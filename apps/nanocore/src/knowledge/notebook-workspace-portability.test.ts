@@ -1,6 +1,14 @@
 // openkit-test-platform: posix
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId, formatReferenceUri } from '@openkit/protocol';
@@ -13,17 +21,19 @@ import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { allocateRetrievalTraceId, readRetrievalTrace } from '../storage/retrieval-traces.js';
-import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
 import { readWorkspacePortableFileState } from '../storage/workspace-portable-file-state.js';
 import {
   createVerifiedWorkspaceExport,
   importVerifiedWorkspace,
 } from '../storage/workspace-transfer-routes.js';
+import { createApp } from '../test-support/app.js';
+import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { unresolvedNotebookSubjects } from './conflicts.js';
 import { KnowledgeNotebook } from './notebook.js';
 import { remintPortableWorkspaceNotebookPages } from './notebook-workspace-portability.js';
 import { parseOkfDocument, updateOkfFrontmatter } from './okf.js';
@@ -66,10 +76,8 @@ function source() {
   });
   const content = updateOkfFrontmatter({
     path: 'notes/portable.md',
-    content: serializeUserAuthoredKnowledgePage(
+    content: serializeKnowledgePageFixture(
       {
-        id: 'notes/portable',
-        kind: 'project-context',
         title: 'Exact portable note',
         content: 'Exact Unicode body: 漢字.\r\n\t  ',
         createdAt: '2026-10-16T00:00:00Z',
@@ -115,10 +123,8 @@ describe('canonical Notebook Workspace portability', () => {
     const page = (id: string, sourceReferences: string[]) =>
       updateOkfFrontmatter({
         path: `${id}.md`,
-        content: serializeUserAuthoredKnowledgePage(
+        content: serializeKnowledgePageFixture(
           {
-            id,
-            kind: 'project-context',
             title: id,
             content: `Exact ${id} body.\r\n\t  `,
             sourceReferences,
@@ -285,6 +291,116 @@ describe('canonical Notebook Workspace portability', () => {
       }).publishedRevision()
     ).toBe(f.revision);
   });
+
+  it('refuses current-tree import when an inert historical subject pin requires omitted target bytes', async () => {
+    const f = source();
+    const app = createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, store: f.store });
+    const knowledgeBaseId = readDefaultKnowledgeBaseId({
+      dataRoot: f.dataRoot,
+      scope: { kind: 'workspace', workspaceId: f.workspace.id },
+    });
+    const scopeId = `page/workspace/${f.workspace.id}/${knowledgeBaseId}`;
+    const targetReference = { scopeId, objectId: 'notes/portable' };
+    const targetPin = formatReferenceUri(
+      targetReference,
+      `sha256:${createHash('sha256').update(f.content).digest('hex')}`
+    );
+    const assessmentPath = 'assessments/historical.md';
+    const assessment = updateOkfFrontmatter({
+      path: assessmentPath,
+      content: serializeKnowledgePageFixture(
+        {
+          title: 'Assessment of the original target version',
+          content: 'Only the exact original target bytes remain disputed.',
+          sourceReferences: [],
+          createdAt: '2026-10-16T00:00:00Z',
+          updatedAt: '2026-10-16T00:00:00Z',
+        },
+        { kind: 'workspace', workspaceId: f.workspace.id }
+      ),
+      updates: {
+        type: 'Observation',
+        openkit_status: 'draft',
+        status: 'draft',
+        conflict_status: 'unresolved',
+        subject_refs: [targetPin],
+      },
+    });
+    const publish = async (path: string, content: string): Promise<string> => {
+      const response = await app.request('/api/app/operations/knowledge.notebook.update', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-openkit-request-id': randomUUID() },
+        body: JSON.stringify({
+          workspaceId: f.workspace.id,
+          baseRevision: f.notebook.publishedRevision(),
+          changes: [{ path, content }],
+          summary: 'Retain exact assessment scope through an ordinary target edit',
+        }),
+      });
+      const result = await response.json();
+      expect(response.status, JSON.stringify(result)).toBe(200);
+      expect(result.outcome).toBe('published');
+      return result.notebookRevision;
+    };
+    const assessedRevision = await publish(assessmentPath, assessment);
+    const assessed = f.notebook.readRevision(assessedRevision);
+    expect(unresolvedNotebookSubjects(assessed.files, scopeId)).toEqual(
+      new Set([formatReferenceUri(targetReference)])
+    );
+
+    const editedRevision = await publish(
+      'notes/portable.md',
+      `${f.content}\nA later independently edited target version.\n`
+    );
+    const edited = f.notebook.readRevision(editedRevision);
+    expect(edited.parentRevision).toBe(assessedRevision);
+    expect(edited.files['notes/portable.md']).not.toBe(f.content);
+    expect(edited.files[assessmentPath]).toBe(assessed.files[assessmentPath]);
+    expect(
+      parseOkfDocument({ path: assessmentPath, content: edited.files[assessmentPath]! }).document
+        ?.frontmatter.subject_refs
+    ).toEqual([targetPin]);
+    expect(unresolvedNotebookSubjects(edited.files, scopeId)).toEqual(new Set());
+    expect(f.notebook.readRevision(assessedRevision).files['notes/portable.md']).toBe(f.content);
+
+    const exported = createVerifiedWorkspaceExport({
+      authorityUserId: LOCAL_USER_ID,
+      authorityActor: { kind: 'user', id: LOCAL_USER_ID },
+      requestActor: { kind: 'local', userId: LOCAL_USER_ID },
+      coreDb: f.coreDb,
+      dataRoot: f.dataRoot,
+      repositoryWorkspaceDb: (workspaceId) => openWorkspaceDb(f.dataRoot, workspaceId),
+      store: f.store,
+      workspaceId: f.workspace.id,
+    });
+    expect(exported.verified.manifest.knowledgeNotebookRevision).toBe(editedRevision);
+    const target = deployment();
+    const targetRoot = join(target.dataRoot, 'workspaces');
+    const targetFiles = () =>
+      existsSync(targetRoot) ? readdirSync(targetRoot, { recursive: true }).sort() : [];
+    const beforeFiles = targetFiles();
+    const beforeWorkspaces = structuredClone(target.store.listWorkspaces());
+    const sourceWorkspace = structuredClone(f.store.getWorkspace(f.workspace.id));
+
+    // A current-tree archive cannot reconstruct the old subject bytes retained only in source Git.
+    expect(() =>
+      importVerifiedWorkspace({
+        authorityUserId: LOCAL_USER_ID,
+        coreDb: target.coreDb,
+        dataRoot: target.dataRoot,
+        requestId: randomUUID(),
+        store: target.store,
+        verified: exported.verified,
+      })
+    ).toThrow('Portable Knowledge Page requires unavailable pinned source bytes.');
+    expect(target.store.listWorkspaces()).toEqual(beforeWorkspaces);
+    expect(targetFiles()).toEqual(beforeFiles);
+    expect(existsSync(join(targetRoot, f.workspace.id, 'knowledge', 'notebook.git'))).toBe(false);
+    expect(f.notebook.publishedRevision()).toBe(editedRevision);
+    expect(f.notebook.readRevision(editedRevision)).toEqual(edited);
+    expect(f.notebook.readRevision(assessedRevision)).toEqual(assessed);
+    expect(f.store.getWorkspace(f.workspace.id)).toEqual(sourceWorkspace);
+  }, 60_000);
 
   it('remints a retained current-revision Knowledge selection into the imported Notebook', async () => {
     const f = source();

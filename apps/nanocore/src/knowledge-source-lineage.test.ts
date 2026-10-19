@@ -8,16 +8,26 @@ import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
+import * as capabilityUsage from './capability/usage-ledger.js';
+import {
+  parseOkfDocument,
+  stringListFrontmatterField,
+  updateOkfFrontmatter,
+} from './knowledge/okf.js';
 import { FsStore } from './lib/store.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
+import { knowledgePageFixture } from './test-support/knowledge-page.js';
 import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from './test-support/local-user.js';
+import { readWorkspaceSourceFixture } from './test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
+
+const timestamp = '2026-10-19T00:00:00.000Z';
 
 /** Uses real disk, current authorization and operation dispatch without an HTTP replacement. */
 function sourceFixture() {
@@ -48,7 +58,7 @@ function sourceFixture() {
   };
 }
 
-/** Keeps explicit registered-source selection distinct from coincidentally equal entry bytes. */
+/** Keeps explicit registered-source selection distinct from coincidentally equal page bytes. */
 describe('direct Knowledge saved-source lineage', () => {
   it('withholds published page identities and content after a registered Source becomes private', async () => {
     const f = sourceFixture();
@@ -62,18 +72,28 @@ describe('direct Knowledge saved-source lineage', () => {
         content: 'The protected meeting starts at eight.',
         originatingThreadId: origin.id,
       });
-      const created = await f.client.operations['knowledge.create']({
+      const page = knowledgePageFixture(
+        {
+          id: 'protected-meeting-marker',
+          title: 'PROTECTED-TITLE-MARKER',
+          content: 'PROTECTED-BODY-MARKER',
+          sourceReferences: [`source:${source.id}@${source.contentDigest}`],
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        },
+        { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID }
+      );
+      const created = await f.client.operations['knowledge.notebook.create']({
         workspaceId: DEMO_WORKSPACE_ID,
         requestId: crypto.randomUUID(),
         baseRevision: (
-          await f.client.operations['knowledge.list']({ workspaceId: DEMO_WORKSPACE_ID })
+          await f.client.operations['knowledge.notebook.list']({ workspaceId: DEMO_WORKSPACE_ID })
         ).notebookRevision,
-        knowledgePageId: 'protected-meeting-marker',
-        kind: 'project-context',
-        title: 'PROTECTED-TITLE-MARKER',
-        content: 'PROTECTED-BODY-MARKER',
-        sourceReferences: [`source:${source.id}@${source.contentDigest}`],
+        path: page.path,
+        content: page.content,
+        summary: 'Publish the page before its Source audience changes.',
       });
+      expect(created.changedPageIds).toContain(page.id);
       const issued = createOpenKitAccessTokenRecord(f.coreDb, {
         ownerUserId: LOCAL_USER_ID,
         scope: 'workspace-readonly',
@@ -91,23 +111,27 @@ describe('direct Knowledge saved-source lineage', () => {
         headers: { authorization: `Bearer ${issued.secret}` },
         fetch: (input, init) => app.fetch(new Request(input, init)),
       });
-      const before = await client.operations['knowledge.list']({ workspaceId: DEMO_WORKSPACE_ID });
-      expect(before.items.map((entry) => entry.id)).toContain(created.id);
+      const before = await client.operations['knowledge.notebook.list']({
+        workspaceId: DEMO_WORKSPACE_ID,
+      });
+      expect(before.pages.map((entry) => entry.id)).toContain(page.id);
       // Change the real current audience; immutable notebook bytes and their revision stay intact.
       Object.assign(origin, {
         visibility: 'private',
         privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000002',
       });
-      const after = await client.operations['knowledge.list']({ workspaceId: DEMO_WORKSPACE_ID });
+      const after = await client.operations['knowledge.notebook.list']({
+        workspaceId: DEMO_WORKSPACE_ID,
+      });
       expect(after.notebookRevision).toBe(before.notebookRevision);
       for (const denied of [
-        created.id,
-        created.title,
-        created.content,
+        page.id,
+        'PROTECTED-TITLE-MARKER',
+        'PROTECTED-BODY-MARKER',
         source.id,
         source.contentDigest,
       ])
-        expect(JSON.stringify(after.items)).not.toContain(denied);
+        expect(JSON.stringify(after.pages)).not.toContain(denied);
     } finally {
       f.close();
     }
@@ -163,7 +187,7 @@ describe('direct Knowledge saved-source lineage', () => {
       });
       expect(listed.items.map((source) => source.id)).toContain(sharedSource.id);
       expect.soft(listed.items.map((source) => source.id)).not.toContain(privateSource.id);
-      const derivedReads = vi.spyOn(f.store, 'listKnowledgeSourceDerivedRepresentations');
+      const usageCalls = vi.spyOn(capabilityUsage, 'startCapabilityCall');
       try {
         await expect(
           client.operations['knowledge.source.read']({
@@ -171,16 +195,16 @@ describe('direct Knowledge saved-source lineage', () => {
             sourceId: privateSource.id,
           })
         ).rejects.toMatchObject({ status: 403, code: 'workspace_access_denied' });
-        expect(derivedReads).not.toHaveBeenCalled();
+        expect(usageCalls).not.toHaveBeenCalled();
       } finally {
-        derivedReads.mockRestore();
+        usageCalls.mockRestore();
       }
     } finally {
       f.close();
     }
   });
 
-  it('withholds Source data when its derived metadata read revokes the presented credential', async () => {
+  it('withholds Source data when its native usage write revokes the presented credential', async () => {
     const f = sourceFixture();
     try {
       const { source } = await f.client.operations['knowledge.source.register']({
@@ -207,13 +231,13 @@ describe('direct Knowledge saved-source lineage', () => {
         headers: { authorization: `Bearer ${issued.secret}` },
         fetch: (input, init) => app.fetch(new Request(input, init)),
       });
-      const read = f.store.listKnowledgeSourceDerivedRepresentations.bind(f.store);
-      const derivedReads = vi
-        .spyOn(f.store, 'listKnowledgeSourceDerivedRepresentations')
-        .mockImplementation((workspaceId, sourceId) => {
-          const representations = read(workspaceId, sourceId);
+      const start = capabilityUsage.startCapabilityCall;
+      const usageCalls = vi
+        .spyOn(capabilityUsage, 'startCapabilityCall')
+        .mockImplementation((input) => {
+          const call = start(input);
           revokeOpenKitAccessTokenRecord(f.coreDb, issued.record.tokenId);
-          return representations;
+          return call;
         });
       try {
         await expect(
@@ -222,9 +246,9 @@ describe('direct Knowledge saved-source lineage', () => {
             sourceId: source.id,
           })
         ).rejects.toMatchObject({ status: 403, code: 'workspace_access_denied' });
-        expect(derivedReads).toHaveBeenCalledTimes(1);
+        expect(usageCalls).toHaveBeenCalledTimes(1);
       } finally {
-        derivedReads.mockRestore();
+        usageCalls.mockRestore();
       }
     } finally {
       f.close();
@@ -308,26 +332,32 @@ describe('direct Knowledge saved-source lineage', () => {
         content: 'Private interpretation.',
         originatingThreadId: thread.id,
       });
-      const fields = {
-        kind: 'project-context' as const,
-        title: 'Private interpretation',
-        content: 'Private interpretation.',
-        sourceReferences: [`source:${source.id}@${source.contentDigest}`],
-      };
-      const before = await f.client.operations['knowledge.list']({
+      const page = knowledgePageFixture(
+        {
+          id: 'private-interpretation',
+          title: 'Private interpretation',
+          content: 'Private interpretation.',
+          sourceReferences: [`source:${source.id}@${source.contentDigest}`],
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        },
+        { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID }
+      );
+      const before = await f.client.operations['knowledge.notebook.list']({
         workspaceId: DEMO_WORKSPACE_ID,
       });
       await expect(
-        f.client.operations['knowledge.create']({
-          ...fields,
+        f.client.operations['knowledge.notebook.create']({
+          path: page.path,
+          content: page.content,
+          summary: 'Refuse a private Source in shared Knowledge.',
           workspaceId: DEMO_WORKSPACE_ID,
           requestId: crypto.randomUUID(),
           baseRevision: before.notebookRevision,
-          knowledgePageId: 'private-interpretation',
         })
       ).rejects.toMatchObject({ status: 403, code: 'workspace_access_denied' });
       expect(
-        await f.client.operations['knowledge.list']({ workspaceId: DEMO_WORKSPACE_ID })
+        await f.client.operations['knowledge.notebook.list']({ workspaceId: DEMO_WORKSPACE_ID })
       ).toEqual(before);
       const personal = f.store.ensureQuickChatWorkspace(LOCAL_USER_ID);
       recordWorkspaceOwnerMembership({
@@ -344,28 +374,60 @@ describe('direct Knowledge saved-source lineage', () => {
         content: 'Private interpretation.',
         originatingThreadId: personalThread.id,
       });
+      const personalPage = knowledgePageFixture(
+        {
+          id: 'private-interpretation',
+          title: 'Private interpretation',
+          content: 'Private interpretation.',
+          sourceReferences: [`source:${personalSource.id}@${personalSource.contentDigest}`],
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        },
+        { kind: 'workspace', workspaceId: personal.id }
+      );
       const personalCommand = {
-        ...fields,
         workspaceId: personal.id,
         requestId: crypto.randomUUID(),
-        baseRevision: (await f.client.operations['knowledge.list']({ workspaceId: personal.id }))
-          .notebookRevision,
-        knowledgePageId: 'private-interpretation',
-        sourceReferences: [`source:${personalSource.id}@${personalSource.contentDigest}`],
+        baseRevision: (
+          await f.client.operations['knowledge.notebook.list']({ workspaceId: personal.id })
+        ).notebookRevision,
+        path: personalPage.path,
+        content: personalPage.content,
+        summary: 'Publish owner-only personal Knowledge.',
       };
-      const entry = await f.client.operations['knowledge.create'](personalCommand);
-      expect(await f.client.operations['knowledge.create'](personalCommand)).toEqual(entry);
+      const created = await f.client.operations['knowledge.notebook.create'](personalCommand);
+      expect(await f.client.operations['knowledge.notebook.create'](personalCommand)).toEqual(
+        created
+      );
+      const current = await f.client.operations['knowledge.notebook.list']({
+        workspaceId: personal.id,
+      });
+      const currentPage = current.pages.find((page) => page.path === personalPage.path)!;
       const update = {
         workspaceId: personal.id,
-        knowledgeEntryId: entry.id,
         requestId: crypto.randomUUID(),
-        baseRevision: (await f.client.operations['knowledge.list']({ workspaceId: personal.id }))
-          .notebookRevision,
-        title: 'Updated private interpretation',
+        baseRevision: current.notebookRevision,
+        changes: [
+          {
+            path: currentPage.path,
+            content: updateOkfFrontmatter({
+              path: currentPage.path,
+              content: currentPage.content,
+              updates: { title: 'Updated private interpretation' },
+            }),
+          },
+        ],
+        summary: 'Edit the personal title while preserving exact Source references.',
       };
-      const updated = await f.client.operations['knowledge.update'](update);
-      expect(await f.client.operations['knowledge.update'](update)).toEqual(updated);
-      expect(updated.sourceReferences).toEqual(personalCommand.sourceReferences);
+      const updated = await f.client.operations['knowledge.notebook.update'](update);
+      expect(await f.client.operations['knowledge.notebook.update'](update)).toEqual(updated);
+      const after = await f.client.operations['knowledge.notebook.list']({
+        workspaceId: personal.id,
+      });
+      const updatedPage = after.pages.find((page) => page.path === personalPage.path)!;
+      expect(
+        stringListFrontmatterField(parseOkfDocument(updatedPage).document!, 'source_refs')
+      ).toEqual([`source:${personalSource.id}@${personalSource.contentDigest}`]);
     } finally {
       f.close();
     }
@@ -384,25 +446,34 @@ describe('direct Knowledge saved-source lineage', () => {
       });
       expect(source.contentDigest).toBeTruthy();
       const reference = `source:${source.id}@${source.contentDigest}`;
+      const page = knowledgePageFixture(
+        {
+          id: 'reading-room-hours',
+          title: 'Reading room hours',
+          content: 'The reading room opens at eight.',
+          sourceReferences: [reference],
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        },
+        { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID }
+      );
       const command = {
         workspaceId: DEMO_WORKSPACE_ID,
         requestId: crypto.randomUUID(),
         baseRevision: (
-          await client.operations['knowledge.list']({ workspaceId: DEMO_WORKSPACE_ID })
+          await client.operations['knowledge.notebook.list']({ workspaceId: DEMO_WORKSPACE_ID })
         ).notebookRevision,
-        knowledgePageId: 'reading-room-hours',
-        kind: 'project-context' as const,
-        title: 'Reading room hours',
-        content: 'The reading room opens at eight.',
-        sourceReferences: [reference],
+        path: page.path,
+        content: page.content,
+        summary: 'Publish source-traceable Knowledge through the Notebook.',
       };
-      const entry = await client.operations['knowledge.create'](command);
-      expect(await client.operations['knowledge.create'](command)).toEqual(entry);
+      const publication = await client.operations['knowledge.notebook.create'](command);
+      expect(await client.operations['knowledge.notebook.create'](command)).toEqual(publication);
       const indexes = await client.operations['knowledge.indexes']({
         workspaceId: DEMO_WORKSPACE_ID,
       });
       expect(indexes.sourceReferences.references).toContainEqual(
-        expect.objectContaining({ conceptId: entry.id, reference, resolved: true })
+        expect.objectContaining({ conceptId: page.id, reference, resolved: true })
       );
       const reopened = new FsStore({ dataRoot });
       const reopenedApp = createApp({ coreDb, dataRoot, store: reopened });
@@ -410,23 +481,28 @@ describe('direct Knowledge saved-source lineage', () => {
         baseUrl: 'http://test.invalid',
         fetch: (input, init) => reopenedApp.fetch(new Request(input, init)),
       });
-      const retained = await reopenedClient.operations['knowledge.list']({
+      const retained = await reopenedClient.operations['knowledge.notebook.list']({
         workspaceId: DEMO_WORKSPACE_ID,
       });
-      expect(retained.items.find((item) => item.id === entry.id)?.sourceReferences).toEqual([
-        reference,
-      ]);
+      const retainedPage = retained.pages.find((item) => item.id === page.id)!;
+      expect(
+        stringListFrontmatterField(parseOkfDocument(retainedPage).document!, 'source_refs')
+      ).toEqual([reference]);
       const rebuilt = await reopenedClient.operations['knowledge.indexes']({
         workspaceId: DEMO_WORKSPACE_ID,
       });
       expect(rebuilt.sourceReferences.references).toContainEqual(
-        expect.objectContaining({ conceptId: entry.id, reference, resolved: true })
+        expect.objectContaining({ conceptId: page.id, reference, resolved: true })
       );
-      expect(await reopenedClient.operations['knowledge.create'](command)).toEqual(entry);
+      expect(await reopenedClient.operations['knowledge.notebook.create'](command)).toEqual(
+        publication
+      );
       expect(
         (
-          await reopenedClient.operations['knowledge.list']({ workspaceId: DEMO_WORKSPACE_ID })
-        ).items.filter((item) => item.id === entry.id)
+          await reopenedClient.operations['knowledge.notebook.list']({
+            workspaceId: DEMO_WORKSPACE_ID,
+          })
+        ).pages.filter((item) => item.id === page.id)
       ).toHaveLength(1);
     } finally {
       f.close();
@@ -437,9 +513,7 @@ describe('direct Knowledge saved-source lineage', () => {
     'missing',
     'stale-digest',
     'foreign',
-    'changed-bytes',
-    'missing-bytes',
-  ] as const)('refuses %s Source evidence before publishing an entry', async (condition) => {
+  ] as const)('refuses %s Source evidence before publishing a page', async (condition) => {
     const f = sourceFixture();
     try {
       const targetWorkspaceId =
@@ -463,50 +537,123 @@ describe('direct Knowledge saved-source lineage', () => {
         condition === 'missing'
           ? `source:${allocateEntityId('ks')}@${source.contentDigest}`
           : `source:${source.id}@${condition === 'stale-digest' ? `sha256:${'a'.repeat(64)}` : source.contentDigest}`;
-      const materialPath = join(
-        f.dataRoot,
-        'workspaces',
-        targetWorkspaceId,
-        'sources',
-        'materials',
-        source.id,
-        'content.txt'
-      );
-      if (condition === 'changed-bytes') writeFileSync(materialPath, 'Changed captured bytes.');
-      if (condition === 'missing-bytes') rmSync(materialPath);
-      const before = await f.client.operations['knowledge.list']({
+      const before = await f.client.operations['knowledge.notebook.list']({
         workspaceId: DEMO_WORKSPACE_ID,
       });
       const requestId = crypto.randomUUID();
       const scope = { workspaceId: DEMO_WORKSPACE_ID, actorId: LOCAL_USER_ID };
-      expect(f.store.getCommandRequest('knowledge.create', requestId, scope)).toBeNull();
-      const refusal = await f.client.operations['knowledge.create']({
+      expect(f.store.getCommandRequest('knowledge.notebook.create', requestId, scope)).toBeNull();
+      const page = knowledgePageFixture(
+        {
+          id: 'must-not-publish',
+          title: 'Must not publish',
+          content: 'The reading room opens at eight.',
+          sourceReferences: [reference],
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        },
+        { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID }
+      );
+      const refusal = await f.client.operations['knowledge.notebook.create']({
         workspaceId: DEMO_WORKSPACE_ID,
         requestId,
         baseRevision: before.notebookRevision,
-        knowledgePageId: 'must-not-publish',
-        kind: 'project-context',
-        title: 'Must not publish',
-        content: 'The reading room opens at eight.',
-        sourceReferences: [reference],
+        path: page.path,
+        content: page.content,
+        summary: 'Refuse invalid Source evidence before publication.',
       }).catch((error: unknown) => error);
-      // Missing/corrupt immutable captured bytes require recovery; invalid selection remains a request error.
-      expect(refusal).toMatchObject(
-        condition === 'changed-bytes' || condition === 'missing-bytes'
-          ? { status: 409, code: 'recovery_required' }
-          : { status: 400, code: 'invalid_request' }
-      );
+      expect(refusal).toMatchObject({ status: 400, code: 'invalid_request' });
       expect(JSON.stringify(refusal)).not.toContain('The reading room opens at eight.');
       expect(JSON.stringify(refusal)).not.toContain('Changed captured bytes.');
-      expect(f.store.getCommandRequest('knowledge.create', requestId, scope)).toBeNull();
+      expect(f.store.getCommandRequest('knowledge.notebook.create', requestId, scope)).toBeNull();
       expect(
-        await f.client.operations['knowledge.list']({ workspaceId: DEMO_WORKSPACE_ID })
+        await f.client.operations['knowledge.notebook.list']({ workspaceId: DEMO_WORKSPACE_ID })
       ).toEqual(before);
       const indexes = await f.client.operations['knowledge.indexes']({
         workspaceId: DEMO_WORKSPACE_ID,
       });
       expect(indexes.sourceReferences.references.some((row) => row.reference === reference)).toBe(
         false
+      );
+    } finally {
+      f.close();
+    }
+  });
+
+  it.each([
+    'changed',
+    'missing',
+  ] as const)('keeps an exact Source-backed saved page when original bytes are %s', async (condition) => {
+    const f = sourceFixture();
+    try {
+      const { source } = await f.client.operations['knowledge.source.register']({
+        workspaceId: DEMO_WORKSPACE_ID,
+        requestId: crypto.randomUUID(),
+        kind: 'document',
+        title: 'Independent original',
+        content: 'Retained original bytes.',
+      });
+      const reference = `source:${source.id}@${source.contentDigest}`;
+      const current = await f.client.operations['knowledge.notebook.list']({
+        workspaceId: DEMO_WORKSPACE_ID,
+      });
+      const page = knowledgePageFixture(
+        {
+          id: 'independent-saved-page',
+          title: 'Independent saved page',
+          content: 'Saved bytes remain exact.',
+          sourceReferences: [reference],
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        },
+        { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID }
+      );
+      const command = {
+        workspaceId: DEMO_WORKSPACE_ID,
+        requestId: crypto.randomUUID(),
+        baseRevision: current.notebookRevision,
+        path: page.path,
+        content: page.content,
+        summary: 'Save the exact Source-backed page.',
+      };
+      const entry = await f.client.operations['knowledge.notebook.create'](command);
+      const before = await f.client.operations['knowledge.notebook.list']({
+        workspaceId: DEMO_WORKSPACE_ID,
+      });
+      const saved = before.pages.find((item) => item.id === page.id)!;
+      expect(saved.content).toBe(page.content);
+      const path = join(
+        f.dataRoot,
+        'workspaces',
+        DEMO_WORKSPACE_ID,
+        'knowledge',
+        'raw',
+        'sources',
+        source.id,
+        'original'
+      );
+      if (condition === 'changed') writeFileSync(path, 'Changed captured bytes.');
+      else rmSync(path);
+      expect(
+        (
+          await readWorkspaceSourceFixture({
+            ...f,
+            userId: LOCAL_USER_ID,
+            workspaceId: DEMO_WORKSPACE_ID,
+            sourceId: source.id,
+          })
+        ).status
+      ).not.toBe('ok');
+      expect(await f.client.operations['knowledge.notebook.create'](command)).toEqual(entry);
+      const retained = await f.client.operations['knowledge.notebook.list']({
+        workspaceId: DEMO_WORKSPACE_ID,
+      });
+      expect(retained.pages.find((item) => item.id === page.id)).toEqual(saved);
+      const indexes = await f.client.operations['knowledge.indexes']({
+        workspaceId: DEMO_WORKSPACE_ID,
+      });
+      expect(indexes.sourceReferences.references).toContainEqual(
+        expect.objectContaining({ conceptId: page.id, reference, resolved: true })
       );
     } finally {
       f.close();
@@ -540,22 +687,32 @@ describe('direct Knowledge saved-source lineage', () => {
         headers: { authorization: `Bearer ${issued.secret}` },
         fetch: (input, init) => server.fetch(new Request(input, init)),
       });
+      const page = knowledgePageFixture(
+        {
+          id: 'authorized-source-link',
+          title: 'Authorized source link',
+          content: 'The room opens at eight.',
+          sourceReferences: [`source:${source.id}@${source.contentDigest}`],
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        },
+        { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID }
+      );
       const command = {
         workspaceId: DEMO_WORKSPACE_ID,
         requestId: crypto.randomUUID(),
         baseRevision: (
-          await client.operations['knowledge.list']({ workspaceId: DEMO_WORKSPACE_ID })
+          await client.operations['knowledge.notebook.list']({ workspaceId: DEMO_WORKSPACE_ID })
         ).notebookRevision,
-        knowledgePageId: 'authorized-source-link',
-        kind: 'project-context' as const,
-        title: 'Authorized source link',
-        content: 'The room opens at eight.',
-        sourceReferences: [`source:${source.id}@${source.contentDigest}`],
+        path: page.path,
+        content: page.content,
+        summary: 'Publish source-traceable Knowledge through the Notebook.',
       };
-      const entry = await client.operations['knowledge.create'](command);
+      const publication = await client.operations['knowledge.notebook.create'](command);
+      expect(publication.changedPageIds).toEqual([page.id]);
       revokeOpenKitAccessTokenRecord(f.coreDb, issued.record.tokenId);
 
-      await expect(client.operations['knowledge.create'](command)).rejects.toMatchObject({
+      await expect(client.operations['knowledge.notebook.create'](command)).rejects.toMatchObject({
         status: 401,
       });
       await expect(
@@ -563,8 +720,8 @@ describe('direct Knowledge saved-source lineage', () => {
       ).rejects.toMatchObject({ status: 401 });
       expect(
         (
-          await f.client.operations['knowledge.list']({ workspaceId: DEMO_WORKSPACE_ID })
-        ).items.filter((item) => item.id === entry.id)
+          await f.client.operations['knowledge.notebook.list']({ workspaceId: DEMO_WORKSPACE_ID })
+        ).pages.filter((item) => item.id === page.id)
       ).toHaveLength(1);
     } finally {
       f.close();

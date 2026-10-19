@@ -6,17 +6,17 @@ import { resolveKnowledgeMeaningReference } from '../knowledge/knowledge-meaning
 import type { KnowledgeRetrievalAccess } from '../retrieval-knowledge-adapter.js';
 
 /** Resolves one admitted pin through its existing owner without selecting a current default. */
-export function resolveLightAppMeaning(input: {
+export async function resolveLightAppMeaning(input: {
   readonly workspaceId: string;
   readonly reference: string;
   readonly access: KnowledgeRetrievalAccess;
-}): LightAppMeaningResolution {
+}): Promise<LightAppMeaningResolution> {
   const unavailable = { reference: input.reference, status: 'unavailable' as const };
   const parsed = parseReferenceUri(input.reference);
   const scope = parsed && parseReferenceScope(parsed.reference.scopeId);
   if (!parsed?.contentDigest || !scope) return unavailable;
   if (scope.family === 'page' || scope.family === 'raw') {
-    const result = resolveKnowledgeMeaningReference(input);
+    const result = await resolveKnowledgeMeaningReference(input);
     return result.status === 'available'
       ? { reference: input.reference, status: 'available', content: result.content }
       : unavailable;

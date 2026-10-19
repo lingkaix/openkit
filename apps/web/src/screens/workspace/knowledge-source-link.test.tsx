@@ -10,6 +10,11 @@ import { CoreClientProvider } from '../../app/core-client';
 import { useWorkspaceStore } from '../workspace-store';
 import { workspaceKeys } from './data';
 import { KnowledgeScreen } from './KnowledgeScreen';
+import { readKnowledgePageDisplay } from './knowledge-okf';
+import {
+  knowledgeNotebookPageFixture,
+  knowledgePageContentDigest,
+} from './knowledge-test-fixtures';
 
 const TIMESTAMP = '2026-10-16T00:00:00.000Z';
 const WORKSPACE_A = allocateEntityId('ws');
@@ -44,17 +49,16 @@ const SOURCE_B = {
   workspaceId: WORKSPACE_B,
   title: 'Other Workspace reading-room document',
 };
-const PAGE = {
+const PAGE = knowledgeNotebookPageFixture({
   id: 'reading-room',
-  contentDigest: `sha256:${'a'.repeat(64)}`,
-  kind: 'preference' as const,
   title: 'Reading room opening hours',
-  content: CONTENT,
-  createdAt: TIMESTAMP,
-  updatedAt: TIMESTAMP,
-};
+  body: CONTENT,
+  workspaceId: WORKSPACE_A,
+  timestamp: TIMESTAMP,
+  contentDigest: `sha256:${'a'.repeat(64)}`,
+});
 type CreateInput = Parameters<
-  ReturnType<typeof createCoreClient>['operations']['knowledge.create']
+  ReturnType<typeof createCoreClient>['operations']['knowledge.notebook.create']
 >[0];
 const queryClients: QueryClient[] = [];
 
@@ -93,13 +97,18 @@ function renderKnowledge({ failFirstCreate = false } = {}) {
             })),
           };
           break;
-        case operationHttpPath('knowledge.list'):
+        case operationHttpPath('knowledge.notebook.list'):
           body = {
             knowledgeBaseId: KNOWLEDGE_BASE_ID,
             notebookRevision: 'notebook-fixture-revision',
-            items: creates.some((command) => command.workspaceId === request.workspaceId)
-              ? [PAGE]
-              : [],
+            pages: creates
+              .filter((command) => command.workspaceId === request.workspaceId)
+              .map((command) => ({
+                id: command.path.replace(/\.md$/, ''),
+                path: command.path,
+                content: command.content,
+                contentDigest: knowledgePageContentDigest(command.content),
+              })),
           };
           break;
         case operationHttpPath('knowledge.source.list'):
@@ -130,14 +139,24 @@ function renderKnowledge({ failFirstCreate = false } = {}) {
             },
           };
           break;
-        case operationHttpPath('knowledge.create'):
-          creates.push(request);
+        case operationHttpPath('knowledge.notebook.create'): {
+          const requestId = new Headers(init?.headers).get('x-openkit-request-id');
+          creates.push({ ...request, requestId });
           if (failFirstCreate && creates.length === 1) throw new TypeError('Response lost.');
-          body = PAGE;
+          body = {
+            outcome: 'published',
+            ownerScope: { kind: 'workspace', workspaceId: request.workspaceId },
+            baseRevision: request.baseRevision,
+            notebookRevision: 'notebook-fixture-revision-next',
+            changedPageIds: [request.path.replace(/\.md$/, '')],
+            receiptRef: {
+              operation: 'knowledge.notebook.create',
+              requestId,
+              ownerScope: { kind: 'workspace', workspaceId: request.workspaceId },
+            },
+          };
           break;
-        case operationHttpPath('knowledge.observation.list'):
-        case operationHttpPath('knowledge.claim.list'):
-        case operationHttpPath('knowledge.conflict.list'):
+        }
         case operationHttpPath('attention.list'):
           body = { items: [] };
           break;
@@ -192,7 +211,7 @@ async function fillEntry(user: ReturnType<typeof userEvent.setup>) {
 
 beforeEach(() => {
   localStorage.clear();
-  useWorkspaceStore.setState({ currentWorkspaceId: null, selectionUserKey: null });
+  useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE_A, selectionUserKey: 'test-user' });
 });
 
 afterEach(() => {
@@ -210,16 +229,18 @@ describe('Add knowledge registered Source relationship', () => {
     await user.click(screen.getByRole('button', { name: 'Save' }));
 
     await waitFor(() => expect(creates).toHaveLength(1));
-    expect(creates[0]).toEqual({
+    expect(creates[0]).toMatchObject({
       workspaceId: WORKSPACE_A,
       baseRevision: 'notebook-fixture-revision',
-      knowledgePageId: expect.any(String),
-      kind: 'preference',
-      title: PAGE.title,
-      content: CONTENT,
-      sourceReferences: [`source:${SELECTED_SOURCE.id}@${DIGEST}`],
+      path: expect.stringMatching(/^notes\/.+\.md$/),
+      summary: expect.stringMatching(/^Create notes\/.+\.md$/),
     });
-    expect(await screen.findByText(PAGE.title)).toBeVisible();
+    expect(creates[0]?.content).toContain(`title: ${PAGE.title}`);
+    expect(creates[0]?.content).toContain(CONTENT);
+    expect(creates[0]?.content).toContain(`source:${SELECTED_SOURCE.id}@${DIGEST}`);
+    const createdTitle = readKnowledgePageDisplay(creates[0]!.path, creates[0]!.content).title;
+    await waitFor(() => expect(screen.queryByText('New notebook page')).not.toBeInTheDocument());
+    expect(await screen.findByText(createdTitle)).toBeVisible();
   });
 
   it('does not infer a relationship from matching content when the user selects no Source', async () => {
@@ -232,13 +253,17 @@ describe('Add knowledge registered Source relationship', () => {
     await waitFor(() => expect(creates).toHaveLength(1));
     expect(creates[0]).toMatchObject({
       workspaceId: WORKSPACE_A,
-      title: PAGE.title,
-      content: CONTENT,
+      path: expect.stringMatching(/^notes\/.+\.md$/),
     });
-    expect(creates[0]?.sourceReferences ?? []).toEqual([]);
+    expect(creates[0]?.content).toContain(`title: ${PAGE.title}`);
+    expect(creates[0]?.content).toContain(CONTENT);
+    expect(creates[0]?.content).toContain('source_refs: []');
     const paths = fetch.mock.calls.map(([input]) => new URL(String(input)).pathname);
     expect(paths).not.toContain(operationHttpPath('knowledge.source.register'));
-    expect(await screen.findByText(PAGE.title)).toBeVisible();
+    await waitFor(() => expect(screen.queryByText('New notebook page')).not.toBeInTheDocument());
+    expect(
+      await screen.findByText(readKnowledgePageDisplay(creates[0]!.path, creates[0]!.content).title)
+    ).toBeVisible();
   });
 
   it('does not carry a selected Source into an entry created in another Workspace', async () => {
@@ -261,8 +286,12 @@ describe('Add knowledge registered Source relationship', () => {
     await user.click(screen.getByRole('button', { name: 'Save' }));
 
     await waitFor(() => expect(creates).toHaveLength(1));
-    expect(creates[0]).toMatchObject({ workspaceId: WORKSPACE_B, content: CONTENT });
-    expect(creates[0]?.sourceReferences ?? []).toEqual([]);
+    expect(creates[0]).toMatchObject({
+      workspaceId: WORKSPACE_B,
+      path: expect.stringMatching(/^notes\/.+\.md$/),
+    });
+    expect(creates[0]?.content).toContain(CONTENT);
+    expect(creates[0]?.content).toContain('source_refs: []');
   });
 
   it('does not offer a foreign Workspace Source returned in the current catalog', async () => {
@@ -397,7 +426,8 @@ describe('Add knowledge registered Source relationship', () => {
     await waitFor(() => expect(fixture.creates).toHaveLength(2));
     expect(fixture.creates[1]).toEqual(fixture.creates[0]);
     const commands = fixture.fetch.mock.calls.filter(
-      ([input]) => new URL(String(input)).pathname === operationHttpPath('knowledge.create')
+      ([input]) =>
+        new URL(String(input)).pathname === operationHttpPath('knowledge.notebook.create')
     );
     const requestIds = commands.map(([, init]) =>
       new Headers(init?.headers).get('x-openkit-request-id')

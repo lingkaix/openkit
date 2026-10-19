@@ -26,7 +26,8 @@ import {
   retrieveUserMemory,
 } from '../storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
-import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
+import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
+
 import { appendMemorySuppression } from './memory-maintenance.js';
 import { KnowledgeNotebook } from './notebook.js';
 import { attributedNotebookPageBytes } from './notebook-publication.js';
@@ -70,10 +71,8 @@ function fixture(enabled = true) {
     );
     expect(payload.sources[0].content).toBe('I prefer green labels.');
     expect(run.inputs?.sourceRange).toEqual([]);
-    const page = serializeUserAuthoredKnowledgePage(
+    const page = serializeKnowledgePageFixture(
       {
-        id: 'labels',
-        kind: 'preference',
         title: 'Labels',
         content: 'I prefer green labels.',
         sourceReferences: [payload.sources[0].reference],
@@ -220,10 +219,8 @@ function useFakeProvider(f: ReturnType<typeof fixture>) {
     const payload = JSON.parse(
       run.messages[0]!.content.flatMap((part) => (part.type === 'text' ? [part.text] : [])).join('')
     );
-    const page = serializeUserAuthoredKnowledgePage(
+    const page = serializeKnowledgePageFixture(
       {
-        id: 'labels',
-        kind: 'preference',
         title: 'Labels',
         content: 'I prefer green labels.',
         sourceReferences: [payload.sources[0].reference],
@@ -295,10 +292,8 @@ describe('User-private bounded Memory maintenance', () => {
         sourceFingerprints: [],
       });
     }
-    const citing = serializeUserAuthoredKnowledgePage(
+    const citing = serializeKnowledgePageFixture(
       {
-        id: 'citing',
-        kind: 'preference',
         title: 'Citing',
         content: 'Compare saved labels.',
         sourceReferences: [reference],
@@ -607,7 +602,21 @@ describe('User-private bounded Memory maintenance', () => {
     expect((await runUserMemoryMaintenanceCommand(f.dependencies, f.input)).outcome).toBe('failed');
     expect(f.notebook().publishedRevision()).toBe(current);
     const nativeNotebook = f.notebook();
+    const humanFiles = nativeNotebook.readRevision(current).files;
+    let capturedBase = '';
+    let capturedAuditCount = 0;
+    const auditCount = () =>
+      (
+        f.userDb.sqlite.prepare('SELECT COUNT(*) AS count FROM audit_events').get() as {
+          count: number;
+        }
+      ).count;
     f.run.mockImplementationOnce(async (run) => {
+      // The new Source is captured under valid self authority before this revocation.
+      capturedBase = nativeNotebook.publishedRevision();
+      expect(run.inputs!.baseRevision).toBe(capturedBase);
+      expect(nativeNotebook.readRevision(capturedBase).files).toEqual(humanFiles);
+      capturedAuditCount = auditCount();
       f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, userId))();
       return original(run);
     });
@@ -619,7 +628,10 @@ describe('User-private bounded Memory maintenance', () => {
         })
       ).outcome
     ).toBe('failed');
-    expect(nativeNotebook.publishedRevision()).toBe(current);
+    expect(capturedBase).not.toBe('');
+    expect(nativeNotebook.publishedRevision()).toBe(capturedBase);
+    expect(nativeNotebook.readRevision(capturedBase).files).toEqual(humanFiles);
+    expect(auditCount()).toBe(capturedAuditCount);
     await expect(
       runUserMemoryMaintenanceCommand(f.dependencies, { ...f.input, requestId: randomUUID() })
     ).rejects.toThrow('Scoped notebook access denied');

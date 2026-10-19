@@ -9,9 +9,6 @@ import {
   EvidenceBundleRecordSchema,
   InjectionVisibilitySchema,
   JudgementRecordReaderSchema,
-  KnowledgeClaimSchema,
-  KnowledgeConflictSchema,
-  KnowledgeObservationSchema,
   KnowledgeRetrievalTraceSchema,
   type ProductRetrievalTrace,
   StagedWorkspaceReviewReaderSchema,
@@ -57,7 +54,7 @@ import {
   type EntityKind,
   ItemSchema,
   KnowledgeBaseIdSchema,
-  KnowledgeEntrySchema,
+  KnowledgeNotebookPageSchema,
   MaterialIdSchema,
   PermissionDecisionIdSchema,
   parseReferenceScope,
@@ -117,6 +114,7 @@ import {
 } from '../internal-agents/delegation.js';
 import { remintPortableWorkspaceNotebookPages } from '../knowledge/notebook-workspace-portability.js';
 import { parseOkfDocument, stringFrontmatterField } from '../knowledge/okf.js';
+import { importWorkspaceSources } from '../knowledge/source-workspace-portability.js';
 import type { AgentSession, KnowledgeSourceRecord } from '../lib/store.js';
 import { remintResourcePolicyConfig } from '../policy/resource-policy-portability.js';
 import {
@@ -170,7 +168,6 @@ import { assertWorkspaceArchiveFilePath } from './workspace-archive.js';
 import {
   assertPortableArtifactHistory,
   dryRunWorkspaceImport,
-  type ExportedKnowledgeSourceMaterial,
   parsePortableWorkObservations,
   UNSUPPORTED_WORKSPACE_EXPORT_RECORD_PATHS,
   type VerifiedWorkspaceExportTree,
@@ -181,14 +178,11 @@ import {
   ArtifactReaderSchema,
   artifactContentFileName,
   artifactReferenceItemId,
-  assertSafeWorkspacePathSegment,
   type CaptureCoverageBinding,
-  KnowledgeSourceRecordSchema,
-  knowledgeEntriesEqual,
   listUnresolvedUserInputRequestItemIds,
   measureCanonicalFile,
   parseCanonicalWorkspaceHistory,
-  parseOwnedKnowledgeEntry,
+  parseOwnedKnowledgePage,
   readCanonicalFile,
   WorkspaceSystemRecordSchema,
 } from './workspace-file-records.js';
@@ -207,7 +201,7 @@ import {
 type WorkspaceRecord = import('zod').infer<typeof WorkspaceRecordSchema>;
 type Thread = import('zod').infer<typeof ThreadSchema>;
 type Turn = import('zod').infer<typeof TurnSchema>;
-type KnowledgeEntry = import('zod').infer<typeof KnowledgeEntrySchema>;
+type KnowledgeNotebookPage = import('zod').infer<typeof KnowledgeNotebookPageSchema>;
 type Item = import('zod').infer<typeof ItemSchema>;
 type Artifact = import('zod').infer<typeof ArtifactSchema>;
 type SseEventEnvelope = import('zod').infer<typeof SseEventEnvelopeSchema>;
@@ -272,9 +266,6 @@ const ImportedEvidenceBundleRecordSchema = EvidenceBundleRecordSchema.safeExtend
 }).strip();
 
 const ImportedUsageRecordSchema = UsageRecordSchema.strip();
-const ImportedKnowledgeObservationSchema = KnowledgeObservationSchema.strip();
-const ImportedKnowledgeClaimSchema = KnowledgeClaimSchema.strip();
-const ImportedKnowledgeConflictSchema = KnowledgeConflictSchema.strip();
 const ExportedResolvedAgentSetupSchema = z
   .object({
     id: z.string().min(1),
@@ -586,7 +577,7 @@ export interface WorkspaceImportSnapshot {
   /** Imported turns with target workspace, thread, and current item lineage. */
   turns: Turn[];
   /** Imported knowledge records. */
-  knowledge: KnowledgeEntry[];
+  knowledge: KnowledgeNotebookPage[];
   /** Imported full item revision history. */
   itemRevisions: Item[];
   /** Imported artifacts with reconstructed bodies. */
@@ -608,7 +599,9 @@ export interface WorkspaceImportSnapshot {
   /** Imported knowledge source identity records. */
   knowledgeSources: KnowledgeSourceRecord[];
   /** Imported knowledge source text materials. */
-  knowledgeSourceMaterials: ExportedKnowledgeSourceMaterial[];
+  initialNotebookSources: Readonly<Record<string, string>>;
+  /** Request-local check of copied original bytes before the existing Workspace publication. */
+  verifySourceOriginals: (workspaceRoot: string) => void;
   /** Imported unbound workspace vault references. */
   vaultReferences: ImportedWorkspaceVaultReference[];
   /** Imported non-secret workspace vault grants. */
@@ -1095,20 +1088,11 @@ export function readWorkspaceImportSnapshot(
         );
     }
   }
-  const knowledgeReferenceReplacements = portableReferenceReplacements(context);
-  const knowledge = canonical.knowledge.map((entry) =>
-    KnowledgeEntrySchema.parse({
-      ...entry,
-      ...(entry.sourceReferences
-        ? {
-            sourceReferences: rewritePortableReferences(
-              entry.sourceReferences,
-              knowledgeReferenceReplacements
-            ),
-          }
-        : {}),
-    })
-  );
+  const knowledge = canonical.knowledge.map((page) => {
+    const content = notebookPages.get(`knowledge/pages/${page.path}`);
+    if (content === undefined) throw new Error('Portable Notebook page bytes are missing.');
+    return parseOwnedKnowledgePage(page.path, page.id, content);
+  });
   const portableFileState = {
     ...readPortableImportState(
       context,
@@ -1121,6 +1105,8 @@ export function readWorkspaceImportSnapshot(
   };
   const importedCatalog = readImportedAgentResourceCatalog(context.files);
   const artifactPayloadFiles = workResources.artifactPayloadFiles;
+  for (const [path, source] of canonical.sourceTransfer.payloadFiles)
+    artifactPayloadFiles.set(path, source);
   const sourceTurnIds = new Map([...context.turnIds].map(([source, target]) => [target, source]));
   const sourceThreadIds = new Map(
     [...context.threadIds].map(([source, target]) => [target, source])
@@ -1201,7 +1187,8 @@ export function readWorkspaceImportSnapshot(
     agentSessions: canonical.agentSessions,
     turnEvents: workResources.turnEvents,
     knowledgeSources: canonical.knowledgeSources,
-    knowledgeSourceMaterials: canonical.knowledgeSourceMaterials,
+    initialNotebookSources: canonical.sourceTransfer.pointers,
+    verifySourceOriginals: canonical.sourceTransfer.verifyCopies,
     vaultReferences: securityRuntime.vaultReferences,
     vaultGrants: securityRuntime.vaultGrants,
     vaultInjectionPlans: securityRuntime.vaultInjectionPlans,
@@ -1366,7 +1353,7 @@ function readCanonicalImportState(context: ImportRemintContext) {
   );
   remintAssistantThreadParents(threads, threadIds);
   const exportedKnowledge = readImportJsonl(context.files, 'records/knowledge.jsonl').map(
-    (record) => KnowledgeEntrySchema.parse(record)
+    (record) => KnowledgeNotebookPageSchema.parse(record)
   );
   const exportedTurns = readImportJsonl(context.files, 'records/turns.jsonl').map((record) =>
     readRetainedV1(record, StoredTurnSnapshotV1Schema.parse)
@@ -1781,38 +1768,32 @@ function readCanonicalImportState(context: ImportRemintContext) {
         })
       ),
   ]);
-  const exportedKnowledgeSources = readOptionalImportJsonl(
-    context.files,
-    'records/knowledge-sources.jsonl'
-  ).map((record) => {
-    const source = KnowledgeSourceRecordSchema.parse(record);
-    assertSafeWorkspacePathSegment(source.id, 'Knowledge source id');
-    return source;
+  const sourceConfig = readRetainedV1(
+    parseJsoncObject(requiredExportFile(context.files, 'workspace-files/config/workspace.jsonc')),
+    (record) => WorkspaceConfigSchema.parse(record)
+  );
+  const sourceTransfer = importWorkspaceSources({
+    files: context.files,
+    payloadFiles: context.payloadFiles,
+    scopeSchemaText: requiredExportFile(
+      context.files,
+      'workspace-files/knowledge/schema/scope-schema.yaml'
+    ),
+    mounts: sourceConfig.workspace.knowledgeMounts,
+    sourceWorkspaceId: report.exportedWorkspaceId,
+    targetWorkspaceId: context.targetWorkspaceId,
+    sourceKnowledgeBaseId: context.sourceKnowledgeBaseId,
+    targetKnowledgeBaseId: context.targetKnowledgeBaseId,
+    threadIds,
+    turnIds,
+    rewriteUri: (uri) =>
+      rewriteWorkspaceReference(uri, report.exportedWorkspaceId, context.targetWorkspaceId),
   });
-  const knowledgeSourceIds = allocateImportedEntityIds(
-    'ks',
-    exportedKnowledgeSources.map((source) => source.id)
-  );
-  const knowledgeSources = exportedKnowledgeSources.map((parsed) =>
-    KnowledgeSourceRecordSchema.parse({
-      ...parsed,
-      id: requiredMapValue(knowledgeSourceIds, parsed.id, 'Knowledge source'),
-      originatingThreadId: parsed.originatingThreadId
-        ? requiredMapValue(threadIds, parsed.originatingThreadId, 'thread')
-        : null,
-      originatingTurnId: parsed.originatingTurnId
-        ? requiredMapValue(turnIds, parsed.originatingTurnId, 'turn')
-        : null,
-      uri: parsed.uri
-        ? rewriteWorkspaceReference(
-            parsed.uri,
-            report.exportedWorkspaceId,
-            context.targetWorkspaceId
-          )
-        : null,
-      workspaceId: context.targetWorkspaceId,
-    })
-  );
+  const exportedKnowledgeSources = sourceTransfer.originalSources;
+  const knowledgeSources = sourceTransfer.sources;
+  const knowledgeSourceIds = sourceTransfer.sourceIds;
+  for (const [source, target] of sourceTransfer.references)
+    context.knowledgePageReferences.set(source, target);
   const knowledge = exportedKnowledge;
   parseCanonicalWorkspaceHistory({
     workspace: exportedWorkspace,
@@ -1834,18 +1815,6 @@ function readCanonicalImportState(context: ImportRemintContext) {
     agentSessions,
     turnEvents,
   });
-  const knowledgeSourceMaterials = exportedKnowledgeSources
-    .map((source): ExportedKnowledgeSourceMaterial | null => {
-      const materialPath = `sources/materials/${source.id}/content.txt`;
-
-      return context.files.has(materialPath)
-        ? {
-            sourceId: requiredMapValue(knowledgeSourceIds, source.id, 'knowledge source'),
-            content: requiredExportFile(context.files, materialPath),
-          }
-        : null;
-    })
-    .filter((material): material is ExportedKnowledgeSourceMaterial => material !== null);
   context.threadIds = threadIds;
   context.turnIds = turnIds;
   context.itemIds = itemIds;
@@ -1868,7 +1837,7 @@ function readCanonicalImportState(context: ImportRemintContext) {
     agentSessions,
     turnEvents,
     knowledgeSources,
-    knowledgeSourceMaterials,
+    sourceTransfer,
     agentEnvironmentPackageSnapshots,
   };
 }
@@ -4662,7 +4631,7 @@ function readRetrievalTraceImportState(
 function readPortableImportState(
   context: ImportRemintContext,
   workerContextPackageFiles: ReadonlyMap<string, string>,
-  knowledge: readonly KnowledgeEntry[],
+  knowledge: readonly KnowledgeNotebookPage[],
   retrievalTraceFiles: ReadonlyMap<string, ProductRetrievalTrace>,
   notebookPages: ReadonlyMap<string, string>
 ): WorkspacePortableFileState {
@@ -4692,7 +4661,10 @@ function remintImportedNotebookPages(
     rewriteReferences: (references) =>
       rewritePortableReferences(references, portableReferenceReplacements(context)),
   });
-  context.knowledgePageReferences = new Map(notebook.referenceReplacements);
+  context.knowledgePageReferences = new Map([
+    ...context.knowledgePageReferences,
+    ...notebook.referenceReplacements,
+  ]);
   return notebook.pages;
 }
 
@@ -4700,12 +4672,12 @@ function remintImportedNotebookPages(
  * Verifies a one-to-one projection between canonical Knowledge records and exact portable pages.
  *
  * @param pages Reminted portable page bytes keyed by workspace-relative path.
- * @param knowledge Canonical imported KnowledgeEntry projections.
+ * @param knowledge Canonical imported Notebook page projections.
  * @throws Error when an owned page is missing, duplicated, malformed, or contradictory.
  */
 function assertPortableKnowledgePagesMatch(
   pages: ReadonlyMap<string, string>,
-  knowledge: readonly KnowledgeEntry[]
+  knowledge: readonly KnowledgeNotebookPage[]
 ): void {
   const expectedById = new Map(knowledge.map((entry) => [entry.id, entry]));
   if (expectedById.size !== knowledge.length) {
@@ -4729,14 +4701,20 @@ function assertPortableKnowledgePagesMatch(
       throw new Error(`Portable Knowledge Page identity is ambiguous: ${entryId}`);
     }
 
-    let projected: KnowledgeEntry;
+    let projected: KnowledgeNotebookPage;
     try {
-      projected = parseOwnedKnowledgeEntry(path, entryId, content);
+      projected = parseOwnedKnowledgePage(path.slice('knowledge/pages/'.length), entryId, content);
     } catch {
       throw new Error(`Portable Knowledge Page is invalid: ${entryId}`);
     }
     const expected = expectedById.get(entryId);
-    if (!expected || !knowledgeEntriesEqual(projected, expected)) {
+    if (
+      !expected ||
+      projected.id !== expected.id ||
+      projected.path !== expected.path ||
+      projected.content !== expected.content ||
+      projected.contentDigest !== expected.contentDigest
+    ) {
       throw new Error(`Portable Knowledge Page contradicts its canonical record: ${entryId}`);
     }
     matchedIds.add(entryId);
@@ -4760,46 +4738,6 @@ function readPortableFileStateFromExport(
   notebookPages: ReadonlyMap<string, string>
 ): WorkspacePortableFileState {
   const files = context.files;
-  const replacements = portableReferenceReplacements(context);
-  const observations = readImportJsonl(files, 'records/knowledge-observations.jsonl').map(
-    (record) => {
-      const parsed = ImportedKnowledgeObservationSchema.parse(record);
-      assertPortableWorkspaceOwner(
-        parsed.workspaceId,
-        context.report.exportedWorkspaceId,
-        'observation'
-      );
-      return ImportedKnowledgeObservationSchema.parse({
-        ...parsed,
-        workspaceId: context.targetWorkspaceId,
-        sourceReferences: rewritePortableReferences(parsed.sourceReferences, replacements),
-      });
-    }
-  );
-  const claims = readImportJsonl(files, 'records/knowledge-claims.jsonl').map((record) => {
-    const parsed = ImportedKnowledgeClaimSchema.parse(record);
-    assertPortableWorkspaceOwner(parsed.workspaceId, context.report.exportedWorkspaceId, 'claim');
-    return ImportedKnowledgeClaimSchema.parse({
-      ...parsed,
-      workspaceId: context.targetWorkspaceId,
-      sourceReferences: rewritePortableReferences(parsed.sourceReferences, replacements),
-    });
-  });
-  const conflicts = readImportJsonl(files, 'records/knowledge-conflicts.jsonl').map((record) => {
-    const parsed = ImportedKnowledgeConflictSchema.parse(record);
-    assertPortableWorkspaceOwner(
-      parsed.workspaceId,
-      context.report.exportedWorkspaceId,
-      'conflict'
-    );
-    return ImportedKnowledgeConflictSchema.parse({
-      ...parsed,
-      workspaceId: context.targetWorkspaceId,
-      subjectReferences: rewritePortableReferences(parsed.subjectReferences, replacements),
-      sourceReferences: rewritePortableReferences(parsed.sourceReferences, replacements),
-    });
-  });
-
   let workspaceConfig: string | null = null;
   let workspaceSchema: string | null = null;
   const nativeKnowledgePages = new Map<string, string>();
@@ -4832,6 +4770,23 @@ function readPortableFileStateFromExport(
           }
         )
       );
+      const mounts = readRetainedV1(parseJsoncObject(remintedConfig), (record) =>
+        WorkspaceConfigSchema.parse(record)
+      ).workspace.knowledgeMounts;
+      if (mounts)
+        for (let index = 0; index < mounts.length; index += 1)
+          // Remint only authority bindings; preserve authored comments and descriptive extensions.
+          workspaceConfig = applyEdits(
+            workspaceConfig,
+            modify(
+              workspaceConfig,
+              ['workspace', 'knowledgeMounts', index, 'knowledgeBaseId'],
+              context.targetKnowledgeBaseId,
+              { formattingOptions: { insertSpaces: true, tabSize: 2 } }
+            )
+          );
+    } else if (workspacePath.startsWith('knowledge/sources/')) {
+      // Source pointers are validated/reminted with their binary payloads, then enter the first Notebook commit.
     } else if (workspacePath === 'knowledge/schema/scope-schema.yaml') {
       workspaceSchema = content;
     } else if (workspacePath.startsWith('knowledge/pages/')) {
@@ -4850,9 +4805,6 @@ function readPortableFileStateFromExport(
 
   return {
     recurringHistory: null,
-    observations: groupPortableRecords(observations, (record) => record.observedAt),
-    claims: groupPortableRecords(claims, (record) => record.createdAt),
-    conflicts: groupPortableRecords(conflicts, (record) => record.resolvedAt ?? record.createdAt),
     retrievalTraceFiles: new Map(),
     workspaceConfig,
     workspaceSchema,
@@ -4879,26 +4831,6 @@ function rewritePortableReferences(
       reference
     )
   );
-}
-
-/** Groups append-order records by their authoritative ledger month. */
-function groupPortableRecords<T>(
-  records: readonly T[],
-  timestamp: (record: T) => string
-): ReadonlyMap<string, readonly T[]> {
-  const grouped = new Map<string, T[]>();
-  for (const record of records) {
-    const value = timestamp(record);
-    const match = /^(\d{4})-(\d{2})-/.exec(value);
-    if (!match || Number(match[2]) < 1 || Number(match[2]) > 12) {
-      throw new Error(`Portable ledger timestamp is invalid: ${value}`);
-    }
-    const month = `${match[1]}${match[2]}`;
-    const rows = grouped.get(month) ?? [];
-    rows.push(record);
-    grouped.set(month, rows);
-  }
-  return grouped;
 }
 
 /** Reads every exact immutable original and the acknowledged current projection from verified export files. */

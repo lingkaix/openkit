@@ -3,11 +3,12 @@ import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { formatReferenceUri, KnowledgeEntrySchema } from '@openkit/protocol';
+import { formatReferenceUri, KnowledgeNotebookPageSchema } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ensureLocalUser } from './auth/identity.js';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
+import { updateOkfFrontmatter } from './knowledge/okf.js';
 import { FsStore } from './lib/store.js';
 import { admitKnowledgeRetrieval } from './retrieval-knowledge-adapter.js';
 import { closeRetrievalServices, getRetrievalService } from './retrieval-service.js';
@@ -19,7 +20,12 @@ import {
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { testEntityId } from './test-support/entity-ids.js';
+import {
+  knowledgePageFixture,
+  serializeKnowledgePageFixture,
+} from './test-support/knowledge-page.js';
 import { notebookImportFixture } from './test-support/notebook-import.js';
+import { captureWorkspaceSourceFixture } from './test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const NOW = '2026-10-15T00:00:00.000Z';
@@ -60,6 +66,88 @@ describe('canonical local retrieval identity', () => {
 });
 
 describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
+  it.each([
+    'Claim',
+    'Observation',
+  ] as const)('excludes unresolved %s pages from active query and pinned selection until resolved', async (type) => {
+    const fixture = createFixture(`conflict-${type.toLowerCase()}`);
+    const page = await createEntry(fixture, 'Conflict evidence', 'conflict-selection-marker');
+    const reference = pageReference(fixture, page.id);
+    await publishPages(fixture, [
+      {
+        path: `${page.id}.md`,
+        content: updateOkfFrontmatter({
+          path: `${page.id}.md`,
+          content: readPage(fixture, page.id),
+          updates: {
+            type,
+            ...(type === 'Claim'
+              ? { confidence: 0 }
+              : { subject_refs: [formatReferenceUri(reference)] }),
+          },
+        }),
+      },
+    ]);
+    // No recorded assessment remains eligible; it does not fabricate a resolution.
+    const unassessed = await retrieveWorkspaceKnowledge(
+      retrievalInput(fixture, 'conflict-selection-marker')
+    );
+    expect(unassessed.selected.map(({ reference }) => reference.objectId)).toEqual([page.id]);
+    expect(readPage(fixture, page.id)).not.toContain('conflict_status:');
+
+    for (const conflict_status of ['unresolved', 'resolved'] as const) {
+      await publishPages(fixture, [
+        {
+          path: `${page.id}.md`,
+          content: updateOkfFrontmatter({
+            path: `${page.id}.md`,
+            content: readPage(fixture, page.id),
+            updates: { conflict_status },
+          }),
+        },
+      ]);
+      for (const pinnedReferences of [[], [reference]]) {
+        const trace = await retrieveWorkspaceKnowledge({
+          ...retrievalInput(
+            fixture,
+            pinnedReferences.length ? 'unmatched-conflict-lookup' : 'conflict-selection-marker'
+          ),
+          pinnedReferences,
+        });
+        if (conflict_status === 'unresolved') {
+          expect(trace.selected).toEqual([]);
+          expect(exclusionReasons(trace)).toEqual({ [page.id]: 'lower_conformance' });
+        } else {
+          expect(trace.selected.map(({ reference }) => reference.objectId)).toEqual([page.id]);
+          expect(trace.excluded).toEqual([]);
+        }
+      }
+    }
+    if (type === 'Claim') {
+      // Current authorized inspection of non-active facts remains available.
+      await publishPages(fixture, [
+        {
+          path: `${page.id}.md`,
+          content: updateOkfFrontmatter({
+            path: `${page.id}.md`,
+            content: readPage(fixture, page.id),
+            updates: {
+              openkit_status: 'archived',
+              status: 'deprecated',
+              conflict_status: 'unresolved',
+            },
+          }),
+        },
+      ]);
+      const inspected = await retrieveWorkspaceKnowledge({
+        ...retrievalInput(fixture, 'conflict-selection-marker'),
+        states: ['archived'],
+      });
+      expect(inspected.selected.map(({ reference }) => reference.objectId)).toEqual([page.id]);
+      expect(inspected.excluded).toEqual([]);
+    }
+  });
+
   it('enumerates lexical matches before sensitivity, conflict, freshness, and budget dispositions', async () => {
     const fixture = createFixture('enumeration');
     const selected = await createEntry(
@@ -89,21 +177,27 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
       freshness: 'stale',
       sensitivity: 'confidential',
     });
-    fixture.store.recordKnowledgeConflict({
-      id: 'kf_00000000-0000-7c2b-96dc-273a402e04ac',
-      workspaceId: fixture.workspaceId,
-      subjectReferences: [
-        formatReferenceUri(pageReference(fixture, conflicted.id)),
-        formatReferenceUri(pageReference(fixture, sensitive.id)),
-      ],
-      sourceReferences: [],
-      status: 'conflicting',
-      summary: 'The test owns an unresolved conflict.',
-      suggestedActions: ['Resolve the test conflict.'],
-      producer: 'test-author',
-      createdAt: NOW,
-      updatedAt: NOW,
-    });
+    const analysisId = 'assessments/enumeration-conflict';
+    await publishPages(fixture, [
+      {
+        path: `${analysisId}.md`,
+        content: updateOkfFrontmatter({
+          path: `${analysisId}.md`,
+          content: readPage(fixture, conflicted.id),
+          updates: {
+            openkit_entry_id: analysisId,
+            type: 'Observation',
+            openkit_status: 'draft',
+            status: 'draft',
+            subject_refs: [
+              formatReferenceUri(pageReference(fixture, conflicted.id)),
+              formatReferenceUri(pageReference(fixture, sensitive.id)),
+            ],
+            conflict_status: 'unresolved',
+          },
+        }),
+      },
+    ]);
 
     const trace = await retrieveWorkspaceKnowledge({
       ...retrievalInput(fixture, 'selection-marker'),
@@ -231,8 +325,11 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
     );
     fixture.access.outputThreadId = destination.id;
     const material = 'source audience material';
-    const source = fixture.store.createKnowledgeSource(
-      {
+    const source = await captureWorkspaceSourceFixture({
+      ...fixture,
+      coreDb: fixture.access.coreDb!,
+      userId: fixture.userId,
+      source: {
         id: 'ks_00000000-0000-78f8-b8d2-1dd7a79cb16e',
         workspaceId: fixture.workspaceId,
         kind: 'document',
@@ -246,8 +343,8 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
         createdAt: NOW,
         updatedAt: NOW,
       },
-      material
-    );
+      content: material,
+    });
     const sourcePage = await createEntry(
       fixture,
       'Audience source page',
@@ -279,14 +376,18 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
 
   // Fresh attributed import of 1001 Git pages measured 81s; this is fixture setup, not a retrieval deadline.
   it('returns a typed failure and writes no trace when lexical enumeration exceeds 1000 matches', async () => {
-    const initialKnowledge = Array.from({ length: 1001 }, (_, index) => ({
-      id: `bulk-${String(index).padStart(4, '0')}`,
-      kind: 'project-context' as const,
-      title: `Bulk ${index}`,
-      content: 'enumeration-overflow',
-      createdAt: NOW,
-      updatedAt: NOW,
-    }));
+    const initialKnowledge = Array.from({ length: 1001 }, (_, index) =>
+      knowledgePageFixture(
+        {
+          id: `bulk-${String(index).padStart(4, '0')}`,
+          title: `Bulk ${index}`,
+          content: 'enumeration-overflow',
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+        { kind: 'workspace', workspaceId: testEntityId('ws', 'enumeration-incomplete') }
+      )
+    );
     const fixture = createFixture('enumeration-incomplete', initialKnowledge);
     const traceThread = fixture.store.createThread(fixture.workspaceId, 'Enumeration trace owner');
     fixture.access.outputThreadId = traceThread.id;
@@ -318,10 +419,18 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
     // Keep the real kernel publication; change current content at its exact completion boundary.
     vi.spyOn(service, 'publish').mockImplementationOnce(async (...args) => {
       const generation = await publish(...args);
-      await operation(fixture, 'knowledge.update', {
+      await operation(fixture, 'knowledge.notebook.update', {
         baseRevision: fixture.notebook.publishedRevision(),
-        knowledgeEntryId: page.id,
-        content: 'after-change-marker',
+        changes: [
+          {
+            path: page.path,
+            content: readPage(fixture, page.id).replace(
+              'before-change-marker',
+              'after-change-marker'
+            ),
+          },
+        ],
+        summary: 'Change evidence at publication boundary',
       });
       return generation;
     });
@@ -459,15 +568,25 @@ async function createEntry(
   sourceReferences: string[] = []
 ) {
   const files = fixture.notebook.inspectRevision(fixture.notebook.publishedRevision()).entries;
-  return KnowledgeEntrySchema.parse(
-    await operation(fixture, 'knowledge.create', {
-      baseRevision: fixture.notebook.publishedRevision(),
-      knowledgePageId: `page-${String(Object.keys(files).length).padStart(4, '0')}`,
-      kind: 'project-context',
-      title,
-      content,
-      sourceReferences,
-    })
+  const id = `page-${String(Object.keys(files).length).padStart(4, '0')}`;
+  await operation(fixture, 'knowledge.notebook.create', {
+    baseRevision: fixture.notebook.publishedRevision(),
+    path: `${id}.md`,
+    content: serializeKnowledgePageFixture(
+      {
+        title,
+        content,
+        sourceReferences,
+        createdAt: '2026-10-19T00:00:00.000Z',
+        updatedAt: '2026-10-19T00:00:00.000Z',
+      },
+      { kind: 'workspace', workspaceId: fixture.workspaceId }
+    ),
+    summary: 'Publish retrieval governance evidence',
+  });
+  const listed = await operation(fixture, 'knowledge.notebook.list', {});
+  return KnowledgeNotebookPageSchema.parse(
+    listed.pages.find((page: { id: string }) => page.id === id)
   );
 }
 

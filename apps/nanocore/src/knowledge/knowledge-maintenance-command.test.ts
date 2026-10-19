@@ -21,13 +21,14 @@ import { closeRetrievalServices } from '../retrieval-service.js';
 import { IdempotencyKeyConflictError } from '../runtime/idempotent-command.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import type { KnowledgeMaintenanceDependencies } from './knowledge-agent-maintenance.js';
 import { runKnowledgeMaintenanceCommand } from './knowledge-maintenance-command.js';
 import { KnowledgeNotebook } from './notebook.js';
-import { publishWorkspaceNotebookEntry } from './notebook-entry-publication.js';
+import { publishWorkspaceNotebook } from './notebook-publication.js';
 import { readWorkspaceNotebookAdmission } from './notebook-workspace-admission.js';
 
 type Request = Parameters<LLMGatewayProviderDispatcher['createResponses']>[1];
@@ -64,36 +65,48 @@ async function fixture(reviewRequired = false, failAfterPublication = false) {
     dataRoot,
     initialSnapshot: createInMemoryRuntimeConfigSnapshot({ dataRoot }),
   });
-  await publishWorkspaceNotebookEntry(
+  const timestamp = new Date().toISOString();
+  const publicationRequest = {
+    workspaceId: workspace.id,
+    requestId: randomUUID(),
+    baseRevision: notebook.publishedRevision(),
+    summary: 'Record human label note',
+    changes: [
+      {
+        path: 'labels.md',
+        content: serializeKnowledgePageFixture(
+          {
+            title: 'Labels',
+            content: 'Human note: keep this sentence.',
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          },
+          { kind: 'workspace', workspaceId: workspace.id }
+        ),
+      },
+    ],
+  };
+  await publishWorkspaceNotebook(
     {
       store,
       workspaceDb,
       notebook,
       producer: actor,
       inflightCommands: new WeakMap(),
-      revalidate: (request) =>
+      revalidate: () =>
         readWorkspaceNotebookAdmission({
           store,
           coreDb,
           workspaceDb,
           notebook,
-          request,
+          request: publicationRequest,
           requestActor: { kind: 'local', userId },
           actor,
           runtimeConfigManager: bootstrap,
           workspaceMutationAdmission,
         }),
     },
-    {
-      operation: 'knowledge.create',
-      workspaceId: workspace.id,
-      requestId: randomUUID(),
-      knowledgePageId: 'labels',
-      baseRevision: notebook.publishedRevision(),
-      kind: 'project-context',
-      title: 'Labels',
-      content: 'Human note: keep this sentence.',
-    }
+    publicationRequest
   );
   const baseRevision = notebook.publishedRevision();
   const ordinary = store.createThread(workspace.id, 'Shared source conversation');
@@ -320,25 +333,30 @@ it.each([
   expect(publication.outcome).toBe(reviewRequired ? 'review_required' : 'published');
   const selected = reviewRequired ? result.candidateRevision! : result.notebookRevision;
   const committed = f.notebook.readRevision(selected);
-  expect(committed.parentRevision).toBe(f.baseRevision);
+  const turn = f.store.getTurnById(result.turnId);
+  const runBaseRevision = turn.internalExecution!.knowledge!.baseRevision;
+  const capturedBase = f.notebook.readRevision(runBaseRevision);
+  expect(capturedBase.parentRevision).toBe(f.baseRevision);
+  expect(capturedBase.files).toEqual(f.notebook.readRevision(f.baseRevision).files);
+  expect(Object.keys(f.notebook.readSourcePointers(runBaseRevision))).toHaveLength(1);
+  expect(committed.parentRevision).toBe(runBaseRevision);
   expect(committed.files['labels.md']).toContain('Human note: keep this sentence.');
   expect(committed.files['labels.md']).toContain('The project uses cobalt labels.');
   expect(committed.files['labels.md']).toContain(f.sourceReference());
   expect(committed.files['index.md']).toContain('[Labels](labels.md)');
   if (reviewRequired) {
-    expect(f.notebook.publishedRevision()).toBe(f.baseRevision);
+    expect(f.notebook.publishedRevision()).toBe(runBaseRevision);
     expect(f.store.projectKnowledgeProposalDraft(f.workspace.id, result.proposalId!)).toMatchObject(
       { candidateRevision: selected }
     );
   } else expect(f.notebook.publishedRevision()).toBe(selected);
-  const turn = f.store.getTurnById(result.turnId);
   expect(turn).toMatchObject({
     status: 'completed',
     internalExecution: {
       logicalModelId: 'maintenance',
       knowledge: {
         purpose: 'maintenance',
-        baseRevision: f.baseRevision,
+        baseRevision: runBaseRevision,
         sourceRange: [{ turnId: f.sourceTurn.id }],
       },
     },
@@ -354,7 +372,7 @@ it.each([
     IdempotencyKeyConflictError
   );
   expect(f.createResponses).toHaveBeenCalledTimes(3);
-  expect(f.notebook.publishedRevision()).toBe(reviewRequired ? f.baseRevision : selected);
+  expect(f.notebook.publishedRevision()).toBe(reviewRequired ? runBaseRevision : selected);
   expect(
     f.store
       .listThreads(f.workspace.id)

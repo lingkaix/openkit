@@ -4,7 +4,6 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   existsSync,
   mkdtempSync,
-  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -12,9 +11,12 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { parseRecordEnvelope } from '@openkit/config-schema';
-import { KnowledgeBaseIdSchema, KnowledgeSourceIdSchema } from '@openkit/protocol';
+import { isAbsolute, join, relative, resolve } from 'node:path';
+import {
+  ContentReferenceSchema,
+  KnowledgeBaseIdSchema,
+  KnowledgeSourceIdSchema,
+} from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import {
   createOpenKitAccessTokenRecord,
@@ -25,6 +27,8 @@ import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { FsStore } from '../lib/store.js';
 import { openCoreDb, openUserDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { KnowledgeNotebook } from './notebook.js';
+import { parseOkfDocument, validateOpenKitKnowledgeProfile } from './okf.js';
 import {
   listUserKnowledgeSources,
   readUserKnowledgeSource,
@@ -34,7 +38,7 @@ import {
 const aliceId = 'usr_00000000-0000-7000-8000-000000000001';
 const bobId = 'usr_00000000-0000-7000-8000-000000000002';
 
-/** Real User databases and files supply the oracle without a Notebook, Workspace or model invocation. */
+/** Real User authority, Notebook and raw files supply the oracle without model invocation. */
 function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'scoped-sources-'));
   const coreDb = openCoreDb(dataRoot);
@@ -49,7 +53,7 @@ function fixture() {
     applyScopedMigrations(userDb);
     return userDb;
   });
-  const store = new FsStore();
+  const store = new FsStore({ dataRoot });
   const contexts = databases.map((userDb) => ({
     coreDb,
     userDb,
@@ -69,12 +73,51 @@ function fixture() {
     title: 'Exact personal source',
     content: 'Literal source.\r\nUnicode Ω 雪.\n',
   });
-  const root = (userId = aliceId) => join(dataRoot, 'users', userId, 'sources');
-  return { alice: contexts[0]!, bob: contexts[1]!, coreDb, databases, dataRoot, request, root };
+  const root = (userId = aliceId) => join(dataRoot, 'users', userId, 'memory');
+  const notebook = (userId = aliceId) =>
+    new KnowledgeNotebook({ repositoryPath: join(root(userId), 'notebook.git') });
+  const retained = (id: string, userId = aliceId) => {
+    const book = notebook(userId);
+    const revision = book.publishedRevision();
+    const content = book.readSourcePointers(revision)[id]!;
+    const parsed = parseOkfDocument({ path: `sources/${id}.md`, content });
+    if (!parsed.ok) throw new Error('Fixture expects a valid canonical Source pointer.');
+    const reference = ContentReferenceSchema.parse(parsed.document.frontmatter.contentRef);
+    expect(reference.locator.ownerScope).toEqual({ kind: 'user', userId });
+    const rawRoot = resolve(root(userId), 'raw');
+    const rawPath = resolve(rawRoot, reference.locator.path);
+    const confined = relative(rawRoot, rawPath);
+    expect(isAbsolute(confined)).toBe(false);
+    expect(confined === '..' || confined.startsWith('../')).toBe(false);
+    return { book, revision, content, document: parsed.document, reference, rawPath };
+  };
+  // Fault injection uses Git publication directly; ordinary edits cannot alter captured facts.
+  const publish = (id: string, content: string | null) => {
+    const book = notebook();
+    const baseRevision = book.publishedRevision();
+    const candidateRevision = book.prepareSourcePointers({
+      baseRevision,
+      changes: { [id]: content },
+      metadata: book.readRevision(baseRevision).metadata,
+    });
+    return book.publish({ baseRevision, candidateRevision }).revision;
+  };
+  return {
+    alice: contexts[0]!,
+    bob: contexts[1]!,
+    coreDb,
+    databases,
+    dataRoot,
+    request,
+    root,
+    notebook,
+    retained,
+    publish,
+  };
 }
 
 describe('explicit native User Source intake', () => {
-  it('captures exact literal bytes under the sibling Source family with one canonical envelope', async () => {
+  it('captures exact literal bytes outside Git with one canonical SourceSummary pointer', async () => {
     const f = fixture();
     const request = f.request();
     const source = await registerUserKnowledgeSource(f.alice, request);
@@ -101,78 +144,84 @@ describe('explicit native User Source intake', () => {
     });
     expect(source.capturedAt).toBe(source.createdAt);
     expect(source.updatedAt).toBe(source.createdAt);
-    expect(readFileSync(join(f.root(), 'materials', source.id, 'content.txt'))).toEqual(
-      Buffer.from(request.content)
-    );
-    const row = JSON.parse(readFileSync(join(f.root(), 'registry', `${source.id}.json`), 'utf8'));
-    expect(row).toMatchObject({
-      schemaVersion: 1,
-      recordType: 'source',
-      id: source.id,
-      ownerScope: 'user',
-      lineage: { userId: aliceId, requestId: request.requestId },
-      contentDigest: digest,
-      createdAt: source.createdAt,
-      updatedAt: source.updatedAt,
-      redactionLevel: 'none',
+    const saved = f.retained(source.id);
+    expect(Object.keys(saved.book.readSourcePointers(saved.revision))).toEqual([source.id]);
+    expect(readFileSync(saved.rawPath)).toEqual(Buffer.from(request.content));
+    expect(
+      validateOpenKitKnowledgeProfile(saved.document, { kind: 'user', userId: aliceId })
+    ).toMatchObject({ conformance: 'OpenKit-profile-valid', errors: [] });
+    expect(saved.document.frontmatter).toMatchObject({
+      type: 'SourceSummary',
+      scope: { kind: 'user', userId: aliceId },
+      title: request.title,
+      sourceKind: 'document',
+      contentRef: {
+        knowledgeBaseId,
+        contentDigest: digest,
+        locator: { ownerScope: { kind: 'user', userId: aliceId }, mount: 'managed' },
+        range: null,
+        availability: 'available',
+      },
+      byteLength: Buffer.byteLength(request.content),
+      mediaType: 'application/octet-stream',
+      captureChannel: 'knowledge.source.register',
+      capturedAt: source.capturedAt,
+      created_at: source.createdAt,
+      updated_at: source.updatedAt,
       sensitivity: 'confidential',
-      requiredFeatures: ['openkit.knowledge-owner-scope.v1'],
-      payload: {
-        kind: 'document',
-        title: request.title,
-        uri: null,
-        originatingThreadId: null,
-        originatingTurnId: null,
-        originatingFileId: null,
+      requiredFeatures: ['openkit.knowledge-owner-scope.v1', 'openkit.knowledge-git-notebook.v1'],
+      uri: null,
+      originatingThreadId: null,
+      originatingTurnId: null,
+      originatingFileId: null,
+    });
+    expect(saved.book.readRevision(saved.revision).metadata).toMatchObject({
+      producer: { kind: 'user', id: aliceId },
+      changeRequest: { requestId: request.requestId },
+      authority: {
+        kind: 'direct',
+        instructionReference: `knowledge.source.register:${request.requestId}`,
       },
     });
-    expect(Object.keys(row.payload).sort()).toEqual(
-      [
-        'kind',
-        'title',
-        'uri',
-        'originatingThreadId',
-        'originatingTurnId',
-        'originatingFileId',
-      ].sort()
-    );
-    expect(() => parseRecordEnvelope(row)).toThrow(
-      'Unsupported required feature: openkit.knowledge-owner-scope.v1'
-    );
     expect(
-      parseRecordEnvelope(row, { supportedFeatures: ['openkit.knowledge-owner-scope.v1'] }).id
-    ).toBe(source.id);
+      existsSync(join(f.dataRoot, 'users', aliceId, 'sources', 'registry', `${source.id}.json`))
+    ).toBe(false);
     expect(listUserKnowledgeSources(f.alice)).toEqual([source]);
-    expect(readUserKnowledgeSource(f.alice, source.id)).toEqual({
+    expect(await readUserKnowledgeSource(f.alice, source.id)).toEqual({
       source,
       content: request.content,
     });
-    expect(readUserKnowledgeSource(f.alice, source.id, 'model')).toEqual({
+    expect(await readUserKnowledgeSource(f.alice, source.id, 'model')).toEqual({
       source,
       content: request.content,
     });
     expect(listUserKnowledgeSources(f.alice, 'model')).toEqual([source]);
-    expect(existsSync(join(f.dataRoot, 'users', aliceId, 'memory'))).toBe(false);
+    expect(saved.book.readSourcePointers(saved.revision)[source.id]).not.toContain(request.content);
   });
 
   it('replays the original Source through durable User receipts after reopen and conflicts on changed input', async () => {
     const f = fixture();
     const request = f.request();
     const original = await registerUserKnowledgeSource(f.alice, request);
+    const saved = f.retained(original.id);
     f.alice.userDb.sqlite.close();
     const reopenedDb = openUserDb(f.dataRoot, aliceId);
     f.databases.push(reopenedDb);
     const reopened = {
       ...f.alice,
       userDb: reopenedDb,
-      store: new FsStore(),
+      store: new FsStore({ dataRoot: f.dataRoot }),
       inflightCommands: new WeakMap(),
     };
     expect(await registerUserKnowledgeSource(reopened, request)).toEqual(original);
+    expect(f.notebook().publishedRevision()).toBe(saved.revision);
+    expect(readFileSync(saved.rawPath)).toEqual(Buffer.from(request.content));
     await expect(
       registerUserKnowledgeSource(reopened, { ...request, content: 'Changed source.' })
     ).rejects.toMatchObject({ code: 'idempotency_key_conflict' });
-    expect(readdirSync(join(f.root(), 'registry'))).toEqual([`${original.id}.json`]);
+    expect(Object.keys(f.notebook().readSourcePointers(f.notebook().publishedRevision()))).toEqual([
+      original.id,
+    ]);
     const audits = reopenedDb.sqlite
       .prepare(
         "SELECT actor_json, resource, summary FROM audit_events WHERE action = 'knowledge.source.register'"
@@ -233,19 +282,19 @@ describe('explicit native User Source intake', () => {
     } as unknown as typeof f.alice;
     for (const context of [foreign, worker]) {
       expect(() => listUserKnowledgeSources(context)).toThrow('Scoped notebook access denied.');
-      expect(() => readUserKnowledgeSource(context, source.id)).toThrow(
+      await expect(readUserKnowledgeSource(context, source.id)).rejects.toThrow(
         'Scoped notebook access denied.'
       );
       await expect(registerUserKnowledgeSource(context, f.request())).rejects.toThrow(
         'Scoped notebook access denied.'
       );
     }
-    expect(() => readUserKnowledgeSource(f.alice, '../outside')).toThrowError(
+    await expect(readUserKnowledgeSource(f.alice, '../outside')).rejects.toThrowError(
       expect.objectContaining({ code: 'invalid_request' })
     );
-    expect(() => readUserKnowledgeSource({ ...f.alice, userDb: f.bob.userDb }, source.id)).toThrow(
-      'Scoped notebook access denied.'
-    );
+    await expect(
+      readUserKnowledgeSource({ ...f.alice, userDb: f.bob.userDb }, source.id)
+    ).rejects.toThrow('Scoped notebook access denied.');
   });
 
   it('rechecks active User and current bearer authority for reads and replay', async () => {
@@ -267,14 +316,17 @@ describe('explicit native User Source intake', () => {
     };
     const request = f.request();
     const source = await registerUserKnowledgeSource(bearer, request);
-    expect(readUserKnowledgeSource(bearer, source.id)?.content).toBe(request.content);
+    expect((await readUserKnowledgeSource(bearer, source.id))?.content).toBe(request.content);
     revokeOpenKitAccessTokenRecord(f.coreDb, issued.tokenId);
     expect(() => listUserKnowledgeSources(bearer)).toThrow('Scoped notebook access denied.');
+    await expect(readUserKnowledgeSource(bearer, source.id)).rejects.toThrow(
+      'Scoped notebook access denied.'
+    );
     await expect(registerUserKnowledgeSource(bearer, request)).rejects.toThrow(
       'Scoped notebook access denied.'
     );
     f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, aliceId))();
-    expect(() => readUserKnowledgeSource(f.alice, source.id)).toThrow(
+    await expect(readUserKnowledgeSource(f.alice, source.id)).rejects.toThrow(
       'Scoped notebook access denied.'
     );
     await expect(registerUserKnowledgeSource(f.alice, f.request())).rejects.toThrow(
@@ -284,14 +336,12 @@ describe('explicit native User Source intake', () => {
 
   it('does not replace absent established Source storage or return an empty store', async () => {
     const f = fixture();
-    expect(() => listUserKnowledgeSources(f.alice)).toThrowError(
-      expect.objectContaining({ code: 'recovery_required' })
-    );
+    expect(listUserKnowledgeSources(f.alice)).toEqual([]);
     expect(existsSync(f.root())).toBe(false);
     const request = f.request();
     const source = await registerUserKnowledgeSource(f.alice, request);
     rmSync(f.root(), { recursive: true });
-    expect(() => readUserKnowledgeSource(f.alice, source.id)).toThrowError(
+    await expect(readUserKnowledgeSource(f.alice, source.id)).rejects.toThrowError(
       expect.objectContaining({ code: 'recovery_required' })
     );
     expect(() => listUserKnowledgeSources(f.alice)).toThrowError(
@@ -304,6 +354,18 @@ describe('explicit native User Source intake', () => {
       code: 'recovery_required',
     });
     expect(existsSync(f.root())).toBe(false);
+  });
+
+  it('refuses an absent established pointer rather than returning an empty Source collection', async () => {
+    const f = fixture();
+    const source = await registerUserKnowledgeSource(f.alice, f.request());
+    f.publish(source.id, null);
+    expect
+      .soft(() => listUserKnowledgeSources(f.alice))
+      .toThrowError(expect.objectContaining({ code: 'recovery_required' }));
+    await expect
+      .soft(readUserKnowledgeSource(f.alice, source.id))
+      .rejects.toThrowError(expect.objectContaining({ code: 'recovery_required' }));
   });
 
   it('keeps two User Source collections separate even for the same request identity', async () => {
@@ -319,30 +381,38 @@ describe('explicit native User Source intake', () => {
     expect(bob.id).not.toBe(alice.id);
     expect(listUserKnowledgeSources(f.alice)).toEqual([alice]);
     expect(listUserKnowledgeSources(f.bob)).toEqual([bob]);
-    expect(readUserKnowledgeSource(f.alice, bob.id)).toBeNull();
-    expect(readUserKnowledgeSource(f.bob, alice.id)).toBeNull();
-    expect(readUserKnowledgeSource(f.bob, bob.id)?.content).toBe(bobRequest.content);
-    expect(existsSync(join(f.root(bobId), 'registry', `${alice.id}.json`))).toBe(false);
+    expect(await readUserKnowledgeSource(f.alice, bob.id)).toBeNull();
+    expect(await readUserKnowledgeSource(f.bob, alice.id)).toBeNull();
+    expect((await readUserKnowledgeSource(f.bob, bob.id))?.content).toBe(bobRequest.content);
+    expect(
+      f.notebook(bobId).readSourcePointers(f.notebook(bobId).publishedRevision())
+    ).not.toHaveProperty(alice.id);
   });
 
   it('refuses a redirected Source root without following it or replacing retained bytes', async () => {
     const f = fixture();
     const request = f.request();
     const source = await registerUserKnowledgeSource(f.alice, request);
+    const saved = f.retained(source.id);
     const retainedRoot = `${f.root()}-retained`;
     renameSync(f.root(), retainedRoot);
     symlinkSync(retainedRoot, f.root(), 'dir');
-    expect(() => listUserKnowledgeSources(f.alice)).toThrowError(
-      expect.objectContaining({ code: 'recovery_required' })
-    );
-    expect(() => readUserKnowledgeSource(f.alice, source.id)).toThrowError(
-      expect.objectContaining({ code: 'recovery_required' })
-    );
-    await expect(registerUserKnowledgeSource(f.alice, f.request())).rejects.toMatchObject({
+    expect
+      .soft(() => listUserKnowledgeSources(f.alice))
+      .toThrowError(expect.objectContaining({ code: 'recovery_required' }));
+    await expect
+      .soft(readUserKnowledgeSource(f.alice, source.id))
+      .rejects.toThrowError(expect.objectContaining({ code: 'recovery_required' }));
+    await expect.soft(registerUserKnowledgeSource(f.alice, f.request())).rejects.toMatchObject({
       code: 'recovery_required',
     });
-    expect(readdirSync(join(retainedRoot, 'registry'))).toEqual([`${source.id}.json`]);
-    expect(readFileSync(join(retainedRoot, 'materials', source.id, 'content.txt'), 'utf8')).toBe(
+    const retainedBook = new KnowledgeNotebook({
+      repositoryPath: join(retainedRoot, 'notebook.git'),
+    });
+    expect(Object.keys(retainedBook.readSourcePointers(retainedBook.publishedRevision()))).toEqual([
+      source.id,
+    ]);
+    expect(readFileSync(join(retainedRoot, 'raw', saved.reference.locator.path), 'utf8')).toBe(
       request.content
     );
   });
@@ -351,41 +421,44 @@ describe('explicit native User Source intake', () => {
     const f = fixture();
     const request = f.request();
     const source = await registerUserKnowledgeSource(f.alice, request);
-    const path = join(f.root(), 'registry', `${source.id}.json`);
-    const original = JSON.parse(readFileSync(path, 'utf8'));
-    const annotated = JSON.stringify({
-      ...original,
-      description: 'Unknown annotation',
-      lineage: { ...original.lineage, description: 'Unknown lineage annotation' },
-      payload: { ...original.payload, descriptive: { note: 'Unknown nested annotation' } },
-    });
-    writeFileSync(path, annotated);
-    writeFileSync(join(f.root(), 'registry', 'notes.txt'), 'Descriptive file addition.');
-    expect(readUserKnowledgeSource(f.alice, source.id)).toEqual({
+    const saved = f.retained(source.id);
+    const original = saved.document.frontmatter;
+    const annotated = `---\n${JSON.stringify({ ...original, description: 'Unknown annotation', contentRef: { ...saved.reference, description: 'Unknown reference annotation' }, descriptive: { note: 'Unknown nested annotation' } })}\n---\n`;
+    f.publish(source.id, annotated);
+    writeFileSync(join(f.root(), 'notes.txt'), 'Descriptive file addition.');
+    expect(await readUserKnowledgeSource(f.alice, source.id)).toEqual({
       source,
       content: request.content,
     });
-    expect(readFileSync(path, 'utf8')).toBe(annotated);
+    expect(f.retained(source.id).content).toBe(annotated);
     for (const change of [
-      { schemaVersion: 2 },
-      { recordType: 'unknown-source' },
-      { requiredFeatures: ['openkit.knowledge-owner-scope.v1', 'openkit.memory-suppression.v1'] },
-      { payload: { ...original.payload, kind: 'transcript' } },
+      { schema_version: 'unsupported-scope-schema' },
+      { type: 'UnknownSource' },
+      {
+        requiredFeatures: [
+          ...(original.requiredFeatures as string[]),
+          'openkit.memory-suppression.v1',
+        ],
+      },
+      { sourceKind: 'unknown-source-kind' },
     ]) {
-      const retained = JSON.stringify({ ...original, ...change });
-      writeFileSync(path, retained);
-      expect(() => listUserKnowledgeSources(f.alice)).toThrowError(
-        expect.objectContaining({ code: 'recovery_required' })
-      );
-      expect(readFileSync(path, 'utf8')).toBe(retained);
+      const retained = `---\n${JSON.stringify({ ...original, ...change })}\n---\n`;
+      const revision = f.publish(source.id, retained);
+      expect
+        .soft(() => listUserKnowledgeSources(f.alice), JSON.stringify(change))
+        .toThrowError(expect.objectContaining({ code: 'recovery_required' }));
+      expect(f.notebook().readSourcePointers(revision)[source.id]).toBe(retained);
     }
-    writeFileSync(path, JSON.stringify(original));
-    const material = join(f.root(), 'materials', source.id, 'content.txt');
+    f.publish(source.id, saved.content);
+    const material = saved.rawPath;
     writeFileSync(material, 'Changed retained source.');
-    expect(() => readUserKnowledgeSource(f.alice, source.id)).toThrowError(
-      expect.objectContaining({ code: 'recovery_required' })
-    );
+    expect(await readUserKnowledgeSource(f.alice, source.id)).toBeNull();
+    expect(listUserKnowledgeSources(f.alice)).toEqual([source]);
     expect(readFileSync(material, 'utf8')).toBe('Changed retained source.');
+    rmSync(material);
+    expect(await readUserKnowledgeSource(f.alice, source.id)).toBeNull();
+    expect(listUserKnowledgeSources(f.alice)).toEqual([source]);
+    expect(f.retained(source.id).content).toBe(saved.content);
   });
 
   it('does not allocate another Source after a missing completion receipt', async () => {
@@ -394,14 +467,16 @@ describe('explicit native User Source intake', () => {
     vi.spyOn(f.alice.store, 'recordCommandRequest').mockImplementationOnce(() => {
       throw new Error('Receipt unavailable.');
     });
-    await expect(registerUserKnowledgeSource(f.alice, request)).rejects.toMatchObject({
+    await expect.soft(registerUserKnowledgeSource(f.alice, request)).rejects.toMatchObject({
       code: 'recovery_required',
     });
-    const retained = readdirSync(join(f.root(), 'registry'));
+    const retained = Object.keys(f.notebook().readSourcePointers(f.notebook().publishedRevision()));
     expect(retained).toHaveLength(1);
-    await expect(registerUserKnowledgeSource(f.alice, request)).rejects.toMatchObject({
+    await expect.soft(registerUserKnowledgeSource(f.alice, request)).rejects.toMatchObject({
       code: 'recovery_required',
     });
-    expect(readdirSync(join(f.root(), 'registry'))).toEqual(retained);
+    expect(Object.keys(f.notebook().readSourcePointers(f.notebook().publishedRevision()))).toEqual(
+      retained
+    );
   });
 });

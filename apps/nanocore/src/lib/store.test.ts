@@ -16,15 +16,21 @@ import {
   writeRetainedV1,
 } from '@openkit/protocol';
 import Database from 'better-sqlite3';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import { uuidv5 } from '../generative-kernel/uuid.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
-import { openUserDb, openWorkspaceDb } from '../storage/db.js';
+import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { userDbPath, workspaceDbPath } from '../storage/fs-layout.js';
-import { applyScopedMigrations } from '../storage/migrate.js';
+import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { parseCanonicalWorkspaceHistory } from '../storage/workspace-file-records.js';
 import { seedDemoWorkspace } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
+import {
+  captureWorkspaceSourceFixture,
+  readWorkspaceSourceFixture,
+} from '../test-support/workspace-source.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { FsStore } from './store.js';
 
 const LOCAL_ACTOR = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
@@ -779,7 +785,7 @@ describe('FsStore persistence', () => {
     );
   });
 
-  it('restores thread, turn, event, knowledge, artifact, and AgentSession history after restart', () => {
+  it('restores thread, turn, event, knowledge, artifact, and AgentSession history after restart', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
     const store = new FsStore({ dataRoot });
     seedDemoWorkspace(store);
@@ -793,19 +799,32 @@ describe('FsStore persistence', () => {
       'Persist this work',
       LOCAL_ACTOR
     );
-    const knowledgeEntry = store.getKnowledgeEntry(
+    const knowledgePage = store.getKnowledgePage(
       'ws_00000000-0000-7000-8000-000000000001',
       'mem_project'
     );
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    onTestFinished(() => coreDb.sqlite.close());
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      ownerUserId: LOCAL_ACTOR.id,
+    });
     const knowledgeSourceContent = 'Persisted source material.';
-    const knowledgeSource = store.createKnowledgeSource(
-      {
+    const knowledgeSource = await captureWorkspaceSourceFixture({
+      dataRoot,
+      store,
+      coreDb,
+      userId: LOCAL_ACTOR.id,
+      source: {
         id: 'ks_00000000-0000-7d21-9eb2-83eaddf3aec7',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         kind: 'upload',
         title: 'Persisted source',
         uri: null,
-        contentDigest: 'sha256:source',
+        contentDigest: artifactDigest(knowledgeSourceContent),
         originatingThreadId: thread.id,
         originatingTurnId: turn.id,
         originatingFileId: 'file_persisted',
@@ -813,8 +832,8 @@ describe('FsStore persistence', () => {
         createdAt: turn.startedAt ?? new Date().toISOString(),
         updatedAt: turn.startedAt ?? new Date().toISOString(),
       },
-      knowledgeSourceContent
-    );
+      content: knowledgeSourceContent,
+    });
     const agentSession = store.createAgentSession({
       id: 'as_00000000-0000-75c9-856b-dc71ec901f44',
       agentId: 'agent_codex_host',
@@ -872,7 +891,7 @@ describe('FsStore persistence', () => {
       workspaceRoot,
       'knowledge',
       'pages',
-      `${knowledgeEntry.id}.md`
+      `${knowledgePage.id}.md`
     );
     const knowledgeSourceProjectionPath = join(
       workspaceRoot,
@@ -882,10 +901,11 @@ describe('FsStore persistence', () => {
     );
     const knowledgeSourceMaterialPath = join(
       workspaceRoot,
+      'knowledge',
+      'raw',
       'sources',
-      'materials',
       knowledgeSource.id,
-      'content.txt'
+      'original'
     );
     const agentSessionProjectionPath = join(
       workspaceRoot,
@@ -908,10 +928,11 @@ describe('FsStore persistence', () => {
       repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
     });
     expect(
-      notebook.readRevision(notebook.publishedRevision()).files[`${knowledgeEntry.id}.md`]
-    ).toContain(knowledgeEntry.content);
-    expect(JSON.parse(readFileSync(knowledgeSourceProjectionPath, 'utf8'))).toEqual(
-      knowledgeSource
+      notebook.readRevision(notebook.publishedRevision()).files[`${knowledgePage.id}.md`]
+    ).toBe(knowledgePage.content);
+    expect(existsSync(knowledgeSourceProjectionPath)).toBe(false);
+    expect(notebook.readSourcePointers(notebook.publishedRevision())[knowledgeSource.id]).toContain(
+      knowledgeSource.title
     );
     expect(readFileSync(knowledgeSourceMaterialPath, 'utf8')).toBe(knowledgeSourceContent);
     expect(JSON.parse(readFileSync(agentSessionProjectionPath, 'utf8'))).toEqual(
@@ -924,17 +945,21 @@ describe('FsStore persistence', () => {
       restarted.getTurn('ws_00000000-0000-7000-8000-000000000001', thread.id, turn.id).id
     ).toBe(turn.id);
     expect(
-      restarted.getKnowledgeEntry('ws_00000000-0000-7000-8000-000000000001', knowledgeEntry.id)
-    ).toEqual(knowledgeEntry);
+      restarted.getKnowledgePage('ws_00000000-0000-7000-8000-000000000001', knowledgePage.id)
+    ).toEqual(knowledgePage);
     expect(
       restarted.getKnowledgeSource('ws_00000000-0000-7000-8000-000000000001', knowledgeSource.id)
     ).toEqual(knowledgeSource);
     expect(
-      restarted.readKnowledgeSourceMaterial(
-        'ws_00000000-0000-7000-8000-000000000001',
-        knowledgeSource.id
-      )
-    ).toBe(knowledgeSourceContent);
+      await readWorkspaceSourceFixture({
+        dataRoot,
+        coreDb,
+        store: restarted,
+        userId: LOCAL_ACTOR.id,
+        workspaceId: knowledgeSource.workspaceId,
+        sourceId: knowledgeSource.id,
+      })
+    ).toEqual({ status: 'ok', value: knowledgeSourceContent });
     expect(
       restarted.listArtifacts('ws_00000000-0000-7000-8000-000000000001').map((item) => item.id)
     ).toContain(artifact.id);

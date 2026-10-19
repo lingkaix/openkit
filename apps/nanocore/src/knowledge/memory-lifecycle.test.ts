@@ -21,7 +21,7 @@ import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { FsStore } from '../lib/store.js';
 import { openCoreDb, openUserDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
-import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
+import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import {
   editMemoryPage,
   listMemoryPages,
@@ -32,7 +32,11 @@ import {
 } from './memory-lifecycle.js';
 import { KnowledgeNotebook } from './notebook.js';
 import { updateOkfFrontmatter } from './okf.js';
-import { admitUserMemorySources, registerUserKnowledgeSource } from './scoped-knowledge-sources.js';
+import {
+  admitUserMemorySources,
+  readUserKnowledgeSource,
+  registerUserKnowledgeSource,
+} from './scoped-knowledge-sources.js';
 import { initializeScopedNotebook } from './scoped-notebook-owner.js';
 import { publishScopedNotebook } from './scoped-notebook-publication.js';
 
@@ -82,10 +86,8 @@ function fixture() {
     requestId: randomUUID(),
     baseRevision: base,
     pageId,
-    content: serializeUserAuthoredKnowledgePage(
+    content: serializeKnowledgePageFixture(
       {
-        id: pageId,
-        kind: 'preference',
         title: 'Private title',
         content: body,
         sourceReferences,
@@ -108,7 +110,7 @@ describe('explicit native self Memory', () => {
       title: 'Personal fact',
       content: 'I prefer short answers.',
     });
-    const request = f.request(f.baseRevision, 'preferences', 'Use short answers.', [
+    const request = f.request(f.notebook.publishedRevision(), 'preferences', 'Use short answers.', [
       `source:${source.id}@${source.contentDigest}`,
     ]);
     const delegated = updateOkfFrontmatter({
@@ -140,7 +142,7 @@ describe('explicit native self Memory', () => {
     });
     const reference = `source:${source.id}@${source.contentDigest}`;
     const request = f.request(
-      f.baseRevision,
+      f.notebook.publishedRevision(),
       'preferences',
       'Personally authored interpretation.\r\n',
       [reference]
@@ -183,6 +185,7 @@ describe('explicit native self Memory', () => {
         content: 'Other evidence.',
       }
     );
+    const capturedRevision = f.notebook.publishedRevision();
     for (const reference of [
       `source:${foreign.id}@${foreign.contentDigest}`,
       `source:ks_${randomUUID()}@${source.contentDigest}`,
@@ -191,15 +194,15 @@ describe('explicit native self Memory', () => {
       await expect(
         saveMemoryPage(
           f.input,
-          f.request(f.baseRevision, 'preferences', 'Do not publish.', [reference])
+          f.request(capturedRevision, 'preferences', 'Do not publish.', [reference])
         )
       ).rejects.toMatchObject({ code: 'invalid_request' });
-      expect(f.notebook.publishedRevision()).toBe(f.baseRevision);
+      expect(f.notebook.publishedRevision()).toBe(capturedRevision);
     }
     expect(listMemoryPages(f.input).pages).toEqual([]);
   });
 
-  it('refuses corrupt Source bytes at read, list, edit and the final publication check without repairing them', async () => {
+  it('preserves saved pages when raw originals are unavailable and refuses lost Knowledge Base authority at final publication', async () => {
     const f = fixture();
     const source = await registerUserKnowledgeSource(f.input, {
       requestId: randomUUID(),
@@ -208,26 +211,33 @@ describe('explicit native self Memory', () => {
       content: 'Exact evidence.',
     });
     const refs = [`source:${source.id}@${source.contentDigest}`];
-    const saved = await saveMemoryPage(
-      f.input,
-      f.request(f.baseRevision, 'preferences', 'My interpretation.', refs)
+    const request = f.request(
+      f.notebook.publishedRevision(),
+      'preferences',
+      'My interpretation.',
+      refs
     );
-    const material = join(
-      f.input.coreDb.dataRoot,
-      'users',
-      alice,
-      'sources',
-      'materials',
-      source.id,
-      'content.txt'
-    );
+    const saved = await saveMemoryPage(f.input, request);
+    const material = join(f.root, 'raw', 'sources', source.id, 'original');
+    writeFileSync(material, 'Corrupt evidence.');
+    expect(await readUserKnowledgeSource(f.input, source.id)).toBeNull();
+    expect(readMemoryPage(f.input, 'preferences')?.content).toBe(request.content);
+    expect(listMemoryPages(f.input).pages.map(({ id }) => id)).toEqual(['preferences']);
+    expect(readFileSync(material, 'utf8')).toBe('Corrupt evidence.');
+    rmSync(material);
+    expect(await readUserKnowledgeSource(f.input, source.id)).toBeNull();
+    expect(readMemoryPage(f.input, 'preferences')?.content).toBe(request.content);
+    expect(existsSync(material)).toBe(false);
+
+    // Saved pages require current pointer/KB authority, independently of original delivery.
+    const configuration = join(f.input.coreDb.dataRoot, 'users', alice, 'config', 'user.jsonc');
     const prepare = KnowledgeNotebook.prototype.prepare;
     vi.spyOn(KnowledgeNotebook.prototype, 'prepare').mockImplementationOnce(function (
       this: KnowledgeNotebook,
       input
     ) {
       const candidate = prepare.call(this, input);
-      writeFileSync(material, 'Corrupt evidence.');
+      writeFileSync(configuration, '{"schemaVersion":1}\n');
       return candidate;
     });
     await expect(
@@ -243,12 +253,12 @@ describe('explicit native self Memory', () => {
     expect(() => listMemoryPages(f.input)).toThrowError(
       expect.objectContaining({ code: 'recovery_required' })
     );
-    expect(readFileSync(material, 'utf8')).toBe('Corrupt evidence.');
-    rmSync(join(f.input.coreDb.dataRoot, 'users', alice, 'sources'), { recursive: true });
+    expect(readFileSync(configuration, 'utf8')).toBe('{"schemaVersion":1}\n');
+    rmSync(configuration);
     expect(() => readMemoryPage(f.input, 'preferences')).toThrowError(
       expect.objectContaining({ code: 'recovery_required' })
     );
-    expect(existsSync(join(f.input.coreDb.dataRoot, 'users', alice, 'sources'))).toBe(false);
+    expect(existsSync(configuration)).toBe(false);
   });
 
   it('saves, lists and reads exact authored bytes, edits one fixed base and replays the original receipt', async () => {

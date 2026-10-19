@@ -8,8 +8,8 @@ EnvironmentFile=/etc/openkit/nanohost.env
 PrivateMounts=yes
 InaccessiblePaths=/run/docker.sock
 ExecStart=/usr/lib/openkit/nanohost
-# SIGKILL the slice tree without a stop job. A stop job on this slice stops this service and cancels Restart=.
-ExecStop=-/usr/bin/systemctl kill --signal=SIGKILL --kill-whom=all openkit-nanohost.slice
+# Let systemd stop the service cgroup first so an intentional stop is not a MainPID SIGKILL failure.
+# Then kill the complete slice without a slice stop job, which would cancel Restart=.
 ExecStopPost=-/usr/bin/systemctl kill --signal=SIGKILL --kill-whom=all openkit-nanohost.slice
 Slice=openkit-nanohost.slice
 KillMode=control-group

@@ -19,11 +19,22 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION } from '../knowledge/okf.js';
+import type { KnowledgeSourceRecord } from '../lib/store.js';
 import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
-import { FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID } from '../test-support/local-user.js';
+import { knowledgePageFixture } from '../test-support/knowledge-page.js';
+import {
+  ensureLocalUser,
+  FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
+} from '../test-support/local-user.js';
+import {
+  captureWorkspaceSourceFixture,
+  readWorkspaceSourceFixture,
+} from '../test-support/workspace-source.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { openCoreDb } from './db.js';
 import {
   rebuildExistingWorkspaceDerivedIndexes,
   rebuildInvalidExistingWorkspaceDerivedIndexes,
@@ -31,8 +42,8 @@ import {
   resolveWorkspaceKnowledgeRetrievalPages,
   retrieveWorkspaceKnowledge,
 } from './index-rebuild.js';
+import { applyMigrations } from './migrate.js';
 import { readRetrievalTrace } from './retrieval-traces.js';
-import { serializeUserAuthoredKnowledgePage } from './workspace-file-records.js';
 
 const fixtureRoots: string[] = [];
 afterEach(async () => {
@@ -58,6 +69,35 @@ function localRetrievalAccess(dataRoot: string, store = new FsStore({ dataRoot }
     actor: { kind: 'user' as const, id: LOCAL_USER_ID },
     requestActor: { kind: 'local' as const, userId: LOCAL_USER_ID },
   };
+}
+
+/** Establishes explicit fixture membership, then uses the shared canonical Source publisher. */
+async function captureIndexSource(
+  dataRoot: string,
+  store: FsStore,
+  source: KnowledgeSourceRecord,
+  content: string
+) {
+  const coreDb = openCoreDb(dataRoot);
+  try {
+    applyMigrations(coreDb);
+    const userId = ensureLocalUser(coreDb);
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      workspaceId: source.workspaceId,
+      ownerUserId: userId,
+    });
+    return await captureWorkspaceSourceFixture({
+      dataRoot,
+      store,
+      coreDb,
+      userId,
+      source,
+      content,
+    });
+  } finally {
+    coreDb.sqlite.close();
+  }
 }
 
 /**
@@ -87,7 +127,6 @@ function sourceReferencePage(knowledgePageId: string, reference: string): string
     'created_at: "2026-10-08T00:00:00.000Z"',
     'updated_at: "2026-10-08T00:00:00.000Z"',
     `openkit_entry_id: ${knowledgePageId}`,
-    'openkit_entry_kind: project-context',
     '---',
     'Registered capture evidence.',
     '',
@@ -125,25 +164,24 @@ function publishedPage(workspaceRoot: string, path: string): string {
   return notebook.readRevision(notebook.publishedRevision(), [path]).files[path]!;
 }
 
-let entrySequence = 0;
-/** Creates a managed-view fixture through the same content serializer and Git owner. */
-function publishEntry(
+let pageSequence = 0;
+/** Publishes canonical fixture bytes through the existing test-owned Git content seam. */
+function publishFixturePage(
   dataRoot: string,
   workspaceId: string,
-  input: Parameters<FsStore['createKnowledgeEntry']>[1]
+  input: Pick<Parameters<typeof knowledgePageFixture>[0], 'title' | 'content' | 'sourceReferences'>
 ) {
-  const entry = {
-    id: `index-fixture-${String(++entrySequence).padStart(4, '0')}`,
-    ...input,
-    createdAt: '2026-10-16T00:00:00.000Z',
-    updatedAt: '2026-10-16T00:00:00.000Z',
-  };
-  publishPage(
-    join(dataRoot, 'workspaces', workspaceId),
-    `${entry.id}.md`,
-    serializeUserAuthoredKnowledgePage(entry, { kind: 'workspace', workspaceId })
+  const page = knowledgePageFixture(
+    {
+      id: `index-fixture-${String(++pageSequence).padStart(4, '0')}`,
+      ...input,
+      createdAt: '2026-10-16T00:00:00.000Z',
+      updatedAt: '2026-10-16T00:00:00.000Z',
+    },
+    { kind: 'workspace', workspaceId }
   );
-  return entry;
+  publishPage(join(dataRoot, 'workspaces', workspaceId), page.path, page.content);
+  return page;
 }
 
 /** Attributes fresh empty notebooks to the actual fixture creator. */
@@ -156,7 +194,7 @@ function notebookInitialization() {
 }
 
 describe('workspace derived index rebuild', () => {
-  it('uses the same registered-source resolution for validation and reference indexing', () => {
+  it('uses the same registered-source resolution for validation and reference indexing', async () => {
     const dataRoot = createDataRoot();
     const store = createDemoStore({ dataRoot });
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
@@ -165,33 +203,28 @@ describe('workspace derived index rebuild', () => {
     const noDigestId = 'ks_00000000-0000-7b37-b1ba-f647a038d171';
     const foreignId = 'ks_00000000-0000-7da0-a360-7ab1e8d5225c';
     const digest = sha256Digest('Registered capture evidence.');
-    const source = store.createKnowledgeSource({
-      id: sourceId,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      kind: 'document',
-      title: 'Registered capture',
-      uri: null,
-      contentDigest: digest,
-      originatingThreadId: null,
-      originatingTurnId: null,
-      originatingFileId: null,
-      capturedAt: '2026-10-08T00:00:00.000Z',
-      createdAt: '2026-10-08T00:00:00.000Z',
-      updatedAt: '2026-10-08T00:00:00.000Z',
-    });
-    // Registry-only fixtures ensure rebuild does not require captured-file integrity proof.
-    writeFileSync(
-      join(workspaceRoot, 'sources', 'registry', `${noDigestId}.json`),
-      JSON.stringify({ ...source, id: noDigestId, contentDigest: null })
+    const source = await captureIndexSource(
+      dataRoot,
+      store,
+      {
+        id: sourceId,
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        kind: 'document',
+        title: 'Registered capture',
+        uri: null,
+        contentDigest: digest,
+        originatingThreadId: null,
+        originatingTurnId: null,
+        originatingFileId: null,
+        capturedAt: '2026-10-08T00:00:00.000Z',
+        createdAt: '2026-10-08T00:00:00.000Z',
+        updatedAt: '2026-10-08T00:00:00.000Z',
+      },
+      'Registered capture evidence.'
     );
-    writeFileSync(
-      join(workspaceRoot, 'sources', 'registry', `${foreignId}.json`),
-      JSON.stringify({
-        ...source,
-        id: foreignId,
-        workspaceId: 'ws_00000000-0000-7f9c-aa14-53566c621405',
-      })
-    );
+    // A canonical pointer remains resolvable when its independently retained original is unavailable.
+    rmSync(join(workspaceRoot, 'knowledge', 'raw', 'sources', source.id, 'original'));
+    // Nullable-digest or foreign registry rows are not admitted Source pointers in this format.
     const cases = [
       { id: 'bare', reference: `source:${sourceId}`, targetId: sourceId, resolved: true },
       {
@@ -220,10 +253,10 @@ describe('workspace derived index rebuild', () => {
         resolved: false,
       },
       {
-        id: 'bare-without-digest',
+        id: 'unadmitted-without-digest',
         reference: `source:${noDigestId}`,
         targetId: noDigestId,
-        resolved: true,
+        resolved: false,
       },
       {
         id: 'wrong-scope',
@@ -308,11 +341,13 @@ describe('workspace derived index rebuild', () => {
     }
   });
 
-  it('rebuilds an accepted matching-pin Page without rewriting bytes or contradicting resolution', () => {
+  it('rebuilds an accepted matching-pin Page without rewriting bytes or contradicting resolution', async () => {
     const dataRoot = createDataRoot();
     const store = createDemoStore({ dataRoot });
     const material = 'Registered capture evidence.';
-    const source = store.createKnowledgeSource(
+    const source = await captureIndexSource(
+      dataRoot,
+      store,
       {
         id: 'ks_00000000-0000-7e28-9211-1f67fd14ca84',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -400,7 +435,9 @@ describe('workspace derived index rebuild', () => {
     const sourceId = 'ks_00000000-0000-7a5f-abd1-664e5a6aadee';
     const sourceReference = `source:${sourceId}`;
 
-    store.createKnowledgeSource(
+    await captureIndexSource(
+      dataRoot,
+      store,
       {
         id: sourceId,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -417,19 +454,16 @@ describe('workspace derived index rebuild', () => {
       },
       'Governed retrieval source.'
     );
-    const selected = publishEntry(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
-      kind: 'project-context',
+    const selected = publishFixturePage(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
       title: 'Selected page',
       content: 'retrievalneedle',
       sourceReferences: [sourceReference],
     });
-    const overflow = publishEntry(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
-      kind: 'project-context',
+    const overflow = publishFixturePage(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
       title: 'Overflow page',
       content: 'retrievalneedle',
     });
-    const zeroScore = publishEntry(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
-      kind: 'project-context',
+    const zeroScore = publishFixturePage(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
       title: 'Unaddressed page',
       content: 'No matching term.',
     });
@@ -491,7 +525,6 @@ describe('workspace derived index rebuild', () => {
         knowledgePageId: selected.id,
         notebookRevision,
         contentDigest: sha256Digest(selectedPageBytes),
-        kind: 'project-context',
         sourceRefs: [sourceReference],
         content: selectedPageBytes,
         title: 'Selected page',
@@ -567,13 +600,19 @@ describe('workspace derived index rebuild', () => {
     expect(JSON.stringify(row)).not.toContain(zeroScore.id);
   });
 
-  it('does not let a persisted retrieval trace grant access after current Source material is missing', async () => {
+  it('keeps exact saved pages after original loss and refuses a later Source audience revocation', async () => {
     const dataRoot = createDataRoot();
     const store = createDemoStore({ dataRoot });
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     const knowledgePageId = 'reviewed-task-proof';
     const material = 'The current registered source supplies exact evidence.';
-    const source = store.createKnowledgeSource(
+    const sourceThread = store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Current evidence origin'
+    );
+    const source = await captureIndexSource(
+      dataRoot,
+      store,
       {
         id: testEntityId('ks', 'index-current-evidence'),
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -581,7 +620,7 @@ describe('workspace derived index rebuild', () => {
         title: 'Current evidence',
         uri: null,
         contentDigest: sha256Digest(material),
-        originatingThreadId: null,
+        originatingThreadId: sourceThread.id,
         originatingTurnId: null,
         originatingFileId: null,
         capturedAt: '2026-07-12T00:00:00.000Z',
@@ -606,7 +645,6 @@ describe('workspace derived index rebuild', () => {
       'freshness: "current"',
       'created_at: "2026-07-12T00:00:00.000Z"',
       'updated_at: "2026-07-12T00:00:00.000Z"',
-      'openkit_entry_kind: "project-context"',
       `openkit_entry_id: ${JSON.stringify(knowledgePageId)}`,
       '---',
       'Only current owners can authorize this reviewed task proof.',
@@ -643,12 +681,48 @@ describe('workspace derived index rebuild', () => {
       contentDigest: sha256Digest(content),
       sourceReferences,
     });
-    rmSync(join(workspaceRoot, 'sources', 'materials', source.id, 'content.txt'));
+    const originalPath = join(workspaceRoot, 'knowledge', 'raw', 'sources', source.id, 'original');
+    rmSync(originalPath);
     expect(publishedPage(workspaceRoot, `${knowledgePageId}.md`)).toBe(content);
-    expect(
-      store.readKnowledgeSourceMaterial('ws_00000000-0000-7000-8000-000000000001', source.id)
-    ).toBeNull();
+    const coreDb = openCoreDb(dataRoot);
+    try {
+      const original = await readWorkspaceSourceFixture({
+        dataRoot,
+        store,
+        coreDb,
+        userId: LOCAL_USER_ID,
+        workspaceId: source.workspaceId,
+        sourceId: source.id,
+      });
+      expect(original.status).toBe('unavailable');
+      expect(JSON.stringify(original)).not.toContain(material);
+    } finally {
+      coreDb.sqlite.close();
+    }
     const afterStore = new FsStore({ dataRoot });
+    const readSelection = () =>
+      resolveWorkspaceKnowledgeRetrievalPages({
+        access: {
+          ...localRetrievalAccess(dataRoot, afterStore),
+          outputThreadId: 'th_00000000-0000-7000-8000-000000000001',
+        },
+        caller: 'task-mode',
+        dataRoot,
+        retrievalTraceRef: retrieval.retrievalTraceRef!,
+        workspaceId: source.workspaceId,
+      });
+    expect(readSelection()).toContainEqual(
+      expect.objectContaining({
+        contentDigest: sha256Digest(content),
+        notebookRevision,
+        sourceRefs: sourceReferences,
+      })
+    );
+    Object.assign(afterStore.getThread(source.workspaceId, sourceThread.id), {
+      visibility: 'private',
+      privateOwnerUserId: LOCAL_USER_ID,
+    });
+
     expect(() =>
       resolveWorkspaceKnowledgeRetrievalPages({
         access: {
@@ -667,6 +741,8 @@ describe('workspace derived index rebuild', () => {
         message: 'Knowledge trace or source is unavailable.',
       })
     );
+    expect(existsSync(originalPath)).toBe(false);
+    expect(publishedPage(workspaceRoot, `${knowledgePageId}.md`)).toBe(content);
   });
 
   it('does not expose unpublished physical page identity from accepted metadata', async () => {
@@ -689,7 +765,6 @@ describe('workspace derived index rebuild', () => {
       'freshness: "current"',
       'created_at: "2026-07-12T00:00:00.000Z"',
       'updated_at: "2026-07-12T00:00:00.000Z"',
-      'openkit_entry_kind: "project-context"',
       `openkit_entry_id: ${JSON.stringify(knowledgePageId)}`,
       '---',
       'This accepted page must not become retrievable without its authority proof.',
@@ -1009,8 +1084,7 @@ describe('workspace derived index rebuild', () => {
   it('uses the workspace schema when rebuilding extension knowledge pages', () => {
     const dataRoot = createDataRoot();
     createDemoStore({ dataRoot });
-    publishEntry(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
-      kind: 'project-context',
+    publishFixturePage(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
       title: 'Seed knowledge',
       content: 'Seed body.',
     });
@@ -1069,8 +1143,7 @@ describe('workspace derived index rebuild', () => {
   it('does not rebuild knowledge pages when the workspace schema is invalid', () => {
     const dataRoot = createDataRoot();
     createDemoStore({ dataRoot });
-    publishEntry(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
-      kind: 'project-context',
+    publishFixturePage(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
       title: 'Schema blocked knowledge',
       content: 'This body should not be indexed.',
     });
@@ -1093,31 +1166,35 @@ describe('workspace derived index rebuild', () => {
     expect(validation.records.some((record) => record.errors.length > 0)).toBe(true);
   });
 
-  it('requires active knowledge page source references to resolve to registered records', () => {
+  it('requires active knowledge page source references to resolve to registered records', async () => {
     const dataRoot = createDataRoot();
     const store = createDemoStore({ dataRoot });
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     const timestamp = '2026-07-07T00:00:00.000Z';
-    const knowledge = publishEntry(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
-      kind: 'project-context',
+    const knowledge = publishFixturePage(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
       title: 'Registered knowledge',
       content: 'Registered knowledge body.',
     });
 
-    const source = store.createKnowledgeSource({
-      id: 'ks_00000000-0000-7e28-9211-1f67fd14ca84',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      kind: 'document',
-      title: 'Registered source',
-      uri: null,
-      contentDigest: `sha256:${'a'.repeat(64)}`,
-      originatingThreadId: null,
-      originatingTurnId: null,
-      originatingFileId: null,
-      capturedAt: timestamp,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    });
+    const source = await captureIndexSource(
+      dataRoot,
+      store,
+      {
+        id: 'ks_00000000-0000-7e28-9211-1f67fd14ca84',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        kind: 'document',
+        title: 'Registered source',
+        uri: null,
+        contentDigest: sha256Digest('Registered capture evidence.'),
+        originatingThreadId: null,
+        originatingTurnId: null,
+        originatingFileId: null,
+        capturedAt: timestamp,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+      'Registered capture evidence.'
+    );
     publishPage(
       workspaceRoot,
       'source-backed.md',
@@ -1297,8 +1374,7 @@ describe('workspace derived index rebuild', () => {
     createDemoStore({ dataRoot });
     const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
     const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
-    const target = publishEntry(dataRoot, workspaceId, {
-      kind: 'project-context',
+    const target = publishFixturePage(dataRoot, workspaceId, {
       title: 'Pinned target',
       content: 'Exact target bytes.',
     });
@@ -1324,8 +1400,7 @@ describe('workspace derived index rebuild', () => {
       { reference: unknownReference, targetId: 'unknown-target', resolved: false },
     ].map((testCase) => ({
       ...testCase,
-      page: publishEntry(dataRoot, workspaceId, {
-        kind: 'project-context',
+      page: publishFixturePage(dataRoot, workspaceId, {
         title: 'Page-source proof',
         content: `[Target](${target.id}.md)`,
         sourceReferences: [testCase.reference],
@@ -1372,31 +1447,35 @@ describe('workspace derived index rebuild', () => {
     }
   });
 
-  it('rebuilds the knowledge source-reference index from file-backed pages', () => {
+  it('rebuilds the knowledge source-reference index from file-backed pages', async () => {
     const dataRoot = createDataRoot();
     const store = createDemoStore({ dataRoot });
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     const timestamp = '2026-07-07T00:00:00.000Z';
-    const knowledge = publishEntry(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
-      kind: 'project-context',
+    const knowledge = publishFixturePage(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
       title: 'Registered knowledge',
       content: 'Registered knowledge body.',
     });
 
-    store.createKnowledgeSource({
-      id: 'ks_00000000-0000-7e28-9211-1f67fd14ca84',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      kind: 'document',
-      title: 'Registered source',
-      uri: null,
-      contentDigest: `sha256:${'a'.repeat(64)}`,
-      originatingThreadId: null,
-      originatingTurnId: null,
-      originatingFileId: null,
-      capturedAt: timestamp,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    });
+    await captureIndexSource(
+      dataRoot,
+      store,
+      {
+        id: 'ks_00000000-0000-7e28-9211-1f67fd14ca84',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        kind: 'document',
+        title: 'Registered source',
+        uri: null,
+        contentDigest: sha256Digest('Registered capture evidence.'),
+        originatingThreadId: null,
+        originatingTurnId: null,
+        originatingFileId: null,
+        capturedAt: timestamp,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+      'Registered capture evidence.'
+    );
     publishPage(
       workspaceRoot,
       'source-reference-index.md',
@@ -1411,7 +1490,7 @@ describe('workspace derived index rebuild', () => {
         'requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
         `source_refs: ${JSON.stringify([
           'source:ks_00000000-0000-7e28-9211-1f67fd14ca84',
-          `source:ks_00000000-0000-7e28-9211-1f67fd14ca84@sha256:${'a'.repeat(64)}`,
+          `source:ks_00000000-0000-7e28-9211-1f67fd14ca84@${sha256Digest('Registered capture evidence.')}`,
           formatReferenceUri({ scopeId: workspacePageScope(dataRoot), objectId: knowledge.id }),
           formatReferenceUri(
             { scopeId: workspacePageScope(dataRoot), objectId: knowledge.id },
@@ -1468,7 +1547,7 @@ describe('workspace derived index rebuild', () => {
         {
           conceptId: 'source-reference-index',
           path: 'knowledge/pages/source-reference-index.md',
-          reference: `source:ks_00000000-0000-7e28-9211-1f67fd14ca84@sha256:${'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'}`,
+          reference: `source:ks_00000000-0000-7e28-9211-1f67fd14ca84@${sha256Digest('Registered capture evidence.')}`,
           kind: 'registered-source',
           targetId: 'ks_00000000-0000-7e28-9211-1f67fd14ca84',
           resolved: true,
@@ -1540,8 +1619,7 @@ describe('workspace derived index rebuild', () => {
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     const timestamp = '2026-07-07T00:00:00.000Z';
 
-    publishEntry(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
-      kind: 'project-context',
+    publishFixturePage(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
       title: 'Seed knowledge',
       content: 'Seed body.',
     });

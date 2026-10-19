@@ -1,5 +1,6 @@
 // openkit-test-platform: posix
 
+import { createHash } from 'node:crypto';
 import {
   existsSync,
   mkdirSync,
@@ -13,16 +14,22 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { FsStore, type KnowledgeSourceRecord } from '../lib/store.js';
 import { feedbackFilePath, readTurnFeedback, updateTurnFeedback } from '../runtime/feedback.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { notebookImportFixture } from '../test-support/notebook-import.js';
+import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
 import {
   readEncryptedFileVaultText,
   writeEncryptedFileVaultJsonAtomically,
 } from '../vault/vault-encrypted-file-store.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { writeStorageJsonAtomically } from './data-root-backup.js';
+import { openCoreDb } from './db.js';
+import { applyMigrations } from './migrate.js';
 
 const durability = vi.hoisted(() => ({
   paths: new Map<number, string>(),
@@ -191,124 +198,43 @@ describe('direct canonical write boundaries', () => {
     expect(existsSync(join(workspacesRoot, workspaceId))).toBe(false);
   });
 
-  it('rejects a symlinked source material parent without writing outside the workspace', () => {
-    const { store, workspace, workspaceRoot } = createFixture('openkit-source-material-symlink-');
-    const sourceId = 'ks_00000000-0000-7f09-8877-59431b147e4f';
-    const outsideRoot = installOutsideParent(
-      join(workspaceRoot, 'sources', 'materials', sourceId),
-      'openkit-source-material-outside-'
-    );
-
-    expect
-      .soft(() =>
-        store.createKnowledgeSource(
-          knowledgeSource(workspace.id, sourceId),
-          'This content must stay inside the workspace.'
-        )
-      )
-      .toThrow();
-    expect(existsSync(join(outsideRoot, 'content.txt'))).toBe(false);
-  });
-
   it.each([
-    'materials',
-    'derived',
-  ] as const)('rejects a symlinked staged source %s parent without writing outside', (family) => {
-    const { store, workspace } = createFixture(`openkit-staged-source-${family}-`);
-    const workspaceRoot = mkdtempSync(join(tmpdir(), `openkit-staged-source-root-${family}-`));
-    const sourceId = testEntityId('ks', `ks_staged_${family}_symlink`);
-    const source = knowledgeSource(workspace.id, sourceId);
-    const outsideRoot = installOutsideParent(
-      join(workspaceRoot, 'sources', family, sourceId),
-      `openkit-staged-source-outside-${family}-`
-    );
-    const outsideFile = family === 'materials' ? 'content.txt' : 'text.json';
-
-    expect
-      .soft(() => {
-        if (family === 'materials') {
-          Reflect.apply(Reflect.get(store, 'writeKnowledgeSourceMaterialsToRoot'), store, [
-            workspaceRoot,
-            [{ sourceId, content: 'Staged source material.' }],
-            [source],
-          ]);
-          return;
-        }
-
-        Reflect.apply(Reflect.get(store, 'writeKnowledgeSourceDerivedRepresentation'), store, [
-          workspaceRoot,
-          source,
-        ]);
-      })
-      .toThrow();
-    expect(existsSync(join(outsideRoot, outsideFile))).toBe(false);
-  });
-
-  it.each([
-    ['observation', 'observations'],
-    ['claim', 'claims'],
-    ['conflict', 'conflicts'],
-  ] as const)('rejects a symlinked %s write parent without writing outside', (family, directory) => {
-    const { store, workspace, workspaceRoot } = createFixture(`openkit-direct-${family}-symlink-`);
-    const outsideRoot = installOutsideParent(
-      join(workspaceRoot, 'knowledge', directory),
-      `openkit-direct-${family}-outside-`
-    );
-
-    expect
-      .soft(() => {
-        switch (family) {
-          case 'observation':
-            store.recordKnowledgeObservation({
-              id: 'ko_00000000-0000-78d5-afde-a8d938b2aee1',
-              workspaceId: workspace.id,
-              kind: 'maintenance',
-              summary: 'Canonical writes must reject symlinked parents.',
-              sourceReferences: [],
-              scope: 'workspace',
-              producer: 'boundary-test',
-              confidence: 1,
-              freshness: 'current',
-              status: 'retained',
-              observedAt: timestamp,
-              createdAt: timestamp,
-            });
-            break;
-          case 'claim':
-            store.recordKnowledgeClaim({
-              id: 'kc_00000000-0000-7ee4-876e-3645dfc70dfc',
-              workspaceId: workspace.id,
-              statement: 'Canonical writes reject symlinked parents.',
-              sourceReferences: [],
-              scope: 'workspace',
-              producer: 'boundary-test',
-              confidence: 1,
-              freshness: 'current',
-              reviewState: 'accepted',
-              conflictStatus: 'none',
-              createdAt: timestamp,
-              updatedAt: timestamp,
-            });
-            break;
-          case 'conflict':
-            store.recordKnowledgeConflict({
-              id: 'kf_00000000-0000-759a-86ef-092a69e6ef8e',
-              workspaceId: workspace.id,
-              subjectReferences: ['knowledge:boundary'],
-              sourceReferences: [],
-              status: 'needs_review',
-              summary: 'A symlinked parent crosses the workspace boundary.',
-              suggestedActions: ['Reject the write.'],
-              producer: 'boundary-test',
-              createdAt: timestamp,
-              updatedAt: timestamp,
-            });
-            break;
-        }
-      })
-      .toThrow();
-
-    expect(existsSync(join(outsideRoot, '202607.jsonl'))).toBe(false);
+    'original',
+    'managed-prefix',
+    'staging',
+  ] as const)('rejects a symlinked Source %s parent without writing outside the Knowledge Base', async (boundary) => {
+    const f = createFixture(`openkit-source-${boundary}-symlink-`);
+    const coreDb = openCoreDb(f.dataRoot);
+    applyMigrations(coreDb);
+    const userId = ensureLocalUser(coreDb);
+    onTestFinished(() => coreDb.sqlite.close());
+    recordWorkspaceOwnerMembership({ coreDb, workspaceId: f.workspace.id, ownerUserId: userId });
+    const sourceId = testEntityId('ks', `source-${boundary}-symlink`);
+    const notebook = new KnowledgeNotebook({
+      repositoryPath: join(f.workspaceRoot, 'knowledge', 'notebook.git'),
+    });
+    const revision = notebook.publishedRevision();
+    const parent =
+      boundary === 'original'
+        ? join(f.workspaceRoot, 'knowledge', 'raw', 'sources', sourceId)
+        : boundary === 'managed-prefix'
+          ? join(f.workspaceRoot, 'knowledge', 'raw', 'sources')
+          : join(f.workspaceRoot, 'knowledge', '.source-staging');
+    const outsideRoot = installOutsideParent(parent, `openkit-source-outside-${boundary}-`);
+    const sentinel = join(outsideRoot, 'sentinel.txt');
+    writeFileSync(sentinel, 'untouched');
+    const content = 'This original must stay inside the Knowledge Base.';
+    const source = {
+      ...knowledgeSource(f.workspace.id, sourceId),
+      contentDigest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
+    };
+    await expect(
+      captureWorkspaceSourceFixture({ ...f, coreDb, userId, source, content })
+    ).rejects.toThrow();
+    expect(readdirSync(outsideRoot)).toEqual(['sentinel.txt']);
+    expect(readFileSync(sentinel, 'utf8')).toBe('untouched');
+    expect(notebook.publishedRevision()).toBe(revision);
+    expect(notebook.readSourcePointers(revision)).not.toHaveProperty(sourceId);
   });
 
   it.each([

@@ -842,7 +842,7 @@ function requireDeletingRegistry(coreDb: CoreDb, request: WorkspaceDeletionReque
 }
 
 /**
- * Reports whether Workspace deletion must stay fenced for an active runtime, unproved lease, or pending apply.
+ * Reports whether Workspace deletion must preserve runtime proof, an unproved lease, or a pending apply.
  *
  * Every non-closed execution attempt blocks deletion until its actual handoff and exact fence are proved.
  *
@@ -859,6 +859,10 @@ function hasActiveWorkspaceRuntime(input: {
     input.store
       .listWorkspaceAgentSessions(input.workspaceId)
       .some((session) => ['created', 'initializing', 'busy'].includes(session.status)) ||
+    // A completed Turn leaves an idle native binding that still needs its retained AEP for retirement.
+    input.coreDb.sqlite
+      .prepare('SELECT 1 FROM agent_session_runtime_bindings WHERE workspace_id = ? LIMIT 1')
+      .get(input.workspaceId) ||
     hasUnprovedNanoHostWorkspaceCleanup(input.coreDb, input.workspaceId) ||
     listWorkerBackendSessions(input.coreDb).some(
       (session) => session.workspaceId === input.workspaceId && session.state !== 'cleaned'

@@ -106,7 +106,7 @@ A narrow-job reviewer or decision model supplies an assessment; Core enforces Po
 
 Needed to distinguish source verification from implementation of the unified design.
 
-The specialized producers below exist, except rows explicitly marked absent. Their presence does not implement the common binding, stage order or complete invocation evidence. Current knowledge claims/observations/conflicts use monthly JSONL; live and catalog Light App definitions include semantic prose. Production AEP instructions are empty. Sources, candidates, presentations and catalog labels have evidence/operational roles, not automatic Knowledge migration. The naming cutover is already the base: canonical `work.input.request` and `work.artifact.submit` project mechanically to MCP names; capability operations use the current hyphenated names.
+The specialized producers below exist, except rows explicitly marked absent. Their presence does not implement the common binding, stage order or complete invocation evidence. Claim and reusable Observation/conflict analysis use canonical OKF pages through the existing Notebook owner; live and catalog Light App definitions include semantic prose. Production AEP instructions are empty. Sources, candidates, presentations and catalog labels have evidence/operational roles, not automatic Knowledge migration. The naming cutover is already the base: canonical `work.input.request` and `work.artifact.submit` project mechanically to MCP names; capability operations use the current hyphenated names.
 
 The I labels identify migration rows, never persisted points. Paths are under `apps/nanocore/src/`. Each row names its operation/stage, crossing attribute and role. Angle-bracket names mark non-API registry extension slots or the containing operation, not another registry or frozen operation IDs. Existing operation identities stay unchanged. A row may span multiple crossings. U means later routing after the first pilot; L means an absent optional capability. Specialized regressions remain with their lanes.
 
@@ -162,8 +162,8 @@ Phase F lands before the v0.1.0 retained-data freeze. MIGRATION means a changed 
 
 | Step | Class and receiver | Completion boundary |
 | --- | --- | --- |
-| C01 Claims | MIGRATION; L-AK, F | One OKF Claim authority, KM read/write, no canonical JSONL path; numeric confidence preserved. |
-| C02 observations/conflicts | MIGRATION; L-AK + L-GA, F | Reusable analysis in OKF; event/decision authority stays; conflict refusals and exclusions still work. |
+| C01 Claims | MIGRATION; L-CH, L-AK owner review, F | One OKF Claim authority, KM read/write, no canonical JSONL path; numeric confidence preserved. |
+| C02 observations/conflicts | MIGRATION; L-CH, L-AK owner review, F | Reusable analysis in OKF; event/decision authority stays; conflict refusals and exclusions still work. |
 | C03 app/domain separation | MIGRATION; L-GO + L-AK, F | Kernel holds any structured app record data; reusable meaning/procedures use OKF/Skills. Glue-only is the Meta-Skill current recommendation for MVP validation first and to prevent Skill overuse, not a Kernel limit. |
 | C04 solidified procedures | MIGRATION where present; L-AK + L-GO + L-RT, F | Skill is the procedure owner; projections reference selected versions; no private grounding copy. |
 | C05 typed pages | ADDITIVE; L-AK, F | Rule/Effect/Objective, required applies_to and Effect basis/last_checked_at land together with native/KM type and exact applicability retrieval after the pre-reset cut; normal notebook governance remains binding. |
@@ -178,6 +178,16 @@ Phase F lands before the v0.1.0 retained-data freeze. MIGRATION means a changed 
 The store dispositions are: TS1 Claim -> OKF Claim; TS2 reusable observations -> OKF Observation; TS3 reusable conflicts -> OKF Observation with conflict state; TS4 Sources stay evidence; TS5 proposals stay candidates; TS6 live app and TS7 template reusable meaning -> Entity/Topic/Rule or Skill while records/structure stay; TS8 presentations stay projections; TS9 has no production instruction-body store and future procedures use Skills; TS10 plugin descriptions stay discovery metadata. These are classifications, not a claim that live private content was inspected or moved.
 
 The native reset slice below implements the shared retained formats and I16 pilot. Goal-domain activation, Task-resource intersection, agent-principal authority and automatic Policy review remain Not Started. The landed channel-origin addition supplies capture provenance only. Changed retained meaning/layout joins the coordinator-owned reset RC only after the pre-reset cut announcement; additive changes require no conversion. The reset RC requires final retained shapes, writers and validators; behavior that writes no new shape may follow additively before v0.1.0. Other row routing, impact simulation, adaptive/cached review, external adapters and react remain later work.
+
+### Canonical Reusable Fact Cutover
+
+Needed to give C01/C02 one active writer, reader and lifecycle before the reset RC.
+
+The existing Notebook publisher writes Claim and reusable Observation pages. KM and ordinary page/retrieval operations read them. Claim confidence is finite numeric 0..1; source, scope, freshness and Review remain independent of actual conflict assessment. Observation subject references name affected objects separately from supporting evidence. Current same-Notebook target admission checks any exact digest; an unpinned subject applies to the object, and an exact pin applies only to that version. Other target families remain refused until a native owner reader exists.
+
+Current draft/active unresolved Observations drive the existing Proposal target/source refusal before Review mutation and active retrieval exclusion, including pinned queries and restart. Active unresolved Claim/Observation pages remain excluded themselves. Resolution, archive, confirmed removal, stale bases and restore follow ordinary Notebook publication. Portable current-tree export/import remints subjects and exact page pins through the existing reference owner. Git retains native history; an imported current-tree archive is not a fabricated original edit history.
+
+The seven standalone fact-ledger operations, their DTOs, monthly readers/writers and portable JSONL records are retired without aliases or conversion. Otherwise they would remain a competing authority. WorkObservation, Audit, actual decisions and content-free User suppression retain their existing owners and formats. This cut changes pre-stable retained meaning and uses the coordinator-owned reset; it does not perform one. Public tests cover the ordinary lifecycle, exact-pin refusal, Proposal refusal and current retrieval; the completed landing must also qualify the retirement, portability and operational continuity.
 
 ### Native Reset Slice: Implementation Projection
 

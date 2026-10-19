@@ -477,15 +477,28 @@ function agent() {
   };
 }
 
-/** Returns one valid knowledge entry. */
-function knowledgeEntry() {
+/** Returns one canonical Notebook page projection. */
+function knowledgePage() {
   return {
     id: 'mem_demo',
-    kind: 'project-context',
-    title: 'Demo knowledge',
-    content: 'Shared context',
-    createdAt: timestamp,
-    updatedAt: timestamp,
+    path: 'mem_demo.md',
+    content: '---\ntype: KnowledgePage\ntitle: Demo knowledge\n---\nShared context\n',
+    contentDigest: `sha256:${'a'.repeat(64)}`,
+  };
+}
+
+/** Returns the existing Notebook publication result for each public page intent. */
+function notebookPublication(
+  operation: 'knowledge.notebook.create' | 'knowledge.notebook.update' | 'knowledge.notebook.delete'
+) {
+  const ownerScope = { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' };
+  return {
+    outcome: 'published',
+    ownerScope,
+    baseRevision: notebookBaseRevision,
+    notebookRevision: notebookCandidateRevision,
+    changedPageIds: ['mem_demo'],
+    receiptRef: { operation, requestId, ownerScope },
   };
 }
 
@@ -1708,7 +1721,7 @@ describe('createCoreClient', () => {
   });
 
   it('routes remaining product operations through validated definition-derived paths', async () => {
-    const knowledge = knowledgeEntry();
+    const knowledge = knowledgePage();
     const item = userMessageItem();
     const { client, requests } = createFakeClient({
       'GET /api/meta': {
@@ -1727,16 +1740,22 @@ describe('createCoreClient', () => {
         },
       },
       'POST /api/app/operations/workspace.update': { body: workspace() },
-      'POST /api/app/operations/knowledge.list': {
+      'POST /api/app/operations/knowledge.notebook.list': {
         body: {
           knowledgeBaseId: 'kb_0190f4c8-0000-7000-8000-000000000001',
           notebookRevision: notebookBaseRevision,
-          items: [{ ...knowledge, contentDigest: `sha256:${'a'.repeat(64)}` }],
+          pages: [knowledge],
         },
       },
-      'POST /api/app/operations/knowledge.create': { body: knowledge },
-      'POST /api/app/operations/knowledge.update': { body: knowledge },
-      'POST /api/app/operations/knowledge.delete': { body: null },
+      'POST /api/app/operations/knowledge.notebook.create': {
+        body: notebookPublication('knowledge.notebook.create'),
+      },
+      'POST /api/app/operations/knowledge.notebook.update': {
+        body: notebookPublication('knowledge.notebook.update'),
+      },
+      'POST /api/app/operations/knowledge.notebook.delete': {
+        body: notebookPublication('knowledge.notebook.delete'),
+      },
       'POST /api/app/operations/thread.list': { body: { items: [thread()] } },
       'POST /api/app/operations/thread.read': { body: thread() },
       'POST /api/app/operations/thread.update': { body: thread() },
@@ -2014,41 +2033,43 @@ describe('createCoreClient', () => {
       })
     ).resolves.toEqual(workspace());
     await expect(
-      client.operations['knowledge.list']({
+      client.operations['knowledge.notebook.list']({
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       })
     ).resolves.toEqual({
       knowledgeBaseId: 'kb_0190f4c8-0000-7000-8000-000000000001',
       notebookRevision: notebookBaseRevision,
-      items: [{ ...knowledge, contentDigest: `sha256:${'a'.repeat(64)}` }],
+      pages: [knowledge],
     });
     await expect(
-      client.operations['knowledge.create']({
+      client.operations['knowledge.notebook.create']({
         baseRevision: notebookBaseRevision,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        knowledgePageId: knowledge.id,
-        kind: knowledge.kind,
-        title: knowledge.title,
+        path: knowledge.path,
         content: knowledge.content,
+        summary: 'Create shared page',
       })
-    ).resolves.toEqual(knowledge);
+    ).resolves.toEqual(notebookPublication('knowledge.notebook.create'));
     await expect(
-      client.operations['knowledge.update']({
+      client.operations['knowledge.notebook.update']({
         baseRevision: notebookBaseRevision,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        knowledgeEntryId: 'mem_demo',
-        ...{ title: 'Updated' },
+        changes: [
+          { path: knowledge.path, content: knowledge.content.replace('Demo knowledge', 'Updated') },
+        ],
+        summary: 'Update shared page',
       })
-    ).resolves.toEqual(knowledge);
+    ).resolves.toEqual(notebookPublication('knowledge.notebook.update'));
     await expect(
-      client.operations['knowledge.delete']({
+      client.operations['knowledge.notebook.delete']({
         baseRevision: notebookBaseRevision,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        knowledgeEntryId: 'mem_demo',
+        path: knowledge.path,
+        summary: 'Remove shared page',
         expectedContentDigest: `sha256:${'a'.repeat(64)}`,
         confirmRemoval: true,
       })
-    ).resolves.toBeNull();
+    ).resolves.toEqual(notebookPublication('knowledge.notebook.delete'));
     await expect(
       client.operations['thread.list']({ workspaceId: 'ws_00000000-0000-7000-8000-000000000001' })
     ).resolves.toEqual({
@@ -2232,10 +2253,10 @@ describe('createCoreClient', () => {
       'GET /api/meta',
       'POST /api/app/operations/workspace.read',
       'POST /api/app/operations/workspace.update',
-      'POST /api/app/operations/knowledge.list',
-      'POST /api/app/operations/knowledge.create',
-      'POST /api/app/operations/knowledge.update',
-      'POST /api/app/operations/knowledge.delete',
+      'POST /api/app/operations/knowledge.notebook.list',
+      'POST /api/app/operations/knowledge.notebook.create',
+      'POST /api/app/operations/knowledge.notebook.update',
+      'POST /api/app/operations/knowledge.notebook.delete',
       'POST /api/app/operations/thread.list',
       'POST /api/app/operations/thread.read',
       'POST /api/app/operations/thread.update',
@@ -2266,7 +2287,8 @@ describe('createCoreClient', () => {
     expect(requests[2]?.headers['x-openkit-request-id']).toEqual(expect.any(String));
     expect(requests[6]?.body).toEqual({
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      knowledgeEntryId: 'mem_demo',
+      path: knowledge.path,
+      summary: 'Remove shared page',
       baseRevision: notebookBaseRevision,
       expectedContentDigest: `sha256:${'a'.repeat(64)}`,
       confirmRemoval: true,
@@ -2949,7 +2971,6 @@ describe('createCoreClient', () => {
       'freshness: "current"',
       `created_at: ${JSON.stringify(timestamp)}`,
       `updated_at: ${JSON.stringify(timestamp)}`,
-      'openkit_entry_kind: "project-context"',
       'openkit_entry_id: "lessons/release-review"',
       '---',
       'Release reviews happen every Friday.',
@@ -3222,165 +3243,6 @@ describe('createCoreClient', () => {
                 ],
               },
             ],
-          },
-        },
-      },
-      'POST /api/app/operations/knowledge.observation.record': {
-        body: {
-          observation: {
-            id: 'ko_00000000-0000-7998-bb5a-f6e99a870e41',
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            kind: 'retrieval',
-            summary: 'Worker repeatedly needed release cadence context.',
-            sourceReferences: [
-              `openkit:${knowledgePageScopeId}/kn_demo`,
-              'source:ks_00000000-0000-7ef0-a551-80b39073108f',
-            ],
-            scope: 'workspace',
-            producer: 'knowledge-manager',
-            confidence: 0.75,
-            freshness: 'current',
-            status: 'retained',
-            observedAt: timestamp,
-            createdAt: timestamp,
-          },
-        },
-      },
-      'POST /api/app/operations/knowledge.observation.list': {
-        body: {
-          items: [
-            {
-              id: 'ko_00000000-0000-7998-bb5a-f6e99a870e41',
-              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-              kind: 'retrieval',
-              summary: 'Worker repeatedly needed release cadence context.',
-              sourceReferences: [
-                `openkit:${knowledgePageScopeId}/kn_demo`,
-                'source:ks_00000000-0000-7ef0-a551-80b39073108f',
-              ],
-              scope: 'workspace',
-              producer: 'knowledge-manager',
-              confidence: 0.75,
-              freshness: 'current',
-              status: 'retained',
-              observedAt: timestamp,
-              createdAt: timestamp,
-            },
-          ],
-        },
-      },
-      'POST /api/app/operations/knowledge.claim.record': {
-        body: {
-          claim: {
-            id: 'kc_00000000-0000-7120-8707-e527057f1dd9',
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            statement: 'Release cadence is weekly.',
-            sourceReferences: [
-              `openkit:${knowledgePageScopeId}/release-plan`,
-              'source:ks_00000000-0000-7b52-90c5-8003864b63f9',
-            ],
-            scope: 'workspace',
-            producer: 'knowledge-manager',
-            confidence: 0.8,
-            freshness: 'current',
-            reviewState: 'needs-review',
-            conflictStatus: 'none',
-            createdAt: timestamp,
-            updatedAt: timestamp,
-          },
-        },
-      },
-      'POST /api/app/operations/knowledge.claim.list': {
-        body: {
-          items: [
-            {
-              id: 'kc_00000000-0000-7120-8707-e527057f1dd9',
-              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-              statement: 'Release cadence is weekly.',
-              sourceReferences: [
-                `openkit:${knowledgePageScopeId}/release-plan`,
-                'source:ks_00000000-0000-7b52-90c5-8003864b63f9',
-              ],
-              scope: 'workspace',
-              producer: 'knowledge-manager',
-              confidence: 0.8,
-              freshness: 'current',
-              reviewState: 'needs-review',
-              conflictStatus: 'none',
-              createdAt: timestamp,
-              updatedAt: timestamp,
-            },
-          ],
-        },
-      },
-      'POST /api/app/operations/knowledge.conflict.record': {
-        body: {
-          conflict: {
-            id: 'kf_00000000-0000-7b22-b99c-14cb0ba3c7ef',
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            subjectReferences: [
-              `openkit:${knowledgePageScopeId}/release-plan`,
-              'claim:kc_00000000-0000-78d1-ade0-e140ee38bc7a',
-            ],
-            sourceReferences: [
-              'source:ks_00000000-0000-7b52-90c5-8003864b63f9',
-              'source:ks_00000000-0000-7cfe-8f5a-5c42a2b55641',
-            ],
-            status: 'conflicting',
-            summary: 'Release cadence has contradictory source evidence.',
-            suggestedActions: ['Ask the user which source is authoritative.'],
-            producer: 'knowledge-manager',
-            createdAt: timestamp,
-            updatedAt: timestamp,
-          },
-        },
-      },
-      'POST /api/app/operations/knowledge.conflict.list': {
-        body: {
-          items: [
-            {
-              id: 'kf_00000000-0000-7b22-b99c-14cb0ba3c7ef',
-              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-              subjectReferences: [
-                `openkit:${knowledgePageScopeId}/release-plan`,
-                'claim:kc_00000000-0000-78d1-ade0-e140ee38bc7a',
-              ],
-              sourceReferences: [
-                'source:ks_00000000-0000-7b52-90c5-8003864b63f9',
-                'source:ks_00000000-0000-7cfe-8f5a-5c42a2b55641',
-              ],
-              status: 'conflicting',
-              summary: 'Release cadence has contradictory source evidence.',
-              suggestedActions: ['Ask the user which source is authoritative.'],
-              producer: 'knowledge-manager',
-              createdAt: timestamp,
-              updatedAt: timestamp,
-            },
-          ],
-        },
-      },
-      'POST /api/app/operations/knowledge.conflict.resolve': {
-        body: {
-          conflict: {
-            id: 'kf_00000000-0000-7b22-b99c-14cb0ba3c7ef',
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            subjectReferences: [
-              `openkit:${knowledgePageScopeId}/release-plan`,
-              'claim:kc_00000000-0000-78d1-ade0-e140ee38bc7a',
-            ],
-            sourceReferences: [
-              'source:ks_00000000-0000-7b52-90c5-8003864b63f9',
-              'source:ks_00000000-0000-7cfe-8f5a-5c42a2b55641',
-            ],
-            status: 'resolved',
-            summary: 'Release cadence has contradictory source evidence.',
-            suggestedActions: ['Ask the user which source is authoritative.'],
-            producer: 'knowledge-manager',
-            resolution: 'Friday release reviews are authoritative.',
-            resolvedAt: timestamp,
-            resolvedBy: 'knowledge-manager',
-            createdAt: timestamp,
-            updatedAt: timestamp,
           },
         },
       },
@@ -3787,7 +3649,7 @@ describe('createCoreClient', () => {
       client.operations['knowledge.source.register']({
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         ...{
-          requestId: 'req_source',
+          requestId,
           kind: 'document',
           title: 'Release notes',
           uri: 'file://release.md',
@@ -3831,104 +3693,6 @@ describe('createCoreClient', () => {
           { reference: 'source:ks_00000000-0000-7ef0-a551-80b39073108f', resolved: true },
         ],
       },
-    });
-    await expect(
-      client.operations['knowledge.observation.record']({
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        ...{
-          requestId: 'req_observation',
-          kind: 'retrieval',
-          summary: 'Worker repeatedly needed release cadence context.',
-          sourceReferences: [
-            `openkit:${knowledgePageScopeId}/kn_demo`,
-            'source:ks_00000000-0000-7ef0-a551-80b39073108f',
-          ],
-          producer: 'knowledge-manager',
-          confidence: 0.75,
-        },
-      })
-    ).resolves.toMatchObject({
-      observation: {
-        id: 'ko_00000000-0000-7998-bb5a-f6e99a870e41',
-        kind: 'retrieval',
-        status: 'retained',
-      },
-    });
-    await expect(
-      client.operations['knowledge.observation.list']({
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      })
-    ).resolves.toMatchObject({
-      items: [{ id: 'ko_00000000-0000-7998-bb5a-f6e99a870e41', kind: 'retrieval' }],
-    });
-    await expect(
-      client.operations['knowledge.claim.record']({
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        ...{
-          requestId: 'req_claim',
-          statement: 'Release cadence is weekly.',
-          sourceReferences: [
-            `openkit:${knowledgePageScopeId}/release-plan`,
-            'source:ks_00000000-0000-7b52-90c5-8003864b63f9',
-          ],
-          producer: 'knowledge-manager',
-          confidence: 0.8,
-        },
-      })
-    ).resolves.toMatchObject({
-      claim: {
-        id: 'kc_00000000-0000-7120-8707-e527057f1dd9',
-        statement: 'Release cadence is weekly.',
-      },
-    });
-    await expect(
-      client.operations['knowledge.claim.list']({
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      })
-    ).resolves.toMatchObject({
-      items: [
-        { id: 'kc_00000000-0000-7120-8707-e527057f1dd9', statement: 'Release cadence is weekly.' },
-      ],
-    });
-    await expect(
-      client.operations['knowledge.conflict.record']({
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        ...{
-          requestId: 'req_conflict',
-          subjectReferences: [
-            `openkit:${knowledgePageScopeId}/release-plan`,
-            'claim:kc_00000000-0000-78d1-ade0-e140ee38bc7a',
-          ],
-          sourceReferences: [
-            'source:ks_00000000-0000-7b52-90c5-8003864b63f9',
-            'source:ks_00000000-0000-7cfe-8f5a-5c42a2b55641',
-          ],
-          summary: 'Release cadence has contradictory source evidence.',
-          producer: 'knowledge-manager',
-        },
-      })
-    ).resolves.toMatchObject({
-      conflict: { id: 'kf_00000000-0000-7b22-b99c-14cb0ba3c7ef', status: 'conflicting' },
-    });
-    await expect(
-      client.operations['knowledge.conflict.list']({
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      })
-    ).resolves.toMatchObject({
-      items: [{ id: 'kf_00000000-0000-7b22-b99c-14cb0ba3c7ef', status: 'conflicting' }],
-    });
-    await expect(
-      client.operations['knowledge.conflict.resolve']({
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        conflictId: 'kf_00000000-0000-7b22-b99c-14cb0ba3c7ef',
-        ...{
-          requestId: 'req_resolve_conflict',
-          resolution: 'Friday release reviews are authoritative.',
-          resolvedBy: 'knowledge-manager',
-        },
-      })
-    ).resolves.toMatchObject({
-      conflict: { id: 'kf_00000000-0000-7b22-b99c-14cb0ba3c7ef', status: 'resolved' },
     });
     await expect(
       client.operations['knowledge.retrieval']({
@@ -4171,13 +3935,6 @@ describe('createCoreClient', () => {
       'POST /api/app/operations/knowledge.source.list',
       'POST /api/app/operations/knowledge.source.read',
       'POST /api/app/operations/knowledge.indexes',
-      'POST /api/app/operations/knowledge.observation.record',
-      'POST /api/app/operations/knowledge.observation.list',
-      'POST /api/app/operations/knowledge.claim.record',
-      'POST /api/app/operations/knowledge.claim.list',
-      'POST /api/app/operations/knowledge.conflict.record',
-      'POST /api/app/operations/knowledge.conflict.list',
-      'POST /api/app/operations/knowledge.conflict.resolve',
       'POST /api/app/operations/knowledge.retrieval',
       'POST /api/app/operations/knowledge.context.prepare',
       'POST /api/app/operations/knowledge.proposal.draft',

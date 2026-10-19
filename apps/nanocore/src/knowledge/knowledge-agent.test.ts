@@ -35,8 +35,8 @@ import { dispatchOpenkitWorkTool } from '../runtime/openkit-work-mcp.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { readTurnRetrievalTraces } from '../storage/retrieval-traces.js';
-import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -45,7 +45,7 @@ import { askKnowledgeAgent, type KnowledgeAgentDependencies } from './knowledge-
 import { saveMemoryPage } from './memory-lifecycle.js';
 import { appendMemorySuppression } from './memory-maintenance.js';
 import { KnowledgeNotebook } from './notebook.js';
-import { publishWorkspaceNotebookEntry } from './notebook-entry-publication.js';
+import { publishWorkspaceNotebook } from './notebook-publication.js';
 import { readWorkspaceNotebookAdmission } from './notebook-workspace-admission.js';
 import {
   readUserKnowledgeSource,
@@ -53,6 +53,7 @@ import {
 } from './scoped-knowledge-sources.js';
 import { initializeScopedNotebook, resolveScopedNotebookOwner } from './scoped-notebook-owner.js';
 import { publishScopedNotebook } from './scoped-notebook-publication.js';
+import { publishCapturedSource } from './source-publication.js';
 
 type TransportRequest = Parameters<LLMGatewayProviderDispatcher['createResponses']>[1];
 type Transport = Parameters<LLMGatewayProviderDispatcher['createResponses']>[2];
@@ -87,60 +88,102 @@ async function fixture(withServerKnowledge = false, emptyOverview = false) {
   );
   const captured = 'The heliotrope launch uses the cobalt gate. No launch date is documented.';
   const now = new Date().toISOString();
-  const source = store.createKnowledgeSource(
-    {
-      id: allocateEntityId('ks'),
-      workspaceId: workspace.id,
-      kind: 'document',
-      title: 'Launch evidence',
-      uri: null,
-      contentDigest: `sha256:${createHash('sha256').update(captured).digest('hex')}`,
-      originatingThreadId: sourceThread.id,
-      originatingTurnId: null,
-      originatingFileId: null,
-      capturedAt: now,
-      createdAt: now,
-      updatedAt: now,
-    },
-    captured
-  );
-  const sourceReference = `source:${source.id}@${source.contentDigest}`;
+  const sourceInput = {
+    id: allocateEntityId('ks'),
+    workspaceId: workspace.id,
+    kind: 'document' as const,
+    title: 'Launch evidence',
+    uri: null,
+    contentDigest: `sha256:${createHash('sha256').update(captured).digest('hex')}`,
+    originatingThreadId: sourceThread.id,
+    originatingTurnId: null,
+    originatingFileId: null,
+    capturedAt: now,
+    createdAt: now,
+    updatedAt: now,
+  };
   const notebook = new KnowledgeNotebook({
     repositoryPath: join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'notebook.git'),
   });
   const publicationConfig = createInMemoryRuntimeConfigSnapshot({ dataRoot });
   const workspaceMutationAdmission = new WorkspaceMutationAdmission();
-  await publishWorkspaceNotebookEntry(
+  const sourceRequestId = randomUUID();
+  await publishCapturedSource(
+    {
+      owner: { dataRoot, ownerScope: { kind: 'workspace', workspaceId: workspace.id } },
+      database: { kind: 'workspace', workspaceDb },
+      access: { store, coreDb, actor, requestActor: { kind: 'local', userId } },
+      producer: actor,
+      requestId: sourceRequestId,
+      commandInput: sourceInput,
+      captureChannel: 'knowledge.source.register',
+      revalidatePublication: () => {
+        readWorkspaceNotebookAdmission({
+          store,
+          coreDb,
+          workspaceDb,
+          notebook,
+          request: {
+            workspaceId: workspace.id,
+            requestId: sourceRequestId,
+            baseRevision: notebook.publishedRevision(),
+            changes: [],
+            summary: 'Capture the explicit launch evidence.',
+          },
+          requestActor: { kind: 'local', userId },
+          actor,
+          runtimeConfigManager: { current: () => publicationConfig },
+          workspaceMutationAdmission,
+        });
+      },
+    },
+    sourceInput,
+    Buffer.from(captured)
+  );
+  const source = store.getKnowledgeSource(workspace.id, sourceInput.id);
+  const sourceReference = `source:${source.id}@${source.contentDigest}`;
+  const publicationRequest = {
+    requestId: randomUUID(),
+    workspaceId: workspace.id,
+    baseRevision: notebook.publishedRevision(),
+    summary: 'Record launch evidence',
+    changes: [
+      {
+        path: 'launch-evidence.md',
+        content: serializeKnowledgePageFixture(
+          {
+            title: 'Heliotrope launch',
+            content: captured,
+            sourceReferences: [sourceReference],
+            createdAt: now,
+            updatedAt: now,
+          },
+          { kind: 'workspace', workspaceId: workspace.id }
+        ),
+      },
+    ],
+  };
+  await publishWorkspaceNotebook(
     {
       store,
       workspaceDb,
       notebook,
       producer: actor,
       inflightCommands: new WeakMap(),
-      revalidate: (request) =>
+      revalidate: () =>
         readWorkspaceNotebookAdmission({
           store,
           coreDb,
           workspaceDb,
           notebook,
-          request,
+          request: publicationRequest,
           requestActor: { kind: 'local', userId },
           actor,
           runtimeConfigManager: { current: () => publicationConfig },
           workspaceMutationAdmission,
         }),
     },
-    {
-      operation: 'knowledge.create',
-      requestId: randomUUID(),
-      workspaceId: workspace.id,
-      knowledgePageId: 'launch-evidence',
-      baseRevision: notebook.publishedRevision(),
-      kind: 'project-context',
-      title: 'Heliotrope launch',
-      content: captured,
-      sourceReferences: [sourceReference],
-    }
+    publicationRequest
   );
   // A valid shared publication does not retain disclosure authority after its Source becomes private.
   Object.assign(sourceThread, { visibility: 'private', privateOwnerUserId: userId });
@@ -180,10 +223,8 @@ async function fixture(withServerKnowledge = false, emptyOverview = false) {
     const repositoryPath = join(resolveScopedNotebookOwner(context).notebookRoot, 'notebook.git');
     const serverNotebook = new KnowledgeNotebook({ repositoryPath });
     const timestamp = new Date().toISOString();
-    const content = serializeUserAuthoredKnowledgePage(
+    const content = serializeKnowledgePageFixture(
       {
-        id: 'launch-evidence',
-        kind: 'project-context',
         title: 'Heliotrope launch policy',
         content: 'The heliotrope launch requires cobalt approval from the Server owner.',
         sourceReferences: [],
@@ -653,9 +694,13 @@ it('binds Worker dispatch to its package Workspace and shared audience, refusing
         pageId: `openkit:${f.workspaceScope}/launch-evidence`,
       });
     }
-    expect(toolOutput(request, 'knowledge.page.read')).toContain(
-      'The Tool failed without a safe result.'
-    );
+    const refused = toolOutput(request, 'knowledge.page.read');
+    expect(refused).toContain('This pageId is not an admitted candidate.');
+    expect(refused).toContain('Copy its exact pageId');
+    expect(refused).not.toContain('launch-evidence');
+    expect(refused).not.toContain('cobalt gate');
+    expect(refused).not.toContain(f.sourceReference);
+    expect(refused).not.toContain(f.userId);
     return message(
       'No evidence is available to this shared Task.',
       [],
@@ -718,7 +763,8 @@ it('binds Worker dispatch to its package Workspace and shared audience, refusing
     expect.objectContaining({
       type: 'tool-call',
       tool: 'knowledge.page.read',
-      result: expect.stringContaining('The Tool failed without a safe result.'),
+      status: 'failed',
+      result: expect.stringContaining('This pageId is not an admitted candidate.'),
     })
   );
   const traces = readTurnRetrievalTraces(
@@ -1011,6 +1057,112 @@ it('repairs an unsearched absence by indexing the pinned notebook, reading the u
   expect(f.createResponses).toHaveBeenCalledTimes(4);
 }, 120_000);
 
+it('repairs wildcard selection and an unselected malformed read before accepting absence for a published fact', async () => {
+  const f = await fixture(false, true);
+  const pageId = formatReferenceUri({ scopeId: f.workspaceScope, objectId: 'launch-evidence' });
+  let step = 0;
+  f.createResponses.mockImplementation(async (_provider, request) => {
+    if (++step === 1)
+      return call('knowledge.retrieval', {
+        query: 'heliotrope cobalt',
+        types: ['*'],
+        appliesTo: ['*'],
+      });
+    if (step === 2)
+      return call('knowledge.page.read', { pageId: `${f.workspaceScope}/launch-evidence` });
+    if (step === 3)
+      return message('No evidence found.', [], 'The attempted page read was unavailable.');
+    if (step === 4)
+      return call('knowledge.retrieval', { query: 'heliotrope cobalt' }, 'corrected-search');
+    if (step === 5) {
+      const search = JSON.parse(toolOutput(request, 'knowledge.retrieval', 'corrected-search'));
+      expect(search.sources[0].selected).toMatchObject([{ pageId }]);
+      return call(
+        'knowledge.page.read',
+        { pageId: search.sources[0].selected[0].pageId },
+        'selected-read'
+      );
+    }
+    const selected = JSON.parse(toolOutput(request, 'knowledge.page.read', 'selected-read'));
+    expect(selected.content).toBe(f.page);
+    return message('The heliotrope launch uses the cobalt gate.', [selected.pageId]);
+  });
+  const answer = await f.ask();
+  expect(answer).toMatchObject({
+    answer: 'The heliotrope launch uses the cobalt gate.',
+    citations: [
+      {
+        reference: formatReferenceUri(
+          { scopeId: f.workspaceScope, objectId: 'launch-evidence' },
+          f.contentDigest
+        ),
+        revision: f.revision,
+        contentDigest: f.contentDigest,
+        sourceReferences: [f.sourceReference],
+      },
+    ],
+  });
+  expect(f.createResponses).toHaveBeenCalledTimes(6);
+  const failedRead = toolOutput(f.createResponses.mock.calls[2]![1], 'knowledge.page.read');
+  expect(failedRead).not.toContain('heliotrope launch uses the cobalt gate');
+  expect(failedRead).not.toContain(f.sourceReference);
+  const turn = f.store.getTurnById(answer.turnId);
+  expect(turn.status).toBe('completed');
+  expect(
+    turn.items
+      .filter((item) => item.type === 'tool-call' && item.tool === 'knowledge.result')
+      .map((item) => item.status)
+  ).toEqual(['failed', 'completed']);
+  const traces = readTurnRetrievalTraces(
+    join(f.dataRoot, 'workspaces', f.workspace.id),
+    f.workspace.id,
+    f.thread.id,
+    f.turn.id
+  );
+  const corrected = traces.find(
+    ({ trace }) =>
+      'sourceScope' in trace &&
+      trace.selected.some((entry) => entry.reference.objectId === 'launch-evidence')
+  );
+  expect(corrected).toBeDefined();
+  expect(corrected?.trace.retrievalParameters).not.toHaveProperty('types');
+  expect(corrected?.trace.retrievalParameters).not.toHaveProperty('appliesTo');
+}, 120_000);
+
+it('refuses repeated wildcard-only absence after one bounded repair without delivering an answer', async () => {
+  const f = await fixture(false, true);
+  let step = 0;
+  f.createResponses.mockImplementation(async () => {
+    ++step;
+    return step % 2 === 1
+      ? call(
+          'knowledge.retrieval',
+          { query: 'heliotrope cobalt', types: ['*'], appliesTo: ['*'] },
+          `wildcard-${step}`
+        )
+      : message('No evidence.', [], 'Only wildcard selectors were attempted.');
+  });
+  const error = await f.ask().catch((error: unknown) => error);
+  expect(error).toMatchObject({
+    code: 'knowledge_query_failed',
+    status: 422,
+    details: { threadId: expect.any(String), turnId: expect.any(String) },
+  });
+  expect(f.createResponses).toHaveBeenCalledTimes(4);
+  const turn = f.store.getTurnById(error.details.turnId);
+  expect(turn.status).toBe('failed');
+  expect(
+    turn.items
+      .filter((item) => item.type === 'tool-call' && item.tool === 'knowledge.result')
+      .map((item) => item.status)
+  ).toEqual(['failed', 'failed']);
+  expect(
+    listWorkspaceCapabilityCalls(f.workspaceDb, f.workspace.id).find(
+      (call) => call.id === f.askingCall.id
+    )?.extensions?.['openkit.knowledge/delivery']
+  ).toBeUndefined();
+}, 120_000);
+
 it('refuses a second unsearched absence after one bounded repair with retained work and no delivery', async () => {
   const f = await fixture(false, true);
   f.createResponses.mockImplementation(async () => message('No evidence.', [], 'No search.'));
@@ -1047,7 +1199,7 @@ async function memoryFixture() {
     runtimeConfigManager: createRuntimeConfigManager({ dataRoot: f.dataRoot }),
     inflightCommands: new WeakMap(),
   };
-  const baseRevision = initializeScopedNotebook({
+  initializeScopedNotebook({
     ...writer,
     target: { kind: 'user' },
     initialization: { requestId: randomUUID(), instructionReference: 'test:private-km' },
@@ -1058,16 +1210,17 @@ async function memoryFixture() {
     title: 'Private User preference',
     content: 'I prefer the meridian violet tea. USER_PRIVATE_SOURCE',
   });
+  const baseRevision = new KnowledgeNotebook({
+    repositoryPath: join(f.dataRoot, 'users', f.userId, 'memory', 'notebook.git'),
+  }).publishedRevision();
   const pageId = 'preferences';
   const publication = await saveMemoryPage(writer, {
     requestId: randomUUID(),
     baseRevision,
     pageId,
     summary: 'Save private preference',
-    content: serializeUserAuthoredKnowledgePage(
+    content: serializeKnowledgePageFixture(
       {
-        id: pageId,
-        kind: 'preference',
         title: 'Meridian tea preference',
         content: 'I prefer meridian violet tea. USER_PRIVATE_PAGE',
         sourceReferences: [`source:${source.id}@${source.contentDigest}`],
@@ -1237,7 +1390,7 @@ it('rechecks Memory page suppression before delivering a synthesized answer', as
   });
   await expect(f.askMemory()).rejects.toMatchObject({ code: 'memory_access_denied' });
   expect(readPage).toContain('USER_PRIVATE_PAGE');
-  expect(readUserKnowledgeSource(f.writer, f.source.id, 'model')).toBeNull();
+  expect(await readUserKnowledgeSource(f.writer, f.source.id, 'model')).toBeNull();
 });
 
 it('rechecks current User authority after Memory page reads before answer delivery', async () => {

@@ -15,7 +15,7 @@ import {
   type ArtifactVersionRecord,
   deriveEntityId,
   type ItemSchema,
-  KnowledgeEntrySchema,
+  KnowledgeNotebookPageSchema,
   readRetainedV1,
   ThreadSchema,
   type TurnSchema,
@@ -30,6 +30,7 @@ import {
   type WorkspaceCatalogExportProjection,
 } from '../catalog/catalog-portability.js';
 import { parseJsoncObject } from '../config/jsonc.js';
+import { exportWorkspaceSources } from '../knowledge/source-workspace-portability.js';
 import { assertPortableResourcePolicy } from '../policy/resource-policy-portability.js';
 import { retainPermissionDecision } from '../policy/retained-records-v1.js';
 import { EMPTY_POLICY_DOCUMENT } from '../policy/statements.js';
@@ -81,14 +82,6 @@ import {
   writeWorkspacePortableExportState,
 } from './workspace-portable-file-state.js';
 
-/** Exported text material captured for one workspace knowledge source. */
-export interface ExportedKnowledgeSourceMaterial {
-  /** Source id that owns the material. */
-  sourceId: string;
-  /** Captured source text content. */
-  content: string;
-}
-
 /** File name for the root workspace export manifest. */
 export const WORKSPACE_EXPORT_MANIFEST_FILE = 'openkit-workspace-export.json';
 
@@ -98,6 +91,9 @@ export const UNSUPPORTED_WORKSPACE_EXPORT_RECORD_PATHS = [
   'records/injection-receipts.jsonl',
   'catalog/catalog.json',
   'records/knowledge-retrieval-traces.jsonl',
+  'records/knowledge-observations.jsonl',
+  'records/knowledge-claims.jsonl',
+  'records/knowledge-conflicts.jsonl',
   'workspace-files/imports/recurrence-history.json',
 ] as const;
 
@@ -183,7 +179,7 @@ export interface VerifiedWorkspaceExportTree {
   fileContents: ReadonlyMap<string, string>;
   /** Exact restricted original bytes, kept separate from canonical UTF-8 records. */
   binaryFileContents: ReadonlyMap<string, Uint8Array>;
-  /** Verified original payload paths for Artifacts, Turn inputs and Context Packages; never loaded into UTF-8 or binary body maps. */
+  /** Verified original payload paths for Artifacts, Sources, Turn inputs and Context Packages; never loaded into UTF-8 or binary body maps. */
   artifactPayloadFiles: ReadonlyMap<string, string>;
   /** Digest of the exact manifest bytes parsed by this verification. */
   manifestDigest: string;
@@ -235,10 +231,8 @@ export interface WriteWorkspaceExportTreeInput {
   portableFileState?: WorkspacePortableFileState;
   /** Captured inert Core and imported recurrence history, already stripped of local payload paths. */
   recurringHistory?: RecurringPortableHistory;
-  /** Knowledge source identity records to export as line-oriented records. */
+  /** Current pinned Source metadata used to validate canonical pointer closure. */
   knowledgeSources?: readonly unknown[];
-  /** Knowledge source text materials to export as evidence files. */
-  knowledgeSourceMaterials?: readonly ExportedKnowledgeSourceMaterial[];
   /** Non-secret workspace vault reference records to export. */
   vaultReferences?: readonly unknown[];
   /** Non-secret workspace vault grant records to export. */
@@ -402,7 +396,7 @@ export function writeWorkspaceExportTree(
       turns: new Map(history.turns.map((turn) => [turn.id, turn.threadId])),
     }
   );
-  const knowledge = input.knowledge.map((record) => KnowledgeEntrySchema.parse(record));
+  const knowledge = input.knowledge.map((record) => KnowledgeNotebookPageSchema.parse(record));
   const portableFileState = input.portableFileState;
   if (!portableFileState?.workspaceConfig) {
     throw new Error('Workspace export requires config/workspace.jsonc.');
@@ -434,9 +428,6 @@ export function writeWorkspaceExportTree(
   }
   for (const source of history.knowledgeSources) {
     assertSafeWorkspacePathSegment(source.id, 'Knowledge source id');
-  }
-  for (const material of input.knowledgeSourceMaterials ?? []) {
-    assertSafeWorkspacePathSegment(material.sourceId, 'Knowledge source id');
   }
 
   const rootMetadata = lstatSync(input.exportRoot, { throwIfNoEntry: false });
@@ -608,51 +599,19 @@ export function writeWorkspaceExportTree(
         artifact.content.body
       );
     }
-    if (history.knowledgeSources.length) {
-      writeJsonl(join(recordsRoot, 'knowledge-sources.jsonl'), history.knowledgeSources);
-    }
-    if (input.knowledgeSourceMaterials?.length) {
-      const sourcesById = new Map(history.knowledgeSources.map((source) => [source.id, source]));
-
-      for (const material of input.knowledgeSourceMaterials) {
-        const path = join(
-          input.exportRoot,
-          'sources',
-          'materials',
-          material.sourceId,
-          'content.txt'
-        );
-        const source = sourcesById.get(material.sourceId);
-
-        if (!source) {
-          throw new Error(
-            `Knowledge source material references missing source: ${material.sourceId}`
-          );
-        }
-
-        mkdirSync(dirname(path), { recursive: true });
-        writeFileAtomic(path, material.content);
-        const derivedPath = join(
-          input.exportRoot,
-          'sources',
-          'derived',
-          material.sourceId,
-          'text.json'
-        );
-
-        mkdirSync(dirname(derivedPath), { recursive: true });
-        writeJson(derivedPath, {
-          id: `${material.sourceId}:text`,
-          workspaceId: source.workspaceId,
-          sourceId: material.sourceId,
-          kind: 'text',
-          path: `sources/derived/${material.sourceId}/text.json`,
-          materialPath: `sources/materials/${material.sourceId}/content.txt`,
-          contentDigest: source.contentDigest,
-          sourceContentDigest: source.contentDigest,
-          createdAt: source.createdAt,
-        });
-      }
+    if (input.sourceWorkspaceRoot && portableFileState.notebookRevision) {
+      exportWorkspaceSources({
+        workspaceRoot: input.sourceWorkspaceRoot,
+        workspaceId: history.workspace.id,
+        revision: portableFileState.notebookRevision,
+        exportRoot: input.exportRoot,
+        sources: history.knowledgeSources,
+        knowledgeBaseId: workspaceConfig.workspace.defaultKnowledgeBaseId,
+        scopeSchemaText: portableFileState.workspaceSchema,
+        mounts: workspaceConfig.workspace.knowledgeMounts,
+      });
+    } else if (history.knowledgeSources.length) {
+      throw new Error('Source export requires the pinned canonical Notebook.');
     }
     if (input.auditEvents?.length) {
       writeJsonl(
@@ -1160,6 +1119,7 @@ export function verifyWorkspaceExportTree(
   for (const entry of manifest.contentInventory) {
     if (
       /^artifacts\/[^/]+\/versions\/[1-9][0-9]*\/payload$/.test(entry.path) ||
+      entry.path.startsWith('workspace-files/knowledge/raw/') ||
       /^workspace-files\/threads\/[^/]+\/turns\/[^/]+\/context-package\/originals\/.+/.test(
         entry.path
       ) ||

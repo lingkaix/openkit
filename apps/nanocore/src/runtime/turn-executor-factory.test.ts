@@ -4445,6 +4445,146 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
+  it('does not recreate a deleted resident Workspace during independent preparation', async () => {
+    const admitted = await admitIdleSupplyResident('missing_skill_admission', {
+      capacity: 20,
+      exactBinding: true,
+      configurePackage: (environmentPackage, coreDb) => {
+        const configRoot = join(
+          coreDb.dataRoot,
+          'workspaces',
+          environmentPackage.scope.workspaceId,
+          'config'
+        );
+        mkdirSync(configRoot, { recursive: true });
+        writeFileSync(
+          join(configRoot, 'workspace.jsonc'),
+          JSON.stringify(
+            WorkspaceConfigSchema.parse({
+              schemaVersion: 1,
+              workspace: { name: 'Admission recovery fixture' },
+            })
+          )
+        );
+      },
+    });
+    const { coreDb, environmentPackage, effects, runtime } = admitted;
+    try {
+      const independent = completeNanoHostPackage({
+        scope: {
+          ...environmentPackage.scope,
+          agentSessionId: testEntityId('as', 'missing_skill_independent'),
+          threadId: testEntityId('th', 'missing_skill_independent'),
+          turnId: testEntityId('tu', 'missing_skill_independent'),
+          workspaceId: testEntityId('ws', 'missing_skill_independent'),
+        },
+        snapshotId: 'snapshot_missing_skill_independent',
+      });
+      authorizeNanoHostPackage(coreDb, independent);
+      const configRoot = join(
+        coreDb.dataRoot,
+        'workspaces',
+        independent.scope.workspaceId,
+        'config'
+      );
+      mkdirSync(configRoot, { recursive: true });
+      writeFileSync(
+        join(configRoot, 'workspace.jsonc'),
+        JSON.stringify(
+          WorkspaceConfigSchema.parse({
+            schemaVersion: 1,
+            workspace: { name: 'Independent admission fixture' },
+          })
+        )
+      );
+      const store = new FsStore({ dataRoot: coreDb.dataRoot });
+      const turn = store.createTurn(
+        independent.scope.workspaceId,
+        independent.scope.threadId,
+        'Prepare an independent Worker.',
+        independent.scope.triggerActor,
+        undefined,
+        {
+          turnId: independent.scope.turnId,
+          status: 'pending',
+          agentId: independent.agent.agentId,
+          executorKind: 'worker',
+        }
+      );
+      const input = {
+        agentSetup: createTestAgentSetup(),
+        freshAgentSessionId: independent.scope.agentSessionId,
+        requestId: 'request_missing_skill_independent',
+        turn,
+        turnInput: 'Prepare an independent Worker.',
+        workspaceCwd: null,
+        workspaceRoots: [],
+      } satisfies PrepareAgentSessionForTurnInput;
+      const executor = runtime.turnExecutor as WorkerGovernanceTurnExecutor;
+      const expected = {
+        agentSessionId: independent.scope.agentSessionId,
+        currentAgentSession: null,
+        replacementRequired: false,
+      };
+      await expect(executor.prepareAgentSessionForTurn(store, input)).resolves.toMatchObject(
+        expected
+      );
+      const beforeEffects = [...effects];
+      const beforeBindings = coreDb.sqlite
+        .prepare('SELECT * FROM agent_session_runtime_bindings')
+        .all();
+      const beforeBackends = coreDb.sqlite.prepare('SELECT * FROM worker_backend_sessions').all();
+      await expect(
+        executor.prepareAgentSessionForTurn(store, {
+          ...input,
+          agentSetup: createTestAgentSetup({ skillIds: ['missing-admission-skill'] }),
+        })
+      ).rejects.toThrow('Worker supply catalog entry not found: skill:missing-admission-skill');
+      expect(effects).toEqual(beforeEffects);
+      expect(coreDb.sqlite.prepare('SELECT * FROM agent_session_runtime_bindings').all()).toEqual(
+        beforeBindings
+      );
+      expect(coreDb.sqlite.prepare('SELECT * FROM worker_backend_sessions').all()).toEqual(
+        beforeBackends
+      );
+      await expect(executor.prepareAgentSessionForTurn(store, input)).resolves.toMatchObject(
+        expected
+      );
+      expect(effects).toEqual(beforeEffects);
+
+      // Reproduce the retained Core facts after completed canonical Workspace deletion.
+      // These disposable fixture bytes are gone; runtime retirement still belongs to the backend.
+      const deletedRoot = join(coreDb.dataRoot, 'workspaces', environmentPackage.scope.workspaceId);
+      const deletedDb = join(deletedRoot, 'db', 'workspace.sqlite');
+      coreDb.sqlite
+        .prepare(
+          "UPDATE workspace_registry SET status = 'deleted', revision = revision + 2 WHERE workspace_id = ?"
+        )
+        .run(environmentPackage.scope.workspaceId);
+      rmSync(deletedRoot, { recursive: true });
+      expect(() => readFileSync(deletedDb)).toThrow(expect.objectContaining({ code: 'ENOENT' }));
+      const preparation = await executor
+        .prepareAgentSessionForTurn(store, input)
+        .then((value) => ({ value, error: null }))
+        .catch((error: unknown) => ({ value: null, error }));
+      expect(preparation.error).toMatchObject({
+        code: 'recovery_required',
+        status: 409,
+        message: expect.stringContaining(
+          'The worker backend materialization capacity cannot be safely inspected.'
+        ),
+      });
+      expect(JSON.stringify(preparation.error)).not.toContain(coreDb.dataRoot);
+      expect((preparation.error as Error).message).toContain(
+        'package-binding-lineage/workspace-deleted'
+      );
+      expect(() => readFileSync(deletedDb)).toThrow(expect.objectContaining({ code: 'ENOENT' }));
+      expect(effects).toEqual(beforeEffects);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('reuses the resident binding when supply is unchanged', async () => {
     const admitted = await admitIdleSupplyResident('supply_same');
     const { backend, coreDb, environmentPackage, settleNext } = admitted;

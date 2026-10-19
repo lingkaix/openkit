@@ -6484,393 +6484,6 @@
         }
       }
     },
-    "/api/app/operations/knowledge.observation.list": {
-      "post": {
-        "operationId": "knowledge.observation.list",
-        "tags": [
-          "knowledge"
-        ],
-        "summary": "List retained Knowledge maintenance observations.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/knowledge.observation.list.input"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "List retained Knowledge maintenance observations.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/knowledge.observation.list.output"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/operations/knowledge.observation.record": {
-      "post": {
-        "operationId": "knowledge.observation.record",
-        "tags": [
-          "knowledge"
-        ],
-        "summary": "Record one Knowledge maintenance observation.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "x-openkit-request-id",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/knowledge.observation.record.input"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Record one Knowledge maintenance observation.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/knowledge.observation.record.output"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/operations/knowledge.claim.list": {
-      "post": {
-        "operationId": "knowledge.claim.list",
-        "tags": [
-          "knowledge"
-        ],
-        "summary": "List Knowledge maintenance claims.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/knowledge.claim.list.input"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "List Knowledge maintenance claims.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/knowledge.claim.list.output"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/operations/knowledge.claim.record": {
-      "post": {
-        "operationId": "knowledge.claim.record",
-        "tags": [
-          "knowledge"
-        ],
-        "summary": "Record one Knowledge maintenance claim.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "x-openkit-request-id",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/knowledge.claim.record.input"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Record one Knowledge maintenance claim.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/knowledge.claim.record.output"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/operations/knowledge.conflict.list": {
-      "post": {
-        "operationId": "knowledge.conflict.list",
-        "tags": [
-          "knowledge"
-        ],
-        "summary": "List the latest Knowledge conflict maintenance records.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/knowledge.conflict.list.input"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "List the latest Knowledge conflict maintenance records.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/knowledge.conflict.list.output"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/operations/knowledge.conflict.record": {
-      "post": {
-        "operationId": "knowledge.conflict.record",
-        "tags": [
-          "knowledge"
-        ],
-        "summary": "Record one Knowledge conflict without publishing content.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "x-openkit-request-id",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/knowledge.conflict.record.input"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Record one Knowledge conflict without publishing content.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/knowledge.conflict.record.output"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/operations/knowledge.conflict.resolve": {
-      "post": {
-        "operationId": "knowledge.conflict.resolve",
-        "tags": [
-          "knowledge"
-        ],
-        "summary": "Resolve one scoped Knowledge conflict.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "x-openkit-request-id",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/knowledge.conflict.resolve.input"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Resolve one scoped Knowledge conflict.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/knowledge.conflict.resolve.output"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/app/operations/knowledge.indexes": {
       "post": {
         "operationId": "knowledge.indexes",
@@ -7563,13 +7176,13 @@
         }
       }
     },
-    "/api/app/operations/knowledge.list": {
+    "/api/app/operations/knowledge.notebook.list": {
       "post": {
-        "operationId": "knowledge.list",
+        "operationId": "knowledge.notebook.list",
         "tags": [
           "knowledge"
         ],
-        "summary": "List retained Workspace Knowledge Entries.",
+        "summary": "Read an authorized fixed Notebook snapshot with complete OKF page bytes.",
         "security": [
           {
             "bearerAuth": []
@@ -7583,18 +7196,18 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/knowledge.list.input"
+                "$ref": "#/components/schemas/knowledge.notebook.list.input"
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "List retained Workspace Knowledge Entries.",
+            "description": "Read an authorized fixed Notebook snapshot with complete OKF page bytes.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/knowledge.list.output"
+                  "$ref": "#/components/schemas/knowledge.notebook.list.output"
                 }
               }
             }
@@ -7612,13 +7225,13 @@
         }
       }
     },
-    "/api/app/operations/knowledge.create": {
+    "/api/app/operations/knowledge.notebook.create": {
       "post": {
-        "operationId": "knowledge.create",
+        "operationId": "knowledge.notebook.create",
         "tags": [
           "knowledge"
         ],
-        "summary": "Create one validated Workspace Knowledge Entry.",
+        "summary": "Create a new full OKF page through the fixed-base Notebook publisher.",
         "security": [
           {
             "bearerAuth": []
@@ -7643,18 +7256,18 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/knowledge.create.input"
+                "$ref": "#/components/schemas/knowledge.notebook.create.input"
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Create one validated Workspace Knowledge Entry.",
+            "description": "Create a new full OKF page through the fixed-base Notebook publisher.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/knowledge.create.output"
+                  "$ref": "#/components/schemas/knowledge.notebook.create.output"
                 }
               }
             }
@@ -7672,13 +7285,13 @@
         }
       }
     },
-    "/api/app/operations/knowledge.update": {
+    "/api/app/operations/knowledge.notebook.delete": {
       "post": {
-        "operationId": "knowledge.update",
+        "operationId": "knowledge.notebook.delete",
         "tags": [
           "knowledge"
         ],
-        "summary": "Update one scoped Workspace Knowledge Entry.",
+        "summary": "Remove exact human-confirmed page bytes while retaining Notebook history.",
         "security": [
           {
             "bearerAuth": []
@@ -7703,78 +7316,18 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/knowledge.update.input"
+                "$ref": "#/components/schemas/knowledge.notebook.delete.input"
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Update one scoped Workspace Knowledge Entry.",
+            "description": "Remove exact human-confirmed page bytes while retaining Notebook history.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/knowledge.update.output"
-                }
-              }
-            }
-          },
-          "default": {
-            "description": "Protocol error envelope.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/app/operations/knowledge.delete": {
-      "post": {
-        "operationId": "knowledge.delete",
-        "tags": [
-          "knowledge"
-        ],
-        "summary": "Delete one scoped Workspace Knowledge Entry.",
-        "security": [
-          {
-            "bearerAuth": []
-          },
-          {
-            "sessionCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "x-openkit-request-id",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "format": "uuid"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/knowledge.delete.input"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Delete one scoped Workspace Knowledge Entry.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/knowledge.delete.output"
+                  "$ref": "#/components/schemas/knowledge.notebook.delete.output"
                 }
               }
             }
@@ -36526,44 +36079,23 @@
                   "type": "string",
                   "minLength": 1
                 },
-                "kind": {
-                  "type": "string",
-                  "enum": [
-                    "preference",
-                    "project-context",
-                    "task-summary"
-                  ]
-                },
-                "title": {
+                "path": {
                   "type": "string",
                   "minLength": 1
                 },
                 "content": {
                   "type": "string"
                 },
-                "sourceReferences": {
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                },
-                "createdAt": {
+                "contentDigest": {
                   "type": "string",
-                  "minLength": 1
-                },
-                "updatedAt": {
-                  "type": "string",
-                  "minLength": 1
+                  "pattern": "^sha256:[a-f0-9]{64}$"
                 }
               },
               "required": [
                 "id",
-                "kind",
-                "title",
+                "path",
                 "content",
-                "createdAt",
-                "updatedAt"
+                "contentDigest"
               ],
               "additionalProperties": false
             }
@@ -61412,14 +60944,6 @@
                   ],
                   "additionalProperties": false
                 },
-                "kind": {
-                  "type": "string",
-                  "enum": [
-                    "preference",
-                    "project-context",
-                    "task-summary"
-                  ]
-                },
                 "title": {
                   "type": "string",
                   "minLength": 1
@@ -61431,7 +60955,6 @@
               },
               "required": [
                 "reference",
-                "kind",
                 "title",
                 "excerpt"
               ],
@@ -62002,1006 +61525,6 @@
         "required": [
           "source",
           "derivedRepresentations"
-        ],
-        "additionalProperties": false
-      },
-      "knowledge.observation.list.input": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspaceId": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-          }
-        },
-        "required": [
-          "workspaceId"
-        ],
-        "additionalProperties": false
-      },
-      "knowledge.observation.list.output": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "items": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "id": {
-                  "type": "string",
-                  "pattern": "^ko_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                },
-                "workspaceId": {
-                  "type": "string",
-                  "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                },
-                "kind": {
-                  "type": "string",
-                  "enum": [
-                    "retrieval",
-                    "source",
-                    "maintenance",
-                    "agent",
-                    "user-feedback"
-                  ]
-                },
-                "summary": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "sourceReferences": {
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                },
-                "scope": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "producer": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "confidence": {
-                  "type": "number",
-                  "minimum": 0,
-                  "maximum": 1
-                },
-                "freshness": {
-                  "type": "string",
-                  "enum": [
-                    "current",
-                    "stale",
-                    "unknown"
-                  ]
-                },
-                "status": {
-                  "type": "string",
-                  "enum": [
-                    "retained",
-                    "promoted",
-                    "expired",
-                    "archived"
-                  ]
-                },
-                "observedAt": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "createdAt": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "required": [
-                "id",
-                "workspaceId",
-                "kind",
-                "summary",
-                "sourceReferences",
-                "scope",
-                "producer",
-                "confidence",
-                "freshness",
-                "status",
-                "observedAt",
-                "createdAt"
-              ],
-              "additionalProperties": false
-            }
-          }
-        },
-        "required": [
-          "items"
-        ],
-        "additionalProperties": false
-      },
-      "knowledge.observation.record.input": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "kind": {
-            "type": "string",
-            "enum": [
-              "retrieval",
-              "source",
-              "maintenance",
-              "agent",
-              "user-feedback"
-            ]
-          },
-          "summary": {
-            "type": "string",
-            "minLength": 1
-          },
-          "sourceReferences": {
-            "default": [],
-            "type": "array",
-            "items": {
-              "type": "string",
-              "minLength": 1
-            }
-          },
-          "scope": {
-            "default": "workspace",
-            "type": "string",
-            "minLength": 1
-          },
-          "producer": {
-            "type": "string",
-            "minLength": 1
-          },
-          "confidence": {
-            "default": 0.5,
-            "type": "number",
-            "minimum": 0,
-            "maximum": 1
-          },
-          "freshness": {
-            "default": "current",
-            "type": "string",
-            "enum": [
-              "current",
-              "stale",
-              "unknown"
-            ]
-          },
-          "status": {
-            "default": "retained",
-            "type": "string",
-            "enum": [
-              "retained",
-              "promoted",
-              "expired",
-              "archived"
-            ]
-          },
-          "observedAt": {
-            "type": "string",
-            "minLength": 1
-          },
-          "workspaceId": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-          }
-        },
-        "required": [
-          "kind",
-          "summary",
-          "sourceReferences",
-          "scope",
-          "producer",
-          "confidence",
-          "freshness",
-          "status",
-          "workspaceId"
-        ],
-        "additionalProperties": false
-      },
-      "knowledge.observation.record.output": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "observation": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string",
-                "pattern": "^ko_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-              },
-              "workspaceId": {
-                "type": "string",
-                "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-              },
-              "kind": {
-                "type": "string",
-                "enum": [
-                  "retrieval",
-                  "source",
-                  "maintenance",
-                  "agent",
-                  "user-feedback"
-                ]
-              },
-              "summary": {
-                "type": "string",
-                "minLength": 1
-              },
-              "sourceReferences": {
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "scope": {
-                "type": "string",
-                "minLength": 1
-              },
-              "producer": {
-                "type": "string",
-                "minLength": 1
-              },
-              "confidence": {
-                "type": "number",
-                "minimum": 0,
-                "maximum": 1
-              },
-              "freshness": {
-                "type": "string",
-                "enum": [
-                  "current",
-                  "stale",
-                  "unknown"
-                ]
-              },
-              "status": {
-                "type": "string",
-                "enum": [
-                  "retained",
-                  "promoted",
-                  "expired",
-                  "archived"
-                ]
-              },
-              "observedAt": {
-                "type": "string",
-                "minLength": 1
-              },
-              "createdAt": {
-                "type": "string",
-                "minLength": 1
-              }
-            },
-            "required": [
-              "id",
-              "workspaceId",
-              "kind",
-              "summary",
-              "sourceReferences",
-              "scope",
-              "producer",
-              "confidence",
-              "freshness",
-              "status",
-              "observedAt",
-              "createdAt"
-            ],
-            "additionalProperties": false
-          }
-        },
-        "required": [
-          "observation"
-        ],
-        "additionalProperties": false
-      },
-      "knowledge.claim.list.input": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspaceId": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-          }
-        },
-        "required": [
-          "workspaceId"
-        ],
-        "additionalProperties": false
-      },
-      "knowledge.claim.list.output": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "items": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "id": {
-                  "type": "string",
-                  "pattern": "^kc_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                },
-                "workspaceId": {
-                  "type": "string",
-                  "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                },
-                "statement": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "sourceReferences": {
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                },
-                "scope": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "producer": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "confidence": {
-                  "type": "number",
-                  "minimum": 0,
-                  "maximum": 1
-                },
-                "freshness": {
-                  "type": "string",
-                  "enum": [
-                    "current",
-                    "stale",
-                    "unknown"
-                  ]
-                },
-                "reviewState": {
-                  "type": "string",
-                  "enum": [
-                    "needs-review",
-                    "accepted",
-                    "rejected",
-                    "deferred"
-                  ]
-                },
-                "conflictStatus": {
-                  "type": "string",
-                  "enum": [
-                    "none",
-                    "conflicting",
-                    "weak_evidence",
-                    "stale",
-                    "superseded",
-                    "partially_superseded"
-                  ]
-                },
-                "createdAt": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "updatedAt": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "required": [
-                "id",
-                "workspaceId",
-                "statement",
-                "sourceReferences",
-                "scope",
-                "producer",
-                "confidence",
-                "freshness",
-                "reviewState",
-                "conflictStatus",
-                "createdAt",
-                "updatedAt"
-              ],
-              "additionalProperties": false
-            }
-          }
-        },
-        "required": [
-          "items"
-        ],
-        "additionalProperties": false
-      },
-      "knowledge.claim.record.input": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "statement": {
-            "type": "string",
-            "minLength": 1
-          },
-          "sourceReferences": {
-            "default": [],
-            "type": "array",
-            "items": {
-              "type": "string",
-              "minLength": 1
-            }
-          },
-          "scope": {
-            "default": "workspace",
-            "type": "string",
-            "minLength": 1
-          },
-          "producer": {
-            "type": "string",
-            "minLength": 1
-          },
-          "confidence": {
-            "default": 0.5,
-            "type": "number",
-            "minimum": 0,
-            "maximum": 1
-          },
-          "freshness": {
-            "default": "current",
-            "type": "string",
-            "enum": [
-              "current",
-              "stale",
-              "unknown"
-            ]
-          },
-          "reviewState": {
-            "default": "needs-review",
-            "type": "string",
-            "enum": [
-              "needs-review",
-              "accepted",
-              "rejected",
-              "deferred"
-            ]
-          },
-          "conflictStatus": {
-            "default": "none",
-            "type": "string",
-            "enum": [
-              "none",
-              "conflicting",
-              "weak_evidence",
-              "stale",
-              "superseded",
-              "partially_superseded"
-            ]
-          },
-          "workspaceId": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-          }
-        },
-        "required": [
-          "statement",
-          "sourceReferences",
-          "scope",
-          "producer",
-          "confidence",
-          "freshness",
-          "reviewState",
-          "conflictStatus",
-          "workspaceId"
-        ],
-        "additionalProperties": false
-      },
-      "knowledge.claim.record.output": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "claim": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string",
-                "pattern": "^kc_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-              },
-              "workspaceId": {
-                "type": "string",
-                "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-              },
-              "statement": {
-                "type": "string",
-                "minLength": 1
-              },
-              "sourceReferences": {
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "scope": {
-                "type": "string",
-                "minLength": 1
-              },
-              "producer": {
-                "type": "string",
-                "minLength": 1
-              },
-              "confidence": {
-                "type": "number",
-                "minimum": 0,
-                "maximum": 1
-              },
-              "freshness": {
-                "type": "string",
-                "enum": [
-                  "current",
-                  "stale",
-                  "unknown"
-                ]
-              },
-              "reviewState": {
-                "type": "string",
-                "enum": [
-                  "needs-review",
-                  "accepted",
-                  "rejected",
-                  "deferred"
-                ]
-              },
-              "conflictStatus": {
-                "type": "string",
-                "enum": [
-                  "none",
-                  "conflicting",
-                  "weak_evidence",
-                  "stale",
-                  "superseded",
-                  "partially_superseded"
-                ]
-              },
-              "createdAt": {
-                "type": "string",
-                "minLength": 1
-              },
-              "updatedAt": {
-                "type": "string",
-                "minLength": 1
-              }
-            },
-            "required": [
-              "id",
-              "workspaceId",
-              "statement",
-              "sourceReferences",
-              "scope",
-              "producer",
-              "confidence",
-              "freshness",
-              "reviewState",
-              "conflictStatus",
-              "createdAt",
-              "updatedAt"
-            ],
-            "additionalProperties": false
-          }
-        },
-        "required": [
-          "claim"
-        ],
-        "additionalProperties": false
-      },
-      "knowledge.conflict.list.input": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "workspaceId": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-          }
-        },
-        "required": [
-          "workspaceId"
-        ],
-        "additionalProperties": false
-      },
-      "knowledge.conflict.list.output": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "items": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "id": {
-                  "type": "string",
-                  "pattern": "^kf_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                },
-                "workspaceId": {
-                  "type": "string",
-                  "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                },
-                "subjectReferences": {
-                  "minItems": 1,
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                },
-                "sourceReferences": {
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                },
-                "status": {
-                  "type": "string",
-                  "enum": [
-                    "conflicting",
-                    "needs_review",
-                    "weak_evidence",
-                    "stale",
-                    "resolved",
-                    "superseded",
-                    "partially_superseded"
-                  ]
-                },
-                "summary": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "suggestedActions": {
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                },
-                "producer": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "resolution": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "resolvedAt": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "resolvedBy": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "createdAt": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "updatedAt": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "required": [
-                "id",
-                "workspaceId",
-                "subjectReferences",
-                "sourceReferences",
-                "status",
-                "summary",
-                "suggestedActions",
-                "producer",
-                "createdAt",
-                "updatedAt"
-              ],
-              "additionalProperties": false
-            }
-          }
-        },
-        "required": [
-          "items"
-        ],
-        "additionalProperties": false
-      },
-      "knowledge.conflict.record.input": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "subjectReferences": {
-            "minItems": 1,
-            "type": "array",
-            "items": {
-              "type": "string",
-              "minLength": 1
-            }
-          },
-          "sourceReferences": {
-            "default": [],
-            "type": "array",
-            "items": {
-              "type": "string",
-              "minLength": 1
-            }
-          },
-          "status": {
-            "default": "conflicting",
-            "type": "string",
-            "enum": [
-              "conflicting",
-              "needs_review",
-              "weak_evidence",
-              "stale",
-              "superseded",
-              "partially_superseded"
-            ]
-          },
-          "summary": {
-            "type": "string",
-            "minLength": 1
-          },
-          "suggestedActions": {
-            "default": [],
-            "type": "array",
-            "items": {
-              "type": "string",
-              "minLength": 1
-            }
-          },
-          "producer": {
-            "type": "string",
-            "minLength": 1
-          },
-          "workspaceId": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-          }
-        },
-        "required": [
-          "subjectReferences",
-          "sourceReferences",
-          "status",
-          "summary",
-          "suggestedActions",
-          "producer",
-          "workspaceId"
-        ],
-        "additionalProperties": false
-      },
-      "knowledge.conflict.record.output": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "conflict": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string",
-                "pattern": "^kf_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-              },
-              "workspaceId": {
-                "type": "string",
-                "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-              },
-              "subjectReferences": {
-                "minItems": 1,
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "sourceReferences": {
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "status": {
-                "type": "string",
-                "enum": [
-                  "conflicting",
-                  "needs_review",
-                  "weak_evidence",
-                  "stale",
-                  "resolved",
-                  "superseded",
-                  "partially_superseded"
-                ]
-              },
-              "summary": {
-                "type": "string",
-                "minLength": 1
-              },
-              "suggestedActions": {
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "producer": {
-                "type": "string",
-                "minLength": 1
-              },
-              "resolution": {
-                "type": "string",
-                "minLength": 1
-              },
-              "resolvedAt": {
-                "type": "string",
-                "minLength": 1
-              },
-              "resolvedBy": {
-                "type": "string",
-                "minLength": 1
-              },
-              "createdAt": {
-                "type": "string",
-                "minLength": 1
-              },
-              "updatedAt": {
-                "type": "string",
-                "minLength": 1
-              }
-            },
-            "required": [
-              "id",
-              "workspaceId",
-              "subjectReferences",
-              "sourceReferences",
-              "status",
-              "summary",
-              "suggestedActions",
-              "producer",
-              "createdAt",
-              "updatedAt"
-            ],
-            "additionalProperties": false
-          }
-        },
-        "required": [
-          "conflict"
-        ],
-        "additionalProperties": false
-      },
-      "knowledge.conflict.resolve.input": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "status": {
-            "default": "resolved",
-            "type": "string",
-            "enum": [
-              "resolved",
-              "superseded",
-              "partially_superseded"
-            ]
-          },
-          "resolution": {
-            "type": "string",
-            "minLength": 1
-          },
-          "resolvedBy": {
-            "type": "string",
-            "minLength": 1
-          },
-          "workspaceId": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-          },
-          "conflictId": {
-            "type": "string",
-            "pattern": "^kf_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-          }
-        },
-        "required": [
-          "status",
-          "resolution",
-          "resolvedBy",
-          "workspaceId",
-          "conflictId"
-        ],
-        "additionalProperties": false
-      },
-      "knowledge.conflict.resolve.output": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "conflict": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string",
-                "pattern": "^kf_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-              },
-              "workspaceId": {
-                "type": "string",
-                "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-              },
-              "subjectReferences": {
-                "minItems": 1,
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "sourceReferences": {
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "status": {
-                "type": "string",
-                "enum": [
-                  "conflicting",
-                  "needs_review",
-                  "weak_evidence",
-                  "stale",
-                  "resolved",
-                  "superseded",
-                  "partially_superseded"
-                ]
-              },
-              "summary": {
-                "type": "string",
-                "minLength": 1
-              },
-              "suggestedActions": {
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "producer": {
-                "type": "string",
-                "minLength": 1
-              },
-              "resolution": {
-                "type": "string",
-                "minLength": 1
-              },
-              "resolvedAt": {
-                "type": "string",
-                "minLength": 1
-              },
-              "resolvedBy": {
-                "type": "string",
-                "minLength": 1
-              },
-              "createdAt": {
-                "type": "string",
-                "minLength": 1
-              },
-              "updatedAt": {
-                "type": "string",
-                "minLength": 1
-              }
-            },
-            "required": [
-              "id",
-              "workspaceId",
-              "subjectReferences",
-              "sourceReferences",
-              "status",
-              "summary",
-              "suggestedActions",
-              "producer",
-              "createdAt",
-              "updatedAt"
-            ],
-            "additionalProperties": false
-          }
-        },
-        "required": [
-          "conflict"
         ],
         "additionalProperties": false
       },
@@ -63840,6 +62363,7 @@
                     "sensitive_content",
                     "lower_conformance",
                     "policy_excluded",
+                    "selector_mismatch",
                     "freshness_expired",
                     "budget_exceeded",
                     "source_unavailable"
@@ -64226,6 +62750,7 @@
                     "sensitive_content",
                     "lower_conformance",
                     "policy_excluded",
+                    "selector_mismatch",
                     "freshness_expired",
                     "budget_exceeded",
                     "source_unavailable"
@@ -65939,7 +64464,11 @@
             "properties": {
               "operation": {
                 "type": "string",
-                "const": "knowledge.notebook.update"
+                "enum": [
+                  "knowledge.notebook.update",
+                  "knowledge.notebook.create",
+                  "knowledge.notebook.delete"
+                ]
               },
               "requestId": {
                 "type": "string",
@@ -65983,7 +64512,7 @@
         ],
         "additionalProperties": false
       },
-      "knowledge.list.input": {
+      "knowledge.notebook.list.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
@@ -65997,7 +64526,7 @@
         ],
         "additionalProperties": false
       },
-      "knowledge.list.output": {
+      "knowledge.notebook.list.output": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
@@ -66009,7 +64538,7 @@
             "type": "string",
             "minLength": 1
           },
-          "items": {
+          "pages": {
             "type": "array",
             "items": {
               "type": "object",
@@ -66018,35 +64547,12 @@
                   "type": "string",
                   "minLength": 1
                 },
-                "kind": {
-                  "type": "string",
-                  "enum": [
-                    "preference",
-                    "project-context",
-                    "task-summary"
-                  ]
-                },
-                "title": {
+                "path": {
                   "type": "string",
                   "minLength": 1
                 },
                 "content": {
                   "type": "string"
-                },
-                "sourceReferences": {
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                },
-                "createdAt": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "updatedAt": {
-                  "type": "string",
-                  "minLength": 1
                 },
                 "contentDigest": {
                   "type": "string",
@@ -66055,11 +64561,8 @@
               },
               "required": [
                 "id",
-                "kind",
-                "title",
+                "path",
                 "content",
-                "createdAt",
-                "updatedAt",
                 "contentDigest"
               ],
               "additionalProperties": false
@@ -66069,11 +64572,11 @@
         "required": [
           "knowledgeBaseId",
           "notebookRevision",
-          "items"
+          "pages"
         ],
         "additionalProperties": false
       },
-      "knowledge.create.input": {
+      "knowledge.notebook.create.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
@@ -66081,32 +64584,16 @@
             "type": "string",
             "minLength": 1
           },
-          "knowledgePageId": {
+          "path": {
             "type": "string",
-            "minLength": 1
-          },
-          "kind": {
-            "type": "string",
-            "enum": [
-              "preference",
-              "project-context",
-              "task-summary"
-            ]
-          },
-          "title": {
-            "type": "string",
-            "minLength": 1
+            "maxLength": 243,
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
           },
           "content": {
-            "type": "string",
-            "minLength": 1
+            "type": "string"
           },
-          "sourceReferences": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "minLength": 1
-            }
+          "summary": {
+            "type": "string"
           },
           "workspaceId": {
             "type": "string",
@@ -66115,145 +64602,109 @@
         },
         "required": [
           "baseRevision",
-          "knowledgePageId",
-          "kind",
-          "title",
+          "path",
           "content",
+          "summary",
           "workspaceId"
         ],
         "additionalProperties": false
       },
-      "knowledge.create.output": {
+      "knowledge.notebook.create.output": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "id": {
+          "outcome": {
+            "type": "string",
+            "const": "published"
+          },
+          "ownerScope": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "workspace"
+              },
+              "workspaceId": {
+                "type": "string",
+                "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              }
+            },
+            "required": [
+              "kind",
+              "workspaceId"
+            ],
+            "additionalProperties": false
+          },
+          "baseRevision": {
             "type": "string",
             "minLength": 1
           },
-          "kind": {
-            "type": "string",
-            "enum": [
-              "preference",
-              "project-context",
-              "task-summary"
-            ]
-          },
-          "title": {
+          "notebookRevision": {
             "type": "string",
             "minLength": 1
           },
-          "content": {
-            "type": "string"
-          },
-          "sourceReferences": {
+          "changedPageIds": {
+            "maxItems": 256,
             "type": "array",
             "items": {
               "type": "string",
               "minLength": 1
             }
           },
-          "createdAt": {
-            "type": "string",
-            "minLength": 1
-          },
-          "updatedAt": {
-            "type": "string",
-            "minLength": 1
+          "receiptRef": {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "knowledge.notebook.update",
+                  "knowledge.notebook.create",
+                  "knowledge.notebook.delete"
+                ]
+              },
+              "requestId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              "ownerScope": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "workspace"
+                  },
+                  "workspaceId": {
+                    "type": "string",
+                    "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "workspaceId"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "operation",
+              "requestId",
+              "ownerScope"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [
-          "id",
-          "kind",
-          "title",
-          "content",
-          "createdAt",
-          "updatedAt"
-        ],
-        "additionalProperties": false
-      },
-      "knowledge.update.input": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "baseRevision": {
-            "type": "string",
-            "minLength": 1
-          },
-          "title": {
-            "type": "string",
-            "minLength": 1
-          },
-          "content": {
-            "type": "string",
-            "minLength": 1
-          },
-          "workspaceId": {
-            "type": "string",
-            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-          },
-          "knowledgeEntryId": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "required": [
+          "outcome",
+          "ownerScope",
           "baseRevision",
-          "workspaceId",
-          "knowledgeEntryId"
+          "notebookRevision",
+          "changedPageIds",
+          "receiptRef"
         ],
         "additionalProperties": false
       },
-      "knowledge.update.output": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string",
-            "minLength": 1
-          },
-          "kind": {
-            "type": "string",
-            "enum": [
-              "preference",
-              "project-context",
-              "task-summary"
-            ]
-          },
-          "title": {
-            "type": "string",
-            "minLength": 1
-          },
-          "content": {
-            "type": "string"
-          },
-          "sourceReferences": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "minLength": 1
-            }
-          },
-          "createdAt": {
-            "type": "string",
-            "minLength": 1
-          },
-          "updatedAt": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "required": [
-          "id",
-          "kind",
-          "title",
-          "content",
-          "createdAt",
-          "updatedAt"
-        ],
-        "additionalProperties": false
-      },
-      "knowledge.delete.input": {
+      "knowledge.notebook.delete.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
@@ -66261,9 +64712,10 @@
             "type": "string",
             "minLength": 1
           },
-          "workspaceId": {
+          "path": {
             "type": "string",
-            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+            "maxLength": 243,
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
           },
           "expectedContentDigest": {
             "type": "string",
@@ -66273,23 +64725,118 @@
             "type": "boolean",
             "const": true
           },
-          "knowledgeEntryId": {
+          "summary": {
+            "type": "string"
+          },
+          "workspaceId": {
             "type": "string",
-            "minLength": 1
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
           }
         },
         "required": [
           "baseRevision",
-          "workspaceId",
+          "path",
           "expectedContentDigest",
           "confirmRemoval",
-          "knowledgeEntryId"
+          "summary",
+          "workspaceId"
         ],
         "additionalProperties": false
       },
-      "knowledge.delete.output": {
+      "knowledge.notebook.delete.output": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "null"
+        "type": "object",
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "const": "published"
+          },
+          "ownerScope": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "workspace"
+              },
+              "workspaceId": {
+                "type": "string",
+                "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              }
+            },
+            "required": [
+              "kind",
+              "workspaceId"
+            ],
+            "additionalProperties": false
+          },
+          "baseRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "notebookRevision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "changedPageIds": {
+            "maxItems": 256,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "receiptRef": {
+            "type": "object",
+            "properties": {
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "knowledge.notebook.update",
+                  "knowledge.notebook.create",
+                  "knowledge.notebook.delete"
+                ]
+              },
+              "requestId": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              "ownerScope": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "workspace"
+                  },
+                  "workspaceId": {
+                    "type": "string",
+                    "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "workspaceId"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "operation",
+              "requestId",
+              "ownerScope"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "outcome",
+          "ownerScope",
+          "baseRevision",
+          "notebookRevision",
+          "changedPageIds",
+          "receiptRef"
+        ],
+        "additionalProperties": false
       },
       "memory.ask.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -67520,6 +66067,7 @@
                     "sensitive_content",
                     "lower_conformance",
                     "policy_excluded",
+                    "selector_mismatch",
                     "freshness_expired",
                     "budget_exceeded",
                     "source_unavailable"
@@ -68216,10 +66764,10 @@
               "operation": {
                 "type": "string",
                 "enum": [
-                  "knowledge.create",
+                  "knowledge.notebook.create",
                   "knowledge.notebook.update",
                   "knowledge.notebook.restore",
-                  "knowledge.delete"
+                  "knowledge.notebook.delete"
                 ]
               },
               "requestId": {
@@ -68344,10 +66892,10 @@
               "operation": {
                 "type": "string",
                 "enum": [
-                  "knowledge.create",
+                  "knowledge.notebook.create",
                   "knowledge.notebook.update",
                   "knowledge.notebook.restore",
-                  "knowledge.delete"
+                  "knowledge.notebook.delete"
                 ]
               },
               "requestId": {
@@ -68780,10 +67328,10 @@
               "operation": {
                 "type": "string",
                 "enum": [
-                  "knowledge.create",
+                  "knowledge.notebook.create",
                   "knowledge.notebook.update",
                   "knowledge.notebook.restore",
-                  "knowledge.delete"
+                  "knowledge.notebook.delete"
                 ]
               },
               "requestId": {
@@ -69003,10 +67551,10 @@
               "operation": {
                 "type": "string",
                 "enum": [
-                  "knowledge.create",
+                  "knowledge.notebook.create",
                   "knowledge.notebook.update",
                   "knowledge.notebook.restore",
-                  "knowledge.delete"
+                  "knowledge.notebook.delete"
                 ]
               },
               "requestId": {
@@ -142105,5 +140653,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:00cd3afcbc705abb6b9a80844d0a365d22c18b74ee0ce751eb74eb2948eb6307"
+  "x-openkit-source-digest": "sha256:c30f0f084f4d98c8800e78ee2ec4b2c91e0366cf4c2f5267e87d4c59240459a5"
 }

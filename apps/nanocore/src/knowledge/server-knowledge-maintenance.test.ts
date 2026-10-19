@@ -16,7 +16,7 @@ import {
   retrieveWorkspaceKnowledge,
 } from '../storage/index-rebuild.js';
 import { applyMigrations } from '../storage/migrate.js';
-import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
+import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { KnowledgeNotebook } from './notebook.js';
@@ -86,7 +86,7 @@ function fixture(enabled: boolean) {
     );
     expect(input.inputs).toMatchObject({
       ownerScope: { kind: 'server' },
-      baseRevision: human,
+      baseRevision: notebook.publishedRevision(),
       trigger: 'request',
       sourceRange: [],
     });
@@ -166,10 +166,8 @@ it.each([
     title: 'Server evidence',
     content: 'Server evidence remains available.',
   });
-  const target = serializeUserAuthoredKnowledgePage(
+  const target = serializeKnowledgePageFixture(
     {
-      id: 'target',
-      kind: 'project-context',
       title: 'Target',
       content: 'Server evidence.',
       sourceReferences: [`source:${source.id}@${source.contentDigest}`],
@@ -178,8 +176,9 @@ it.each([
     },
     { kind: 'server' }
   );
+  const sourceBaseRevision = f.notebook.publishedRevision();
   const baseRevision = f.notebook.prepare({
-    baseRevision: f.human,
+    baseRevision: sourceBaseRevision,
     changes: { 'target.md': target },
     metadata: {
       summary: 'Retain source-backed target',
@@ -189,7 +188,7 @@ it.each([
       changeRequest: { requestId: randomUUID(), inputDigest: commandInputHash(target) },
     },
   });
-  f.notebook.publish({ baseRevision: f.human, candidateRevision: baseRevision });
+  f.notebook.publish({ baseRevision: sourceBaseRevision, candidateRevision: baseRevision });
   const pin = pinScopedNotebook({ ...context, target: { kind: 'server' } });
   const changesTarget = kind === 'candidate-pinned' || kind === 'reviewed-candidate';
   const authoredTarget = target.replace('Server evidence.', 'Updated Server evidence.');
@@ -215,10 +214,8 @@ it.each([
         ? `sha256:${'0'.repeat(64)}`
         : undefined
   );
-  const citing = serializeUserAuthoredKnowledgePage(
+  const citing = serializeKnowledgePageFixture(
     {
-      id: 'citing',
-      kind: 'project-context',
       title: 'Citing',
       content: 'Compare the target.',
       sourceReferences: [reference],
@@ -288,7 +285,7 @@ it.each([
   }
 });
 
-it('withholds historical human page bodies when their original Source is unavailable', async () => {
+it('keeps independent historical human page bodies when their original Source is unavailable', async () => {
   const f = fixture(true);
   const source = await registerServerKnowledgeSource(
     { ...f.dependencies, actor: f.requestActor },
@@ -299,12 +296,10 @@ it('withholds historical human page bodies when their original Source is unavail
       content: 'Historical private evidence.',
     }
   );
-  let baseRevision = f.human;
+  let baseRevision = f.notebook.publishedRevision();
   for (const historical of [true, false]) {
-    const content = serializeUserAuthoredKnowledgePage(
+    const content = serializeKnowledgePageFixture(
       {
-        id: 'history',
-        kind: 'project-context',
         title: 'History',
         content: historical ? 'Historical private evidence.' : 'Current independent human note.',
         sourceReferences: historical ? [`source:${source.id}@${source.contentDigest}`] : [],
@@ -328,15 +323,34 @@ it('withholds historical human page bodies when their original Source is unavail
     baseRevision = revision;
   }
   writeFileSync(
-    join(f.coreDb.dataRoot, 'server', 'sources', 'materials', source.id, 'content.txt'),
+    join(f.coreDb.dataRoot, 'server', 'knowledge', 'raw', 'sources', source.id, 'original'),
     'Changed Source bytes.'
   );
+  f.run.mockImplementationOnce(async (run) => {
+    const context = run.messages[0]!.content.flatMap((part) =>
+      part.type === 'text' ? [part.text] : []
+    ).join('');
+    expect(context).toContain('Historical private evidence.');
+    expect(context).toContain('Current independent human note.');
+    expect(context).not.toContain('Changed Source bytes.');
+    await run.tools
+      .find((tool) => tool.name === 'knowledge.notebook.update')!
+      .execute(
+        { summary: 'Preserve the independent human edits.' },
+        { callId: randomUUID(), toolOccurrence: 1, signal: run.signal }
+      );
+    f.store.updateServerTurn(run.turn.id, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+    });
+    return { turnId: run.turn.id, text: '{"summary":"Preserved."}' };
+  });
   const result = await runServerKnowledgeMaintenanceCommand(f.dependencies, {
     ...f.input,
     tellContent: undefined,
   });
-  expect(result.outcome).toBe('failed');
-  expect(f.run).not.toHaveBeenCalled();
+  expect(result.outcome).toBe('no-change');
+  expect(f.run).toHaveBeenCalledTimes(1);
   expect(f.notebook.publishedRevision()).toBe(baseRevision);
 });
 
@@ -351,18 +365,21 @@ it.each([
   expect(await runServerKnowledgeMaintenanceCommand(f.dependencies, f.input)).toEqual(result);
   expect(f.run).toHaveBeenCalledTimes(1);
   const turn = f.store.getServerTurnById(result.turnId);
+  const sourceBaseRevision = turn.internalExecution!.knowledge!.baseRevision!;
+  expect(f.notebook.inspectRevision(sourceBaseRevision).parentRevision).toBe(f.human);
+  expect(Object.keys(f.notebook.readSourcePointers(sourceBaseRevision))).toHaveLength(1);
   expect(turn).toMatchObject({
     owner: { kind: 'server' },
     internalExecution: {
       roleId: 'knowledge-manager',
       logicalModelId: 'server-model',
       contextStrategy: 'compaction',
-      knowledge: { baseRevision: f.human, ownerScope: { kind: 'server' } },
+      knowledge: { baseRevision: sourceBaseRevision, ownerScope: { kind: 'server' } },
     },
   });
   expect(f.store.listWorkspaces()).toEqual([]);
   if (!enabled) {
-    expect(f.notebook.publishedRevision()).toBe(f.human);
+    expect(f.notebook.publishedRevision()).toBe(sourceBaseRevision);
     const context = {
       ...f.dependencies,
       actor: f.requestActor,
@@ -401,10 +418,8 @@ it('recalls the exact Server candidate only after its human Review publishes the
     content: 'The Server release rule uses BLUE-HERON-7.',
   });
   const sourceReference = `source:${source.id}@${source.contentDigest}`;
-  const content = serializeUserAuthoredKnowledgePage(
+  const content = serializeKnowledgePageFixture(
     {
-      id: 'release-rule',
-      kind: 'project-context',
       title: 'Server release rule',
       content: 'The Server release rule uses BLUE-HERON-7.',
       sourceReferences: [sourceReference],
@@ -418,18 +433,19 @@ it('recalls the exact Server candidate only after its human Review publishes the
     id: 'knowledge-manager',
     responsibleUserId: f.requestActor.userId,
   };
+  const sourceBaseRevision = f.notebook.publishedRevision();
   const proposal = createServerNotebookProposal(
     context,
     {
       requestId: randomUUID(),
-      baseRevision: f.human,
+      baseRevision: sourceBaseRevision,
       summary: 'Save the explicit Server release rule.',
       changes: [{ path: 'release-rule.md', content }],
     },
     producer,
     [sourceReference]
   );
-  expect(f.notebook.publishedRevision()).toBe(f.human);
+  expect(f.notebook.publishedRevision()).toBe(sourceBaseRevision);
   const selected = readServerNotebookProposal(context, proposal.id);
   const preview = readServerNotebookProposalPreview(context, {
     proposalId: proposal.id,
@@ -456,7 +472,7 @@ it('recalls the exact Server candidate only after its human Review publishes the
       delivery: 'model',
     })
   ).rejects.toMatchObject({ code: 'human_review_required', status: 403 });
-  expect(f.notebook.publishedRevision()).toBe(f.human);
+  expect(f.notebook.publishedRevision()).toBe(sourceBaseRevision);
   const afterRefusal = readServerNotebookProposal(context, proposal.id);
   expect(afterRefusal.reviews).toEqual([]);
   expect(afterRefusal.proposalDigest).toBe(selected.proposalDigest);

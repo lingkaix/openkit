@@ -1,7 +1,17 @@
+import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { deflateSync } from 'node:zlib';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import type { Actor } from '../auth/identity.js';
@@ -15,8 +25,8 @@ import { readPendingRequest } from '../runtime/pending-requests.js';
 import { type CoreDb, openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { userDbPath } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
-import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
+import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
@@ -29,6 +39,7 @@ import { diffMemoryHistory, readMemoryHistory, restoreMemoryHistory } from './me
 import { editMemoryPage, readMemoryPage, saveMemoryPage } from './memory-lifecycle.js';
 import { readMemorySuppressions } from './memory-maintenance.js';
 import { KnowledgeNotebook } from './notebook.js';
+import { updateOkfFrontmatter } from './okf.js';
 import {
   listUserKnowledgeSources,
   readUserKnowledgeSource,
@@ -76,6 +87,9 @@ async function fixture(sourceBacked = false) {
     runtimeConfigManager: createRuntimeConfigManager({ dataRoot }),
     inflightCommands: new WeakMap(),
   };
+  const notebook = new KnowledgeNotebook({
+    repositoryPath: join(dataRoot, 'users', userId, 'memory', 'notebook.git'),
+  });
   const source = sourceBacked
     ? await registerUserKnowledgeSource(writer, {
         requestId: randomUUID(),
@@ -87,16 +101,16 @@ async function fixture(sourceBacked = false) {
   const references = source
     ? [`source:${source.id}`, `source:${source.id}@${source.contentDigest}`]
     : [];
-  const base = initializeScopedNotebook({
-    ...writer,
-    target: { kind: 'user' },
-    initialization: { requestId: randomUUID(), instructionReference: 'test:memory-forget' },
-  });
-  const content = (pageId: string, body: string) =>
-    serializeUserAuthoredKnowledgePage(
+  const base = source
+    ? notebook.publishedRevision()
+    : initializeScopedNotebook({
+        ...writer,
+        target: { kind: 'user' },
+        initialization: { requestId: randomUUID(), instructionReference: 'test:memory-forget' },
+      });
+  const content = (body: string) =>
+    serializeKnowledgePageFixture(
       {
-        id: pageId,
-        kind: 'preference',
         title: 'Personal preference',
         content: body,
         sourceReferences: references,
@@ -109,7 +123,7 @@ async function fixture(sourceBacked = false) {
     requestId: randomUUID(),
     baseRevision: base,
     pageId: 'preference',
-    content: content('preference', 'Private exact forgotten text.'),
+    content: content('Private exact forgotten text.'),
     summary: 'Save my preference',
   });
   const thread = openAssistantTimeline(store, DEMO_WORKSPACE_ID, userId, 'Private Timeline');
@@ -168,9 +182,6 @@ async function fixture(sourceBacked = false) {
       workspaceId: request.workspaceId,
       threadId: request.threadId,
     });
-  const notebook = new KnowledgeNotebook({
-    repositoryPath: join(dataRoot, 'users', userId, 'memory', 'notebook.git'),
-  });
   onTestFinished(() => {
     vi.restoreAllMocks();
     writer.workspaceDb.sqlite.close();
@@ -191,6 +202,8 @@ describe('Item-confirmed self Memory forget', () => {
       title: 'Other retained Source',
       content: 'Independent retained Source bytes.\r\n',
     });
+    const sourceBase = f.notebook.publishedRevision();
+    f.request.notebookRevision = sourceBase;
     const prepared = prepareMemoryForget(f.writer, f.request);
     const record = readPendingRequest(f.writer.workspaceDb.sqlite, prepared.pendingRequestId)!;
     const preview = projectApprovalEffect({
@@ -207,11 +220,11 @@ describe('Item-confirmed self Memory forget', () => {
     );
     expect(preview.detail).not.toContain('This source-free page');
     await f.decide(prepared.pendingRequestId);
-    expect(f.notebook.publishedRevision()).toBe(f.saved.notebookRevision);
+    expect(f.notebook.publishedRevision()).toBe(sourceBase);
     expect(readMemoryPage(f.writer, 'preference')?.content).toContain(
       'Private exact forgotten text.'
     );
-    expect(readUserKnowledgeSource(f.writer, source.id, 'model')?.content).toBe(
+    expect((await readUserKnowledgeSource(f.writer, source.id, 'model'))?.content).toBe(
       'Independent retained Source bytes.\r\n'
     );
     const removed = await f.apply(prepared.pendingRequestId);
@@ -223,10 +236,10 @@ describe('Item-confirmed self Memory forget', () => {
       `source:${source.id}@${source.contentDigest}`,
     ]);
     expect(JSON.stringify(rows)).not.toContain('Private exact forgotten text.');
-    expect(readUserKnowledgeSource(f.writer, source.id)?.content).toBe(
+    expect((await readUserKnowledgeSource(f.writer, source.id))?.content).toBe(
       'Independent retained Source bytes.\r\n'
     );
-    expect(readUserKnowledgeSource(f.writer, source.id, 'model')).toBeNull();
+    expect(await readUserKnowledgeSource(f.writer, source.id, 'model')).toBeNull();
     expect(listUserKnowledgeSources(f.writer, 'model').map(({ id }) => id)).toEqual([unrelated.id]);
     expect(
       listUserKnowledgeSources(f.writer, 'human')
@@ -267,42 +280,63 @@ describe('Item-confirmed self Memory forget', () => {
       requestId: randomUUID(),
       baseRevision: removed.notebookRevision,
       pageId: 'new-preference',
-      content: f.content('new-preference', 'Explicit new human interpretation.'),
+      content: f.content('Explicit new human interpretation.'),
       summary: 'Save under a new identity',
     });
     expect(await f.apply(prepared.pendingRequestId)).toEqual(removed);
     expect(f.notebook.publishedRevision()).toBe(later.notebookRevision);
-    expect(readUserKnowledgeSource(f.writer, source.id, 'model')).toBeNull();
+    expect(await readUserKnowledgeSource(f.writer, source.id, 'model')).toBeNull();
     rmSync(root, { recursive: true });
-    expect(() => readUserKnowledgeSource(f.writer, source.id, 'model')).toThrowError(
+    await expect(readUserKnowledgeSource(f.writer, source.id, 'model')).rejects.toThrowError(
       expect.objectContaining({ code: 'recovery_required' })
     );
     expect(() => listUserKnowledgeSources(f.writer, 'model')).toThrowError(
       expect.objectContaining({ code: 'recovery_required' })
     );
     expect(existsSync(root)).toBe(false);
-    expect(readUserKnowledgeSource(f.writer, source.id, 'human')?.content).toBe(
-      'Independent retained Source bytes.\r\n'
+    await expect(readUserKnowledgeSource(f.writer, source.id, 'human')).rejects.toThrowError(
+      expect.objectContaining({ code: 'recovery_required' })
     );
+    expect(existsSync(root)).toBe(false);
   });
 
   it.each([
     'grant',
     'apply',
-  ] as const)('rechecks actual Source bytes before %s and withholds the captured preview without repair', async (stage) => {
+  ] as const)('rechecks canonical Source corruption before %s and withholds the captured preview without repair', async (stage) => {
     const f = await fixture(true);
     const prepared = prepareMemoryForget(f.writer, f.request);
     if (stage === 'apply') await f.decide(prepared.pendingRequestId);
-    const material = join(
+    const baseRevision = f.notebook.publishedRevision();
+    const pointer = f.notebook.readSourcePointers(baseRevision)[f.source!.id]!;
+    // Damage the captured Source object without making the confirmation's fixed base stale.
+    const malformed = updateOkfFrontmatter({
+      path: `sources/${f.source!.id}.md`,
+      content: pointer,
+      updates: { schema_version: 'unsupported-source-version' },
+    });
+    const repositoryPath = join(
       f.writer.coreDb.dataRoot,
       'users',
       f.writer.actor.userId,
-      'sources',
-      'materials',
-      f.source!.id,
-      'content.txt'
+      'memory',
+      'notebook.git'
     );
-    writeFileSync(material, 'Corrupt retained Source.');
+    const objectId = execFileSync(
+      'git',
+      ['--git-dir', repositoryPath, 'rev-parse', `${baseRevision}:sources/${f.source!.id}.md`],
+      { encoding: 'utf8' }
+    ).trim();
+    const objectPath = join(repositoryPath, 'objects', objectId.slice(0, 2), objectId.slice(2));
+    const changed = Buffer.from(malformed);
+    const corruptObject = deflateSync(
+      Buffer.concat([Buffer.from(`blob ${changed.length}\0`), changed])
+    );
+    chmodSync(objectPath, 0o600);
+    writeFileSync(objectPath, corruptObject);
+    await expect(readUserKnowledgeSource(f.writer, f.source!.id, 'human')).rejects.toThrowError(
+      expect.objectContaining({ code: 'recovery_required' })
+    );
     const record = readPendingRequest(f.writer.workspaceDb.sqlite, prepared.pendingRequestId)!;
     expect(
       projectApprovalEffect({
@@ -334,8 +368,8 @@ describe('Item-confirmed self Memory forget', () => {
         expect.objectContaining({ code: 'recovery_required' })
       );
     }
-    expect(f.notebook.publishedRevision()).toBe(f.saved.notebookRevision);
-    expect(readFileSync(material, 'utf8')).toBe('Corrupt retained Source.');
+    expect(f.notebook.publishedRevision()).toBe(baseRevision);
+    expect(readFileSync(objectPath)).toEqual(corruptObject);
     expect(
       readMemorySuppressions(
         join(f.writer.coreDb.dataRoot, 'users', f.writer.actor.userId, 'memory'),
@@ -346,22 +380,34 @@ describe('Item-confirmed self Memory forget', () => {
 
   it('refuses corrupt Sources before preparation and never opens a replacement User database for a retained preview', async () => {
     const f = await fixture(true);
-    const material = join(
-      f.writer.coreDb.dataRoot,
-      'users',
-      f.writer.actor.userId,
-      'sources',
-      'materials',
-      f.source!.id,
-      'content.txt'
-    );
-    const original = readFileSync(material);
-    writeFileSync(material, 'Corrupt Source.');
+    const baseRevision = f.notebook.publishedRevision();
+    const original = f.notebook.readSourcePointers(baseRevision)[f.source!.id]!;
+    const candidateRevision = f.notebook.prepareSourcePointers({
+      baseRevision,
+      changes: {
+        [f.source!.id]: updateOkfFrontmatter({
+          path: `sources/${f.source!.id}.md`,
+          content: original,
+          updates: { type: 'UnknownSource' },
+        }),
+      },
+      metadata: f.notebook.readRevision(baseRevision).metadata,
+    });
+    const sourceRevision = f.notebook.publish({ baseRevision, candidateRevision }).revision;
     expect(() => prepareMemoryForget(f.writer, f.request)).toThrowError(
       expect.objectContaining({ code: 'recovery_required' })
     );
     expect(readPendingRequest(f.writer.workspaceDb.sqlite, f.request.requestId)).toBeNull();
-    writeFileSync(material, original);
+    const restored = f.notebook.prepareSourcePointers({
+      baseRevision: sourceRevision,
+      changes: { [f.source!.id]: original },
+      metadata: f.notebook.readRevision(sourceRevision).metadata,
+    });
+    const restoredRevision = f.notebook.publish({
+      baseRevision: sourceRevision,
+      candidateRevision: restored,
+    }).revision;
+    f.request.notebookRevision = restoredRevision;
     const prepared = prepareMemoryForget(f.writer, f.request);
     const record = readPendingRequest(f.writer.workspaceDb.sqlite, prepared.pendingRequestId)!;
     f.writer.userDb.sqlite.close();
@@ -376,7 +422,7 @@ describe('Item-confirmed self Memory forget', () => {
       }).status
     ).toBe('unavailable');
     expect(existsSync(database)).toBe(false);
-    expect(f.notebook.publishedRevision()).toBe(f.saved.notebookRevision);
+    expect(f.notebook.publishedRevision()).toBe(restoredRevision);
   });
 
   it('keeps Source inspection unjoined for a non-self administrator confirmation', async () => {
@@ -542,7 +588,7 @@ describe('Item-confirmed self Memory forget', () => {
       requestId: randomUUID(),
       baseRevision: f.saved.notebookRevision,
       pageId: 'preference',
-      content: f.content('preference', 'Later human text.'),
+      content: f.content('Later human text.'),
       summary: 'Edit my preference',
     });
     await expect(f.apply(prepared.pendingRequestId)).rejects.toMatchObject({
@@ -573,7 +619,7 @@ describe('Item-confirmed self Memory forget', () => {
       requestId: randomUUID(),
       baseRevision: removed.notebookRevision,
       pageId: 'new-preference',
-      content: f.content('new-preference', 'Later saved content.'),
+      content: f.content('Later saved content.'),
       summary: 'Save a new preference',
     });
     f.writer.workspaceDb.sqlite.close();

@@ -10,6 +10,8 @@ import {
   seedDemoWorkspaceAuthority,
   seedDemoWorkspaceDataRoot,
 } from '../../../tests/support/demo-data.mjs';
+import { parseOkfDocument } from '../dist/knowledge/okf.js';
+import { serializeKnowledgePageFixture } from '../dist/test-support/knowledge-page.js';
 import {
   type NanoCoreHarness,
   readTurnEventsUntil,
@@ -72,19 +74,26 @@ async function runSource(outputDir: string): Promise<void> {
     });
     assert.equal(readPath(sourceReferences.data, 'items', 0, 'status'), 'active');
 
-    const sourceNotebook = await runCli(harness.baseUrl, 'knowledge.list', {
+    const sourceNotebook = await runCli(harness.baseUrl, 'knowledge.notebook.list', {
       workspaceId: WORKSPACE_ID,
     });
-    await runCli(harness.baseUrl, 'knowledge.create', {
+    await runCli(harness.baseUrl, 'knowledge.notebook.create', {
       baseRevision: requiredString(
         sourceNotebook.data.notebookRevision,
         'Source Notebook revision'
       ),
-      knowledgePageId: 'ci-portability',
-      content: 'The fixed two-job artifact transfer preserves authoritative knowledge.',
-      kind: 'project-context',
+      path: 'ci-portability.md',
+      summary: 'Publish source portability evidence',
+      content: serializeKnowledgePageFixture(
+        {
+          title: KNOWLEDGE_TITLE,
+          content: 'The fixed two-job artifact transfer preserves authoritative knowledge.',
+          createdAt: '2026-10-19T00:00:00.000Z',
+          updatedAt: '2026-10-19T00:00:00.000Z',
+        },
+        { kind: 'workspace', workspaceId: WORKSPACE_ID }
+      ),
       requestId: randomUUID(),
-      title: KNOWLEDGE_TITLE,
       workspaceId: WORKSPACE_ID,
     });
     const sourceSemantics = await readSemanticSnapshot(harness.baseUrl, WORKSPACE_ID);
@@ -176,19 +185,26 @@ async function runTarget(inputDir: string): Promise<void> {
     assert(!reboundReference.raw.includes(fakeVaultMaterial.toString('base64')));
     assert(!reboundReference.raw.includes(fakeVaultMaterial.toString('utf8')));
 
-    const targetNotebook = await runCli(harness.baseUrl, 'knowledge.list', {
+    const targetNotebook = await runCli(harness.baseUrl, 'knowledge.notebook.list', {
       workspaceId: importedWorkspaceId,
     });
-    await runCli(harness.baseUrl, 'knowledge.create', {
+    await runCli(harness.baseUrl, 'knowledge.notebook.create', {
       baseRevision: requiredString(
         targetNotebook.data.notebookRevision,
         'Target Notebook revision'
       ),
-      knowledgePageId: 'target-portability',
-      content: 'Target behavior remains writable after explicit local resource re-binding.',
-      kind: 'task-summary',
+      path: 'target-portability.md',
+      summary: 'Publish target portability continuation',
+      content: serializeKnowledgePageFixture(
+        {
+          title: 'Target portability continuation',
+          content: 'Target behavior remains writable after explicit local resource re-binding.',
+          createdAt: '2026-10-19T00:00:00.000Z',
+          updatedAt: '2026-10-19T00:00:00.000Z',
+        },
+        { kind: 'workspace', workspaceId: importedWorkspaceId }
+      ),
       requestId: randomUUID(),
-      title: 'Target portability continuation',
       workspaceId: importedWorkspaceId,
     });
 
@@ -309,12 +325,22 @@ async function readSemanticSnapshot(
 ): Promise<SemanticSnapshot> {
   const workspace = (await runCli(baseUrl, 'workspace.read', { workspaceId })).data;
   const knowledge = requiredArray(
-    (await runCli(baseUrl, 'knowledge.list', { workspaceId })).data.items
+    (await runCli(baseUrl, 'knowledge.notebook.list', { workspaceId })).data.pages
   )
-    .map((entry) => ({
-      id: requiredString(readPath(entry, 'id'), 'Knowledge id'),
-      value: stripNonSemanticFields(entry),
-    }))
+    .map((entry) => {
+      const path = requiredString(readPath(entry, 'path'), 'Knowledge path');
+      const content = requiredString(readPath(entry, 'content'), 'Knowledge content');
+      const parsed = parseOkfDocument({ path, content });
+      assert(parsed.ok && parsed.document, 'Exported full Knowledge page must parse.');
+      return {
+        id: requiredString(readPath(entry, 'id'), 'Knowledge id'),
+        value: {
+          path,
+          frontmatter: stripNonSemanticFields(parsed.document.frontmatter),
+          body: parsed.document.body,
+        },
+      };
+    })
     .sort(compareJson);
   const threads = requiredArray(
     (await runCli(baseUrl, 'thread.list', { workspaceId })).data.items

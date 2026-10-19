@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { existsSync, lstatSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import {
@@ -5,9 +6,12 @@ import {
   MemoryPublicationSchema,
   type OperationInput,
 } from '@openkit/app-api-schemas';
+import { UserConfigSchema } from '@openkit/config-schema';
+import { readRetainedV1 } from '@openkit/protocol';
 import { z } from 'zod';
 import { authorizeWorkspace } from './auth/operation-authorizer.js';
 import { finishCapabilityCall, startCapabilityCall } from './capability/usage-ledger.js';
+import { parseJsoncObject } from './config/jsonc.js';
 import { initializeDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { findAssistantTimeline } from './internal-agents/assistant-timeline.js';
 import { applyMemoryForget, prepareMemoryForgetCommand } from './knowledge/memory-forget.js';
@@ -39,6 +43,8 @@ import {
   registerUserKnowledgeSource,
 } from './knowledge/scoped-knowledge-sources.js';
 import {
+  initializeScopedNotebook,
+  pinScopedNotebook,
   resolveScopedNotebookOwner,
   ScopedNotebookAccessError,
 } from './knowledge/scoped-notebook-owner.js';
@@ -62,6 +68,7 @@ import { openUserDb } from './storage/db.js';
 import { userDbPath } from './storage/fs-layout.js';
 import { retrieveUserMemory } from './storage/index-rebuild.js';
 import { applyScopedMigrations } from './storage/migrate.js';
+import { readCanonicalTextFile } from './storage/workspace-file-records.js';
 
 /** First explicit save retains its default KB before Notebook publication; existing or lost notebooks are never initialized again. */
 function createFreshMemory(writer: MemoryWriter, input: OperationInput<'memory.create'>) {
@@ -90,7 +97,7 @@ function createFreshMemory(writer: MemoryWriter, input: OperationInput<'memory.c
       notebookRevision: revision,
       changedPageIds: [input.pageId],
       receiptRef: {
-        operation: 'knowledge.create' as const,
+        operation: 'knowledge.notebook.create' as const,
         requestId: input.requestId,
         ownerScope,
       },
@@ -100,7 +107,7 @@ function createFreshMemory(writer: MemoryWriter, input: OperationInput<'memory.c
     store: writer.store,
     receiptDb: writer.userDb,
     inflightCommands: writer.inflightCommands,
-    command: 'knowledge.create',
+    command: 'knowledge.notebook.create',
     requestId: input.requestId,
     scope: { userId: writer.userDb.userId, actorId: writer.actor!.userId },
     input,
@@ -118,7 +125,7 @@ function createFreshMemory(writer: MemoryWriter, input: OperationInput<'memory.c
           .get()
       )
         throw new NotebookError('recovery_required');
-      // The explicit first save binds its base before Notebook publication; readers never allocate it.
+      // The explicit first save binds its base before Notebook publication.
       const knowledgeBaseId = initializeDefaultKnowledgeBaseId({
         dataRoot: writer.coreDb.dataRoot,
         scope: ownerScope,
@@ -184,7 +191,7 @@ export function createMemoryOperationImplementations(
   const self = async <T>(
     context: AdmittedOperationContext,
     run: (writer: MemoryWriter) => T | Promise<T>,
-    initialize = false
+    initialize: boolean | 'query' = false
   ): Promise<T> => {
     const { coreDb, store, runtimeConfigManager, inflightCommands } = dependencies;
     if (!coreDb || !store || !runtimeConfigManager || !inflightCommands)
@@ -193,21 +200,59 @@ export function createMemoryOperationImplementations(
     const target = { kind: 'user' } as const;
     try {
       const owner = resolveScopedNotebookOwner({ coreDb, actor, target });
-      // First use may create a UserDb only when neither retained personal record family exists.
-      if (
-        !existsSync(userDbPath(coreDb.dataRoot, actor.userId)) &&
-        (!initialize ||
+      // A retained KB binding also proves established storage when both data families are lost.
+      if (!existsSync(userDbPath(coreDb.dataRoot, actor.userId))) {
+        if (
+          !initialize ||
           lstatSync(owner.notebookRoot, { throwIfNoEntry: false }) ||
-          lstatSync(join(dirname(owner.notebookRoot), 'sources'), { throwIfNoEntry: false }))
-      )
-        throw new OperationError('recovery_required', 'Memory storage is unavailable.', 503);
+          lstatSync(join(dirname(owner.notebookRoot), 'sources'), { throwIfNoEntry: false })
+        )
+          throw new OperationError('recovery_required', 'Memory storage is unavailable.', 503);
+        const configPath = join(dirname(owner.notebookRoot), 'config', 'user.jsonc');
+        if (lstatSync(configPath, { throwIfNoEntry: false })) {
+          try {
+            const config = readRetainedV1(
+              parseJsoncObject(readCanonicalTextFile(configPath)),
+              (value) => UserConfigSchema.parse(value)
+            );
+            if (config.defaultKnowledgeBaseId) throw new NotebookError('recovery_required');
+          } catch {
+            throw new NotebookError('recovery_required');
+          }
+        }
+      }
     } catch (error) {
       return memoryFailure(error);
     }
     const userDb = openUserDb(coreDb.dataRoot, actor.userId);
     try {
       applyScopedMigrations(userDb);
-      return await run({ coreDb, userDb, actor, store, runtimeConfigManager, inflightCommands });
+      const writer = { coreDb, userDb, actor, store, runtimeConfigManager, inflightCommands };
+      if (initialize === 'query') {
+        const owner = admitMemoryContext(writer);
+        if (!lstatSync(owner.notebookRoot, { throwIfNoEntry: false })) {
+          // The existing initialization Audit distinguishes first use from lost established pages.
+          if (
+            userDb.sqlite
+              .prepare(
+                "SELECT 1 FROM audit_events WHERE action = 'knowledge.notebook.initialize' LIMIT 1"
+              )
+              .get()
+          )
+            throw new NotebookError('recovery_required');
+          initializeScopedNotebook({
+            ...writer,
+            target: { kind: 'user' },
+            initialization: {
+              requestId: randomUUID(),
+              instructionReference: 'memory-query:first-use',
+            },
+          });
+        }
+        // Detect incomplete established storage before the KM query owner wraps its errors.
+        pinScopedNotebook({ coreDb, actor, target: { kind: 'user' } }).read([]);
+      }
+      return await run(writer);
     } catch (error) {
       return memoryFailure(error);
     } finally {
@@ -242,36 +287,37 @@ export function createMemoryOperationImplementations(
         workspaceDb.sqlite.close();
       }
     });
-  const queryAccess = (
-    writer: MemoryWriter,
-    context: AdmittedOperationContext,
-    workspaceId: string
-  ) => {
+  // Current audience admission must precede even a personal storage existence check.
+  const queryAccess = (context: AdmittedOperationContext, workspaceId: string) => {
+    const { coreDb, store } = dependencies;
+    if (!coreDb || !store)
+      throw new OperationError('recovery_required', 'Memory storage is unavailable.', 503);
+    const actor = publicOperationActor(context);
     if (
-      !authorizeWorkspace(writer.coreDb, writer.actor!, workspaceId, {
+      !authorizeWorkspace(coreDb, actor, workspaceId, {
         policyOperation: 'knowledge.read',
         mutating: false,
       })
     )
       throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
     const threadId =
-      context.queryContext?.threadId ??
-      findAssistantTimeline(writer.store, workspaceId, writer.userDb.userId)?.id;
+      context.queryContext?.threadId ?? findAssistantTimeline(store, workspaceId, actor.userId)?.id;
     if (!threadId)
       throw new OperationError(
         'memory_access_denied',
         'Memory needs a private Assistant Timeline.',
         403
       );
-    return {
-      store: writer.store,
-      coreDb: writer.coreDb,
-      userDb: writer.userDb,
+    const access = {
+      store,
+      coreDb,
       actor: context.actorRef,
-      requestActor: writer.actor!,
+      requestActor: actor,
       outputThreadId: threadId,
       outputTurnId: context.queryContext?.turnId,
     };
+    admitUserMemoryCaller({ dataRoot: coreDb.dataRoot, workspaceId, access });
+    return access;
   };
   const proposalContext = (writer: MemoryWriter) => ({
     ...writer,
@@ -287,13 +333,8 @@ export function createMemoryOperationImplementations(
       context,
       async (writer) => {
         if (context.queryContext) {
-          const access = queryAccess(writer, context, input.workspaceId);
           // An existing shared caller cannot substitute a private Timeline for User-scoped effects.
-          admitUserMemoryCaller({
-            dataRoot: writer.coreDb.dataRoot,
-            workspaceId: input.workspaceId,
-            access,
-          });
+          queryAccess(context, input.workspaceId);
         } else if (
           !authorizeWorkspace(writer.coreDb, writer.actor!, input.workspaceId, {
             policyOperation: 'knowledge.read',
@@ -326,63 +367,69 @@ export function createMemoryOperationImplementations(
       true
     );
   return {
-    'memory.ask': (input, context) =>
-      self(context, async (writer) => {
-        if (!dependencies.knowledgeAgent)
-          throw new OperationError('memory_unavailable', 'Memory query is unavailable.', 503);
-        const access = queryAccess(writer, context, input.workspaceId);
-        admitUserMemoryRetrieval({
-          dataRoot: writer.coreDb.dataRoot,
-          workspaceId: input.workspaceId,
-          access,
-        });
-        if (!dependencies.repositoryWorkspaceDb)
-          throw new OperationError('memory_unavailable', 'Memory delivery is unavailable.', 503);
-        const db = dependencies.repositoryWorkspaceDb(input.workspaceId);
-        const call = startCapabilityCall({
-          workspaceDb: db,
-          workspaceId: input.workspaceId,
-          authorityActor: context.actorRef,
-          family: 'knowledge',
-          operation: 'memory.ask',
-          capabilityId: 'memory.ask',
-          requestId: null,
-          providerRef: null,
-          serviceRef: 'knowledge-manager',
-          redactionClass: 'metadata-only',
-          summary: 'Memory question.',
-          threadId: access.outputThreadId,
-          turnId: access.outputTurnId ?? null,
-        });
-        try {
-          const result = await dependencies.knowledgeAgent.ask({
+    'memory.ask': (input, context) => {
+      const admittedAccess = queryAccess(context, input.workspaceId);
+      return self(
+        context,
+        async (writer) => {
+          if (!dependencies.knowledgeAgent)
+            throw new OperationError('memory_unavailable', 'Memory query is unavailable.', 503);
+          const access = { ...admittedAccess, userDb: writer.userDb };
+          admitUserMemoryRetrieval({
+            dataRoot: writer.coreDb.dataRoot,
             workspaceId: input.workspaceId,
-            question: input.question,
-            source: 'memory',
-            caller: context.delivery === 'model' ? 'internal-agent' : 'app-api',
             access,
-            signal: context.signal ?? new AbortController().signal,
-            capabilityCallId: call.id,
           });
-          finishCapabilityCall({
+          if (!dependencies.repositoryWorkspaceDb)
+            throw new OperationError('memory_unavailable', 'Memory delivery is unavailable.', 503);
+          const db = dependencies.repositoryWorkspaceDb(input.workspaceId);
+          const call = startCapabilityCall({
             workspaceDb: db,
-            callId: call.id,
-            status: 'succeeded',
-            deliveredKnowledgeAnswer: JSON.stringify(result),
+            workspaceId: input.workspaceId,
+            authorityActor: context.actorRef,
+            family: 'knowledge',
+            operation: 'memory.ask',
+            capabilityId: 'memory.ask',
+            requestId: null,
+            providerRef: null,
+            serviceRef: 'knowledge-manager',
+            redactionClass: 'metadata-only',
+            summary: 'Memory question.',
+            threadId: access.outputThreadId,
+            turnId: access.outputTurnId ?? null,
           });
-          return result;
-        } catch (error) {
-          finishCapabilityCall({
-            workspaceDb: db,
-            callId: call.id,
-            status: 'failed',
-            errorCode: 'knowledge_query_failed',
-          });
-          throw error;
-        } finally {
-          db.sqlite.close();
-        }
-      }),
+          try {
+            const result = await dependencies.knowledgeAgent.ask({
+              workspaceId: input.workspaceId,
+              question: input.question,
+              source: 'memory',
+              caller: context.delivery === 'model' ? 'internal-agent' : 'app-api',
+              access,
+              signal: context.signal ?? new AbortController().signal,
+              capabilityCallId: call.id,
+            });
+            finishCapabilityCall({
+              workspaceDb: db,
+              callId: call.id,
+              status: 'succeeded',
+              deliveredKnowledgeAnswer: JSON.stringify(result),
+            });
+            return result;
+          } catch (error) {
+            finishCapabilityCall({
+              workspaceDb: db,
+              callId: call.id,
+              status: 'failed',
+              errorCode: 'knowledge_query_failed',
+            });
+            throw error;
+          } finally {
+            db.sqlite.close();
+          }
+        },
+        'query'
+      );
+    },
     'memory.tell': maintain,
     'memory.maintain': maintain,
     'memory.proposal.read': (input, context) =>
@@ -418,48 +465,29 @@ export function createMemoryOperationImplementations(
             : null,
         };
       }),
-    'memory.search': (input, context) =>
-      self(context, async (writer) => {
-        if (
-          !authorizeWorkspace(writer.coreDb, writer.actor!, input.workspaceId, {
-            policyOperation: 'knowledge.read',
-            mutating: false,
-          })
-        )
-          throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
-        // Existing query lineage remains binding; a shared Thread cannot be replaced by a Timeline.
-        const threadId =
-          context.queryContext?.threadId ??
-          findAssistantTimeline(writer.store, input.workspaceId, writer.userDb.userId)?.id;
-        if (!threadId)
-          throw new OperationError(
-            'memory_access_denied',
-            'Memory needs a private Assistant Timeline.',
-            403
+    'memory.search': (input, context) => {
+      const admittedAccess = queryAccess(context, input.workspaceId);
+      return self(
+        context,
+        async (writer) => {
+          return MEMORY_OPERATION_DEFINITIONS['memory.search'].outputSchema.parse(
+            await retrieveUserMemory({
+              dataRoot: writer.coreDb.dataRoot,
+              workspaceId: input.workspaceId,
+              caller: 'app-api',
+              query: input.query,
+              limit: input.limit,
+              pinnedReferences: input.pinnedReferences,
+              types: input.types,
+              appliesTo: input.appliesTo,
+              states: input.states,
+              access: { ...admittedAccess, userDb: writer.userDb },
+            })
           );
-        return MEMORY_OPERATION_DEFINITIONS['memory.search'].outputSchema.parse(
-          await retrieveUserMemory({
-            dataRoot: writer.coreDb.dataRoot,
-            workspaceId: input.workspaceId,
-            caller: 'app-api',
-            query: input.query,
-            limit: input.limit,
-            pinnedReferences: input.pinnedReferences,
-            types: input.types,
-            appliesTo: input.appliesTo,
-            states: input.states,
-            access: {
-              store: writer.store,
-              coreDb: writer.coreDb,
-              userDb: writer.userDb,
-              actor: context.actorRef,
-              requestActor: writer.actor!,
-              outputThreadId: threadId,
-              outputTurnId: context.queryContext?.turnId,
-            },
-          })
-        );
-      }),
+        },
+        'query'
+      );
+    },
     'memory.source.register': (input, context) =>
       self(
         context,
@@ -476,8 +504,8 @@ export function createMemoryOperationImplementations(
         })
       ),
     'memory.source.read': (input, context) =>
-      self(context, (writer) => {
-        const entry = readUserKnowledgeSource(writer, input.sourceId, context.delivery);
+      self(context, async (writer) => {
+        const entry = await readUserKnowledgeSource(writer, input.sourceId, context.delivery);
         return MEMORY_OPERATION_DEFINITIONS['memory.source.read'].outputSchema.parse({
           source: entry ? { ...entry.source, content: entry.content } : null,
         });

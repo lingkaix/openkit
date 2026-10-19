@@ -30,7 +30,8 @@ const NONCE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 const EPOCH: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const MACHINE_DIGEST: &str = "6ed6653dba3d6aee8110c6e23de37f15c609b8a6e29aa164d1acace604e5cb7e";
 const UNIT_DIGEST: &str = "e428c3859b06b474a99bd455572a79e9743048737898747bfb059463775f57f7";
-const EFFECTIVE_DIGEST: &str = "a8468cf551252a9e1baf1e2503790dbd55be5def9acb43d2c995b1abbd3a34c1";
+// Independent SHA-256 of the sorted property map, with no ExecStop command.
+const EFFECTIVE_DIGEST: &str = "2855985f6b177faa602338a7a73aaabe62437b9c9e357d94704053542b400086";
 static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
 
 /// Drives the actual native handshake while the test controls readiness EOF.
@@ -381,7 +382,7 @@ fn unit_properties(pid: u32) -> String {
             "ExecStart",
             "{ path=/usr/lib/openkit/nanohost ; argv[]=/usr/lib/openkit/nanohost ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0 }",
         ),
-        ("ExecStop", kill),
+        ("ExecStop", ""),
         ("ExecStopPost", kill),
         ("PrivateMounts", "yes"),
         ("InaccessiblePaths", "/run/docker.sock"),

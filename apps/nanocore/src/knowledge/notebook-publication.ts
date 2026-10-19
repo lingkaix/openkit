@@ -29,11 +29,10 @@ const OPERATION = 'knowledge.notebook.update';
 export type NotebookPublicationOperation =
   | typeof OPERATION
   | 'knowledge.notebook.restore'
-  | 'knowledge.create'
-  | 'knowledge.update'
+  | 'knowledge.notebook.create'
   | 'knowledge.proposal.decide'
   | 'knowledge.proposal.reverse'
-  | 'knowledge.delete';
+  | 'knowledge.notebook.delete';
 
 /** Exact human edit submitted through native admission; paths are bundle-relative, never host paths. */
 export interface NotebookUpdate {

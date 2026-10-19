@@ -1,6 +1,8 @@
-import { existsSync } from 'node:fs';
+import { existsSync, lstatSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import {
+  type KnowledgeMount,
+  KnowledgeMountsSchema,
   OpenKitConfigSchema,
   UserConfigSchema,
   WorkspaceConfigSchema,
@@ -36,6 +38,7 @@ function configurationOwner(input: KnowledgeBaseOwner, workspaceRoot?: string) {
       notebookRoot: join(root, 'knowledge'),
       sourcesRoot: join(root, 'sources'),
       member: ['workspace', 'defaultKnowledgeBaseId'],
+      mountsMember: ['workspace', 'knowledgeMounts'],
       schema: WorkspaceConfigSchema,
       empty: undefined,
     };
@@ -52,17 +55,22 @@ function configurationOwner(input: KnowledgeBaseOwner, workspaceRoot?: string) {
     notebookRoot,
     sourcesRoot: join(dirname(notebookRoot), 'sources'),
     member: ['defaultKnowledgeBaseId'],
+    mountsMember: ['knowledgeMounts'],
     schema: scope.kind === 'user' ? UserConfigSchema : OpenKitConfigSchema,
     empty: `${JSON.stringify(writeRetainedV1({}))}\n`,
   };
 }
 
 /** Reads only the retained binding from a validated owner configuration. */
-function readBinding(owner: ReturnType<typeof configurationOwner>, source: string): unknown {
+function readBinding(
+  owner: ReturnType<typeof configurationOwner>,
+  source: string,
+  members = owner.member
+): unknown {
   let value: unknown = readRetainedV1(parseJsoncObject(source), (record) =>
     owner.schema.parse(record)
   );
-  for (const member of owner.member) {
+  for (const member of members) {
     value =
       value && typeof value === 'object' ? (value as Record<string, unknown>)[member] : undefined;
   }
@@ -77,6 +85,37 @@ export function readDefaultKnowledgeBaseId(input: KnowledgeBaseOwner): string {
   } catch {
     throw new NotebookError('recovery_required');
   }
+}
+
+/** Reads explicit same-base mount declarations; lookup never creates a default or activates an unknown backend. */
+export function readKnowledgeMounts(input: KnowledgeBaseOwner): readonly KnowledgeMount[] {
+  try {
+    const owner = configurationOwner(input);
+    const source = readCanonicalTextFile(owner.path);
+    const id = KnowledgeBaseIdSchema.parse(readBinding(owner, source));
+    const mounts = KnowledgeMountsSchema.parse(readBinding(owner, source, owner.mountsMember));
+    if (mounts.some((mount) => mount.knowledgeBaseId !== id))
+      throw new NotebookError('recovery_required');
+    assertKnowledgeMountNamespaces(owner.notebookRoot, mounts);
+    return mounts;
+  } catch {
+    throw new NotebookError('recovery_required');
+  }
+}
+
+/** Applies the same reserved mount namespace rule to canonical scopes and captured export roots. */
+export function assertKnowledgeMountNamespaces(
+  notebookRoot: string,
+  mounts: readonly KnowledgeMount[]
+): void {
+  if (
+    mounts.some(
+      (mount) =>
+        !mount.default &&
+        lstatSync(join(notebookRoot, 'raw', mount.name), { throwIfNoEntry: false })
+    )
+  )
+    throw new NotebookError('recovery_required');
 }
 
 /**
@@ -105,17 +144,51 @@ export function initializeDefaultKnowledgeBaseId(
       const retained = KnowledgeBaseIdSchema.parse(previous);
       if (requested !== undefined && retained !== requested)
         throw new NotebookError('recovery_required');
+      const mounts = readBinding(owner, source, owner.mountsMember);
+      if (mounts !== undefined) {
+        KnowledgeMountsSchema.parse(mounts);
+        return retained;
+      }
+      if (existsSync(join(owner.notebookRoot, 'notebook.git')) || existsSync(owner.sourcesRoot))
+        throw new NotebookError('recovery_required');
+      // This is still fresh native initialization with an explicitly supplied fixed ID, not conversion of an existing notebook.
+      const mounted = applyEdits(
+        source,
+        modify(
+          source,
+          owner.mountsMember,
+          [
+            {
+              name: 'managed',
+              backend: 'local',
+              root: 'raw',
+              default: true,
+              knowledgeBaseId: retained,
+            },
+          ],
+          { formattingOptions: { insertSpaces: true, tabSize: 2 } }
+        )
+      );
+      readBinding(owner, mounted);
+      writeFileAtomic(owner.path, mounted);
       return retained;
     }
     if (existsSync(join(owner.notebookRoot, 'notebook.git')) || existsSync(owner.sourcesRoot)) {
       throw new NotebookError('recovery_required');
     }
     const id = requested ?? allocateEntityId('kb');
-    const updated = applyEdits(
+    const bound = applyEdits(
       source,
-      modify(source, owner.member, id, {
-        formattingOptions: { insertSpaces: true, tabSize: 2 },
-      })
+      modify(source, owner.member, id, { formattingOptions: { insertSpaces: true, tabSize: 2 } })
+    );
+    const updated = applyEdits(
+      bound,
+      modify(
+        bound,
+        owner.mountsMember,
+        [{ name: 'managed', backend: 'local', root: 'raw', default: true, knowledgeBaseId: id }],
+        { formattingOptions: { insertSpaces: true, tabSize: 2 } }
+      )
     );
     if (readBinding(owner, updated) !== id) throw new NotebookError('recovery_required');
     writeFileAtomic(owner.path, updated);

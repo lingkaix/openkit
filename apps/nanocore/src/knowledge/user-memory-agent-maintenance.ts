@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { KnowledgeMaintenanceResponseSchema } from '@openkit/app-api-schemas';
+import { KNOWLEDGE_MANAGER_RUN_DEADLINE_MS } from '@openkit/config-schema';
 import { allocateEntityId, isSealedTurnTerminal } from '@openkit/protocol';
 import type { Actor } from '../auth/identity.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
@@ -40,6 +41,7 @@ import {
 } from './okf.js';
 import {
   readUserKnowledgeSource,
+  readUserKnowledgeSourceMetadata,
   registerUserKnowledgeSource,
 } from './scoped-knowledge-sources.js';
 import { initializeScopedNotebook } from './scoped-notebook-owner.js';
@@ -158,9 +160,9 @@ export function readUserMemoryNotebookAdmission(
       const { targetId } = resolveRegisteredKnowledgeSourceReference(reference, registeredSources);
       if (!targetId) throw new NotebookError('invalid_request');
       if (!registeredSources.has(targetId)) {
-        const source = readUserKnowledgeSource(context, targetId, 'model');
+        const source = readUserKnowledgeSourceMetadata(context, targetId, 'model');
         if (!source) throw new NotebookError('invalid_request');
-        registeredSources.set(targetId, source.source.contentDigest);
+        registeredSources.set(targetId, source.contentDigest);
       }
       if (!resolveRegisteredKnowledgeSourceReference(reference, registeredSources).resolved)
         throw new NotebookError('invalid_request');
@@ -233,7 +235,7 @@ export function prepareUserMemoryMaintenance(
   const notebook = new KnowledgeNotebook({
     repositoryPath: join(owner.notebookRoot, 'notebook.git'),
   });
-  const baseRevision = notebook.publishedRevision();
+  let baseRevision = notebook.publishedRevision();
   ensureUserQuickChatWorkspace({ coreDb, store, userId: userDb.userId });
   const workspaceId = store.ensureQuickChatWorkspace(userDb.userId).id;
   const priorRuns = store
@@ -361,425 +363,6 @@ export function prepareUserMemoryMaintenance(
       close();
       return { turnId: turn.id, execute: async () => result, fail };
     }
-    const files: Record<string, string> = {};
-    const sourceFiles: Record<string, string> = {};
-    const sources = new Map<string, { contentDigest: string; content: string }>();
-    const admittedReferences = new Set<string>();
-    const historyReads: Array<{ revision: string; path: string; content: string }> = [];
-    let bytes = 0;
-    const admitBytes = (content: string) => {
-      bytes += Buffer.byteLength(content);
-      if (
-        Buffer.byteLength(content) > NOTEBOOK_EDITING_LIMITS.fileBytes ||
-        bytes > NOTEBOOK_EDITING_LIMITS.workspaceBytes
-      )
-        throw new NotebookError('invalid_request');
-    };
-    const selected = input.pageIds ? new Set([...input.pageIds, 'index']) : undefined;
-    const suppressed = () =>
-      new Set(
-        readMemorySuppressions(owner.notebookRoot, userDb.userId).map(
-          ({ payload }) => payload.pageId
-        )
-      );
-    const navigationUnavailable = (path: string) =>
-      suppressed().size > 0 && ['index.md', 'log.md'].includes(basename(path));
-    const readPage = (revision: string, path: string) => {
-      // Reserved navigation can still carry forgotten prose. Keep canonical bytes, withhold all
-      // such bodies and historical diffs, and invalidate a run if suppression arrives after read.
-      if (navigationUnavailable(path) || suppressed().has(path.slice(0, -3)))
-        throw new NotebookError('invalid_request');
-      // Current owner/schema and Source authority apply also to historical human diffs.
-      admitMemoryContext(context);
-      const content = notebook.readRevision(revision, [path]).files[path];
-      if (content === undefined) throw new NotebookError('recovery_required');
-      // Load only this page's closure from the same immutable revision, not a later publication.
-      const references = { [path]: content };
-      const pending = [path];
-      const entries = notebook.inspectRevision(revision).entries;
-      const knowledgeBaseId = readDefaultKnowledgeBaseId({
-        dataRoot: coreDb.dataRoot,
-        scope: owner.ownerScope,
-      });
-      const pageScopeId = `page/user/${userDb.userId}/${knowledgeBaseId}`;
-      while (pending.length) {
-        const sourcePath = pending.pop()!;
-        const document = parseOkfDocument({ path: sourcePath, content: references[sourcePath]! });
-        if (!document.ok) throw new NotebookError('recovery_required');
-        for (const reference of stringListFrontmatterField(document.document, 'source_refs') ??
-          []) {
-          const selected = parseKnowledgePageSourceReference(reference, pageScopeId);
-          if (!selected || suppressed().has(selected.reference.objectId)) continue;
-          const targetPath = `${selected.reference.objectId}.md`;
-          if (Object.hasOwn(references, targetPath) || !entries[targetPath]) continue;
-          references[targetPath] = notebook.readRevision(revision, [targetPath]).files[targetPath]!;
-          pending.push(targetPath);
-        }
-      }
-      readUserMemoryNotebookAdmission(context, references);
-      return content;
-    };
-    for (const path of Object.keys(notebook.inspectRevision(baseRevision).entries).sort()) {
-      if (
-        navigationUnavailable(path) ||
-        suppressed().has(path.slice(0, -3)) ||
-        (selected && !selected.has(path.slice(0, -3)))
-      )
-        continue;
-      const content = readPage(baseRevision, path);
-      const parsed = parseOkfDocument({ path, content });
-      if (!parsed.ok) throw new NotebookError('recovery_required');
-      if (
-        !selected &&
-        path !== 'index.md' &&
-        (parsed.document.reserved || parsed.document.frontmatter.openkit_status !== 'active')
-      )
-        continue;
-      admitBytes(content);
-      files[path] = content;
-      for (const reference of stringListFrontmatterField(parsed.document, 'source_refs') ?? [])
-        admittedReferences.add(reference);
-    }
-    for (const id of input.pageIds ?? [])
-      if (!Object.hasOwn(files, `${id}.md`)) throw new NotebookError('invalid_request');
-    // Supplied information uses the existing immutable literal Source owner, not conversation crawling.
-    const readSource = (sourceId: string) => {
-      const retained = readUserKnowledgeSource(context, sourceId, 'model');
-      if (!retained) throw new NotebookError('invalid_request');
-      return { contentDigest: retained.source.contentDigest, content: retained.content };
-    };
-    const admitSource = (reference: string) => {
-      const normalized = reference.startsWith('source:') ? reference : `source:${reference}`;
-      const { targetId } = resolveRegisteredKnowledgeSourceReference(normalized, new Map());
-      if (!targetId) throw new NotebookError('invalid_request');
-      const source = readSource(targetId);
-      if (
-        !resolveRegisteredKnowledgeSourceReference(
-          normalized,
-          new Map([[targetId, source.contentDigest]])
-        ).resolved
-      )
-        throw new NotebookError('invalid_request');
-      sources.set(targetId, source);
-      admittedReferences.add(normalized);
-      admittedReferences.add(`source:${targetId}@${source.contentDigest}`);
-    };
-    for (const source of input.sources) admitSource(source);
-    const assertCurrent = () => {
-      input.signal.throwIfAborted();
-      admitMemoryContext(context);
-      for (const [path, content] of Object.entries(files))
-        if (readPage(baseRevision, path) !== content) throw new NotebookError('recovery_required');
-      for (const [id, source] of sources)
-        if (commandInputHash(readSource(id)) !== commandInputHash(source))
-          throw new NotebookError('recovery_required');
-      for (const read of historyReads)
-        if (readPage(read.revision, read.path) !== read.content)
-          throw new NotebookError('recovery_required');
-    };
-    const controller = new AbortController();
-    const createEditor = () =>
-      createNotebookAgentEditing({
-        notebook,
-        baseRevision,
-        requestId: input.requestId,
-        files,
-        sources: sourceFiles,
-        signal: AbortSignal.any([input.signal, controller.signal]),
-        deadlineMs: Date.now() + 120_000,
-        revalidate: assertCurrent,
-        submit: async (edit) => {
-          if (edit.changes.length > 4) throw new NotebookError('invalid_request');
-          assertCurrent();
-          const refs = [
-            ...new Set(
-              edit.changes.flatMap(({ path, content }) =>
-                content === null
-                  ? []
-                  : (stringListFrontmatterField(
-                      parseOkfDocument({ path, content }).document!,
-                      'source_refs'
-                    ) ?? [])
-              )
-            ),
-          ].sort();
-          const baseFiles = notebook.readRevision(baseRevision).files;
-          const setting = settings();
-          const delegated =
-            setting.enabled &&
-            !edit.changes.some(
-              ({ path, content }) =>
-                setting.reviewRequiredPageIds.includes(path.slice(0, -3)) ||
-                (content === null && Object.hasOwn(baseFiles, path))
-            );
-          const resultingFiles = { ...baseFiles };
-          for (const { path, content } of edit.changes) {
-            if (content === null) delete resultingFiles[path];
-            else
-              resultingFiles[path] =
-                baseFiles[path] === content
-                  ? content
-                  : attributedNotebookPageBytes(
-                      path,
-                      content,
-                      owner.ownerScope,
-                      delegated ? 'delegated' : 'accepted'
-                    );
-          }
-          const revalidate = (candidateFiles = resultingFiles) => {
-            assertCurrent();
-            return readUserMemoryNotebookAdmission(
-              context,
-              candidateFiles,
-              edit.changes.map(({ path }) => path)
-            );
-          };
-          const admission = revalidate();
-          if (
-            refs.some(
-              (ref) =>
-                !admittedReferences.has(ref) &&
-                !parseKnowledgePageSourceReference(ref, admission.pageScopeId)
-            )
-          )
-            throw new NotebookError('invalid_request');
-          if (
-            setting.enabled &&
-            !edit.changes.some(
-              ({ path, content }) =>
-                admission.reviewRequiredPageIds.includes(path.slice(0, -3)) ||
-                (content === null &&
-                  Object.hasOwn(notebook.inspectRevision(baseRevision).entries, path))
-            )
-          ) {
-            try {
-              const published = await publishNotebook(
-                {
-                  owner: { kind: 'user', userDb },
-                  store,
-                  inflightCommands: dependencies.inflightCommands,
-                  notebook,
-                  producer,
-                  actor,
-                  publicationAuthority: {
-                    kind: 'delegated',
-                    settingReference: `user:${userDb.userId}:knowledgeMaintenance:${JSON.stringify(setting)}`,
-                    settingDigest: commandInputHash(setting),
-                  },
-                  revalidate: () => {
-                    if (commandInputHash(settings()) !== commandInputHash(setting))
-                      throw new NotebookError('review_required');
-                    return revalidate();
-                  },
-                },
-                edit
-              );
-              outcome = response('published', edit.summary, {
-                notebookRevision: published.notebookRevision,
-              });
-              return published;
-            } catch (error) {
-              if (!(error instanceof NotebookError) || error.code !== 'review_required')
-                throw error;
-            }
-          }
-          const proposal = createUserMemoryProposal(
-            { ...context, store, inflightCommands: dependencies.inflightCommands, revalidate },
-            edit,
-            producer,
-            refs
-          );
-          outcome = response('review-required', edit.summary, {
-            candidateRevision: proposal.candidateRevision,
-            proposalId: proposal.id,
-          });
-          return {
-            outcome: 'review_required',
-            proposalId: proposal.id,
-            baseRevision,
-            candidateRevision: proposal.candidateRevision,
-          };
-        },
-      });
-    let editor: ReturnType<typeof createNotebookAgentEditing>;
-    const tool = (
-      name: string,
-      key: string,
-      execute: (value: string) => Promise<unknown>
-    ): AgentTool => ({
-      name,
-      description:
-        'Edit only the admitted User Memory snapshot. Four changes, 2 MiB per file, 32 MiB total, 64 KiB script/output. Publication requires current native authority.',
-      inputSchema: {
-        type: 'object',
-        properties: { [key]: { type: 'string' } },
-        required: [key],
-        additionalProperties: false,
-      },
-      execute: async (value, context) => {
-        if (
-          typeof value !== 'object' ||
-          value === null ||
-          Array.isArray(value) ||
-          Object.keys(value).length !== 1 ||
-          typeof (value as Record<string, unknown>)[key] !== 'string'
-        )
-          throw new NotebookError('invalid_request');
-        const abort = () => controller.abort();
-        if (context.signal.aborted) abort();
-        context.signal.addEventListener('abort', abort, { once: true });
-        try {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: JSON.stringify(await execute((value as Record<string, string>)[key]!)),
-              },
-            ],
-          };
-        } finally {
-          context.signal.removeEventListener('abort', abort);
-        }
-      },
-    });
-    const nativeAuthority = { actorRef: actor, requestActor: input.requestActor, assertCurrent };
-    const history = createAssistantHistory({
-      store,
-      coreDb,
-      workspaceId,
-      threadId: thread.id,
-      turnId: turn.id,
-      nativeAuthority,
-    });
-    const tools = [
-      history.tool,
-      tool('knowledge.notebook-workspace.update', 'script', (script) =>
-        editor.workspaceUpdate({ script })
-      ),
-      tool('knowledge.notebook.update', 'summary', async (summary) => {
-        const result = await editor.notebookUpdate({ summary });
-        if (result.outcome === 'no_change') outcome = response('no-change', summary);
-        if (outcome) record(outcome);
-        return result;
-      }),
-    ];
-    const previous = priorRuns.filter((prior) => prior.status === 'completed').at(-1)
-      ?.internalExecution?.knowledge?.baseRevision;
-    const humanChanges: Array<{ path: string; before: string | null; after: string | null }> = [];
-    let cursor: string | null = baseRevision;
-    let scanned = 0;
-    while (cursor && cursor !== previous && scanned++ < 256) {
-      const revision = notebook.inspectRevision(cursor);
-      const parent = revision.parentRevision
-        ? notebook.inspectRevision(revision.parentRevision)
-        : undefined;
-      if (revision.metadata.producer.kind === 'user')
-        for (const path of new Set([
-          ...Object.keys(revision.entries),
-          ...Object.keys(parent?.entries ?? {}),
-        ])) {
-          if (
-            navigationUnavailable(path) ||
-            suppressed().has(path.slice(0, -3)) ||
-            (selected && !selected.has(path.slice(0, -3))) ||
-            revision.entries[path] === parent?.entries[path]
-          )
-            continue;
-          const read = (selectedRevision: string | undefined, exists: boolean) => {
-            if (!selectedRevision || !exists) return null;
-            const content = readPage(selectedRevision, path);
-            admitBytes(content);
-            historyReads.push({ revision: selectedRevision, path, content });
-            return content;
-          };
-          humanChanges.push({
-            path,
-            before: read(parent?.revision, Boolean(parent?.entries[path])),
-            after: read(revision.revision, Boolean(revision.entries[path])),
-          });
-          if (humanChanges.length > 256) throw new NotebookError('invalid_request');
-        }
-      cursor = revision.parentRevision;
-    }
-    if (cursor && cursor !== previous) throw new NotebookError('invalid_request');
-    const makeRun = (): KnowledgeManagerAgentRun => ({
-      turn,
-      workspaceDb,
-      signal: input.signal,
-      inputs: {
-        purpose: 'maintenance',
-        ownerScope: { kind: 'user', userId: userDb.userId },
-        baseRevision,
-        trigger: input.trigger,
-        instructions: input.instructions,
-        sourceRange: [],
-        ...(input.askingThreadId ? { askingThreadId: input.askingThreadId } : {}),
-        ...(input.askingTurnId ? { askingTurnId: input.askingTurnId } : {}),
-      },
-      tools,
-      assertCurrent,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                instructions: input.instructions,
-                notebookRevision: baseRevision,
-                files: Object.keys(files),
-                selectedPageIds: input.pageIds ?? [],
-                humanEdits: boundedNotebookDiff(humanChanges, false),
-                overview:
-                  files['index.md'] === undefined
-                    ? { unavailable: true }
-                    : excerpt(files['index.md'], 16 * 1024),
-                sources: (() => {
-                  let remaining = 64 * 1024;
-                  return [...sources].map(([id, source]) => {
-                    const delivered = excerpt(source.content, remaining);
-                    remaining -= Buffer.byteLength(delivered.content);
-                    return {
-                      reference: `source:${id}@${source.contentDigest}`,
-                      file: `/sources/${id}`,
-                      ...delivered,
-                    };
-                  });
-                })(),
-                sourceHistory:
-                  'Only supplied User information, admitted Sources and notebook human edits are learning inputs. Maintenance history is not learning input. thread.history.read accepts only exact current-run compaction ranges.',
-              }),
-            },
-          ],
-        },
-      ],
-      readEvidence: (items) =>
-        readInternalContextEvidence({
-          store,
-          coreDb,
-          workspaceId,
-          threadId: thread.id,
-          nativeAuthority,
-          items,
-          strategy: 'compaction',
-        }),
-      resultSchema: {
-        type: 'object',
-        properties: { summary: { type: 'string', minLength: 1 } },
-        required: ['summary'],
-        additionalProperties: false,
-      },
-      validateResult: () => {
-        assertCurrent();
-        if (!outcome)
-          return 'Call knowledge.notebook.update({summary: ...}) first, including when no changes are needed. Then call knowledge.result.';
-        history.assertCurrent();
-        record(outcome);
-      },
-    });
-    // Pin before returning to a scheduler; literal capture remains within this admitted request execution.
-    const pinned = makeRun();
-    dependencies.pin(pinned);
     return {
       turnId: turn.id,
       fail,
@@ -787,24 +370,481 @@ export function prepareUserMemoryMaintenance(
         if (started || closed) throw new NotebookError('invalid_request');
         started = true;
         try {
-          if (input.tellContent !== undefined) {
-            const source = await registerUserKnowledgeSource(
-              { ...context, store, inflightCommands: dependencies.inflightCommands },
-              {
-                requestId: input.requestId,
-                kind: 'document',
-                title: 'Supplied User Memory information',
-                content: input.tellContent,
-              }
+          // Source capture is a Notebook commit. Fix the editor base only after that capture,
+          // while retaining the maintenance Turn synchronously for the existing daily scanner.
+          const supplied =
+            input.tellContent === undefined
+              ? undefined
+              : await registerUserKnowledgeSource(
+                  { ...context, store, inflightCommands: dependencies.inflightCommands },
+                  {
+                    requestId: input.requestId,
+                    kind: 'document',
+                    title: 'Supplied User Memory information',
+                    content: input.tellContent,
+                  }
+                );
+          baseRevision = notebook.publishedRevision();
+          const files: Record<string, string> = {};
+          const sourceFiles: Record<string, string> = {};
+          const sources = new Map<string, { contentDigest: string; content: string }>();
+          const admittedReferences = new Set<string>();
+          const historyReads: Array<{ revision: string; path: string; content: string }> = [];
+          let bytes = 0;
+          const admitBytes = (content: string) => {
+            bytes += Buffer.byteLength(content);
+            if (
+              Buffer.byteLength(content) > NOTEBOOK_EDITING_LIMITS.fileBytes ||
+              bytes > NOTEBOOK_EDITING_LIMITS.workspaceBytes
+            )
+              throw new NotebookError('invalid_request');
+          };
+          const selected = input.pageIds ? new Set([...input.pageIds, 'index']) : undefined;
+          const suppressed = () =>
+            new Set(
+              readMemorySuppressions(owner.notebookRoot, userDb.userId).map(
+                ({ payload }) => payload.pageId
+              )
             );
-            admitSource(`source:${source.id}@${source.contentDigest}`);
+          const navigationUnavailable = (path: string) =>
+            suppressed().size > 0 && ['index.md', 'log.md'].includes(basename(path));
+          const readPage = (revision: string, path: string) => {
+            // Reserved navigation can still carry forgotten prose. Keep canonical bytes, withhold all
+            // such bodies and historical diffs, and invalidate a run if suppression arrives after read.
+            if (navigationUnavailable(path) || suppressed().has(path.slice(0, -3)))
+              throw new NotebookError('invalid_request');
+            // Current owner/schema and Source authority apply also to historical human diffs.
+            admitMemoryContext(context);
+            const content = notebook.readRevision(revision, [path]).files[path];
+            if (content === undefined) throw new NotebookError('recovery_required');
+            // Load only this page's closure from the same immutable revision, not a later publication.
+            const references = { [path]: content };
+            const pending = [path];
+            const entries = notebook.inspectRevision(revision).entries;
+            const knowledgeBaseId = readDefaultKnowledgeBaseId({
+              dataRoot: coreDb.dataRoot,
+              scope: owner.ownerScope,
+            });
+            const pageScopeId = `page/user/${userDb.userId}/${knowledgeBaseId}`;
+            while (pending.length) {
+              const sourcePath = pending.pop()!;
+              const document = parseOkfDocument({
+                path: sourcePath,
+                content: references[sourcePath]!,
+              });
+              if (!document.ok) throw new NotebookError('recovery_required');
+              for (const reference of stringListFrontmatterField(
+                document.document,
+                'source_refs'
+              ) ?? []) {
+                const selected = parseKnowledgePageSourceReference(reference, pageScopeId);
+                if (!selected || suppressed().has(selected.reference.objectId)) continue;
+                const targetPath = `${selected.reference.objectId}.md`;
+                if (Object.hasOwn(references, targetPath) || !entries[targetPath]) continue;
+                references[targetPath] = notebook.readRevision(revision, [targetPath]).files[
+                  targetPath
+                ]!;
+                pending.push(targetPath);
+              }
+            }
+            readUserMemoryNotebookAdmission(context, references);
+            return content;
+          };
+          for (const path of Object.keys(notebook.inspectRevision(baseRevision).entries).sort()) {
+            if (
+              navigationUnavailable(path) ||
+              suppressed().has(path.slice(0, -3)) ||
+              (selected && !selected.has(path.slice(0, -3)))
+            )
+              continue;
+            const content = readPage(baseRevision, path);
+            const parsed = parseOkfDocument({ path, content });
+            if (!parsed.ok) throw new NotebookError('recovery_required');
+            if (
+              !selected &&
+              path !== 'index.md' &&
+              (parsed.document.reserved || parsed.document.frontmatter.openkit_status !== 'active')
+            )
+              continue;
+            admitBytes(content);
+            files[path] = content;
+            for (const reference of stringListFrontmatterField(parsed.document, 'source_refs') ??
+              [])
+              admittedReferences.add(reference);
           }
+          for (const id of input.pageIds ?? [])
+            if (!Object.hasOwn(files, `${id}.md`)) throw new NotebookError('invalid_request');
+          // Supplied information uses the existing immutable literal Source owner, not conversation crawling.
+          const readSource = async (sourceId: string) => {
+            const retained = await readUserKnowledgeSource(context, sourceId, 'model');
+            if (!retained) throw new NotebookError('invalid_request');
+            return { contentDigest: retained.source.contentDigest, content: retained.content };
+          };
+          const admitSource = async (reference: string) => {
+            const normalized = reference.startsWith('source:') ? reference : `source:${reference}`;
+            const { targetId } = resolveRegisteredKnowledgeSourceReference(normalized, new Map());
+            if (!targetId) throw new NotebookError('invalid_request');
+            const source = await readSource(targetId);
+            if (
+              !resolveRegisteredKnowledgeSourceReference(
+                normalized,
+                new Map([[targetId, source.contentDigest]])
+              ).resolved
+            )
+              throw new NotebookError('invalid_request');
+            sources.set(targetId, source);
+            admittedReferences.add(normalized);
+            admittedReferences.add(`source:${targetId}@${source.contentDigest}`);
+          };
+          for (const source of [
+            ...input.sources,
+            ...(supplied ? [`source:${supplied.id}@${supplied.contentDigest}`] : []),
+          ])
+            await admitSource(source);
+          const assertCurrent = () => {
+            input.signal.throwIfAborted();
+            admitMemoryContext(context);
+            for (const [path, content] of Object.entries(files))
+              if (readPage(baseRevision, path) !== content)
+                throw new NotebookError('recovery_required');
+            for (const [id, source] of sources)
+              if (
+                readUserKnowledgeSourceMetadata(context, id, 'model')?.contentDigest !==
+                source.contentDigest
+              )
+                throw new NotebookError('recovery_required');
+            for (const read of historyReads)
+              if (readPage(read.revision, read.path) !== read.content)
+                throw new NotebookError('recovery_required');
+          };
+          const controller = new AbortController();
+          const createEditor = () =>
+            createNotebookAgentEditing({
+              notebook,
+              baseRevision,
+              requestId: input.requestId,
+              files,
+              sources: sourceFiles,
+              signal: AbortSignal.any([input.signal, controller.signal]),
+              deadlineMs: Date.now() + KNOWLEDGE_MANAGER_RUN_DEADLINE_MS,
+              revalidate: assertCurrent,
+              submit: async (edit) => {
+                if (edit.changes.length > 4) throw new NotebookError('invalid_request');
+                assertCurrent();
+                const refs = [
+                  ...new Set(
+                    edit.changes.flatMap(({ path, content }) =>
+                      content === null
+                        ? []
+                        : (stringListFrontmatterField(
+                            parseOkfDocument({ path, content }).document!,
+                            'source_refs'
+                          ) ?? [])
+                    )
+                  ),
+                ].sort();
+                const baseFiles = notebook.readRevision(baseRevision).files;
+                const setting = settings();
+                const delegated =
+                  setting.enabled &&
+                  !edit.changes.some(
+                    ({ path, content }) =>
+                      setting.reviewRequiredPageIds.includes(path.slice(0, -3)) ||
+                      (content === null && Object.hasOwn(baseFiles, path))
+                  );
+                const resultingFiles = { ...baseFiles };
+                for (const { path, content } of edit.changes) {
+                  if (content === null) delete resultingFiles[path];
+                  else
+                    resultingFiles[path] =
+                      baseFiles[path] === content
+                        ? content
+                        : attributedNotebookPageBytes(
+                            path,
+                            content,
+                            owner.ownerScope,
+                            delegated ? 'delegated' : 'accepted'
+                          );
+                }
+                const revalidate = (candidateFiles = resultingFiles) => {
+                  assertCurrent();
+                  return readUserMemoryNotebookAdmission(
+                    context,
+                    candidateFiles,
+                    edit.changes.map(({ path }) => path)
+                  );
+                };
+                const admission = revalidate();
+                if (
+                  refs.some(
+                    (ref) =>
+                      !admittedReferences.has(ref) &&
+                      !parseKnowledgePageSourceReference(ref, admission.pageScopeId)
+                  )
+                )
+                  throw new NotebookError('invalid_request');
+                if (
+                  setting.enabled &&
+                  !edit.changes.some(
+                    ({ path, content }) =>
+                      admission.reviewRequiredPageIds.includes(path.slice(0, -3)) ||
+                      (content === null &&
+                        Object.hasOwn(notebook.inspectRevision(baseRevision).entries, path))
+                  )
+                ) {
+                  try {
+                    const published = await publishNotebook(
+                      {
+                        owner: { kind: 'user', userDb },
+                        store,
+                        inflightCommands: dependencies.inflightCommands,
+                        notebook,
+                        producer,
+                        actor,
+                        publicationAuthority: {
+                          kind: 'delegated',
+                          settingReference: `user:${userDb.userId}:knowledgeMaintenance:${JSON.stringify(setting)}`,
+                          settingDigest: commandInputHash(setting),
+                        },
+                        revalidate: () => {
+                          if (commandInputHash(settings()) !== commandInputHash(setting))
+                            throw new NotebookError('review_required');
+                          return revalidate();
+                        },
+                      },
+                      edit
+                    );
+                    outcome = response('published', edit.summary, {
+                      notebookRevision: published.notebookRevision,
+                    });
+                    return published;
+                  } catch (error) {
+                    if (!(error instanceof NotebookError) || error.code !== 'review_required')
+                      throw error;
+                  }
+                }
+                const proposal = createUserMemoryProposal(
+                  {
+                    ...context,
+                    store,
+                    inflightCommands: dependencies.inflightCommands,
+                    revalidate,
+                  },
+                  edit,
+                  producer,
+                  refs
+                );
+                outcome = response('review-required', edit.summary, {
+                  candidateRevision: proposal.candidateRevision,
+                  proposalId: proposal.id,
+                });
+                return {
+                  outcome: 'review_required',
+                  proposalId: proposal.id,
+                  baseRevision,
+                  candidateRevision: proposal.candidateRevision,
+                };
+              },
+            });
+          let editor: ReturnType<typeof createNotebookAgentEditing>;
+          const tool = (
+            name: string,
+            key: string,
+            description: string,
+            execute: (value: string) => Promise<unknown>
+          ): AgentTool => ({
+            name,
+            description: `${description} Four changes, 2 MiB per file, 32 MiB total, 64 KiB script/output. Publication requires current native authority.`,
+            inputSchema: {
+              type: 'object',
+              properties: { [key]: { type: 'string' } },
+              required: [key],
+              additionalProperties: false,
+            },
+            execute: async (value, context) => {
+              if (
+                typeof value !== 'object' ||
+                value === null ||
+                Array.isArray(value) ||
+                Object.keys(value).length !== 1 ||
+                typeof (value as Record<string, unknown>)[key] !== 'string'
+              )
+                throw new NotebookError('invalid_request');
+              const abort = () => controller.abort();
+              if (context.signal.aborted) abort();
+              context.signal.addEventListener('abort', abort, { once: true });
+              try {
+                return {
+                  content: [
+                    {
+                      type: 'text',
+                      text: JSON.stringify(await execute((value as Record<string, string>)[key]!)),
+                    },
+                  ],
+                };
+              } finally {
+                context.signal.removeEventListener('abort', abort);
+              }
+            },
+          });
+          const nativeAuthority = {
+            actorRef: actor,
+            requestActor: input.requestActor,
+            assertCurrent,
+          };
+          const history = createAssistantHistory({
+            store,
+            coreDb,
+            workspaceId,
+            threadId: thread.id,
+            turnId: turn.id,
+            nativeAuthority,
+          });
+          const tools = [
+            history.tool,
+            tool(
+              'knowledge.notebook-workspace.update',
+              'script',
+              'Run an edit script against the admitted virtual User Memory snapshot. This edits pages but does not publish them; submit the prior edits with knowledge.notebook.update.',
+              (script) => editor.workspaceUpdate({ script })
+            ),
+            tool(
+              'knowledge.notebook.update',
+              'summary',
+              'Submit prior knowledge.notebook-workspace.update edits for Memory page publication. The summary describes the edits and is not page content. Literal Source capture is not Memory page publication. A native no_change outcome means no page changes were published.',
+              async (summary) => {
+                const result = await editor.notebookUpdate({ summary });
+                if (result.outcome === 'no_change')
+                  outcome = response('no-change', 'No Memory page changes were published.');
+                if (outcome) record(outcome);
+                return result;
+              }
+            ),
+          ];
+          const previous = priorRuns.filter((prior) => prior.status === 'completed').at(-1)
+            ?.internalExecution?.knowledge?.baseRevision;
+          const humanChanges: Array<{ path: string; before: string | null; after: string | null }> =
+            [];
+          let cursor: string | null = baseRevision;
+          let scanned = 0;
+          while (cursor && cursor !== previous && scanned++ < 256) {
+            const revision = notebook.inspectRevision(cursor);
+            const parent = revision.parentRevision
+              ? notebook.inspectRevision(revision.parentRevision)
+              : undefined;
+            if (revision.metadata.producer.kind === 'user')
+              for (const path of new Set([
+                ...Object.keys(revision.entries),
+                ...Object.keys(parent?.entries ?? {}),
+              ])) {
+                if (
+                  navigationUnavailable(path) ||
+                  suppressed().has(path.slice(0, -3)) ||
+                  (selected && !selected.has(path.slice(0, -3))) ||
+                  revision.entries[path] === parent?.entries[path]
+                )
+                  continue;
+                const read = (selectedRevision: string | undefined, exists: boolean) => {
+                  if (!selectedRevision || !exists) return null;
+                  const content = readPage(selectedRevision, path);
+                  admitBytes(content);
+                  historyReads.push({ revision: selectedRevision, path, content });
+                  return content;
+                };
+                humanChanges.push({
+                  path,
+                  before: read(parent?.revision, Boolean(parent?.entries[path])),
+                  after: read(revision.revision, Boolean(revision.entries[path])),
+                });
+                if (humanChanges.length > 256) throw new NotebookError('invalid_request');
+              }
+            cursor = revision.parentRevision;
+          }
+          if (cursor && cursor !== previous) throw new NotebookError('invalid_request');
+          const makeRun = (): KnowledgeManagerAgentRun => ({
+            turn,
+            workspaceDb,
+            signal: input.signal,
+            inputs: {
+              purpose: 'maintenance',
+              ownerScope: { kind: 'user', userId: userDb.userId },
+              baseRevision,
+              trigger: input.trigger,
+              instructions: input.instructions,
+              sourceRange: [],
+              ...(input.askingThreadId ? { askingThreadId: input.askingThreadId } : {}),
+              ...(input.askingTurnId ? { askingTurnId: input.askingTurnId } : {}),
+            },
+            tools,
+            assertCurrent,
+            messages: [
+              {
+                role: 'user',
+                content: [
+                  {
+                    type: 'text',
+                    text: JSON.stringify({
+                      instructions: input.instructions,
+                      notebookRevision: baseRevision,
+                      files: Object.keys(files),
+                      selectedPageIds: input.pageIds ?? [],
+                      humanEdits: boundedNotebookDiff(humanChanges, false),
+                      overview:
+                        files['index.md'] === undefined
+                          ? { unavailable: true }
+                          : excerpt(files['index.md'], 16 * 1024),
+                      sources: (() => {
+                        let remaining = 64 * 1024;
+                        return [...sources].map(([id, source]) => {
+                          const delivered = excerpt(source.content, remaining);
+                          remaining -= Buffer.byteLength(delivered.content);
+                          return {
+                            reference: `source:${id}@${source.contentDigest}`,
+                            file: `/sources/${id}`,
+                            ...delivered,
+                          };
+                        });
+                      })(),
+                      sourceHistory:
+                        'Only supplied User information, admitted Sources and notebook human edits are learning inputs. Maintenance history is not learning input. thread.history.read accepts only exact current-run compaction ranges.',
+                    }),
+                  },
+                ],
+              },
+            ],
+            readEvidence: (items) =>
+              readInternalContextEvidence({
+                store,
+                coreDb,
+                workspaceId,
+                threadId: thread.id,
+                nativeAuthority,
+                items,
+                strategy: 'compaction',
+              }),
+            resultSchema: {
+              type: 'object',
+              properties: { summary: { type: 'string', minLength: 1 } },
+              required: ['summary'],
+              additionalProperties: false,
+            },
+            validateResult: () => {
+              assertCurrent();
+              if (!outcome)
+                return 'Call knowledge.notebook.update({summary: ...}) first, including when no changes are needed. Then call knowledge.result.';
+              history.assertCurrent();
+              record(outcome);
+            },
+          });
+
           for (const [id, source] of sources) {
             admitBytes(source.content);
             sourceFiles[id] = source.content;
           }
           editor = createEditor();
-          await dependencies.run(makeRun());
+          const run = makeRun();
+          dependencies.pin(run);
+          await dependencies.run(run);
           if (!outcome) throw new NotebookError('invalid_request');
           return outcome;
         } catch {

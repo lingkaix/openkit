@@ -357,7 +357,7 @@ The Chat stale-refetch regression queries and asserts completed Markdown content
 
 Chat starter Recent stays in loading treatment while Workspace/identity discovery or conversation navigation is unresolved and shows its empty block only after a successful empty navigation read. Failed reads retry their own query; unavailable Workspaces and disconnected reads use error treatment. Its regression defers discovery and navigation separately and checks that neither pending stage shows the empty block. Overview ongoing-work tests query card headings so the required sidebar conversation labels do not collide with card titles.
 
-Knowledge unit journeys paste complete draft values through user-event into focused fields, retaining accessible selection, submission, retry and authoritative-refetch assertions without replaying unrelated keystrokes. The long ledger and cross-Workspace draft cases check Vitest's abort signal at user-event waits; the cross-Workspace case also checks it before changing the shared Workspace store, so timed-out input cannot continue into a following case.
+Knowledge unit journeys paste complete draft values through user-event into focused fields, retaining accessible selection, submission, retry and authoritative-refetch assertions without replaying unrelated keystrokes. The cross-Workspace draft cases check Vitest's abort signal at user-event waits and before changing the shared Workspace store, so timed-out input cannot continue into a following case.
 
 Material proposal review loads file-backed text through the authorized exact-version Artifact download, whose original digest header Core exposes to allowed browser origins, verifies complete UTF-8 and the digest within the 16,777,216-byte Material bound, and hides prior text while a different identity loads or a read fails.
 
@@ -401,7 +401,7 @@ Failed Turns retain their recorded dashboard errors in conversation history afte
 
 ### Knowledge retrieval
 
-Every production Knowledge caller in `screens/workspace/data.ts` uses the definition-derived `client.operations` map with one Workspace-bound argument. The existing entry, Source, ledger, retrieval, manager and proposal-decision hooks retain their retry, request identity and Workspace-cache ownership.
+Every production Knowledge caller in `screens/workspace/data.ts` uses the definition-derived `client.operations` map with one Workspace-bound argument. The existing notebook entry, Source, retrieval, manager and proposal-decision hooks retain their retry, request identity and Workspace-cache ownership.
 
 The Retrieval panel uses the derived-index read only for availability and failure state. It does not expose a separate tokenizer-term inventory; ranked retrieval belongs to the Retrieval Kernel.
 
@@ -477,11 +477,11 @@ Account membership controls permit every active member to invite, revoke, remove
 
 Knowledge Manager answers show returned citations with owner-checked links to current full page content. Failed page refetches withhold those links even when cached entries remain. Add knowledge can retain an explicitly selected registered Source and its captured digest. The picker accepts only Sources owned by the selected Workspace with a captured digest; a new Source-linked save waits for catalog refresh and requires the selected exact reference to remain available. An uncertain command retries its original Source reference and request identity through current server admission. Source selection stays in its Workspace draft; matching text does not create a relationship.
 
-Workspace Knowledge editing keeps the selected published notebook revision in each local draft. A background list refresh does not replace that base. Create/update/delete commands and exact unknown-outcome retries retain that revision and their original request identity. A UI mutation response never replaces an authoritative list refresh.
+Workspace Knowledge uses knowledge.notebook.list/create/update/delete over complete OKF pages; title/body editing preserves other front matter and unchanged body bytes. Editing keeps the selected published notebook revision in each local draft. A background list refresh does not replace that base. Create/update/delete commands and exact unknown-outcome retries retain that revision and their original request identity. A UI mutation response never replaces an authoritative list refresh.
 
 Notebook history reads published revisions and exact page differences for the selected Workspace. A truncated diff is visibly marked; users can select fewer displayed pages to request a complete restore preview. Prepare restore shows the normalized bytes and selected removals before explicit confirmation; a truncated result cannot enable confirmation. Restore creates a new revision at the displayed base and retains intervening history. An unknown result retries the same command identity and selection. Workspace changes discard local history choices and prevent late responses from displaying another Workspace's content; current permissions remain enforced by the server.
 
-Knowledge Review actions submit the exact saved proposal digest and base/candidate commits from the attention source. Confirmed removal submits the displayed list revision and canonical page digest; the browser does not rebuild canonical page bytes or infer Git identities.
+Knowledge Review actions submit the exact saved proposal digest and base/candidate commits from the attention source. Confirmed removal submits the displayed list revision, exact path and canonical page digest without rebuilding the deleted page bytes; the browser does not infer Git identities.
 
 Vitest uses the shared [per-run temporary-directory setup](../../tests/support/vitest-global-setup.mjs), which contains worker temporary files and removes them at normal success or failure teardown.
 

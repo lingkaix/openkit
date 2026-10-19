@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import {
-  type KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS,
   KNOWLEDGE_NOTEBOOK_DIFF_TEXT_LIMIT_BYTES,
+  type KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS,
   RestoreKnowledgeNotebookResponseSchema,
 } from '@openkit/app-api-schemas';
 import type { OperationInvocationDependencies } from '../operation-composition.js';
@@ -13,6 +13,7 @@ import {
 import { OperationError } from '../operation-error.js';
 import {
   type KnowledgeRetrievalAccess,
+  knowledgeSourceAudienceReadable,
   readAuthorizedWorkspaceNotebookPages,
 } from '../retrieval-knowledge-adapter.js';
 import { KnowledgeNotebook, NotebookError } from './notebook.js';
@@ -30,7 +31,7 @@ type Dependencies = Pick<
   | 'workspaceMutationAdmission'
 >;
 type Handlers = Pick<
-  FamilyImplementations<typeof KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS>,
+  FamilyImplementations<typeof KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS>,
   'knowledge.notebook.history' | 'knowledge.notebook.diff' | 'knowledge.notebook.restore'
 >;
 type Selection = {
@@ -165,6 +166,26 @@ export class AuthorizedHistory {
           ).sort();
           this.read(revision.revision, changedPaths);
         }
+        const sources = this.notebook.readSourcePointers(revision.revision);
+        const previousSources = revision.parentRevision
+          ? this.notebook.readSourcePointers(revision.parentRevision)
+          : {};
+        for (const id of new Set([...Object.keys(sources), ...Object.keys(previousSources)])) {
+          if (sources[id] === previousSources[id]) continue;
+          if (
+            !knowledgeSourceAudienceReadable(
+              { workspaceId: this.workspaceId, access: this.access },
+              id
+            )
+          )
+            throw new OperationError(
+              'workspace_access_denied',
+              'Notebook Source history is unavailable.',
+              403
+            );
+          changedPaths.push(`sources/${id}.md`);
+        }
+        changedPaths.sort();
         return {
           ...identity,
           availability: 'available' as const,

@@ -28,9 +28,6 @@ export const FILE_CORPUS_FAMILIES = Object.freeze([
   'Notebook scope schema',
   'Knowledge Proposal',
   'Knowledge Proposal Review',
-  'Knowledge observation ledger',
-  'Knowledge claim ledger',
-  'Knowledge conflict ledger',
   'Workspace Source identity',
   'Workspace captured Source text',
   'User Source identity',
@@ -73,8 +70,16 @@ async function owners(appRoot) {
     records: 'storage/workspace-file-records.js',
     notebook: 'knowledge/notebook.js',
     notebookOwner: 'knowledge/scoped-notebook-owner.js',
+    knowledgeBase: 'config/knowledge-base.js',
     okf: 'knowledge/okf.js',
+    pageFixture: 'test-support/knowledge-page.js',
     sources: 'knowledge/scoped-knowledge-sources.js',
+    sourcePublisher: 'knowledge/source-publication.js',
+    sourcePointers: 'knowledge/source-pointers.js',
+    sourceReader: 'knowledge/source-reading.js',
+    notebookAdmission: 'knowledge/notebook-workspace-admission.js',
+    runtimeConfig: 'config/runtime-config.js',
+    mutationAdmission: 'workspace-mutation-admission.js',
     memory: 'knowledge/memory-maintenance.js',
     membership: 'workspace-membership.js',
     feedback: 'runtime/feedback.js',
@@ -324,8 +329,11 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
       reservation.release();
     }
     selectors.sourceId = o.protocol.allocateEntityId('ks');
-    ctx.store.createKnowledgeSource(
-      {
+    const sourceDb = o.db.openWorkspaceDb(r.data, workspace.id);
+    try {
+      o.migrate.applyScopedMigrations(sourceDb);
+      const requestId = randomUUID();
+      const source = {
         id: selectors.sourceId,
         workspaceId: workspace.id,
         kind: 'document',
@@ -338,9 +346,53 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
         capturedAt: FIXTURE.at,
         createdAt: FIXTURE.at,
         updatedAt: FIXTURE.at,
-      },
-      FIXTURE.text
-    );
+      };
+      const notebook = new o.notebook.KnowledgeNotebook({
+        repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
+      });
+      const runtimeConfigManager = {
+        current: () => o.runtimeConfig.createInMemoryRuntimeConfigSnapshot({ dataRoot: r.data }),
+      };
+      const workspaceMutationAdmission = new o.mutationAdmission.WorkspaceMutationAdmission();
+      await o.sourcePublisher.publishCapturedSource(
+        {
+          owner: { dataRoot: r.data, ownerScope: { kind: 'workspace', workspaceId: workspace.id } },
+          database: { kind: 'workspace', workspaceDb: sourceDb },
+          access: {
+            store: ctx.store,
+            coreDb: ctx.coreDb,
+            actor: producer,
+            requestActor: ctx.actor,
+          },
+          producer,
+          requestId,
+          commandInput: source,
+          captureChannel: 'knowledge.source.register',
+          revalidatePublication: () =>
+            o.notebookAdmission.readWorkspaceNotebookAdmission({
+              store: ctx.store,
+              coreDb: ctx.coreDb,
+              workspaceDb: sourceDb,
+              actor: producer,
+              requestActor: ctx.actor,
+              notebook,
+              runtimeConfigManager,
+              workspaceMutationAdmission,
+              request: {
+                workspaceId: workspace.id,
+                requestId,
+                baseRevision: notebook.publishedRevision(),
+                changes: [],
+                summary: 'Capture public corpus evidence.',
+              },
+            }),
+        },
+        source,
+        Buffer.from(FIXTURE.text)
+      );
+    } finally {
+      sourceDb.sqlite.close();
+    }
     selectors.userSourceId = (
       await o.sources.registerUserKnowledgeSource(ctx, {
         requestId: randomUUID(),
@@ -376,10 +428,8 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
           : scope === 'user'
             ? { kind: scope, userId }
             : { kind: scope };
-      const content = o.records.serializeUserAuthoredKnowledgePage(
+      const content = o.pageFixture.serializeKnowledgePageFixture(
         {
-          id: 'continuity',
-          kind: 'project-context',
           title: 'Public synthetic continuity',
           content: FIXTURE.text,
           createdAt: FIXTURE.at,
@@ -387,14 +437,48 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
         },
         ownerScope
       );
+      const changes = { 'continuity.md': content };
+      if (scope === 'workspace') {
+        const knowledgeBaseId = o.knowledgeBase.readDefaultKnowledgeBaseId({
+          dataRoot: r.data,
+          scope: ownerScope,
+        });
+        const pageScopeId = `page/workspace/${workspace.id}/${knowledgeBaseId}`;
+        const claim = o.okf.updateOkfFrontmatter({
+          path: 'continuity-claim.md',
+          content,
+          updates: { type: 'Claim', openkit_entry_id: 'continuity-claim', confidence: 0.75 },
+        });
+        changes['continuity-claim.md'] = claim;
+        changes['continuity-assessment.md'] = o.okf.updateOkfFrontmatter({
+          path: 'continuity-assessment.md',
+          content,
+          updates: {
+            type: 'Observation',
+            openkit_entry_id: 'continuity-assessment',
+            openkit_status: 'draft',
+            status: 'draft',
+            conflict_status: 'unresolved',
+            subject_refs: [
+              o.protocol.formatReferenceUri(
+                { scopeId: pageScopeId, objectId: 'continuity-claim' },
+                `sha256:${sha256(claim)}`
+              ),
+            ],
+          },
+        });
+      }
       const candidateRevision = notebook.prepare({
         baseRevision,
-        changes: { 'continuity.md': content },
+        changes,
         metadata: {
           summary: 'Public synthetic upgrade fixture',
           producer,
           authority: { kind: 'direct', instructionReference: 'fixture:upgrade-from-previous' },
-          changeRequest: { requestId: randomUUID(), inputDigest: `sha256:${sha256(content)}` },
+          changeRequest: {
+            requestId: randomUUID(),
+            inputDigest: `sha256:${sha256(JSON.stringify(changes))}`,
+          },
           sourceReferences: [],
         },
       });
@@ -421,10 +505,8 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
     const notebook = new o.notebook.KnowledgeNotebook({
       repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
     });
-    const candidatePage = o.records.serializeUserAuthoredKnowledgePage(
+    const candidatePage = o.pageFixture.serializeKnowledgePageFixture(
       {
-        id: 'candidate',
-        kind: 'project-context',
         title: 'Public synthetic candidate',
         content: FIXTURE.text,
         createdAt: FIXTURE.at,
@@ -458,47 +540,6 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
       actor: producer,
       decidedAt: FIXTURE.at,
       verifiedExternalReferences: [],
-    });
-    selectors.claimId = o.protocol.allocateEntityId('kc');
-    ctx.store.recordKnowledgeClaim({
-      id: selectors.claimId,
-      workspaceId: workspace.id,
-      statement: 'Public synthetic retained claim.',
-      sourceReferences: ['knowledge:continuity'],
-      scope: 'workspace',
-      producer: 'upgrade-corpus',
-      confidence: 1,
-      freshness: 'current',
-      reviewState: 'accepted',
-      conflictStatus: 'none',
-      createdAt: FIXTURE.at,
-      updatedAt: FIXTURE.at,
-    });
-    ctx.store.recordKnowledgeObservation({
-      id: o.protocol.allocateEntityId('ko'),
-      workspaceId: workspace.id,
-      kind: 'maintenance',
-      summary: 'Public synthetic observation.',
-      sourceReferences: [`claim:${selectors.claimId}`],
-      scope: 'workspace',
-      producer: 'upgrade-corpus',
-      confidence: 1,
-      freshness: 'current',
-      status: 'retained',
-      observedAt: FIXTURE.at,
-      createdAt: FIXTURE.at,
-    });
-    ctx.store.recordKnowledgeConflict({
-      id: o.protocol.allocateEntityId('kf'),
-      workspaceId: workspace.id,
-      subjectReferences: ['knowledge:continuity', `claim:${selectors.claimId}`],
-      sourceReferences: ['knowledge:continuity'],
-      status: 'needs_review',
-      summary: 'Public synthetic historical conflict.',
-      suggestedActions: ['Inspect synthetic fixture.'],
-      producer: 'upgrade-corpus',
-      createdAt: FIXTURE.at,
-      updatedAt: FIXTURE.at,
     });
     await seedRemainingFiles(o, ctx, r, selectors, producer, workspaceRoot);
   } finally {
@@ -779,37 +820,46 @@ export async function readFileCorpus({ appRoot, dataRoot, retainedRoot, selector
       ctx.store.listKnowledgeProposalReviewDecisions(selectors.workspaceId, selectors.proposalId),
       [`${workspacePath}/knowledge/reviews/${selectors.proposalId}.json`]
     );
-    record(
-      'Knowledge observation ledger',
-      ctx.store.listKnowledgeObservations(selectors.workspaceId),
-      [`${workspacePath}/knowledge/observations`]
-    );
-    record('Knowledge claim ledger', ctx.store.listKnowledgeClaims(selectors.workspaceId), [
-      `${workspacePath}/knowledge/claims`,
-    ]);
-    record('Knowledge conflict ledger', ctx.store.listKnowledgeConflicts(selectors.workspaceId), [
-      `${workspacePath}/knowledge/conflicts`,
-    ]);
+    const sourceOwner = {
+      dataRoot: r.data,
+      ownerScope: { kind: 'workspace', workspaceId: selectors.workspaceId },
+    };
+    const workspaceSource = o.sourcePointers
+      .readSourcePointers(sourceOwner)
+      .get(selectors.sourceId);
+    if (!workspaceSource) throw new Error('Corpus Source pointer is unavailable.');
     record(
       'Workspace Source identity',
       [ctx.store.getKnowledgeSource(selectors.workspaceId, selectors.sourceId)],
-      [`${workspacePath}/sources/registry/${selectors.sourceId}.json`]
+      [`${workspacePath}/knowledge/notebook.git`]
     );
+    const sourceText = await o.sourceReader.readManagedSourceText({
+      owner: sourceOwner,
+      access: {
+        store: ctx.store,
+        coreDb: ctx.coreDb,
+        actor: { kind: 'user', id: selectors.userId },
+        requestActor: ctx.actor,
+      },
+      pointer: workspaceSource,
+    });
+    if (sourceText.status !== 'ok') throw new Error('Corpus Source original is unavailable.');
     record(
       'Workspace captured Source text',
-      [ctx.store.readKnowledgeSourceMaterial(selectors.workspaceId, selectors.sourceId)],
-      [`${workspacePath}/sources/materials/${selectors.sourceId}/content.txt`]
+      [sourceText.value],
+      [`${workspacePath}/knowledge/raw/${workspaceSource.fields.contentRef.locator.path}`]
     );
-    const userSource = o.sources.readUserKnowledgeSource(ctx, selectors.userSourceId);
+    const userSource = await o.sources.readUserKnowledgeSource(ctx, selectors.userSourceId);
+    if (!userSource) throw new Error('Corpus User Source is unavailable.');
     record(
       'User Source identity',
       [userSource.source],
-      [`users/${selectors.userId}/sources/registry/${selectors.userSourceId}.json`]
+      [`users/${selectors.userId}/memory/notebook.git`]
     );
     record(
       'User captured Source text',
       [userSource.content],
-      [`users/${selectors.userId}/sources/materials/${selectors.userSourceId}/content.txt`]
+      [`users/${selectors.userId}/memory/raw/sources/${selectors.userSourceId}/original`]
     );
     record(
       'Memory suppression',

@@ -10,6 +10,7 @@ import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { knowledgeOperationRequest } from './test-support/knowledge-operation.js';
+import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -53,31 +54,40 @@ async function createLineageFixture() {
       { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' }
     );
     const allowedNotebookResponse = await app.request(
-      ...operationRequest('knowledge.list', { workspaceId: allowedWorkspace.id })
+      ...operationRequest('knowledge.notebook.list', { workspaceId: allowedWorkspace.id })
     );
     expect(allowedNotebookResponse.status, await allowedNotebookResponse.clone().text()).toBe(200);
     const { notebookRevision: allowedNotebookRevision } = await allowedNotebookResponse.json();
     const foreignNotebookResponse = await app.request(
-      ...operationRequest('knowledge.list', { workspaceId: foreignWorkspace.id })
+      ...operationRequest('knowledge.notebook.list', { workspaceId: foreignWorkspace.id })
     );
     expect(foreignNotebookResponse.status, await foreignNotebookResponse.clone().text()).toBe(200);
     const { notebookRevision: foreignBaseRevision } = await foreignNotebookResponse.json();
     const created = await app.request(
       ...operationRequest(
-        'knowledge.create',
+        'knowledge.notebook.create',
         {
           workspaceId: foreignWorkspace.id,
-          knowledgePageId: 'foreign-knowledge',
           baseRevision: foreignBaseRevision,
-          kind: 'project-context',
-          title: 'Foreign knowledge',
-          content: 'This entry belongs to the foreign Workspace.',
+          path: 'foreign-knowledge' + '.md',
+          content: serializeKnowledgePageFixture(
+            {
+              title: 'Foreign knowledge',
+              content: 'This entry belongs to the foreign Workspace.',
+              sourceReferences: [],
+              createdAt: '2026-10-19T00:00:00.000Z',
+              updatedAt: '2026-10-19T00:00:00.000Z',
+            },
+            { kind: 'workspace', workspaceId: foreignWorkspace.id }
+          ),
+          summary: 'Publish explicit full-page fixture',
         },
         { body: JSON.stringify({ requestId: randomUUID() }) }
       )
     );
     expect(created.status, await created.clone().text()).toBe(200);
-    const foreignKnowledge = await created.json();
+    expect((await created.json()).changedPageIds).toEqual(['foreign-knowledge']);
+    const foreignKnowledge = { id: 'foreign-knowledge' };
     const foreignNotebook = new KnowledgeNotebook({
       repositoryPath: join(
         dataRoot,
@@ -90,21 +100,22 @@ async function createLineageFixture() {
     const foreignKnowledgeBytes = foreignNotebook.readRevision(foreignNotebook.publishedRevision())
       .files[`${foreignKnowledge.id}.md`]!;
     const foreignKnowledgeDigest = `sha256:${createHash('sha256').update(foreignKnowledgeBytes).digest('hex')}`;
-    const timestamp = new Date().toISOString();
-    const foreignKnowledgeSource = store.createKnowledgeSource({
-      id: 'ks_00000000-0000-756d-9b79-fde0d969c5fa',
-      workspaceId: foreignWorkspace.id,
-      kind: 'document',
-      title: 'Foreign knowledge source',
-      uri: null,
-      contentDigest: 'sha256:foreign-lineage-source',
-      originatingThreadId: null,
-      originatingTurnId: null,
-      originatingFileId: null,
-      capturedAt: timestamp,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    });
+    const foreignSourceResponse = await app.request(
+      ...operationRequest(
+        'knowledge.source.register',
+        { workspaceId: foreignWorkspace.id },
+        {
+          body: JSON.stringify({
+            requestId: randomUUID(),
+            kind: 'document',
+            title: 'Foreign knowledge source',
+            content: 'Foreign Source exact original bytes.',
+          }),
+        }
+      )
+    );
+    expect(foreignSourceResponse.status, await foreignSourceResponse.clone().text()).toBe(200);
+    const { source: foreignKnowledgeSource } = await foreignSourceResponse.json();
     const artifactBody = 'Foreign Artifact content.';
     const artifactRequestId = 'foreign-artifact-lineage';
     const foreignArtifact = store.createArtifact({
@@ -267,27 +278,33 @@ describe('Workspace child lineage', () => {
     const foreignBytes = foreignNotebook.readRevision(foreignRevision).files;
     for (const [id, child, status, code] of [
       [
-        'knowledge.update',
+        'knowledge.notebook.update',
         {
-          knowledgeEntryId: fixture.foreignKnowledge.id,
           requestId: '00000000-0000-4000-8000-000000000403',
-          title: 'Do not update this entry',
+          changes: [
+            {
+              path: `${fixture.foreignKnowledge.id}.md`,
+              content: foreignBytes[`${fixture.foreignKnowledge.id}.md`]!,
+            },
+          ],
+          summary: 'Refuse foreign-owner content',
           baseRevision: fixture.allowedNotebookRevision,
         },
         400,
         'invalid_request',
       ],
       [
-        'knowledge.delete',
+        'knowledge.notebook.delete',
         {
-          knowledgeEntryId: fixture.foreignKnowledge.id,
           requestId: '00000000-0000-4000-8000-000000000404',
           baseRevision: fixture.allowedNotebookRevision,
+          path: `${fixture.foreignKnowledge.id}.md`,
+          summary: 'Refuse foreign page deletion',
           expectedContentDigest: fixture.foreignKnowledgeDigest,
           confirmRemoval: true,
         },
-        409,
-        'conflict',
+        400,
+        'invalid_request',
       ],
       [
         'knowledge.source.read',

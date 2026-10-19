@@ -1,7 +1,8 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
@@ -11,8 +12,9 @@ import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { readRetrievalTrace } from '../storage/retrieval-traces.js';
-import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
+import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { KnowledgeNotebook } from './notebook.js';
@@ -33,10 +35,8 @@ function page(
 ) {
   return updateOkfFrontmatter({
     path: `${id}.md`,
-    content: serializeUserAuthoredKnowledgePage(
+    content: serializeKnowledgePageFixture(
       {
-        id,
-        kind: 'project-context',
         title: id,
         content: 'domain-selector evidence.',
         sourceReferences: [],
@@ -282,3 +282,79 @@ it('forwards typed filters through the native operation and records supplied fil
     native.selected.map((entry: { reference: { objectId: string } }) => entry.reference.objectId)
   ).toEqual(['invoice-rule']);
 });
+
+it('retains selector mismatch separately from an actual Source audience denial without widening wildcard selectors', async () => {
+  const f = fixture();
+  const sourceThread = f.store.createThread(
+    f.workspace.id,
+    'Private source',
+    undefined,
+    'conversation',
+    { visibility: 'workspace' }
+  );
+  const captured = 'domain-selector private evidence.';
+  const source = await captureWorkspaceSourceFixture({
+    dataRoot: f.dataRoot,
+    coreDb: f.coreDb,
+    store: f.store,
+    userId: f.access.actor.id,
+    source: {
+      id: allocateEntityId('ks'),
+      workspaceId: f.workspace.id,
+      kind: 'document',
+      title: 'Private evidence',
+      uri: null,
+      contentDigest: `sha256:${createHash('sha256').update(captured).digest('hex')}`,
+      originatingThreadId: sourceThread.id,
+      originatingTurnId: null,
+      originatingFileId: null,
+      capturedAt: NOW,
+      createdAt: NOW,
+      updatedAt: NOW,
+    },
+    content: captured,
+  });
+  const publication = await f.publish([
+    { path: 'invoice-rule.md', content: page('invoice-rule', 'Rule', f.workspace.id) },
+    {
+      path: 'private-rule.md',
+      content: page('private-rule', 'Rule', f.workspace.id, {
+        source_refs: [`source:${source.id}@${source.contentDigest}`],
+      }),
+    },
+  ]);
+  // Narrow after publication so the query proves current audience admission, not setup refusal.
+  Object.assign(sourceThread, { visibility: 'private', privateOwnerUserId: f.access.actor.id });
+  const thread = f.store.createThread(
+    f.workspace.id,
+    'Shared selector query',
+    undefined,
+    'conversation',
+    { visibility: 'workspace' }
+  );
+  Object.assign(f.access, { outputThreadId: thread.id });
+  const corrected = await f.retrieve();
+  expect(corrected.selected.map((entry) => entry.reference.objectId)).toEqual(['invoice-rule']);
+  expect(JSON.stringify([corrected.selected, corrected.excluded])).not.toContain('private-rule');
+  expect(JSON.stringify([corrected.selected, corrected.excluded])).not.toContain(source.id);
+  const result = await f.retrieve({ types: ['*'], appliesTo: ['*'] });
+  expect(result.selected).toEqual([]);
+  expect(result.retrievalParameters).toMatchObject({ types: ['*'], appliesTo: ['*'] });
+  // The admitted index hides this Source-restricted page before any selector disposition.
+  expect(JSON.stringify([result.selected, result.excluded])).not.toContain('private-rule');
+  expect(JSON.stringify([result.selected, result.excluded])).not.toContain(source.id);
+  expect(result.excluded).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        reference: expect.objectContaining({ objectId: 'invoice-rule' }),
+        reason: 'selector_mismatch',
+      }),
+    ])
+  );
+  const retained = readRetrievalTrace(f.root, result.retrievalTraceRef!);
+  expect(retained).toMatchObject({
+    notebookRevision: publication.notebookRevision,
+    retrievalParameters: { types: ['*'], appliesTo: ['*'] },
+    excluded: result.excluded,
+  });
+}, 120_000);

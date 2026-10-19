@@ -27,6 +27,13 @@ import {
   markSchedulerExecutionAttemptClosing,
   schedulerExecutionCorrelation,
 } from './runtime/execution-attempt-records.js';
+import {
+  createNanoHostHarnessRuntime,
+  dispatchNanoHostHarnessOperation,
+  openNanoHostAgentSessionBinding,
+  queueNanoHostHarnessOperation,
+  settleNanoHostHarnessOperation,
+} from './runtime/nanohost-harness-records.js';
 import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import { createSchedulerAdmissionEntry } from './scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
@@ -37,10 +44,13 @@ import {
   createVerifiedWorkspaceExport,
   workspaceDeletionRecoveryExportId,
 } from './storage/workspace-transfer-routes.js';
+import { recordTestAgentEnvironmentPackage } from './test-support/agent-environment.js';
 import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
+import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import { ensureLocalUser } from './test-support/local-user.js';
+import { recordTestNativeRuntimeTarget } from './test-support/native-environment.js';
 import { operationRequest } from './test-support/operation-request.js';
 import {
   createWorkspaceDeletionClosure,
@@ -588,6 +598,7 @@ it.each([
   ['scheduler recovery evidence', '00000000-0000-4000-8000-000000000027'],
   ['physical worker cleanup', '00000000-0000-4000-8000-000000000028'],
   ['approved apply plan', '00000000-0000-4000-8000-000000000029'],
+  ['idle ready native binding', '00000000-0000-4000-8000-000000000037'],
 ] as const)('keeps deletion fenced while %s remains nonterminal', async (blocker, requestId) => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-deletion-quiescence-'));
   const coreDb = openCoreDb(dataRoot);
@@ -603,6 +614,7 @@ it.each([
       workspaceId: workspace.id,
     });
     const timestamp = new Date().toISOString();
+    let retainedPackage: { path: string; bytes: Buffer } | null = null;
     if (blocker === 'scheduler recovery evidence') {
       insertDeletionQuiescenceLease(coreDb, {
         recoveryState: 'needs-evidence',
@@ -630,6 +642,107 @@ it.each([
            )`
         )
         .run(workspace.id, 'a'.repeat(64), timestamp, timestamp, timestamp);
+    } else if (blocker === 'idle ready native binding') {
+      const suffix = 'deletion_idle_native';
+      const thread = store.createThread(workspace.id, 'Idle native resident');
+      const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
+      let environmentPackage: ReturnType<typeof recordTestAgentEnvironmentPackage>;
+      try {
+        applyScopedMigrations(workspaceDb);
+        environmentPackage = recordTestAgentEnvironmentPackage(workspaceDb, {
+          coreDb,
+          suffix,
+          threadId: thread.id,
+          triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+          workspaceInputIds: [],
+        });
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+      store.createAgentSession({
+        id: environmentPackage.scope.agentSessionId,
+        agentId: environmentPackage.agent.agentId,
+        workspaceId: workspace.id,
+        threadId: thread.id,
+        environmentPackageSnapshotId: environmentPackage.snapshotId,
+        status: 'idle',
+        message: null,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
+      const target = recordTestNativeRuntimeTarget(coreDb);
+      createNanoHostHarnessRuntime(coreDb, {
+        maxActiveTurns: 1,
+        adapterId: 'codex',
+        adapterVersion: 'test',
+        harnessBindingRef: 'harness-binding-deletion-idle',
+        harnessCompatibilityKey: 'b'.repeat(64),
+        harnessInstanceId: 'harness-deletion-idle',
+        imageDigest: `sha256:${'f'.repeat(64)}`,
+        originPhysicalEpoch: target.physicalEpoch!,
+        sandboxBindingRef: 'sandbox-binding-deletion-idle',
+        sandboxCompatibilityKey: 'c'.repeat(64),
+        sandboxIntegrationBindingRef: 'integration-binding-deletion-idle',
+        sandboxRuntimeId: 'sandbox-runtime-deletion-idle',
+        runtimeTargetId: target.targetId,
+        timestamp,
+      });
+      const binding = {
+        agentSessionCompatibilityKey: 'd'.repeat(64),
+        agentSessionId: environmentPackage.scope.agentSessionId,
+        agentSessionRuntimeBindingId: 'binding-deletion-idle',
+        effectiveSetupGeneration: 1,
+        harnessInstanceId: 'harness-deletion-idle',
+        threadId: thread.id,
+        workspaceId: workspace.id,
+      };
+      openNanoHostAgentSessionBinding(coreDb, { ...binding, timestamp });
+      const { harnessInstanceId, ...sessionOpen } = binding;
+      queueNanoHostHarnessOperation(coreDb, {
+        body: { ...sessionOpen, adapterId: 'codex', resume: null },
+        harnessInstanceId,
+        operation: 'session.open',
+        timestamp,
+      });
+      const command = dispatchNanoHostHarnessOperation(coreDb, {
+        sandboxIntegrationBindingRef: 'integration-binding-deletion-idle',
+      })!;
+      expect(command).not.toBeNull();
+      settleNanoHostHarnessOperation(coreDb, {
+        sandboxIntegrationBindingRef: 'integration-binding-deletion-idle',
+        timestamp,
+        result: {
+          schemaVersion: 2,
+          harnessInstanceId: command.harnessInstanceId,
+          operationId: command.operationId,
+          sequence: command.sequence,
+          disposition: 'succeeded',
+          body: {
+            state: 'open',
+            maxActiveTurns: 1,
+            nativeHandleState: 'ready',
+            nativeHandleDigest: 'a'.repeat(64),
+          },
+        },
+      });
+      const path = join(
+        dataRoot,
+        'workspaces',
+        workspace.id,
+        'runtime',
+        'agent-sessions',
+        environmentPackage.scope.agentSessionId,
+        'aep-snapshots',
+        `${environmentPackage.snapshotId}.json`
+      );
+      retainedPackage = { path, bytes: readFileSync(path) };
+      expect(
+        coreDb.sqlite
+          .prepare(
+            'SELECT lifecycle_state, native_handle_state FROM agent_session_runtime_bindings'
+          )
+          .get()
+      ).toEqual({ lifecycle_state: 'open', native_handle_state: 'ready' });
     } else {
       const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
       try {
@@ -674,6 +787,7 @@ it.each([
     );
 
     expect(response.status, await response.clone().text()).toBe(202);
+    if (retainedPackage) expect(readFileSync(retainedPackage.path)).toEqual(retainedPackage.bytes);
     expect(readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId).phase).toBe('fenced');
     expect(
       coreDb.sqlite
@@ -1783,27 +1897,36 @@ it('retains a Thread-owned retrieval trace in the verified deletion recovery exp
       turnExecutor: new SimulatedTurnExecutor(),
     });
     const notebookResponse = await app.request(
-      ...operationRequest('knowledge.list', { workspaceId: workspace.id })
+      ...operationRequest('knowledge.notebook.list', { workspaceId: workspace.id })
     );
     expect(notebookResponse.status, await notebookResponse.clone().text()).toBe(200);
     const { notebookRevision } = await notebookResponse.json();
     const pageResponse = await app.request(
       ...operationRequest(
-        'knowledge.create',
+        'knowledge.notebook.create',
         {
           workspaceId: workspace.id,
           baseRevision: notebookRevision,
-          knowledgePageId: 'deletion-recovery-trace',
           requestId: '00000000-0000-4000-8000-000000000904',
-          kind: 'project-context',
-          title: 'Deletion recovery trace',
-          content: 'Retain this retrieval trace in the verified recovery export.',
+          path: 'deletion-recovery-trace' + '.md',
+          content: serializeKnowledgePageFixture(
+            {
+              title: 'Deletion recovery trace',
+              content: 'Retain this retrieval trace in the verified recovery export.',
+              sourceReferences: [],
+              createdAt: '2026-10-19T00:00:00.000Z',
+              updatedAt: '2026-10-19T00:00:00.000Z',
+            },
+            { kind: 'workspace', workspaceId: workspace.id }
+          ),
+          summary: 'Publish explicit full-page fixture',
         },
         { headers: { 'x-openkit-request-id': '00000000-0000-4000-8000-000000000904' } }
       )
     );
     expect(pageResponse.status, await pageResponse.clone().text()).toBe(200);
-    const page = await pageResponse.json();
+    expect((await pageResponse.json()).changedPageIds).toEqual(['deletion-recovery-trace']);
+    const page = { id: 'deletion-recovery-trace' };
     const traceId = 'krt_00000000-0000-7c9e-a8c7-f3f6e7618033';
     const retrieval = await retrieveWorkspaceKnowledge({
       access: {

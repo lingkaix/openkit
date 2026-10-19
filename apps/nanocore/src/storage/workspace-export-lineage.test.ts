@@ -51,7 +51,11 @@ import {
   bindImportedWorkspaceNotebookTraces,
   readPortableWorkspaceNotebookPages,
 } from '../knowledge/notebook-workspace-portability.js';
-import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT, parseOkfDocument } from '../knowledge/okf.js';
+import {
+  DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
+  parseOkfDocument,
+  stringListFrontmatterField,
+} from '../knowledge/okf.js';
 import {
   importAgentEnvironmentPackageSnapshots,
   requireAgentEnvironmentPackageSnapshot,
@@ -72,6 +76,10 @@ import {
   listWorkspaceReconciliationRecords,
 } from '../runtime/workspace-reconciliation-records.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import {
+  knowledgePageFixture,
+  serializeKnowledgePageFixture,
+} from '../test-support/knowledge-page.js';
 import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { publishArtifactVersionRecord } from './artifacts/artifact-version-records.js';
@@ -83,11 +91,7 @@ import {
   type WriteWorkspaceExportTreeInput,
   writeWorkspaceExportTree,
 } from './workspace-export.js';
-import {
-  artifactReferenceItemId,
-  parseOwnedKnowledgeEntry,
-  serializeUserAuthoredKnowledgePage,
-} from './workspace-file-records.js';
+import { artifactReferenceItemId, parseOwnedKnowledgePage } from './workspace-file-records.js';
 import {
   readWorkspaceImportSnapshot,
   verifyImportedWorkerContextPackageSnapshot,
@@ -380,10 +384,7 @@ function createLineageExportInput(
       updatedAt: timestamp,
     },
     portableFileState: {
-      claims: new Map(),
-      conflicts: new Map(),
       nativeKnowledgePages: new Map(),
-      observations: new Map(),
       retrievalTraceFiles: new Map(),
       workerContextPackageFiles: new Map(),
       workspaceConfig: JSON.stringify({
@@ -392,9 +393,18 @@ function createLineageExportInput(
           name: 'Lineage workspace',
           defaultAgentId: null,
           defaultKnowledgeBaseId: source.knowledgeBaseId,
+          knowledgeMounts: [
+            {
+              name: 'raw',
+              knowledgeBaseId: source.knowledgeBaseId,
+              default: true,
+              backend: 'local',
+              root: 'raw',
+            },
+          ],
         },
       }),
-      workspaceSchema: null,
+      workspaceSchema: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
     },
     threads: [
       {
@@ -835,10 +845,8 @@ function createWorkResourceLineageExportInput(
   const appliedContentDigest = `sha256:${createHash('sha256').update(appliedContent).digest('hex')}`;
   const knowledgePageId = 'knowledge_portable_source';
   const knowledgeSourceRefs: string[] = [];
-  const knowledgeContent = serializeUserAuthoredKnowledgePage(
+  const knowledgeContent = serializeKnowledgePageFixture(
     {
-      id: knowledgePageId,
-      kind: 'project-context',
       title: 'Retained portable Knowledge',
       content:
         '# Retained portable knowledge\n\nUse the retained package bytes.\n' +
@@ -872,11 +880,7 @@ function createWorkResourceLineageExportInput(
   const notebookFiles = notebook.readRevision(notebookRevision).files;
   onTestFinished(() => rmSync(dirname(input.exportRoot), { recursive: true, force: true }));
   input.knowledge = [
-    parseOwnedKnowledgeEntry(
-      `knowledge/pages/${knowledgePageId}.md`,
-      knowledgePageId,
-      knowledgeContent
-    ),
+    parseOwnedKnowledgePage(`${knowledgePageId}.md`, knowledgePageId, knowledgeContent),
   ];
   input.workspace = {
     ...input.workspace,
@@ -1403,13 +1407,10 @@ function createWorkResourceLineageExportInput(
     },
   ];
   input.portableFileState = {
-    claims: new Map(),
-    conflicts: new Map(),
     notebookRevision,
     nativeKnowledgePages: new Map(
       Object.entries(notebookFiles).map(([path, content]) => [`knowledge/pages/${path}`, content])
     ),
-    observations: new Map(),
     retrievalTraceFiles: new Map([
       [
         `threads/${source.threadId}/turns/${source.turnId}/retrieval-traces/${retrievalTraceId}.json`,
@@ -1469,6 +1470,15 @@ function createWorkResourceLineageExportInput(
         name: 'Lineage workspace',
         defaultAgentId: null,
         defaultKnowledgeBaseId: source.knowledgeBaseId,
+        knowledgeMounts: [
+          {
+            name: 'raw',
+            knowledgeBaseId: source.knowledgeBaseId,
+            default: true,
+            backend: 'local',
+            root: 'raw',
+          },
+        ],
       },
     }),
     workspaceSchema: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
@@ -2197,34 +2207,39 @@ describe('workspace auxiliary lineage reminting', () => {
       sourceTraceText ?? '{}',
       input.portableFileState!.workerContextPackageFiles
     );
-    const knowledge = {
-      id: 'mem_1',
-      kind: 'task-summary' as const,
-      title: 'Portable work history',
-      content: 'Reuse the accepted Context Package.',
-      sourceReferences: [`context-package:${source.turnId}@${sourceTrace.contextPackageDigest}`],
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    };
+    const sourceReferences = [
+      `context-package:${source.turnId}@${sourceTrace.contextPackageDigest}`,
+    ];
+    const fixturePage = knowledgePageFixture(
+      {
+        id: 'mem_1',
+        title: 'Portable work history',
+        content: 'Reuse the accepted Context Package.',
+        sourceReferences,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+      { kind: 'workspace', workspaceId: input.workspace.id }
+    );
+    const pageBytes = fixturePage.content
+      .replace(
+        `source_refs: ${JSON.stringify(sourceReferences)}`,
+        `source_refs:\n  - ${JSON.stringify(sourceReferences[0])}`
+      )
+      .replace(
+        `scope: ${JSON.stringify({ kind: 'workspace', workspaceId: source.workspaceId })}`,
+        `scope: ${JSON.stringify({ kind: 'workspace', workspaceId: source.workspaceId })}\nsources:\n  - id: retained-source\n    credibility:\n      author: human:owner`
+      );
+    const knowledge = parseOwnedKnowledgePage(fixturePage.path, fixturePage.id, pageBytes);
+
     input.knowledge = [...input.knowledge, knowledge];
     input.workspace = {
       ...input.workspace,
       counts: { ...input.workspace.counts, knowledgeEntryCount: input.knowledge.length },
     };
     input.portableFileState!.nativeKnowledgePages.set(
-      `knowledge/pages/${knowledge.id}.md`,
-      serializeUserAuthoredKnowledgePage(knowledge, {
-        kind: 'workspace',
-        workspaceId: input.workspace.id,
-      })
-        .replace(
-          `source_refs: ${JSON.stringify(knowledge.sourceReferences)}`,
-          `source_refs:\n  - ${JSON.stringify(knowledge.sourceReferences[0])}`
-        )
-        .replace(
-          `scope: ${JSON.stringify({ kind: 'workspace', workspaceId: source.workspaceId })}`,
-          `scope: ${JSON.stringify({ kind: 'workspace', workspaceId: source.workspaceId })}\nsources:\n  - id: retained-source\n    credibility:\n      author: human:owner`
-        )
+      `knowledge/pages/${knowledge.path}`,
+      pageBytes
     );
 
     const imported = importLineage(input);
@@ -2241,12 +2256,22 @@ describe('workspace auxiliary lineage reminting', () => {
     ].find(([path]) => path === `knowledge/pages/${knowledge.id}.md`)!;
 
     expect(targetTrace.contextPackageDigest).not.toBe(sourceTrace.contextPackageDigest);
-    expect(imported.knowledge.find((entry) => entry.id === knowledge.id)?.sourceReferences).toEqual(
-      [expectedReference]
+    const importedPage = imported.knowledge.find((page) => page.id === knowledge.id)!;
+    expect(importedPage).toEqual(
+      parseOwnedKnowledgePage(knowledge.path, knowledge.id, pageContent)
     );
-    expect(parseOwnedKnowledgeEntry(pagePath, knowledge.id, pageContent).sourceReferences).toEqual([
-      expectedReference,
-    ]);
+    expect(
+      stringListFrontmatterField(
+        parseOkfDocument({ path: pagePath, content: importedPage.content }).document!,
+        'source_refs'
+      )
+    ).toEqual([expectedReference]);
+    expect(
+      stringListFrontmatterField(
+        parseOkfDocument({ path: pagePath, content: pageContent }).document!,
+        'source_refs'
+      )
+    ).toEqual([expectedReference]);
     expect(pageContent).toContain(
       'sources:\n  - id: retained-source\n    credibility:\n      author: human:owner'
     );
@@ -2795,26 +2820,34 @@ describe('workspace auxiliary lineage reminting', () => {
         Buffer.byteLength(sourceKnowledgeContent)
     );
     const expectedExcerpt = expectedExcerptBytes.toString('utf8');
-    expect(
-      parseOwnedKnowledgeEntry(
-        'knowledge/pages/knowledge_portable_source.md',
-        'knowledge_portable_source',
-        expectedExcerpt
-      ).content
-    ).toBe(
-      parseOwnedKnowledgeEntry(
-        'knowledge/pages/knowledge_portable_source.md',
-        'knowledge_portable_source',
-        sourceKnowledgeExcerpt
-      ).content
+    const targetExcerpt = parseOkfDocument({
+      path: 'knowledge_portable_source.md',
+      content: expectedExcerpt,
+    });
+    const sourceExcerpt = parseOkfDocument({
+      path: 'knowledge_portable_source.md',
+      content: sourceKnowledgeExcerpt,
+    });
+    expect(targetExcerpt.ok).toBe(true);
+    expect(sourceExcerpt.ok).toBe(true);
+    expect(targetExcerpt.document!.body).toBe(sourceExcerpt.document!.body);
+    const importedKnowledge = parseOwnedKnowledgePage(
+      'knowledge_portable_source.md',
+      'knowledge_portable_source',
+      targetKnowledgeContent
     );
-    expect(
-      parseOwnedKnowledgeEntry(
-        'knowledge/pages/knowledge_portable_source.md',
-        'knowledge_portable_source',
-        targetKnowledgeContent
-      )
-    ).toEqual(input.knowledge[0]);
+    expect(importedKnowledge).toEqual(imported.knowledge[0]);
+    const targetPage = parseOkfDocument({
+      path: importedKnowledge.path,
+      content: importedKnowledge.content,
+    });
+    const sourcePage = parseOkfDocument({
+      path: input.knowledge[0]!.path,
+      content: input.knowledge[0]!.content,
+    });
+    expect(targetPage.ok).toBe(true);
+    expect(sourcePage.ok).toBe(true);
+    expect(targetPage.document!.body).toBe(sourcePage.document!.body);
     expect(
       parseOkfDocument({ path: 'knowledge_portable_source.md', content: targetKnowledgeContent })
     ).toMatchObject({

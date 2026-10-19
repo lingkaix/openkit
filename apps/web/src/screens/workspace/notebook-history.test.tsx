@@ -60,11 +60,11 @@ function renderNotebook({
             registryRevision: 1,
           })),
         });
-      case operationHttpPath('knowledge.list'):
+      case operationHttpPath('knowledge.notebook.list'):
         return Response.json({
           knowledgeBaseId: KNOWLEDGE_BASE_ID,
           notebookRevision: currentRevision,
-          items: [],
+          pages: [],
         });
       case operationHttpPath('knowledge.indexes'):
         return Response.json({
@@ -88,9 +88,6 @@ function renderNotebook({
           },
         });
       case operationHttpPath('knowledge.source.list'):
-      case operationHttpPath('knowledge.observation.list'):
-      case operationHttpPath('knowledge.claim.list'):
-      case operationHttpPath('knowledge.conflict.list'):
       case operationHttpPath('attention.list'):
         return Response.json({ items: [] });
       case operationHttpPath('knowledge.notebook.history'):

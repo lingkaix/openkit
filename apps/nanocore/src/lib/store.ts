@@ -1,23 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
-import {
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type {
   IntroduceWorkspaceArtifactResponse,
-  KnowledgeClaim,
-  KnowledgeConflict,
-  KnowledgeConflictStatus,
   KnowledgeManagerDraftProposalRequest,
   KnowledgeManagerDraftProposalResponse,
-  KnowledgeObservation,
   KnowledgeProposalApplication,
   KnowledgeProposalReview,
   MaterializedWorkspaceRoot,
@@ -34,7 +22,7 @@ import {
 import { WorkspaceConfigSchema } from '@openkit/config-schema';
 import type {
   ActorRef,
-  KnowledgeEntrySchema,
+  KnowledgeNotebookPageSchema,
   PolicyDocumentV1,
   WorkspaceRecordSchema,
   WorkspaceResourcesSchema,
@@ -78,6 +66,7 @@ import {
 import { loadOpenKitConfig } from '../config/openkit-config.js';
 import { captureCoverageBindingFromOpenKitConfig } from '../config/runtime-config.js';
 import { uuidv5 } from '../generative-kernel/uuid.js';
+import { unresolvedNotebookSubjects } from '../knowledge/conflicts.js';
 import { KnowledgeNotebook, validateNotebookFiles } from '../knowledge/notebook.js';
 import {
   initializeWorkspaceNotebook,
@@ -97,6 +86,7 @@ import {
   stringListFrontmatterField,
   validateKnowledgePageCandidate,
 } from '../knowledge/okf.js';
+import { readSourcePointers } from '../knowledge/source-pointers.js';
 import { OperationError } from '../operation-error.js';
 import { EMPTY_POLICY_DOCUMENT } from '../policy/statements.js';
 import { ensureTurnFeedback } from '../runtime/feedback.js';
@@ -159,30 +149,20 @@ import {
   KnowledgeProposalReviewFileSchema,
   loadWorkspaceFileRecords,
   parseCanonicalWorkspaceHistory,
-  parseOwnedKnowledgeEntry,
+  parseOwnedKnowledgePage,
   publishCanonicalPath,
   readCanonicalTextFile,
-  readWorkspaceKnowledgeEntries,
   readWorkspaceKnowledgePage,
+  readWorkspaceKnowledgePages,
   readWorkspaceTurnEvents,
   serializeKnowledgeProposalRecord,
-  serializeUserAuthoredKnowledgePage,
   TURN_STREAM_EVENT_WINDOW_SIZE,
-  updateUserAuthoredKnowledgePage,
   type WorkspaceFileRecords,
   writeFileAtomic,
   writeWorkspaceFileRecords,
   writeWorkspaceMetadata,
 } from '../storage/workspace-file-records.js';
 import { isTargetIssuedEffectAuthority } from '../storage/workspace-import-authority.js';
-import {
-  appendWorkspaceKnowledgeClaim,
-  appendWorkspaceKnowledgeConflict,
-  appendWorkspaceKnowledgeObservation,
-  readWorkspaceKnowledgeClaimLedger,
-  readWorkspaceKnowledgeConflictLedger,
-  readWorkspaceKnowledgeObservationLedger,
-} from '../storage/workspace-portable-file-state.js';
 
 type WorkspaceRecord = import('zod').infer<typeof WorkspaceRecordSchema>;
 type ProtocolWorkspaceResources = import('zod').infer<typeof WorkspaceResourcesSchema>;
@@ -213,7 +193,7 @@ export interface ImportWorkspaceStage {
   workspaceRoot: string;
 }
 
-type KnowledgeEntry = import('zod').infer<typeof KnowledgeEntrySchema>;
+type KnowledgeNotebookPage = import('zod').infer<typeof KnowledgeNotebookPageSchema>;
 type Thread = import('zod').infer<typeof ThreadSchema>;
 type Turn = import('zod').infer<typeof TurnSchema>;
 type Item = import('zod').infer<typeof ItemSchema>;
@@ -221,14 +201,6 @@ type Artifact = import('zod').infer<typeof ArtifactSchema>;
 type ApprovalRequest = import('zod').infer<typeof ApprovalRequestSchema>;
 type Agent = RuntimeAgent;
 type ProtocolAgentSession = import('zod').infer<typeof AgentSessionSchema>;
-
-/** Conflict states that remain unresolved for Knowledge Proposal publication. */
-const UNRESOLVED_KNOWLEDGE_CONFLICT_STATUSES = new Set<KnowledgeConflictStatus>([
-  'conflicting',
-  'needs_review',
-  'weak_evidence',
-  'stale',
-]);
 
 /** Durable app-local AgentSession stored beside protocol-safe session fields. */
 export type AgentSession = ProtocolAgentSession & {
@@ -322,16 +294,11 @@ export type CommandRequestName =
   | 'workspace.access.recover'
   | 'workspace.delete'
   | 'user.disable'
-  | 'knowledge.create'
-  | 'knowledge.update'
-  | 'knowledge.delete'
+  | 'knowledge.notebook.create'
+  | 'knowledge.notebook.delete'
   | 'knowledge.notebook.update'
   | 'knowledge.notebook.restore'
   | 'knowledge.source.register'
-  | 'knowledge.observation.record'
-  | 'knowledge.claim.record'
-  | 'knowledge.conflict.record'
-  | 'knowledge.conflict.resolve'
   | 'thread.create'
   | 'thread.update'
   | 'thread.archive'
@@ -426,9 +393,6 @@ export type CommandRequestResponseKind =
   | 'knowledge'
   | 'knowledge_notebook_revision'
   | 'knowledge_source'
-  | 'knowledge_observation'
-  | 'knowledge_claim'
-  | 'knowledge_conflict'
   | 'thread'
   | 'turn'
   | 'approval'
@@ -619,54 +583,6 @@ export interface KnowledgeSourceRecord {
   createdAt: string;
   /** ISO timestamp for latest update. */
   updatedAt: string;
-}
-
-/**
- * Stored text material captured for one workspace knowledge source.
- */
-export interface KnowledgeSourceMaterialRecord {
-  /** Source id that owns the material. */
-  sourceId: string;
-  /** Captured source text content. */
-  content: string;
-}
-
-/** Derived text representation metadata for one knowledge source. */
-export interface KnowledgeSourceDerivedRepresentationRecord {
-  /** Stable representation id. */
-  id: string;
-  /** Workspace that owns the representation. */
-  workspaceId: string;
-  /** Source id this representation derives from. */
-  sourceId: string;
-  /** First-slice derived representation kind. */
-  kind: 'text';
-  /** Metadata path relative to the workspace root. */
-  path: string;
-  /** Source material path relative to the workspace root. */
-  materialPath: string;
-  /** Digest of the derived representation content. */
-  contentDigest: string;
-  /** Digest of the source content version used to derive this record. */
-  sourceContentDigest: string;
-  /** ISO timestamp when the representation was created. */
-  createdAt: string;
-}
-
-/** Input for appending one Knowledge Store conflict resolution row. */
-export interface ResolveKnowledgeConflictInput {
-  /** Workspace that owns the conflict. */
-  workspaceId: string;
-  /** Conflict id to resolve. */
-  conflictId: string;
-  /** Final resolution status. */
-  status: Extract<KnowledgeConflictStatus, 'resolved' | 'superseded' | 'partially_superseded'>;
-  /** Human-readable resolution summary. */
-  resolution: string;
-  /** Actor or agent resolving the conflict. */
-  resolvedBy: string;
-  /** ISO timestamp for the resolution append. */
-  resolvedAt: string;
 }
 
 interface TurnStreamState {
@@ -1249,10 +1165,10 @@ function sandboxSummaryForWorkspaceRoots(
 /**
  * Returns empty dynamic resources for a workspace.
  *
- * @param knowledge Seed knowledge entries.
+ * @param knowledge Seed canonical Notebook pages.
  * @returns Workspace resources without a second agent or model catalog.
  */
-function createWorkspaceResources(knowledge: KnowledgeEntry[] = []): WorkspaceResources {
+function createWorkspaceResources(knowledge: KnowledgeNotebookPage[] = []): WorkspaceResources {
   return {
     knowledge,
     skills: [],
@@ -1309,7 +1225,6 @@ export class FsStore {
   private artifactVersions = new Map<string, ArtifactVersionRecord[]>();
   private knowledgeProposals = new Map<string, KnowledgeProposalRecord>();
   private knowledgeProposalReviews = new Map<string, KnowledgeProposalReviewRecord[]>();
-  private knowledgeSources = new Map<string, KnowledgeSourceRecord>();
   private commandRequests = new Map<string, CommandRequestRecord>();
   private streams = new Map<string, TurnStreamState>();
   private liveCaptureCoverage: CaptureCoverageBinding = DEFAULT_CAPTURE_COVERAGE_BINDING;
@@ -1434,9 +1349,6 @@ export class FsStore {
           ...(this.knowledgeProposalReviews.get(review.proposalId) ?? []),
           review,
         ]);
-      }
-      for (const source of records.knowledgeSources) {
-        this.knowledgeSources.set(source.id, source);
       }
       for (const [turnId, events] of records.streamEvents) {
         this.streams.set(turnId, {
@@ -1663,6 +1575,7 @@ export class FsStore {
    * @param notebookInitialization Actual native creation attribution, required for file-backed publication.
    * @param initialNotebookFiles Exact admitted root tree; retained imports must not be regenerated from entry projections.
    * @param initialNotebookSchemaText Exact imported scope schema; fresh creation uses the default schema.
+   * @param initialNotebookSources Verified and reminted Source blobs in the same first Notebook tree.
    */
   private persistNewWorkspaceAtomically(
     records: WorkspaceFileRecords,
@@ -1670,7 +1583,8 @@ export class FsStore {
     stageWorkspace?: (stage: ImportWorkspaceStage) => void,
     notebookInitialization?: NotebookInitialization,
     initialNotebookFiles?: Readonly<Record<string, string>>,
-    initialNotebookSchemaText?: string
+    initialNotebookSchemaText?: string,
+    initialNotebookSources?: Readonly<Record<string, string>>
   ): void {
     if (!this.dataRoot) {
       return;
@@ -1724,6 +1638,9 @@ export class FsStore {
           workspaceDb,
           initialization: notebookInitialization,
           files: initialNotebookFiles ?? {},
+          ...(initialNotebookSources === undefined
+            ? {}
+            : { sourcePointers: initialNotebookSources }),
           revalidate: () => ({
             pageScopeId,
             scopeSchemaText: initialNotebookSchemaText ?? DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
@@ -1789,9 +1706,7 @@ export class FsStore {
         knowledgeProposalReviews: [...this.knowledgeProposalReviews.values()]
           .flat()
           .filter((review) => review.workspaceId === workspaceId),
-        knowledgeSources: [...this.knowledgeSources.values()].filter(
-          (source) => source.workspaceId === workspaceId
-        ),
+        knowledgeSources: this.listKnowledgeSources(workspaceId),
         agentSessions: [...this.agentSessions.values()].filter(
           (session) => session.workspaceId === workspaceId
         ),
@@ -1837,71 +1752,36 @@ export class FsStore {
     return `page/workspace/${workspaceId}/${knowledgeBaseId}`;
   }
 
-  /**
-   * Validates exact direct-write Knowledge Page bytes before store mutation.
-   *
-   * @param workspaceId Workspace that owns the candidate page.
-   * @param candidate Candidate entry about to be written.
-   * @param knowledge Knowledge entries that will exist after the write.
-   * @param candidateContent Exact final page bytes to validate.
-   * @throws KnowledgePageValidationError when the candidate or current schema is invalid.
-   */
-  private assertValidKnowledgeEntryCandidate(
+  /** Validates exact canonical fixture bytes before an in-memory page is admitted. */
+  private assertValidKnowledgePageCandidate(
     workspaceId: string,
-    candidate: KnowledgeEntry,
-    knowledge: readonly KnowledgeEntry[],
-    candidateContent = serializeUserAuthoredKnowledgePage(candidate, {
-      kind: 'workspace',
-      workspaceId,
-    })
+    candidate: KnowledgeNotebookPage,
+    knowledge: readonly KnowledgeNotebookPage[]
   ): void {
-    let scopeSchemaText: string | undefined;
-    let resolvedReferences: ReadonlySet<string> = new Set();
-    let pageScopeId: string | undefined;
-
-    try {
-      pageScopeId = this.workspaceKnowledgePageScopeId(workspaceId);
-      if (this.dataRoot) {
-        const schemaPath = join(
-          this.workspaceRootPath(workspaceId),
-          'knowledge',
-          'schema',
-          'workspace-schema.yaml'
-        );
-
-        if (existsSync(schemaPath)) {
-          scopeSchemaText = readCanonicalTextFile(schemaPath);
-        }
-      }
-      const qualifiedLocalReferences = (candidate.sourceReferences ?? []).filter(
-        (reference) =>
-          /^source:.+@sha256:[a-f0-9]{64}$/.test(reference) || reference.startsWith('openkit:')
-      );
-      if (qualifiedLocalReferences.length > 0) {
-        resolvedReferences = this.resolveKnowledgePageSourceReferences(
-          workspaceId,
-          qualifiedLocalReferences,
-          []
-        );
-      }
-    } catch {
-      throw new KnowledgePageValidationError();
-    }
-
+    const parsed = parseOkfDocument({ path: candidate.path, content: candidate.content });
+    const sourceReferences = parsed.document
+      ? stringListFrontmatterField(parsed.document, 'source_refs')
+      : null;
+    if (!parsed.ok || sourceReferences === null) throw new KnowledgePageValidationError();
+    const qualifiedLocalReferences = sourceReferences.filter(
+      (reference) =>
+        /^source:.+@sha256:[a-f0-9]{64}$/.test(reference) || reference.startsWith('openkit:')
+    );
+    const resolvedReferences = this.resolveKnowledgePageSourceReferences(
+      workspaceId,
+      qualifiedLocalReferences,
+      []
+    );
     const report = validateKnowledgePageCandidate({
-      path: `knowledge/pages/${candidate.id}.md`,
-      content: candidateContent,
-      ...(pageScopeId === undefined ? {} : { pageScopeId }),
-      ...(scopeSchemaText === undefined ? {} : { scopeSchemaText }),
+      path: candidate.path,
+      content: candidate.content,
+      expectedOwnerScope: { kind: 'workspace', workspaceId },
       registeredSources: new Map(
-        [...this.knowledgeSources.values()]
-          .filter((source) => source.workspaceId === workspaceId)
-          .map((source) => [source.id, source.contentDigest])
+        this.listKnowledgeSources(workspaceId).map((source) => [source.id, source.contentDigest])
       ),
-      knowledgeIds: new Set(knowledge.map((entry) => entry.id)),
+      knowledgeIds: new Set(knowledge.map((page) => page.id)),
       resolvedReferences,
     });
-
     if (report.conformance !== 'scope-schema-valid' || report.errors.length > 0) {
       throw new KnowledgePageValidationError();
     }
@@ -1912,13 +1792,12 @@ export class FsStore {
    *
    * @param proposal Proposal owner to verify.
    * @param verifiedExternalReferences Exact Core/S39 references verified by their owners.
-   * @returns Candidate Knowledge entry projected from the fixed page bytes.
    * @throws KnowledgePageValidationError when any candidate or source authority is invalid.
    */
   private assertValidKnowledgeProposal(
     proposal: KnowledgeProposalRecord,
     verifiedExternalReferences: readonly string[]
-  ): KnowledgeEntry | undefined {
+  ): void {
     let scopeSchemaText: string | undefined;
     let pageScopeId: string | undefined;
     try {
@@ -1976,9 +1855,10 @@ export class FsStore {
         candidate: { files },
         scopeSchemaText: scopeSchemaText ?? DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
         registeredSources: new Map(
-          [...this.knowledgeSources.values()]
-            .filter((source) => source.workspaceId === proposal.workspaceId)
-            .map((source) => [source.id, source.contentDigest])
+          this.listKnowledgeSources(proposal.workspaceId).map((source) => [
+            source.id,
+            source.contentDigest,
+          ])
         ),
         resolvedReferences: new Map(
           proposal.changes.map(({ path }) => [path.slice(0, -3), resolved])
@@ -2011,6 +1891,8 @@ export class FsStore {
       proposal.contentDigest !== contentDigest(proposal.canonicalPageBytes) ||
       !parsed.ok ||
       parsed.document.conceptId !== proposal.knowledgePageId ||
+      (parsed.document.frontmatter.openkit_entry_id !== undefined &&
+        parsed.document.frontmatter.openkit_entry_id !== proposal.knowledgePageId) ||
       parsed.document.frontmatter.type !== 'KnowledgePage' ||
       parsed.document.frontmatter.openkit_status !== 'active' ||
       (parsed.document.frontmatter.status !== undefined &&
@@ -2036,24 +1918,15 @@ export class FsStore {
       expectedOwnerScope: { kind: 'workspace', workspaceId: proposal.workspaceId },
       ...(scopeSchemaText === undefined ? {} : { scopeSchemaText }),
       registeredSources: new Map(
-        [...this.knowledgeSources.values()]
-          .filter((source) => source.workspaceId === proposal.workspaceId)
-          .map((source) => [source.id, source.contentDigest])
+        this.listKnowledgeSources(proposal.workspaceId).map((source) => [
+          source.id,
+          source.contentDigest,
+        ])
       ),
       knowledgeIds: new Set(knowledge.map((entry) => entry.id)),
       resolvedReferences,
     });
     if (report.conformance !== 'scope-schema-valid' || report.errors.length > 0) {
-      throw new KnowledgePageValidationError();
-    }
-
-    try {
-      return parseOwnedKnowledgeEntry(
-        candidatePath,
-        proposal.knowledgePageId,
-        proposal.canonicalPageBytes
-      );
-    } catch {
       throw new KnowledgePageValidationError();
     }
   }
@@ -2119,23 +1992,14 @@ export class FsStore {
         expectedDigest = pagePin.contentDigest;
       }
       if (qualifiedSource) {
-        const source = this.knowledgeSources.get(ownerId!);
-        if (
-          !source ||
-          source.workspaceId !== workspaceId ||
-          source.contentDigest !== expectedDigest
-        ) {
-          throw new KnowledgePageValidationError();
-        }
-        let sourceMaterial: string | null;
         try {
-          sourceMaterial = this.readKnowledgeSourceMaterial(workspaceId, ownerId!);
+          if (this.getKnowledgeSource(workspaceId, ownerId!).contentDigest !== expectedDigest)
+            throw new KnowledgePageValidationError();
         } catch {
           throw new KnowledgePageValidationError();
         }
-        if (sourceMaterial === null || contentDigest(sourceMaterial) !== expectedDigest) {
-          throw new KnowledgePageValidationError();
-        }
+        // Synchronous closure validates the canonical pointer. Original bytes are verified
+        // only by the asynchronous Storage delivery owner, never by another Store reader.
         resolvedReferences.add(reference);
         continue;
       }
@@ -2160,7 +2024,8 @@ export class FsStore {
       if (
         !parsed.ok ||
         parsed.document.conceptId !== ownerId ||
-        parsed.document.frontmatter.openkit_entry_id !== ownerId ||
+        (parsed.document.frontmatter.openkit_entry_id !== undefined &&
+          parsed.document.frontmatter.openkit_entry_id !== ownerId) ||
         parsed.document.frontmatter.type !== 'KnowledgePage' ||
         parsed.document.frontmatter.openkit_status !== 'active' ||
         (parsed.document.frontmatter.status !== undefined &&
@@ -2199,13 +2064,12 @@ export class FsStore {
       if (pagePin) relevantReferences.add(formatReferenceUri(pagePin.reference));
     }
 
-    if (
-      this.listKnowledgeConflicts(proposal.workspaceId).some(
-        (conflict) =>
-          UNRESOLVED_KNOWLEDGE_CONFLICT_STATUSES.has(conflict.status) &&
-          conflict.subjectReferences.some((reference) => relevantReferences.has(reference))
-      )
-    ) {
+    const notebook = this.proposalNotebook(proposal.workspaceId);
+    const subjects = unresolvedNotebookSubjects(
+      notebook.readRevision(notebook.publishedRevision()).files,
+      scopeId
+    );
+    if ([...relevantReferences].some((reference) => subjects.has(reference))) {
       throw knowledgeProposalAuthorityError('conflict');
     }
   }
@@ -2458,13 +2322,13 @@ export class FsStore {
     defaultKnowledgeBaseId?: string;
     threads: readonly Thread[];
     turns: readonly Turn[];
-    knowledge: readonly KnowledgeEntry[];
+    knowledge: readonly KnowledgeNotebookPage[];
     itemRevisions: readonly Item[];
     artifacts: readonly Artifact[];
     agentSessions: readonly AgentSession[];
     turnEvents: readonly (readonly [string, readonly SseEventEnvelope[]])[];
     knowledgeSources?: readonly KnowledgeSourceRecord[];
-    knowledgeSourceMaterials?: readonly KnowledgeSourceMaterialRecord[];
+    initialNotebookSources?: Readonly<Record<string, string>>;
     /** Actual importer/fixture creator; file-backed publication must not invent a responsible actor. */
     notebookInitialization?: NotebookInitialization;
     /** Exact admitted imported tree, including unknown OKF metadata and reserved navigation bytes. */
@@ -2527,21 +2391,6 @@ export class FsStore {
       }
     }
 
-    for (const source of history.knowledgeSources) {
-      if (this.knowledgeSources.has(source.id)) {
-        throw new Error(`Knowledge source already exists: ${source.id}`);
-      }
-    }
-
-    const importedSourceIds = new Set(history.knowledgeSources.map((source) => source.id));
-    for (const material of input.knowledgeSourceMaterials ?? []) {
-      if (!importedSourceIds.has(material.sourceId)) {
-        throw new Error(
-          `Knowledge source material references missing source: ${material.sourceId}`
-        );
-      }
-    }
-
     const workspace: WorkspaceRecord = {
       ...history.workspace,
       counts: {
@@ -2571,11 +2420,6 @@ export class FsStore {
       records,
       input.defaultKnowledgeBaseId ?? allocateEntityId('kb'),
       (stage) => {
-        this.writeKnowledgeSourceMaterialsToRoot(
-          stage.workspaceRoot,
-          input.knowledgeSourceMaterials ?? [],
-          history.knowledgeSources
-        );
         input.stageWorkspace?.(stage);
         const turns = new Map(history.turns.map((turn) => [turn.id, turn]));
         for (const artifact of history.artifacts) {
@@ -2587,7 +2431,8 @@ export class FsStore {
       },
       input.notebookInitialization,
       input.initialNotebookFiles,
-      input.initialNotebookSchemaText
+      input.initialNotebookSchemaText,
+      input.initialNotebookSources
     );
 
     this.workspaces.set(workspace.id, workspace);
@@ -2619,9 +2464,6 @@ export class FsStore {
         listeners: new Set(),
         timers: new Set(),
       });
-    }
-    for (const source of history.knowledgeSources) {
-      this.knowledgeSources.set(source.id, source);
     }
     if (this.dataRoot) {
       for (const approval of loadApprovalProjections(
@@ -2704,11 +2546,7 @@ export class FsStore {
         this.knowledgeProposalReviews.delete(proposalId);
       }
     }
-    for (const [sourceId, source] of this.knowledgeSources) {
-      if (source.workspaceId === workspaceId) {
-        this.knowledgeSources.delete(sourceId);
-      }
-    }
+
     for (const [approvalId, approval] of this.approvals) {
       if (approval.workspaceId === workspaceId) {
         this.approvals.delete(approvalId);
@@ -2783,7 +2621,7 @@ export class FsStore {
     const project = this.workspaceAgentCatalogProjection;
 
     const knowledge = this.dataRoot
-      ? readWorkspaceKnowledgeEntries(this.workspaceRootPath(workspaceId))
+      ? readWorkspaceKnowledgePages(this.workspaceRootPath(workspaceId))
       : resources.knowledge;
     return { ...resources, knowledge, ...(project ? { agents: project() } : {}) };
   }
@@ -2826,22 +2664,23 @@ export class FsStore {
     }
   }
 
-  public listKnowledge(workspaceId: string): KnowledgeEntry[] {
+  /** Returns canonical published pages, or explicit in-memory fixture pages. */
+  public listKnowledge(workspaceId: string): KnowledgeNotebookPage[] {
     return this.getWorkspaceResources(workspaceId).knowledge;
   }
 
   /**
-   * Returns one workspace knowledge entry by id.
+   * Returns one canonical Workspace Notebook page by id.
    *
-   * @param workspaceId Workspace that owns the knowledge entry.
-   * @param knowledgeEntryId Knowledge entry id to return.
-   * @returns Stored knowledge entry.
+   * @param workspaceId Workspace that owns the page.
+   * @param knowledgePageId Knowledge page id to return.
+   * @returns Canonical page with complete Markdown bytes.
    */
-  public getKnowledgeEntry(workspaceId: string, knowledgeEntryId: string): KnowledgeEntry {
-    const entry = this.listKnowledge(workspaceId).find((item) => item.id === knowledgeEntryId);
+  public getKnowledgePage(workspaceId: string, knowledgePageId: string): KnowledgeNotebookPage {
+    const entry = this.listKnowledge(workspaceId).find((item) => item.id === knowledgePageId);
 
     if (!entry) {
-      throw new StoreRecordNotFoundError(`Knowledge entry not found: ${knowledgeEntryId}`);
+      throw new StoreRecordNotFoundError(`Knowledge page not found: ${knowledgePageId}`);
     }
 
     return entry;
@@ -2940,72 +2779,18 @@ export class FsStore {
     return updatedAgent;
   }
 
-  public createKnowledgeEntry(
-    workspaceId: string,
-    input: Pick<KnowledgeEntry, 'kind' | 'title' | 'content'> & {
-      sourceReferences?: string[] | undefined;
-    }
-  ): KnowledgeEntry {
-    if (this.dataRoot)
-      throw new OperationError(
-        'recovery_required',
-        'File-backed Knowledge changes require the notebook publisher.',
-        409
-      );
-    const resources = this.storedWorkspaceResources(workspaceId);
-    const entry: KnowledgeEntry = {
-      id: `mem_${resources.knowledge.length + 1}`,
-      ...input,
-      ...(input.sourceReferences === undefined ? {} : { sourceReferences: input.sourceReferences }),
-      createdAt: now(),
-      updatedAt: now(),
-    };
-    this.assertValidKnowledgeEntryCandidate(workspaceId, entry, [...resources.knowledge, entry]);
-    this.workspaceResources.set(workspaceId, {
-      ...resources,
-      knowledge: [...resources.knowledge, entry],
-    });
-    this.refreshWorkspaceCounts(workspaceId);
-    this.persist(workspaceId);
-    return entry;
-  }
-
   /**
-   * Delete one workspace knowledge entry.
+   * Adds one complete canonical page to an explicit in-memory fixture Store.
    *
-   * @param workspaceId Workspace identifier.
-   * @param knowledgeEntryId Knowledge entry identifier.
+   * @param workspaceId Workspace that owns the fixture page.
+   * @param input Bundle-relative path and exact full OKF Markdown bytes.
+   * @returns Validated canonical page with path-derived identity and digest.
+   * @throws OperationError for a file-backed Store, whose Notebook publisher owns all writes.
    */
-  public deleteKnowledgeEntry(workspaceId: string, knowledgeEntryId: string): void {
-    if (this.dataRoot)
-      throw new OperationError(
-        'recovery_required',
-        'File-backed Knowledge changes require the notebook publisher.',
-        409
-      );
-    const resources = this.storedWorkspaceResources(workspaceId);
-    const knowledge = resources.knowledge.filter((entry) => entry.id !== knowledgeEntryId);
-
-    if (knowledge.length === resources.knowledge.length) {
-      throw new StoreRecordNotFoundError(`Knowledge entry not found: ${knowledgeEntryId}`);
-    }
-
-    this.workspaceResources.set(workspaceId, {
-      ...resources,
-      knowledge,
-    });
-    this.refreshWorkspaceCounts(workspaceId);
-    this.persist(workspaceId);
-  }
-
-  public updateKnowledgeEntry(
+  public createKnowledgePage(
     workspaceId: string,
-    knowledgeEntryId: string,
-    input: {
-      title?: KnowledgeEntry['title'] | undefined;
-      content?: KnowledgeEntry['content'] | undefined;
-    }
-  ): KnowledgeEntry {
+    input: Pick<KnowledgeNotebookPage, 'path' | 'content'>
+  ): KnowledgeNotebookPage {
     if (this.dataRoot)
       throw new OperationError(
         'recovery_required',
@@ -3013,35 +2798,18 @@ export class FsStore {
         409
       );
     const resources = this.storedWorkspaceResources(workspaceId);
-    const existing = resources.knowledge.find((entry) => entry.id === knowledgeEntryId);
-
-    if (!existing) {
-      throw new StoreRecordNotFoundError(`Knowledge entry not found: ${knowledgeEntryId}`);
+    validateNotebookFiles({ [input.path]: input.content }, true);
+    const page = parseOwnedKnowledgePage(input.path, input.path.slice(0, -3), input.content);
+    if (resources.knowledge.some((existing) => existing.path === page.path)) {
+      throw new OperationError('conflict', `Knowledge page already exists: ${page.path}`, 409);
     }
-
-    const updated: KnowledgeEntry = {
-      ...existing,
-      title: input.title ?? existing.title,
-      content: input.content ?? existing.content,
-      updatedAt: now(),
-    };
-    const knowledge = resources.knowledge.map((entry) =>
-      entry.id === knowledgeEntryId ? updated : entry
-    );
-    const path = `knowledge/pages/${knowledgeEntryId}.md`;
-    const currentPageBytes = this.dataRoot
-      ? (readWorkspaceKnowledgePage(this.workspaceRootPath(workspaceId), knowledgeEntryId) ??
-        serializeUserAuthoredKnowledgePage(existing, { kind: 'workspace', workspaceId }))
-      : serializeUserAuthoredKnowledgePage(existing, { kind: 'workspace', workspaceId });
-    const candidatePageBytes = updateUserAuthoredKnowledgePage(path, currentPageBytes, updated);
-    this.assertValidKnowledgeEntryCandidate(workspaceId, updated, knowledge, candidatePageBytes);
+    this.assertValidKnowledgePageCandidate(workspaceId, page, [...resources.knowledge, page]);
     this.workspaceResources.set(workspaceId, {
       ...resources,
-      knowledge,
+      knowledge: [...resources.knowledge, page],
     });
     this.refreshWorkspaceCounts(workspaceId);
-    this.persist(workspaceId);
-    return updated;
+    return page;
   }
 
   /** Lists Server narratives for a caller already admitted by the Server authority owner. */
@@ -5090,7 +4858,8 @@ export class FsStore {
     if (
       !parsed.ok ||
       parsed.document.conceptId !== knowledgePageId ||
-      parsed.document.frontmatter.openkit_entry_id !== knowledgePageId ||
+      (parsed.document.frontmatter.openkit_entry_id !== undefined &&
+        parsed.document.frontmatter.openkit_entry_id !== knowledgePageId) ||
       parsed.document.frontmatter.type !== 'KnowledgePage' ||
       parsed.document.frontmatter.openkit_status !== 'active' ||
       (parsed.document.frontmatter.status !== undefined &&
@@ -5114,9 +4883,7 @@ export class FsStore {
       ...(pageScopeId === undefined ? {} : { pageScopeId }),
       ...(scopeSchemaText === undefined ? {} : { scopeSchemaText }),
       registeredSources: new Map(
-        [...this.knowledgeSources.values()]
-          .filter((source) => source.workspaceId === workspaceId)
-          .map((source) => [source.id, source.contentDigest])
+        this.listKnowledgeSources(workspaceId).map((source) => [source.id, source.contentDigest])
       ),
       knowledgeIds: new Set(
         this.getWorkspaceResources(workspaceId).knowledge.map((entry) => entry.id)
@@ -5163,462 +4930,33 @@ export class FsStore {
   }
 
   /**
-   * Creates one workspace source registry record.
-   *
-   * @param input Source identity record to store.
-   * @param materialContent Optional captured source text to write beside the registry record.
-   * @returns Stored source identity record.
-   * @throws OperationError for invalid source lineage or an id owned by another Workspace.
-   */
-  public createKnowledgeSource(
-    input: KnowledgeSourceRecord,
-    materialContent?: string
-  ): KnowledgeSourceRecord {
-    this.getWorkspace(input.workspaceId);
-    if (input.originatingThreadId !== null) {
-      this.getThread(input.workspaceId, input.originatingThreadId);
-    }
-    if (input.originatingTurnId !== null) {
-      if (input.originatingThreadId === null) {
-        throw new OperationError(
-          'knowledge_source_register_failed',
-          `Knowledge source turn requires a thread: ${input.id}`,
-          404
-        );
-      }
-      this.getTurn(input.workspaceId, input.originatingThreadId, input.originatingTurnId);
-    }
-
-    const previous = this.knowledgeSources.get(input.id);
-    if (previous && previous.workspaceId !== input.workspaceId) {
-      throw new OperationError(
-        'knowledge_source_register_failed',
-        `Knowledge source id belongs to another workspace: ${input.id}`,
-        404
-      );
-    }
-
-    try {
-      this.knowledgeSources.set(input.id, input);
-      if (materialContent !== undefined) {
-        this.writeKnowledgeSourceMaterial(input.workspaceId, input.id, materialContent);
-      }
-      this.persist(input.workspaceId);
-    } catch (error) {
-      if (previous) {
-        this.knowledgeSources.set(input.id, previous);
-      } else {
-        this.knowledgeSources.delete(input.id);
-      }
-      throw error;
-    }
-
-    return input;
-  }
-
-  /**
-   * Appends one workspace Knowledge Store observation to the monthly JSONL ledger.
-   *
-   * @param input Observation row to append.
-   * @returns Stored observation row.
-   */
-  public recordKnowledgeObservation(input: KnowledgeObservation): KnowledgeObservation {
-    this.getWorkspace(input.workspaceId);
-
-    if (!this.dataRoot) {
-      return input;
-    }
-
-    appendWorkspaceKnowledgeObservation(this.workspaceRootPath(input.workspaceId), input);
-
-    return input;
-  }
-
-  /**
-   * Returns one workspace Knowledge Store observation by id.
-   *
-   * @param workspaceId Workspace that owns the observation.
-   * @param observationId Observation id.
-   * @returns Stored observation row.
-   */
-  public getKnowledgeObservation(workspaceId: string, observationId: string): KnowledgeObservation {
-    const observation = this.listKnowledgeObservations(workspaceId).find(
-      (candidate) => candidate.id === observationId
-    );
-
-    if (!observation) {
-      throw new StoreRecordNotFoundError(`Knowledge observation not found: ${observationId}`);
-    }
-
-    return observation;
-  }
-
-  /**
-   * Lists workspace Knowledge Store observations from monthly JSONL ledgers.
-   *
-   * @param workspaceId Workspace that owns the observations.
-   * @returns Stored observation rows.
-   */
-  public listKnowledgeObservations(workspaceId: string): KnowledgeObservation[] {
-    this.getWorkspace(workspaceId);
-
-    if (!this.dataRoot) {
-      return [];
-    }
-
-    return [...readWorkspaceKnowledgeObservationLedger(this.workspaceRootPath(workspaceId), true)]
-      .sort(([left], [right]) => left.localeCompare(right))
-      .flatMap(([, rows]) => rows);
-  }
-
-  /**
-   * Appends one workspace Knowledge Store claim to the monthly JSONL ledger.
-   *
-   * @param input Claim row to append.
-   * @returns Stored claim row.
-   */
-  public recordKnowledgeClaim(input: KnowledgeClaim): KnowledgeClaim {
-    this.getWorkspace(input.workspaceId);
-
-    if (!this.dataRoot) {
-      return input;
-    }
-
-    appendWorkspaceKnowledgeClaim(this.workspaceRootPath(input.workspaceId), input);
-
-    return input;
-  }
-
-  /**
-   * Returns one workspace Knowledge Store claim by id.
-   *
-   * @param workspaceId Workspace that owns the claim.
-   * @param claimId Claim id.
-   * @returns Stored claim row.
-   */
-  public getKnowledgeClaim(workspaceId: string, claimId: string): KnowledgeClaim {
-    const claim = this.listKnowledgeClaims(workspaceId).find(
-      (candidate) => candidate.id === claimId
-    );
-
-    if (!claim) {
-      throw new StoreRecordNotFoundError(`Knowledge claim not found: ${claimId}`);
-    }
-
-    return claim;
-  }
-
-  /**
-   * Lists workspace Knowledge Store claims from monthly JSONL ledgers.
-   *
-   * @param workspaceId Workspace that owns the claims.
-   * @returns Stored claim rows.
-   */
-  public listKnowledgeClaims(workspaceId: string): KnowledgeClaim[] {
-    this.getWorkspace(workspaceId);
-
-    if (!this.dataRoot) {
-      return [];
-    }
-
-    return [...readWorkspaceKnowledgeClaimLedger(this.workspaceRootPath(workspaceId), true)]
-      .sort(([left], [right]) => left.localeCompare(right))
-      .flatMap(([, rows]) => rows);
-  }
-
-  /**
-   * Appends one workspace Knowledge Store conflict to the monthly JSONL ledger.
-   *
-   * @param input Conflict row to append.
-   * @returns Stored conflict row.
-   */
-  public recordKnowledgeConflict(input: KnowledgeConflict): KnowledgeConflict {
-    this.getWorkspace(input.workspaceId);
-
-    if (!this.dataRoot) {
-      return input;
-    }
-
-    appendWorkspaceKnowledgeConflict(this.workspaceRootPath(input.workspaceId), input);
-
-    return input;
-  }
-
-  /**
-   * Appends one resolution update for an existing workspace Knowledge Store conflict.
-   *
-   * @param input Conflict resolution input.
-   * @returns Latest conflict row after resolution.
-   */
-  public resolveKnowledgeConflict(input: ResolveKnowledgeConflictInput): KnowledgeConflict {
-    const current = this.getKnowledgeConflict(input.workspaceId, input.conflictId);
-    const resolved: KnowledgeConflict = {
-      ...current,
-      status: input.status,
-      resolution: input.resolution,
-      resolvedAt: input.resolvedAt,
-      resolvedBy: input.resolvedBy,
-      updatedAt: input.resolvedAt,
-    };
-
-    if (!this.dataRoot) {
-      return resolved;
-    }
-
-    appendWorkspaceKnowledgeConflict(this.workspaceRootPath(input.workspaceId), resolved);
-
-    return resolved;
-  }
-
-  /**
-   * Returns one workspace Knowledge Store conflict by id.
-   *
-   * @param workspaceId Workspace that owns the conflict.
-   * @param conflictId Conflict id.
-   * @returns Stored conflict row.
-   */
-  public getKnowledgeConflict(workspaceId: string, conflictId: string): KnowledgeConflict {
-    const conflict = this.listKnowledgeConflicts(workspaceId).find(
-      (candidate) => candidate.id === conflictId
-    );
-
-    if (!conflict) {
-      throw new StoreRecordNotFoundError(`Knowledge conflict not found: ${conflictId}`);
-    }
-
-    return conflict;
-  }
-
-  /**
-   * Lists workspace Knowledge Store conflicts from monthly JSONL ledgers.
-   *
-   * @param workspaceId Workspace that owns the conflicts.
-   * @returns Stored conflict rows.
-   */
-  public listKnowledgeConflicts(workspaceId: string): KnowledgeConflict[] {
-    this.getWorkspace(workspaceId);
-
-    if (!this.dataRoot) {
-      return [];
-    }
-
-    const rows = [
-      ...readWorkspaceKnowledgeConflictLedger(this.workspaceRootPath(workspaceId), true),
-    ]
-      .sort(([left], [right]) => left.localeCompare(right))
-      .flatMap(([, revisions]) => revisions);
-    const latestById = new Map<string, KnowledgeConflict>();
-
-    for (const row of rows) {
-      latestById.set(row.id, row);
-    }
-
-    return [...latestById.values()];
-  }
-
-  /**
-   * Returns one workspace source registry record.
+   * Returns one Workspace Source metadata projection from the published Notebook.
    *
    * @param workspaceId Workspace that owns the source.
    * @param sourceId Source id to return.
    * @returns Stored source identity record.
    */
   public getKnowledgeSource(workspaceId: string, sourceId: string): KnowledgeSourceRecord {
-    const source = this.knowledgeSources.get(sourceId);
-
-    if (!source || source.workspaceId !== workspaceId) {
-      throw new StoreRecordNotFoundError(`Knowledge source not found: ${sourceId}`);
-    }
-
+    const source = this.listKnowledgeSources(workspaceId).find((source) => source.id === sourceId);
+    if (!source) throw new StoreRecordNotFoundError(`Knowledge source not found: ${sourceId}`);
     return source;
   }
 
   /**
-   * Lists source registry records for one workspace.
+   * Lists Source metadata from the current Workspace Notebook.
    *
    * @param workspaceId Workspace that owns the sources.
    * @returns Stored source identity records.
    */
   public listKnowledgeSources(workspaceId: string): KnowledgeSourceRecord[] {
     this.getWorkspace(workspaceId);
-    return [...this.knowledgeSources.values()].filter(
-      (source) => source.workspaceId === workspaceId
-    );
-  }
-
-  /**
-   * Reads captured text material for one workspace source.
-   *
-   * @param workspaceId Workspace that owns the source.
-   * @param sourceId Source id whose material should be returned.
-   * @returns Captured source text, or null when no material file exists.
-   */
-  public readKnowledgeSourceMaterial(workspaceId: string, sourceId: string): string | null {
-    this.getKnowledgeSource(workspaceId, sourceId);
-
-    if (!this.dataRoot) {
-      return null;
-    }
-
-    const path = this.knowledgeSourceMaterialPath(workspaceId, sourceId);
-
-    return lstatSync(path, { throwIfNoEntry: false }) ? readCanonicalTextFile(path) : null;
-  }
-
-  /**
-   * Lists captured text materials for all sources in one workspace.
-   *
-   * @param workspaceId Workspace that owns the source materials.
-   * @returns Captured source text materials.
-   */
-  public listKnowledgeSourceMaterials(workspaceId: string): KnowledgeSourceMaterialRecord[] {
-    return this.listKnowledgeSources(workspaceId)
-      .map((source) => ({
-        sourceId: source.id,
-        content: this.readKnowledgeSourceMaterial(workspaceId, source.id),
-      }))
-      .filter((material): material is KnowledgeSourceMaterialRecord => material.content !== null);
-  }
-
-  /**
-   * Lists derived representation metadata for one source or workspace.
-   *
-   * @param workspaceId Workspace that owns the source.
-   * @param sourceId Optional source id to filter.
-   * @returns Derived representation records.
-   */
-  public listKnowledgeSourceDerivedRepresentations(
-    workspaceId: string,
-    sourceId?: string
-  ): KnowledgeSourceDerivedRepresentationRecord[] {
-    const sources = sourceId
-      ? [this.getKnowledgeSource(workspaceId, sourceId)]
-      : this.listKnowledgeSources(workspaceId);
-
-    return sources.flatMap((source) => {
-      if (!this.dataRoot) {
-        return [];
-      }
-
-      const path = this.knowledgeSourceDerivedRepresentationPath(source.workspaceId, source.id);
-
-      return lstatSync(path, { throwIfNoEntry: false })
-        ? [JSON.parse(readCanonicalTextFile(path)) as KnowledgeSourceDerivedRepresentationRecord]
-        : [];
-    });
-  }
-
-  /**
-   * Writes captured text material for one workspace source.
-   *
-   * @param workspaceId Workspace that owns the source.
-   * @param sourceId Source id whose material should be written.
-   * @param content Captured source text.
-   */
-  private writeKnowledgeSourceMaterial(
-    workspaceId: string,
-    sourceId: string,
-    content: string
-  ): void {
-    this.getKnowledgeSource(workspaceId, sourceId);
-
-    if (!this.dataRoot) {
-      return;
-    }
-
-    const path = this.knowledgeSourceMaterialPath(workspaceId, sourceId);
-    const source = this.getKnowledgeSource(workspaceId, sourceId);
-
-    mkdirSync(dirname(path), { recursive: true });
-    assertCanonicalDirectory(dirname(path));
-    writeFileSync(path, content);
-    this.writeKnowledgeSourceDerivedRepresentation(this.workspaceRootPath(workspaceId), source);
-  }
-
-  /**
-   * Writes imported captured text materials under a staged workspace root.
-   *
-   * @param workspaceRoot Staged workspace root.
-   * @param materials Captured source text materials to publish.
-   */
-  private writeKnowledgeSourceMaterialsToRoot(
-    workspaceRoot: string,
-    materials: readonly KnowledgeSourceMaterialRecord[],
-    sources: readonly KnowledgeSourceRecord[] = []
-  ): void {
-    const sourcesById = new Map(sources.map((source) => [source.id, source]));
-
-    for (const material of materials) {
-      assertSafeWorkspacePathSegment(material.sourceId, 'Knowledge source id');
-      const path = join(workspaceRoot, 'sources', 'materials', material.sourceId, 'content.txt');
-      const source = sourcesById.get(material.sourceId);
-
-      mkdirSync(dirname(path), { recursive: true });
-      assertCanonicalDirectory(dirname(path));
-      writeFileSync(path, material.content);
-      if (source) {
-        this.writeKnowledgeSourceDerivedRepresentation(workspaceRoot, source);
-      }
-    }
-  }
-
-  /**
-   * Returns the durable text material path for one workspace source.
-   *
-   * @param workspaceId Workspace that owns the source.
-   * @param sourceId Source id whose material path should be returned.
-   * @returns Workspace-root-relative source material file path.
-   */
-  private knowledgeSourceMaterialPath(workspaceId: string, sourceId: string): string {
-    assertSafeWorkspacePathSegment(sourceId, 'Knowledge source id');
-    return join(
-      this.workspaceRootPath(workspaceId),
-      'sources',
-      'materials',
-      sourceId,
-      'content.txt'
-    );
-  }
-
-  /**
-   * Writes derived text representation metadata for one source.
-   *
-   * @param workspaceRoot Workspace root path.
-   * @param source Source identity record.
-   */
-  private writeKnowledgeSourceDerivedRepresentation(
-    workspaceRoot: string,
-    source: KnowledgeSourceRecord
-  ): void {
-    assertSafeWorkspacePathSegment(source.id, 'Knowledge source id');
-    const path = join(workspaceRoot, 'sources', 'derived', source.id, 'text.json');
-    const record: KnowledgeSourceDerivedRepresentationRecord = {
-      id: `${source.id}:text`,
-      workspaceId: source.workspaceId,
-      sourceId: source.id,
-      kind: 'text',
-      path: `sources/derived/${source.id}/text.json`,
-      materialPath: `sources/materials/${source.id}/content.txt`,
-      contentDigest: source.contentDigest,
-      sourceContentDigest: source.contentDigest,
-      createdAt: source.createdAt,
-    };
-
-    mkdirSync(dirname(path), { recursive: true });
-    assertCanonicalDirectory(dirname(path));
-    writeFileSync(path, `${JSON.stringify(record, null, 2)}\n`);
-  }
-
-  /**
-   * Returns the durable derived text representation metadata path for one source.
-   *
-   * @param workspaceId Workspace that owns the source.
-   * @param sourceId Source id whose derived metadata path should be returned.
-   * @returns Derived metadata path.
-   */
-  private knowledgeSourceDerivedRepresentationPath(workspaceId: string, sourceId: string): string {
-    assertSafeWorkspacePathSegment(sourceId, 'Knowledge source id');
-    return join(this.workspaceRootPath(workspaceId), 'sources', 'derived', sourceId, 'text.json');
+    if (!this.dataRoot) return [];
+    return [
+      ...readSourcePointers({
+        dataRoot: this.dataRoot,
+        ownerScope: { kind: 'workspace', workspaceId },
+      }).values(),
+    ].map(({ source }) => ({ ...source, workspaceId }));
   }
 
   /**

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { join, posix, relative, sep } from 'node:path';
+import { join, posix, relative, resolve, sep } from 'node:path';
 import {
   type KnowledgeRetrievalResponse,
   KnowledgeRetrievalResponseSchema,
@@ -10,11 +10,14 @@ import {
 } from '@openkit/app-api-schemas';
 import {
   allocateEntityId,
+  formatReferenceUri,
   type PageReference,
   parseReferenceScope,
   type RetrievalTraceReference,
 } from '@openkit/protocol';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
+import { unresolvedNotebookSubjects } from '../knowledge/conflicts.js';
+import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { readWorkspaceNotebookIndexSource } from '../knowledge/notebook-index-source.js';
 import {
   DEFAULT_SCOPE_KNOWLEDGE_SCHEMA,
@@ -33,6 +36,7 @@ import {
   stringListFrontmatterField,
   validateKnowledgePageCandidate,
 } from '../knowledge/okf.js';
+import { readSourcePointers } from '../knowledge/source-pointers.js';
 import { OperationError } from '../operation-error.js';
 import {
   admitKnowledgeRetrieval,
@@ -43,7 +47,6 @@ import {
   collectUserMemoryInventory,
   currentKnowledgeReferenceProofs,
   type KnowledgeRetrievalAccess,
-  knowledgePageConflicted,
   knowledgePageDelegated,
   knowledgePageReadable,
   knowledgeSourceReferencesReadable,
@@ -54,7 +57,7 @@ import {
   type UserMemoryRetrievalAccess,
 } from '../retrieval-knowledge-adapter.js';
 import { getRetrievalService } from '../retrieval-service.js';
-import { resolveDataRootPath } from './fs-layout.js';
+import { resolveDataRootPath, serverKnowledgeRoot, userMemoryRoot } from './fs-layout.js';
 import { publishRetrievalTrace, readRetrievalTrace } from './retrieval-traces.js';
 import { assertCanonicalDirectory, readCanonicalTextFile } from './workspace-file-records.js';
 
@@ -264,6 +267,7 @@ export interface WorkspaceKnowledgeRetrievalExclusion {
     | 'sensitive_content'
     | 'lower_conformance'
     | 'policy_excluded'
+    | 'selector_mismatch'
     | 'freshness_expired'
     | 'budget_exceeded'
     | 'source_unavailable';
@@ -290,7 +294,6 @@ export interface ResolvedWorkspaceKnowledgeRetrievalPage {
   /** Markdown body from the verified authoritative bytes. */
   body: string;
   /** Existing App API projection kind, defaulted for native OKF pages. */
-  kind: 'preference' | 'project-context' | 'task-summary';
 }
 
 /** Options for boot-time derived index rebuild scans. */
@@ -686,6 +689,20 @@ async function retrieveNotebookSelection(
   const notebookRevision = admittedPages.notebookRevision;
   const pinnedInput = { ...input, notebookRevision };
   const pinnedPages = new Map(admittedPages.pages.map((page) => [page.id, page.content]));
+  const conflictNotebook = new KnowledgeNotebook({
+    repositoryPath: join(
+      memory
+        ? userMemoryRoot(input.dataRoot, input.access.actor.id)
+        : server
+          ? serverKnowledgeRoot(input.dataRoot)
+          : join(workspaceRoot, 'knowledge'),
+      'notebook.git'
+    ),
+  });
+  const conflictSubjects = unresolvedNotebookSubjects(
+    conflictNotebook.readRevision(conflictNotebook.publishedRevision()).files,
+    sourceScope
+  );
   const scopeSchemaText =
     scopedPages?.scopeSchemaText ?? readScopeKnowledgeSchemaText(workspaceRoot);
   const registeredSources =
@@ -958,14 +975,19 @@ async function retrieveNotebookSelection(
     }
     const reviewState = stringFrontmatterField(document, 'review_state');
 
+    // Apply conflict exclusion to active facts while preserving explicit non-active inspection.
     if (
       validation.errors.length > 0 ||
+      (stringFrontmatterField(document, 'openkit_status') === 'active' &&
+        ['Claim', 'Observation'].includes(stringFrontmatterField(document, 'type') ?? '') &&
+        stringFrontmatterField(document, 'conflict_status') === 'unresolved') ||
       !states.includes(
         stringFrontmatterField(document, 'openkit_status') as (typeof states)[number]
       ) ||
-      (!memory &&
-        !server &&
-        knowledgePageConflicted(workspaceRoot, candidate.knowledgePageId, sourceScope)) ||
+      (stringFrontmatterField(document, 'openkit_status') === 'active' &&
+        conflictSubjects.has(
+          formatReferenceUri({ scopeId: sourceScope, objectId: candidate.knowledgePageId })
+        )) ||
       (reviewState !== 'accepted' &&
         reviewState !== 'user-authored' &&
         !(
@@ -1010,7 +1032,7 @@ async function retrieveNotebookSelection(
       excluded.push({
         knowledgePageId: candidate.knowledgePageId,
         contentDigest,
-        reason: 'policy_excluded',
+        reason: 'selector_mismatch',
       });
       continue;
     }
@@ -1476,7 +1498,6 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
         ['stale', 'expired'].includes(stringFrontmatterField(document, 'freshness') ?? '')
       )
         throw knowledgeTraceUnavailable();
-      const kind = stringFrontmatterField(document, 'openkit_entry_kind');
       pages.push({
         notebookRevision,
         knowledgeBaseId,
@@ -1487,7 +1508,6 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
         content,
         title: stringFrontmatterField(document, 'title')!,
         body: document.body.trim(),
-        kind: kind === 'preference' || kind === 'task-summary' ? kind : 'project-context',
       });
     }
     admit();
@@ -1545,7 +1565,6 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
     const sensitivity = document ? stringFrontmatterField(document, 'sensitivity') : null;
     const freshness = document ? stringFrontmatterField(document, 'freshness') : null;
     const title = document ? stringFrontmatterField(document, 'title') : null;
-    const entryKind = document ? stringFrontmatterField(document, 'openkit_entry_kind') : null;
 
     if (
       !parsed.ok ||
@@ -1582,12 +1601,6 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
       content,
       title,
       body: document.body.trim(),
-      kind:
-        entryKind === 'preference' ||
-        entryKind === 'project-context' ||
-        entryKind === 'task-summary'
-          ? entryKind
-          : 'project-context',
     });
   }
 
@@ -1701,7 +1714,7 @@ function readKnowledgePageIds(pages: ReadonlyMap<string, string>): Set<string> {
 }
 
 /**
- * Reads registered Source ids and digests from the owning Workspace registry.
+ * Reads current Source identities and digests from the sole published Notebook pointer tree.
  *
  * @param workspaceRoot Workspace root path.
  * @param workspaceId Workspace id.
@@ -1711,21 +1724,14 @@ function readRegisteredSources(
   workspaceRoot: string,
   workspaceId: string
 ): Map<string, string | null> {
-  const registryRoot = join(workspaceRoot, 'sources', 'registry');
-  const sources = new Map<string, string | null>();
-
-  for (const fileName of listFiles(registryRoot).filter((name) => name.endsWith('.json'))) {
-    const source = readJsonRecord(join(registryRoot, fileName)) as Record<string, unknown>;
-
-    if (stringField(source, 'workspaceId') === workspaceId) {
-      sources.set(
-        stringField(source, 'id'),
-        typeof source.contentDigest === 'string' ? source.contentDigest : null
-      );
-    }
-  }
-
-  return sources;
+  return new Map(
+    [
+      ...readSourcePointers({
+        dataRoot: resolve(workspaceRoot, '../..'),
+        ownerScope: { kind: 'workspace', workspaceId },
+      }).values(),
+    ].map(({ source }) => [source.id, source.contentDigest])
+  );
 }
 
 /** Checks only exact same-base page bytes in the selected Notebook tree; native retrieval still owns current access. */
@@ -2250,51 +2256,6 @@ function listDirectories(path: string): string[] {
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
     .sort();
-}
-
-/**
- * Lists direct child files in stable order.
- *
- * @param path Parent directory path.
- * @returns File names.
- */
-function listFiles(path: string): string[] {
-  if (!lstatSync(path, { throwIfNoEntry: false })) {
-    return [];
-  }
-  assertCanonicalDirectory(path);
-
-  const entries = readdirSync(path, { withFileTypes: true });
-  const linkedEntry = entries.find((entry) => entry.isSymbolicLink());
-
-  if (linkedEntry) {
-    throw new Error(
-      `Canonical directory must not contain a symbolic link: ${join(path, linkedEntry.name)}.`
-    );
-  }
-
-  return entries
-    .filter((entry) => entry.isFile())
-    .map((entry) => entry.name)
-    .sort();
-}
-
-/**
- * Reads a required string field from a record.
- *
- * @param record Source record.
- * @param field Field name.
- * @returns String field value.
- * @throws Error when the field is missing or not a string.
- */
-function stringField(record: Record<string, unknown>, field: string): string {
-  const value = record[field];
-
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new Error(`Expected string field ${field}.`);
-  }
-
-  return value;
 }
 
 /**

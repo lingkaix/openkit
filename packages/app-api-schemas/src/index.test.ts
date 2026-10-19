@@ -49,8 +49,6 @@ import {
   ImportWorkspaceArtifactResponseSchema,
   IntroduceWorkspaceArtifactRequestSchema,
   IntroduceWorkspaceArtifactResponseSchema,
-  KnowledgeClaimSchema,
-  KnowledgeConflictSchema,
   KnowledgeDerivedIndexesResponseSchema,
   KnowledgeManagerAnswerRequestSchema,
   KnowledgeManagerAnswerResponseSchema,
@@ -62,7 +60,6 @@ import {
   KnowledgeManagerPrepareContextResponseSchema,
   KnowledgeManagerSuggestRepairRequestSchema,
   KnowledgeManagerSuggestRepairResponseSchema,
-  KnowledgeObservationSchema,
   KnowledgeRetrievalResponseSchema,
   KnowledgeRetrievalTraceSchema,
   KnowledgeSourceSchema,
@@ -72,9 +69,6 @@ import {
   ListBackendWorkspaceHandlesResponseSchema,
   ListHumanAttentionResponseSchema,
   ListInterruptedWorkerStatesResponseSchema,
-  ListKnowledgeClaimsResponseSchema,
-  ListKnowledgeConflictsResponseSchema,
-  ListKnowledgeObservationsResponseSchema,
   ListKnowledgeSourcesResponseSchema,
   ListMyAdminAccessTokensResponseSchema,
   ListOpenKitAccessTokensResponseSchema,
@@ -102,16 +96,8 @@ import {
   ProviderApiKeyProfileIdSchema,
   ProviderRegistryEntrySchema,
   ReadKnowledgeSourceResponseSchema,
-  RecordKnowledgeClaimRequestSchema,
-  RecordKnowledgeClaimResponseSchema,
-  RecordKnowledgeConflictRequestSchema,
-  RecordKnowledgeConflictResponseSchema,
-  RecordKnowledgeObservationRequestSchema,
-  RecordKnowledgeObservationResponseSchema,
   RegisterKnowledgeSourceRequestSchema,
   RegisterKnowledgeSourceResponseSchema,
-  ResolveKnowledgeConflictRequestSchema,
-  ResolveKnowledgeConflictResponseSchema,
   RestoreThreadMaterialRequestSchema,
   RestoreThreadMaterialResponseSchema,
   RetrieveKnowledgeRequestSchema,
@@ -233,7 +219,6 @@ const canonicalKnowledgePageBytes = [
   'freshness: "current"',
   `created_at: ${JSON.stringify(timestamp)}`,
   `updated_at: ${JSON.stringify(timestamp)}`,
-  'openkit_entry_kind: "project-context"',
   `openkit_entry_id: ${JSON.stringify(knowledgePageId)}`,
   '---',
   'Release reviews happen every Friday.',
@@ -935,7 +920,7 @@ describe('app api schemas', () => {
 
     expect(
       RegisterKnowledgeSourceRequestSchema.parse({
-        requestId: 'req_source',
+        requestId: '00000000-0000-4000-8000-000000000603',
         kind: 'document',
         title: 'Release notes',
         uri: 'file://release.md',
@@ -943,7 +928,7 @@ describe('app api schemas', () => {
         originatingThreadId: 'th_00000000-0000-7000-8000-000000000001',
         originatingTurnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
       })
-    ).toMatchObject({ kind: 'document', requestId: 'req_source' });
+    ).toMatchObject({ kind: 'document', requestId: '00000000-0000-4000-8000-000000000603' });
     expect(KnowledgeSourceSchema.parse(source)).toEqual(source);
     const derivedRepresentation = {
       id: 'ks_00000000-0000-7ef0-a551-80b39073108f:text',
@@ -971,165 +956,6 @@ describe('app api schemas', () => {
     ).toEqual({ source, derivedRepresentations: [derivedRepresentation] });
     expect(ListKnowledgeSourcesResponseSchema.parse({ items: [source] })).toEqual({
       items: [source],
-    });
-  });
-
-  it('accepts Knowledge Store observation ledger payloads', () => {
-    const observation = {
-      id: 'ko_00000000-0000-7998-bb5a-f6e99a870e41',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      kind: 'retrieval',
-      summary: 'Worker repeatedly needed release cadence context.',
-      sourceReferences: ['knowledge:kn_demo', 'source:ks_00000000-0000-7ef0-a551-80b39073108f'],
-      scope: 'workspace',
-      producer: 'knowledge-manager',
-      confidence: 0.75,
-      freshness: 'current',
-      status: 'retained',
-      observedAt: timestamp,
-      createdAt: timestamp,
-    };
-
-    expect(
-      RecordKnowledgeObservationRequestSchema.parse({
-        requestId: 'req_observation',
-        kind: 'retrieval',
-        summary: observation.summary,
-        sourceReferences: observation.sourceReferences,
-        confidence: observation.confidence,
-        producer: observation.producer,
-      })
-    ).toMatchObject({ kind: 'retrieval', requestId: 'req_observation' });
-    expect(KnowledgeObservationSchema.parse(observation)).toEqual(observation);
-    expect(RecordKnowledgeObservationResponseSchema.parse({ observation })).toEqual({
-      observation,
-    });
-    expect(ListKnowledgeObservationsResponseSchema.parse({ items: [observation] })).toEqual({
-      items: [observation],
-    });
-  });
-
-  it('accepts Knowledge Store claim ledger payloads', () => {
-    const claim = {
-      id: 'kc_00000000-0000-7120-8707-e527057f1dd9',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      statement: 'Release cadence is weekly.',
-      sourceReferences: [
-        'knowledge:release-plan',
-        'source:ks_00000000-0000-7b52-90c5-8003864b63f9',
-      ],
-      scope: 'workspace',
-      producer: 'knowledge-manager',
-      confidence: 0.8,
-      freshness: 'current',
-      reviewState: 'needs-review',
-      conflictStatus: 'none',
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    };
-
-    expect(
-      RecordKnowledgeClaimRequestSchema.parse({
-        requestId: 'req_claim',
-        statement: claim.statement,
-        sourceReferences: claim.sourceReferences,
-        producer: claim.producer,
-        confidence: claim.confidence,
-      })
-    ).toEqual({
-      requestId: 'req_claim',
-      statement: claim.statement,
-      sourceReferences: claim.sourceReferences,
-      scope: 'workspace',
-      producer: claim.producer,
-      confidence: claim.confidence,
-      freshness: 'current',
-      reviewState: 'needs-review',
-      conflictStatus: 'none',
-    });
-    expect(KnowledgeClaimSchema.parse(claim)).toEqual(claim);
-    expect(RecordKnowledgeClaimResponseSchema.parse({ claim })).toEqual({ claim });
-    expect(ListKnowledgeClaimsResponseSchema.parse({ items: [claim] })).toEqual({
-      items: [claim],
-    });
-  });
-
-  it('accepts Knowledge Store conflict ledger payloads', () => {
-    const conflict = {
-      id: 'kf_00000000-0000-7b22-b99c-14cb0ba3c7ef',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      subjectReferences: [
-        'knowledge:release-plan',
-        'claim:kc_00000000-0000-78d1-ade0-e140ee38bc7a',
-      ],
-      sourceReferences: [
-        'source:ks_00000000-0000-7b52-90c5-8003864b63f9',
-        'source:ks_00000000-0000-7cfe-8f5a-5c42a2b55641',
-      ],
-      status: 'conflicting',
-      summary: 'Release cadence has contradictory source evidence.',
-      suggestedActions: ['Ask the user which source is authoritative.'],
-      producer: 'knowledge-manager',
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    };
-
-    expect(
-      RecordKnowledgeConflictRequestSchema.parse({
-        requestId: 'req_conflict',
-        subjectReferences: conflict.subjectReferences,
-        sourceReferences: conflict.sourceReferences,
-        summary: conflict.summary,
-        producer: conflict.producer,
-      })
-    ).toEqual({
-      requestId: 'req_conflict',
-      subjectReferences: conflict.subjectReferences,
-      sourceReferences: conflict.sourceReferences,
-      status: 'conflicting',
-      summary: conflict.summary,
-      suggestedActions: [],
-      producer: conflict.producer,
-    });
-    expect(() =>
-      RecordKnowledgeConflictRequestSchema.parse({
-        requestId: 'req_conflict_resolved',
-        subjectReferences: conflict.subjectReferences,
-        status: 'resolved',
-        summary: conflict.summary,
-        producer: conflict.producer,
-      })
-    ).toThrow();
-    expect(KnowledgeConflictSchema.parse(conflict)).toEqual(conflict);
-    expect(RecordKnowledgeConflictResponseSchema.parse({ conflict })).toEqual({ conflict });
-    expect(ListKnowledgeConflictsResponseSchema.parse({ items: [conflict] })).toEqual({
-      items: [conflict],
-    });
-
-    const resolvedConflict = {
-      ...conflict,
-      status: 'resolved',
-      resolution: 'Friday release reviews are authoritative.',
-      resolvedAt: timestamp,
-      resolvedBy: 'knowledge-manager',
-      updatedAt: timestamp,
-    };
-
-    expect(
-      ResolveKnowledgeConflictRequestSchema.parse({
-        requestId: 'req_resolve_conflict',
-        status: 'resolved',
-        resolution: resolvedConflict.resolution,
-        resolvedBy: resolvedConflict.resolvedBy,
-      })
-    ).toEqual({
-      requestId: 'req_resolve_conflict',
-      status: 'resolved',
-      resolution: resolvedConflict.resolution,
-      resolvedBy: resolvedConflict.resolvedBy,
-    });
-    expect(ResolveKnowledgeConflictResponseSchema.parse({ conflict: resolvedConflict })).toEqual({
-      conflict: resolvedConflict,
     });
   });
 

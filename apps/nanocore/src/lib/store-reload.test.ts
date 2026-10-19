@@ -1,3 +1,11 @@
+import { openCoreDb } from '../storage/db.js';
+import { applyMigrations } from '../storage/migrate.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
+import {
+  captureWorkspaceSourceFixture,
+  readWorkspaceSourceFixture,
+} from '../test-support/workspace-source.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 // openkit-test-platform: posix
 
 import { createHash } from 'node:crypto';
@@ -15,17 +23,17 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
   ItemSchema,
-  KnowledgeEntrySchema,
   PROTOCOL_VERSION,
   ThreadSchema,
   TurnSchema,
   WorkspaceRecordSchema,
   writeRetainedV1,
 } from '@openkit/protocol';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { discardAbandonedWorkspaceStaging } from '../storage/workspace-file-records.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { knowledgePageFixture } from '../test-support/knowledge-page.js';
 import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { FsStore } from './store.js';
 
@@ -95,14 +103,16 @@ function workspaceImportPayload(
     completedAt: timestamp,
   });
   const knowledge = [
-    KnowledgeEntrySchema.parse({
-      id: `kn_${workspaceId}`,
-      kind: 'project-context',
-      title: 'Imported context',
-      content: 'This entry belongs to the imported workspace.',
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    }),
+    knowledgePageFixture(
+      {
+        id: `kn_${workspaceId}`,
+        title: 'Imported context',
+        content: 'This page belongs to the imported workspace.',
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+      { kind: 'workspace', workspaceId }
+    ),
   ];
 
   return {
@@ -319,15 +329,23 @@ describe('FsStore canonical reload', () => {
     expect(JSON.stringify(turnRecord)).not.toContain(updatedItem.text);
   });
 
-  it('reloads canonical workspace records and event logs without store.json', () => {
+  it('reloads canonical workspace records and event logs without store.json', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-reload-'));
     const fixtureStore = new FsStore();
     const workspace = fixtureStore.createWorkspace('Reload Workspace');
-    const knowledge = fixtureStore.createKnowledgeEntry(workspace.id, {
-      kind: 'project-context',
-      title: 'Reload context',
-      content: 'Snapshot reload should preserve this knowledge entry.',
-    });
+    const knowledge = fixtureStore.createKnowledgePage(
+      workspace.id,
+      knowledgePageFixture(
+        {
+          id: 'reload-context',
+          title: 'Reload context',
+          content: 'Snapshot reload should preserve this canonical page.',
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        },
+        { kind: 'workspace', workspaceId: workspace.id }
+      )
+    );
     const store = new FsStore({ dataRoot });
     store.importWorkspaceSnapshot({
       workspace,
@@ -342,15 +360,28 @@ describe('FsStore canonical reload', () => {
     });
     const thread = store.createThread(workspace.id, 'Reload thread');
     const turn = store.createTurn(workspace.id, thread.id, 'Persist the whole turn', localActor);
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    onTestFinished(() => coreDb.sqlite.close());
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      workspaceId: workspace.id,
+      ownerUserId: localActor.id,
+    });
     const knowledgeSourceContent = 'Reload source material.';
-    const knowledgeSource = store.createKnowledgeSource(
-      {
+    const knowledgeSource = await captureWorkspaceSourceFixture({
+      dataRoot,
+      store,
+      coreDb,
+      userId: localActor.id,
+      source: {
         id: testEntityId('ks', `ks_${turn.id}`),
         workspaceId: workspace.id,
         kind: 'upload',
         title: 'Reload source',
         uri: null,
-        contentDigest: 'sha256:reload-source',
+        contentDigest: artifactDigest(knowledgeSourceContent),
         originatingThreadId: thread.id,
         originatingTurnId: turn.id,
         originatingFileId: `file_${turn.id}`,
@@ -358,8 +389,8 @@ describe('FsStore canonical reload', () => {
         createdAt: turn.startedAt ?? new Date().toISOString(),
         updatedAt: turn.startedAt ?? new Date().toISOString(),
       },
-      knowledgeSourceContent
-    );
+      content: knowledgeSourceContent,
+    });
     const userItem = store.createItem({
       id: testEntityId('it', `it_user_${turn.id}`),
       workspaceId: workspace.id,
@@ -528,9 +559,16 @@ describe('FsStore canonical reload', () => {
     expect(restarted.getWorkspace(workspace.id)).toEqual(store.getWorkspace(workspace.id));
     expect(restarted.getWorkspaceResources(workspace.id).knowledge).toContainEqual(knowledge);
     expect(restarted.getKnowledgeSource(workspace.id, knowledgeSource.id)).toEqual(knowledgeSource);
-    expect(restarted.readKnowledgeSourceMaterial(workspace.id, knowledgeSource.id)).toBe(
-      knowledgeSourceContent
-    );
+    expect(
+      await readWorkspaceSourceFixture({
+        dataRoot,
+        coreDb,
+        store: restarted,
+        userId: localActor.id,
+        workspaceId: workspace.id,
+        sourceId: knowledgeSource.id,
+      })
+    ).toEqual({ status: 'ok', value: knowledgeSourceContent });
     expect(restarted.getThread(workspace.id, thread.id)).toEqual(persistedThread);
     expect(restarted.getTurn(workspace.id, thread.id, turn.id)).toEqual(completedTurn);
     expect(restarted.listThreadItems(workspace.id, thread.id)).toEqual(completedTurn.items);
@@ -585,19 +623,25 @@ describe('FsStore canonical reload', () => {
     const retained = notebook.readRevision(revision);
     const refusal = 'File-backed Knowledge changes require the notebook publisher.';
 
-    expect(() =>
-      store.createKnowledgeEntry(workspace.id, {
-        kind: 'project-context',
+    const candidate = knowledgePageFixture(
+      {
+        id: 'bypass',
         title: 'Bypass',
         content: 'Must not publish.',
-      })
-    ).toThrow(refusal);
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+      { kind: 'workspace', workspaceId: workspace.id }
+    );
+    expect(() => store.createKnowledgePage(workspace.id, candidate)).toThrow(refusal);
     expect(() =>
-      store.updateKnowledgeEntry(workspace.id, knowledge.id, {
-        content: 'Must not replace the published page.',
+      store.createKnowledgePage(workspace.id, {
+        path: knowledge.path,
+        content: candidate.content,
       })
     ).toThrow(refusal);
-    expect(() => store.deleteKnowledgeEntry(workspace.id, knowledge.id)).toThrow(refusal);
+    expect(store).not.toHaveProperty('updateKnowledgeEntry');
+    expect(store).not.toHaveProperty('deleteKnowledgeEntry');
     expect(notebook.publishedRevision()).toBe(revision);
     expect(notebook.readRevision(revision)).toEqual(retained);
     expect(new FsStore({ dataRoot }).getWorkspaceResources(workspace.id).knowledge).toEqual(
@@ -668,7 +712,7 @@ describe('FsStore canonical reload', () => {
     expect(store.listThreadItems(workspace.id, thread.id)).toEqual(beforeItems);
   });
 
-  it('rejects symbolic links for canonical artifact bodies and source materials', () => {
+  it('rejects symbolic links for canonical artifact bodies and source originals', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-canonical-symlink-'));
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Canonical symlink workspace');
@@ -695,14 +739,27 @@ describe('FsStore canonical reload', () => {
       createdAt: turn.startedAt ?? timestamp,
       updatedAt: turn.startedAt ?? timestamp,
     });
-    const source = store.createKnowledgeSource(
-      {
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    onTestFinished(() => coreDb.sqlite.close());
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      workspaceId: workspace.id,
+      ownerUserId: localActor.id,
+    });
+    const source = await captureWorkspaceSourceFixture({
+      dataRoot,
+      store,
+      coreDb,
+      userId: localActor.id,
+      source: {
         id: testEntityId('ks', `ks_${turn.id}`),
         workspaceId: workspace.id,
         kind: 'upload',
         title: 'Canonical source',
         uri: null,
-        contentDigest: 'sha256:canonical-source',
+        contentDigest: artifactDigest('Canonical source material.'),
         originatingThreadId: thread.id,
         originatingTurnId: turn.id,
         originatingFileId: null,
@@ -710,17 +767,18 @@ describe('FsStore canonical reload', () => {
         createdAt: turn.startedAt ?? timestamp,
         updatedAt: turn.startedAt ?? timestamp,
       },
-      'Canonical source material.'
-    );
+      content: 'Canonical source material.',
+    });
     const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
     const outsidePath = join(dataRoot, 'outside-canonical-content.txt');
     const artifactBodyPath = join(workspaceRoot, 'artifacts', artifact.id, 'files', 'content.txt');
     const sourceMaterialPath = join(
       workspaceRoot,
+      'knowledge',
+      'raw',
       'sources',
-      'materials',
       source.id,
-      'content.txt'
+      'original'
     );
 
     writeFileSync(outsidePath, 'Outside canonical content.');
@@ -732,9 +790,17 @@ describe('FsStore canonical reload', () => {
     writeFileSync(artifactBodyPath, artifact.content.body);
     rmSync(sourceMaterialPath);
     symlinkSync(outsidePath, sourceMaterialPath);
-    expect(() => store.readKnowledgeSourceMaterial(workspace.id, source.id)).toThrow(
-      /symbolic link|regular file/
-    );
+    const refused = await readWorkspaceSourceFixture({
+      dataRoot,
+      coreDb,
+      store,
+      userId: localActor.id,
+      workspaceId: workspace.id,
+      sourceId: source.id,
+    });
+    expect(refused.status).not.toBe('ok');
+    expect(JSON.stringify(refused)).not.toContain('Outside canonical content.');
+    expect(readFileSync(outsidePath, 'utf8')).toBe('Outside canonical content.');
   });
 
   it('repairs a pending approval gate from its canonical request item', () => {
