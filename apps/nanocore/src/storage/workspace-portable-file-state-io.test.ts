@@ -469,7 +469,9 @@ describe('workspace portable file-state IO', () => {
   it('rejects retired ledgers and trace files with contradictory path lineage', () => {
     const retiredRoot = workspaceRoot('openkit-portable-state-retired-trace-');
     writePortableFixture(retiredRoot);
-    writeJsonl(join(retiredRoot, 'knowledge', 'traces', '202607.jsonl'), []);
+    const retiredTracePath = join(retiredRoot, 'knowledge', 'traces', '202607.jsonl');
+    mkdirSync(dirname(retiredTracePath), { recursive: true });
+    writeFileSync(retiredTracePath, '');
     expect(() => readWorkspacePortableFileState(retiredRoot, PORTABLE_OWNERS)).toThrow(
       'The retired Knowledge retrieval trace ledger is unsupported.'
     );
