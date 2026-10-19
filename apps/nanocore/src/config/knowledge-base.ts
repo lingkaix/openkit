@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, lstatSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import {
   type KnowledgeMount,
@@ -95,6 +95,15 @@ export function readKnowledgeMounts(input: KnowledgeBaseOwner): readonly Knowled
     const id = KnowledgeBaseIdSchema.parse(readBinding(owner, source));
     const mounts = KnowledgeMountsSchema.parse(readBinding(owner, source, owner.mountsMember));
     if (mounts.some((mount) => mount.knowledgeBaseId !== id))
+      throw new NotebookError('recovery_required');
+    // Additional mount names reserve logical raw subdirectories; managed originals cannot occupy them.
+    if (
+      mounts.some(
+        (mount) =>
+          !mount.default &&
+          lstatSync(join(owner.notebookRoot, 'raw', mount.name), { throwIfNoEntry: false })
+      )
+    )
       throw new NotebookError('recovery_required');
     return mounts;
   } catch {

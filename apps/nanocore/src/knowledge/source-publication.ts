@@ -166,10 +166,14 @@ export async function publishCapturedSource(
     dataRoot: input.owner.dataRoot,
     scope: input.owner.ownerScope,
   });
-  const mount = readKnowledgeMounts({
+  const mounts = readKnowledgeMounts({
     dataRoot: input.owner.dataRoot,
     scope: input.owner.ownerScope,
-  }).find((candidate) => candidate.default)!;
+  });
+  // The managed capture namespace must not shadow an already declared external mount.
+  if (mounts.some((candidate) => !candidate.default && candidate.name === 'sources'))
+    throw new NotebookError('invalid_request');
+  const mount = mounts.find((candidate) => candidate.default)!;
   const admit = (): StorageAccess => {
     input.revalidatePublication();
     const access = deriveManagedSourceAccess({
