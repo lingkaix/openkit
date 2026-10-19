@@ -198,10 +198,8 @@ export function resolveWorkspaceKnowledgeReferenceProofs(input: {
               .map((source) => [source.id, source.contentDigest])
           );
           const resolution = resolveRegisteredKnowledgeSourceReference(reference, sources);
-          const source = resolution.targetId
-            ? input.store.getKnowledgeSource(input.workspaceId, resolution.targetId)
-            : null;
-          if (!resolution.resolved || !source) throw new KnowledgePageValidationError();
+          if (!resolution.resolved || !resolution.targetId)
+            throw new KnowledgePageValidationError();
           verified.add(reference);
         } else if (reference.startsWith('openkit:')) {
           const parsedReference = parseKnowledgePageSourceReference(reference, pageScopeId);

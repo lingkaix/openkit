@@ -86,9 +86,6 @@ export const workspaceKeys = {
   workers: (workspaceId: string) => ['workspace-workers', workspaceId] as const,
   knowledge: (workspaceId: string) => ['knowledge', workspaceId] as const,
   knowledgeSources: (workspaceId: string) => ['knowledge-sources', workspaceId] as const,
-  knowledgeObservations: (workspaceId: string) => ['knowledge-observations', workspaceId] as const,
-  knowledgeClaims: (workspaceId: string) => ['knowledge-claims', workspaceId] as const,
-  knowledgeConflicts: (workspaceId: string) => ['knowledge-conflicts', workspaceId] as const,
   knowledgeIndexes: (workspaceId: string) => ['knowledge-indexes', workspaceId] as const,
   catalog: (workspaceId: string) => ['catalog', workspaceId] as const,
 };
@@ -112,13 +109,9 @@ export type WorkspaceWorkerRow = Awaited<
 export type KnowledgeNotebookPage = Awaited<
   ReturnType<CoreClient['operations']['knowledge.notebook.list']>
 >['pages'][number];
-/** Bounded Knowledge Store projection returned by the three live list reads. */
+/** Bounded Knowledge Store projection returned by the live Source list read. */
 export type KnowledgeStoreProjection = {
   sources: Awaited<ReturnType<CoreClient['operations']['knowledge.source.list']>>['items'];
-  observations: Awaited<
-    ReturnType<CoreClient['operations']['knowledge.observation.list']>
-  >['items'];
-  claims: Awaited<ReturnType<CoreClient['operations']['knowledge.claim.list']>>['items'];
 };
 /** Decision accepted by the existing Knowledge Proposal owner. */
 export type KnowledgeProposalDecision = Omit<
@@ -154,33 +147,6 @@ export type RegisterKnowledgeSourceCommand = {
 export type ReadKnowledgeSourceCommand = {
   workspaceId: string;
   sourceId: string;
-};
-/** Exact replayable Knowledge Observation append bound to one Workspace. */
-export type RecordKnowledgeObservationCommand = {
-  workspaceId: string;
-  input: Omit<
-    Parameters<CoreClient['operations']['knowledge.observation.record']>[0],
-    'workspaceId'
-  >;
-};
-/** Exact replayable Knowledge Claim append bound to one Workspace. */
-export type RecordKnowledgeClaimCommand = {
-  workspaceId: string;
-  input: Omit<Parameters<CoreClient['operations']['knowledge.claim.record']>[0], 'workspaceId'>;
-};
-/** Exact replayable Knowledge Conflict append bound to one Workspace. */
-export type RecordKnowledgeConflictCommand = {
-  workspaceId: string;
-  input: Omit<Parameters<CoreClient['operations']['knowledge.conflict.record']>[0], 'workspaceId'>;
-};
-/** Exact replayable Knowledge Conflict resolution bound to one Workspace. */
-export type ResolveKnowledgeConflictCommand = {
-  workspaceId: string;
-  conflictId: string;
-  input: Omit<
-    Parameters<CoreClient['operations']['knowledge.conflict.resolve']>[0],
-    'workspaceId' | 'conflictId'
-  >;
 };
 /** Workspace-bound Knowledge retrieval request. */
 export type RetrieveKnowledgeCommand = {
@@ -342,48 +308,6 @@ export function useKnowledgeSources(workspaceId: string | null) {
   });
 }
 
-/** List workspace Knowledge Store observations. */
-export function useKnowledgeObservations(workspaceId: string | null) {
-  const client = useCoreClient();
-  return useQuery({
-    queryKey: workspaceKeys.knowledgeObservations(workspaceId ?? ''),
-    queryFn: async () =>
-      (
-        await client.operations['knowledge.observation.list']({
-          workspaceId: workspaceId as string,
-        })
-      ).items,
-    enabled: Boolean(workspaceId),
-    ...knowledgeListQuery,
-  });
-}
-
-/** List workspace Knowledge Store claims. */
-export function useKnowledgeClaims(workspaceId: string | null) {
-  const client = useCoreClient();
-  return useQuery({
-    queryKey: workspaceKeys.knowledgeClaims(workspaceId ?? ''),
-    queryFn: async () =>
-      (await client.operations['knowledge.claim.list']({ workspaceId: workspaceId as string }))
-        .items,
-    enabled: Boolean(workspaceId),
-    ...knowledgeListQuery,
-  });
-}
-
-/** List workspace Knowledge Store conflicts. */
-export function useKnowledgeConflicts(workspaceId: string | null) {
-  const client = useCoreClient();
-  return useQuery({
-    queryKey: workspaceKeys.knowledgeConflicts(workspaceId ?? ''),
-    queryFn: async () =>
-      (await client.operations['knowledge.conflict.list']({ workspaceId: workspaceId as string }))
-        .items,
-    enabled: Boolean(workspaceId),
-    ...knowledgeListQuery,
-  });
-}
-
 /** Read fresh derived Knowledge Store indexes. */
 export function useKnowledgeIndexes(workspaceId: string | null) {
   const client = useCoreClient();
@@ -416,59 +340,6 @@ export function useReadKnowledgeSource() {
       client.operations['knowledge.source.read']({
         workspaceId: command.workspaceId,
         sourceId: command.sourceId,
-      }),
-    retry: false,
-  });
-}
-
-/** @returns Mutation that appends one Knowledge Observation without claiming list settlement. */
-export function useRecordKnowledgeObservation() {
-  const client = useCoreClient();
-  return useMutation({
-    mutationFn: (command: RecordKnowledgeObservationCommand) =>
-      client.operations['knowledge.observation.record']({
-        workspaceId: command.workspaceId,
-        ...command.input,
-      }),
-    retry: false,
-  });
-}
-
-/** @returns Mutation that appends one Knowledge Claim without claiming list settlement. */
-export function useRecordKnowledgeClaim() {
-  const client = useCoreClient();
-  return useMutation({
-    mutationFn: (command: RecordKnowledgeClaimCommand) =>
-      client.operations['knowledge.claim.record']({
-        workspaceId: command.workspaceId,
-        ...command.input,
-      }),
-    retry: false,
-  });
-}
-
-/** @returns Mutation that appends one Knowledge Conflict without claiming list settlement. */
-export function useRecordKnowledgeConflict() {
-  const client = useCoreClient();
-  return useMutation({
-    mutationFn: (command: RecordKnowledgeConflictCommand) =>
-      client.operations['knowledge.conflict.record']({
-        workspaceId: command.workspaceId,
-        ...command.input,
-      }),
-    retry: false,
-  });
-}
-
-/** @returns Mutation that resolves one Knowledge Conflict without claiming list settlement. */
-export function useResolveKnowledgeConflict() {
-  const client = useCoreClient();
-  return useMutation({
-    mutationFn: (command: ResolveKnowledgeConflictCommand) =>
-      client.operations['knowledge.conflict.resolve']({
-        workspaceId: command.workspaceId,
-        conflictId: command.conflictId,
-        ...command.input,
       }),
     retry: false,
   });

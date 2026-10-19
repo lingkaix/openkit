@@ -91,6 +91,9 @@ export const UNSUPPORTED_WORKSPACE_EXPORT_RECORD_PATHS = [
   'records/injection-receipts.jsonl',
   'catalog/catalog.json',
   'records/knowledge-retrieval-traces.jsonl',
+  'records/knowledge-observations.jsonl',
+  'records/knowledge-claims.jsonl',
+  'records/knowledge-conflicts.jsonl',
   'workspace-files/imports/recurrence-history.json',
 ] as const;
 

@@ -4,6 +4,7 @@ import {
   KnowledgeOwnerScopeSchema,
   parseReferenceScope,
   parseReferenceUri,
+  ReferenceUriSchema,
 } from '@openkit/protocol';
 import { type Document, isMap, isScalar, isSeq, parseDocument } from 'yaml';
 
@@ -65,6 +66,8 @@ const OPENKIT_BASE_TYPES = new Set([
 ]);
 // Governed domain types extend the scope schema, not the portable OKF base.
 const OPENKIT_DOMAIN_TYPES = new Set(['Rule', 'Effect', 'Objective']);
+/** Conflict truth is separate from freshness, Review and whole-page lifecycle. */
+const KNOWLEDGE_CONFLICT_STATES = new Set(['unresolved', 'resolved']);
 const DEFAULT_STATUS_VALUES = ['draft', 'active', 'archived', 'superseded', 'invalid', 'deleted'];
 const STANDARD_STATUS_BY_OPENKIT_STATUS = {
   active: 'stable',
@@ -527,6 +530,54 @@ export function validateScopeKnowledgeSchema(
         message:
           'Effect pages require last_checked_at as a machine-readable timestamp with an explicit offset.',
       });
+    }
+  }
+
+  const factType = document.frontmatter.type;
+  if (factType === 'Claim') {
+    const confidence = document.frontmatter.confidence;
+    if (
+      typeof confidence !== 'number' ||
+      !Number.isFinite(confidence) ||
+      confidence < 0 ||
+      confidence > 1
+    ) {
+      errors.push({
+        code: 'scope_schema.invalid_confidence',
+        field: 'confidence',
+        message: 'Claim confidence must be a finite number from zero through one.',
+      });
+    }
+  }
+  if (factType === 'Claim' || factType === 'Observation') {
+    const conflictStatus = document.frontmatter.conflict_status;
+    if (
+      conflictStatus !== undefined &&
+      (typeof conflictStatus !== 'string' || !KNOWLEDGE_CONFLICT_STATES.has(conflictStatus))
+    ) {
+      errors.push({
+        code: 'scope_schema.invalid_conflict_status',
+        field: 'conflict_status',
+        message: 'A recorded conflict assessment must be unresolved or resolved.',
+      });
+    }
+    if (
+      factType === 'Observation' &&
+      (conflictStatus !== undefined || document.frontmatter.subject_refs !== undefined)
+    ) {
+      const subjects = document.frontmatter.subject_refs;
+      if (
+        !Array.isArray(subjects) ||
+        subjects.length === 0 ||
+        !subjects.every((reference) => ReferenceUriSchema.safeParse(reference).success)
+      ) {
+        errors.push({
+          code: 'scope_schema.invalid_conflict_subjects',
+          field: 'subject_refs',
+          message:
+            'Subject assessments require nonempty canonical reference URIs; the reference owner admits their targets.',
+        });
+      }
     }
   }
 

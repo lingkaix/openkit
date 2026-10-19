@@ -109,13 +109,6 @@ const governedIds = [
   'knowledge.source.list',
   'knowledge.source.register',
   'knowledge.source.read',
-  'knowledge.observation.list',
-  'knowledge.observation.record',
-  'knowledge.claim.list',
-  'knowledge.claim.record',
-  'knowledge.conflict.list',
-  'knowledge.conflict.record',
-  'knowledge.conflict.resolve',
   'knowledge.indexes',
   'knowledge.retrieval',
   'knowledge.context.prepare',
@@ -290,6 +283,33 @@ const oldRoutes = [
 ] as const;
 
 describe('Knowledge operation definition cutover', () => {
+  it('retires standalone fact writers and reads from every public projection', async () => {
+    const f = fixture();
+    try {
+      const before = notebook(f).publishedRevision();
+      for (const id of [
+        'knowledge.observation.list',
+        'knowledge.observation.record',
+        'knowledge.claim.list',
+        'knowledge.claim.record',
+        'knowledge.conflict.list',
+        'knowledge.conflict.record',
+        'knowledge.conflict.resolve',
+      ]) {
+        expect(Object.hasOwn(schemas.KNOWLEDGE_OPERATION_DEFINITIONS, id)).toBe(false);
+        const response = await f.app.request(`/api/app/operations/${id}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ workspaceId: DEMO_WORKSPACE_ID }),
+        });
+        expect(response.status, id).toBe(404);
+      }
+      expect(notebook(f).publishedRevision()).toBe(before);
+    } finally {
+      await f.close();
+    }
+  });
+
   it('declares the accepted governed and Notebook operation inventory without handwritten projection catalogs', () => {
     const tables = schemas as unknown as Record<string, Record<string, unknown>>;
     expect(Object.keys(tables.KNOWLEDGE_OPERATION_DEFINITIONS ?? {}).sort()).toEqual(
@@ -381,34 +401,6 @@ describe('Knowledge operation definition cutover', () => {
       });
       await compare('knowledge.source.list', {});
       await compare('knowledge.source.read', { sourceId: source.source.id });
-      await compare('knowledge.observation.record', {
-        requestId: randomUUID(),
-        kind: 'maintenance',
-        summary: 'Inspect knowledge',
-        producer: 'usr_00000000-0000-7000-8000-000000000001',
-      });
-      await compare('knowledge.observation.list', {});
-      await compare('knowledge.claim.record', {
-        requestId: randomUUID(),
-        statement: 'Source traced lesson',
-        producer: 'usr_00000000-0000-7000-8000-000000000001',
-      });
-      await compare('knowledge.claim.list', {});
-      const conflict = await compare('knowledge.conflict.record', {
-        requestId: randomUUID(),
-        subjectReferences: [
-          formatReferenceUri({ scopeId: f.pageScopeId, objectId: 'cutover-lesson' }),
-        ],
-        summary: 'Competing lesson',
-        producer: 'usr_00000000-0000-7000-8000-000000000001',
-      });
-      await compare('knowledge.conflict.list', {});
-      await compare('knowledge.conflict.resolve', {
-        requestId: randomUUID(),
-        conflictId: conflict.conflict.id,
-        resolution: 'Resolved after inspection',
-        resolvedBy: 'usr_00000000-0000-7000-8000-000000000001',
-      });
       const draft = await compare(
         'knowledge.proposal.draft',
         proposalInput(source.source, notebook(f).publishedRevision())
@@ -531,32 +523,6 @@ describe('Knowledge operation definition cutover', () => {
         },
         'knowledge.source.list': {},
         'knowledge.source.read': { sourceId: 'ks_00000000-0000-7e65-a399-d53a84c98ecb' },
-        'knowledge.observation.record': {
-          requestId,
-          kind: 'maintenance',
-          summary: 'Denied observation',
-          producer: 'usr_00000000-0000-7000-8000-000000000001',
-        },
-        'knowledge.observation.list': {},
-        'knowledge.claim.record': {
-          requestId,
-          statement: 'Denied claim',
-          producer: 'usr_00000000-0000-7000-8000-000000000001',
-        },
-        'knowledge.claim.list': {},
-        'knowledge.conflict.record': {
-          requestId,
-          subjectReferences: ['knowledge:missing'],
-          summary: 'Denied conflict',
-          producer: 'usr_00000000-0000-7000-8000-000000000001',
-        },
-        'knowledge.conflict.list': {},
-        'knowledge.conflict.resolve': {
-          requestId,
-          conflictId: 'kf_00000000-0000-720e-9482-c126a411b6fe',
-          resolution: 'Denied resolution',
-          resolvedBy: 'usr_00000000-0000-7000-8000-000000000001',
-        },
         'knowledge.indexes': {},
         'knowledge.retrieval': { query: 'lesson' },
         'knowledge.context.prepare': { query: 'lesson' },

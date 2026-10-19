@@ -54,21 +54,6 @@ import {
   writeWorkspacePortableFileState,
 } from './workspace-portable-file-state.js';
 
-/**
- * Reads one optional JSONL fixture so a single red test can report every missing file family.
- *
- * @param path Canonical workspace JSONL path.
- * @returns Parsed rows, or an empty list when the file is absent.
- */
-function readOptionalJsonl(path: string): Array<Record<string, unknown>> {
-  if (!existsSync(path)) {
-    return [];
-  }
-
-  const text = readFileSync(path, 'utf8').trim();
-  return text ? text.split('\n').map((line) => JSON.parse(line) as Record<string, unknown>) : [];
-}
-
 /** Initializes real Git authority for bare directory-inventory fixtures. */
 function initializeNotebook(workspaceRoot: string): KnowledgeNotebook {
   const notebook = new KnowledgeNotebook({
@@ -167,9 +152,6 @@ describe('workspace portable file state', () => {
       2
     )}\n`;
     const state = {
-      observations: new Map(),
-      claims: new Map(),
-      conflicts: new Map(),
       retrievalTraceFiles: new Map(),
       workspaceConfig: importedConfig,
       workspaceSchema: null,
@@ -279,90 +261,66 @@ describe('workspace portable file state', () => {
     );
     publishFixturePages(notebook, { [knowledge.path]: knowledge.content });
 
-    store.recordKnowledgeObservation({
-      id: 'ko_00000000-0000-72ae-82a2-428025c60c1b',
-      workspaceId: sourceWorkspaceId,
-      kind: 'maintenance',
-      summary: 'First portable observation.',
-      sourceReferences: ['claim:kc_00000000-0000-71a7-90bd-9df60db5bd84'],
-      scope: 'workspace',
-      producer: 'portability-test',
-      confidence: 0.9,
-      freshness: 'current',
-      status: 'retained',
-      observedAt: firstTimestamp,
-      createdAt: firstTimestamp,
-    });
-    store.recordKnowledgeObservation({
-      id: 'ko_00000000-0000-79e1-b411-0955d1d4fab5',
-      workspaceId: sourceWorkspaceId,
-      kind: 'maintenance',
-      summary: 'Second portable observation.',
-      sourceReferences: ['claim:kc_00000000-0000-71a7-90bd-9df60db5bd84'],
-      scope: 'workspace',
-      producer: 'portability-test',
+    const firstClaimId = 'claims/first';
+    const secondClaimId = 'claims/source-backed';
+    const fact = (
+      id: string,
+      type: 'Claim' | 'Observation',
+      title: string,
+      fields: Record<string, unknown>
+    ) =>
+      updateOkfFrontmatter({
+        path: `${id}.md`,
+        content: serializeKnowledgePageFixture(
+          {
+            title,
+            content: `${title}.`,
+            createdAt: firstTimestamp,
+            updatedAt: firstTimestamp,
+          },
+          { kind: 'workspace', workspaceId: sourceWorkspaceId }
+        ),
+        updates: {
+          type,
+          source_refs: [formatReferenceUri({ scopeId: sourcePageScopeId, objectId: knowledge.id })],
+          ...fields,
+        },
+      });
+    const firstClaim = fact(firstClaimId, 'Claim', 'First portable claim', { confidence: 0.8 });
+    const secondClaim = fact(secondClaimId, 'Claim', 'Source-backed portable claim', {
       confidence: 1,
-      freshness: 'current',
-      status: 'promoted',
-      observedAt: secondTimestamp,
-      createdAt: secondTimestamp,
     });
-    store.recordKnowledgeClaim({
-      id: 'kc_00000000-0000-707a-a7d4-e48c361c5546',
-      workspaceId: sourceWorkspaceId,
-      statement: 'First portable claim.',
-      sourceReferences: [
-        formatReferenceUri({ scopeId: sourcePageScopeId, objectId: knowledge.id }),
-      ],
-      scope: 'workspace',
-      producer: 'portability-test',
-      confidence: 0.8,
-      freshness: 'current',
-      reviewState: 'accepted',
-      conflictStatus: 'none',
-      createdAt: firstTimestamp,
-      updatedAt: firstTimestamp,
-    });
-    store.recordKnowledgeClaim({
-      id: 'kc_00000000-0000-71a7-90bd-9df60db5bd84',
-      workspaceId: sourceWorkspaceId,
-      statement: 'Source-backed portable claim.',
-      sourceReferences: [
-        formatReferenceUri({ scopeId: sourcePageScopeId, objectId: knowledge.id }),
-      ],
-      scope: 'workspace',
-      producer: 'portability-test',
-      confidence: 1,
-      freshness: 'current',
-      reviewState: 'accepted',
-      conflictStatus: 'none',
-      createdAt: secondTimestamp,
-      updatedAt: secondTimestamp,
-    });
-    store.recordKnowledgeConflict({
-      id: 'kf_00000000-0000-72bb-b75d-46dfe72603e1',
-      workspaceId: sourceWorkspaceId,
-      subjectReferences: [
-        formatReferenceUri({ scopeId: sourcePageScopeId, objectId: knowledge.id }),
-        'claim:kc_00000000-0000-71a7-90bd-9df60db5bd84',
-      ],
-      sourceReferences: [
-        formatReferenceUri({ scopeId: sourcePageScopeId, objectId: knowledge.id }),
-      ],
-      status: 'needs_review',
-      summary: 'Portable conflict needs review.',
-      suggestedActions: ['Resolve the portable conflict.'],
-      producer: 'portability-test',
-      createdAt: firstTimestamp,
-      updatedAt: firstTimestamp,
-    });
-    store.resolveKnowledgeConflict({
-      workspaceId: sourceWorkspaceId,
-      conflictId: 'kf_00000000-0000-72bb-b75d-46dfe72603e1',
-      status: 'resolved',
-      resolution: 'Portable conflict resolved.',
-      resolvedBy: 'portability-test',
-      resolvedAt: secondTimestamp,
+    const sourceSubjectPin = formatReferenceUri(
+      { scopeId: sourcePageScopeId, objectId: secondClaimId },
+      `sha256:${createHash('sha256').update(secondClaim).digest('hex')}`
+    );
+    publishFixturePages(notebook, {
+      [`${firstClaimId}.md`]: firstClaim,
+      [`${secondClaimId}.md`]: secondClaim,
+      'assessments/first.md': fact(
+        'assessments/first',
+        'Observation',
+        'First portable observation',
+        {
+          openkit_status: 'draft',
+          status: 'draft',
+          subject_refs: [
+            formatReferenceUri({ scopeId: sourcePageScopeId, objectId: firstClaimId }),
+          ],
+          conflict_status: 'unresolved',
+        }
+      ),
+      'assessments/resolved.md': fact(
+        'assessments/resolved',
+        'Observation',
+        'Portable conflict resolved',
+        {
+          openkit_status: 'draft',
+          status: 'draft',
+          subject_refs: [sourceSubjectPin],
+          conflict_status: 'resolved',
+        }
+      ),
     });
     const workspaceConfig = [
       '{',
@@ -381,8 +339,8 @@ describe('workspace portable file state', () => {
     const workspaceSchema = [
       'schema_version: "openkit-scope-knowledge-schema-v4"',
       'status: "active"',
-      'allowed_types: ["KnowledgePage", "RepoConvention", "SourceSummary"]',
-      'allowed_statuses: ["active"]',
+      'allowed_types: ["KnowledgePage", "RepoConvention", "SourceSummary", "Claim", "Observation"]',
+      'allowed_statuses: ["active", "draft"]',
       'allowed_review_states: ["accepted", "user-authored"]',
       'allowed_sensitivities: ["normal", "internal", "confidential"]',
       'allowed_freshness: ["current"]',
@@ -606,51 +564,43 @@ describe('workspace portable file state', () => {
       return;
     }
 
-    const observationRows = readOptionalJsonl(
-      join(importedRoot, 'knowledge', 'observations', '202607.jsonl')
-    );
-    expect
-      .soft(observationRows.map((row) => row.summary))
-      .toEqual(['First portable observation.', 'Second portable observation.']);
-    expect
-      .soft(observationRows.map((row) => row.workspaceId))
-      .toEqual([importedWorkspaceId, importedWorkspaceId]);
-
-    const claimRows = readOptionalJsonl(join(importedRoot, 'knowledge', 'claims', '202607.jsonl'));
-    expect
-      .soft(claimRows.map((row) => row.statement))
-      .toEqual(['First portable claim.', 'Source-backed portable claim.']);
-    expect
-      .soft(claimRows.map((row) => row.workspaceId))
-      .toEqual([importedWorkspaceId, importedWorkspaceId]);
-    expect
-      .soft(claimRows.map((row) => row.sourceReferences))
-      .toEqual([
-        [formatReferenceUri({ scopeId: importedPageScopeId, objectId: importedKnowledge.id })],
-        [formatReferenceUri({ scopeId: importedPageScopeId, objectId: importedKnowledge.id })],
-      ]);
-    const importedSourceClaim = claimRows.find(
-      (row) => row.statement === 'Source-backed portable claim.'
-    );
-    expect.soft(importedSourceClaim?.id).toEqual(expect.any(String));
-
-    const conflictRows = readOptionalJsonl(
-      join(importedRoot, 'knowledge', 'conflicts', '202607.jsonl')
-    );
-    expect.soft(conflictRows.map((row) => row.status)).toEqual(['needs_review', 'resolved']);
-    expect
-      .soft(conflictRows.map((row) => row.workspaceId))
-      .toEqual([importedWorkspaceId, importedWorkspaceId]);
-    expect.soft(conflictRows[1]).toMatchObject({
-      resolution: 'Portable conflict resolved.',
-      sourceReferences: [
-        formatReferenceUri({ scopeId: importedPageScopeId, objectId: importedKnowledge.id }),
-      ],
-      subjectReferences: [
-        formatReferenceUri({ scopeId: importedPageScopeId, objectId: importedKnowledge.id }),
-        `claim:${String(importedSourceClaim?.id)}`,
+    const importedFact = (id: string) => {
+      const parsed = parseOkfDocument({
+        path: `${id}.md`,
+        content: readWorkspaceKnowledgePage(importedRoot, id)!,
+      });
+      if (!parsed.ok) throw new Error('Imported canonical fact must remain valid OKF.');
+      return parsed.document.frontmatter;
+    };
+    expect(importedFact(firstClaimId)).toMatchObject({
+      type: 'Claim',
+      confidence: 0.8,
+      scope: { kind: 'workspace', workspaceId: importedWorkspaceId },
+    });
+    expect(importedFact(secondClaimId)).toMatchObject({ type: 'Claim', confidence: 1 });
+    expect(importedFact('assessments/first')).toMatchObject({
+      type: 'Observation',
+      conflict_status: 'unresolved',
+      subject_refs: [formatReferenceUri({ scopeId: importedPageScopeId, objectId: firstClaimId })],
+    });
+    expect(importedFact(secondClaimId).source_refs).toEqual([
+      formatReferenceUri({ scopeId: importedPageScopeId, objectId: importedKnowledge.id }),
+    ]);
+    const importedSubjectBytes = readWorkspaceKnowledgePage(importedRoot, secondClaimId)!;
+    expect(importedFact('assessments/resolved')).toMatchObject({
+      type: 'Observation',
+      conflict_status: 'resolved',
+      subject_refs: [
+        formatReferenceUri(
+          { scopeId: importedPageScopeId, objectId: secondClaimId },
+          `sha256:${createHash('sha256').update(importedSubjectBytes).digest('hex')}`
+        ),
       ],
     });
+    for (const kind of ['observations', 'claims', 'conflicts']) {
+      expect(existsSync(join(importedRoot, 'knowledge', kind))).toBe(false);
+      expect(verified.fileContents.has(`records/knowledge-${kind}.jsonl`)).toBe(false);
+    }
 
     expect(existsSync(join(importedRoot, 'knowledge', 'traces'))).toBe(false);
 
@@ -714,6 +664,32 @@ describe('workspace portable file state', () => {
     expect(readWorkspaceKnowledgePage(importedRoot, importedAcceptedKnowledge.id)).toBe(
       expectedImportedAcceptedPageBytes
     );
+
+    const reopenedApp = createApp({ dataRoot, coreDb, store: restartedStore });
+    const disputed = await reopenedApp.request(
+      ...knowledgeOperationRequest(
+        'knowledge.retrieval',
+        { workspaceId: importedWorkspaceId },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            query: 'zzqvxc01portable',
+            pinnedReferences: [{ scopeId: importedPageScopeId, objectId: firstClaimId }],
+          }),
+        }
+      )
+    );
+    expect(disputed.status, await disputed.clone().text()).toBe(200);
+    expect(await disputed.json()).toMatchObject({
+      selected: [],
+      excluded: expect.arrayContaining([
+        expect.objectContaining({
+          reference: { scopeId: importedPageScopeId, objectId: firstClaimId },
+          reason: 'lower_conformance',
+        }),
+      ]),
+    });
 
     const importedRetrievalRes = await app.request(
       ...knowledgeOperationRequest(

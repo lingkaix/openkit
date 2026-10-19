@@ -117,10 +117,7 @@ function minimalExportInput(
     agentSessions: [],
     turnEvents: [],
     portableFileState: {
-      claims: new Map(),
-      conflicts: new Map(),
       nativeKnowledgePages: new Map(),
-      observations: new Map(),
       retrievalTraceFiles: new Map(),
       workerContextPackageFiles: new Map(),
       workspaceConfig: JSON.stringify({

@@ -4,11 +4,7 @@ import {
   type KnowledgeManagerHealthCheckRequest,
   type KnowledgeManagerPrepareContextRequest,
   type KnowledgeManagerSuggestRepairRequest,
-  type RecordKnowledgeClaimRequest,
-  type RecordKnowledgeConflictRequest,
-  type RecordKnowledgeObservationRequest,
   type RegisterKnowledgeSourceRequest,
-  type ResolveKnowledgeConflictRequest,
   type RetrieveKnowledgeRequest,
   type ReverseKnowledgeProposalRequest,
   type SubmitKnowledgeProposalDecisionRequest,
@@ -38,14 +34,6 @@ export type KnowledgeManagerSuggestRepairInput = KnowledgeManagerSuggestRepairRe
 export type KnowledgeManagerHealthCheckInput = KnowledgeManagerHealthCheckRequest;
 /** Knowledge Source registration request input. */
 export type RegisterKnowledgeSourceInput = RegisterKnowledgeSourceRequest;
-/** Knowledge Observation append request input. */
-export type RecordKnowledgeObservationInput = RecordKnowledgeObservationRequest;
-/** Knowledge Claim append request input. */
-export type RecordKnowledgeClaimInput = RecordKnowledgeClaimRequest;
-/** Knowledge Conflict append request input. */
-export type RecordKnowledgeConflictInput = RecordKnowledgeConflictRequest;
-/** Knowledge Conflict resolution request input. */
-export type ResolveKnowledgeConflictInput = ResolveKnowledgeConflictRequest;
 /** Deterministic Knowledge Store retrieval request input. */
 export type RetrieveKnowledgeInput = RetrieveKnowledgeRequest;
 /** Knowledge proposal decision input with its required caller-provided request id. */

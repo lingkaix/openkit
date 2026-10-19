@@ -28,9 +28,6 @@ export const FILE_CORPUS_FAMILIES = Object.freeze([
   'Notebook scope schema',
   'Knowledge Proposal',
   'Knowledge Proposal Review',
-  'Knowledge observation ledger',
-  'Knowledge claim ledger',
-  'Knowledge conflict ledger',
   'Workspace Source identity',
   'Workspace captured Source text',
   'User Source identity',
@@ -73,7 +70,9 @@ async function owners(appRoot) {
     records: 'storage/workspace-file-records.js',
     notebook: 'knowledge/notebook.js',
     notebookOwner: 'knowledge/scoped-notebook-owner.js',
+    knowledgeBase: 'config/knowledge-base.js',
     okf: 'knowledge/okf.js',
+    pageFixture: 'test-support/knowledge-page.js',
     sources: 'knowledge/scoped-knowledge-sources.js',
     sourcePublisher: 'knowledge/source-publication.js',
     sourcePointers: 'knowledge/source-pointers.js',
@@ -429,10 +428,8 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
           : scope === 'user'
             ? { kind: scope, userId }
             : { kind: scope };
-      const content = o.records.serializeUserAuthoredKnowledgePage(
+      const content = o.pageFixture.serializeKnowledgePageFixture(
         {
-          id: 'continuity',
-          kind: 'project-context',
           title: 'Public synthetic continuity',
           content: FIXTURE.text,
           createdAt: FIXTURE.at,
@@ -440,14 +437,48 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
         },
         ownerScope
       );
+      const changes = { 'continuity.md': content };
+      if (scope === 'workspace') {
+        const knowledgeBaseId = o.knowledgeBase.readDefaultKnowledgeBaseId({
+          dataRoot: r.data,
+          scope: ownerScope,
+        });
+        const pageScopeId = `page/workspace/${workspace.id}/${knowledgeBaseId}`;
+        const claim = o.okf.updateOkfFrontmatter({
+          path: 'continuity-claim.md',
+          content,
+          updates: { type: 'Claim', openkit_entry_id: 'continuity-claim', confidence: 0.75 },
+        });
+        changes['continuity-claim.md'] = claim;
+        changes['continuity-assessment.md'] = o.okf.updateOkfFrontmatter({
+          path: 'continuity-assessment.md',
+          content,
+          updates: {
+            type: 'Observation',
+            openkit_entry_id: 'continuity-assessment',
+            openkit_status: 'draft',
+            status: 'draft',
+            conflict_status: 'unresolved',
+            subject_refs: [
+              o.protocol.formatReferenceUri(
+                { scopeId: pageScopeId, objectId: 'continuity-claim' },
+                `sha256:${sha256(claim)}`
+              ),
+            ],
+          },
+        });
+      }
       const candidateRevision = notebook.prepare({
         baseRevision,
-        changes: { 'continuity.md': content },
+        changes,
         metadata: {
           summary: 'Public synthetic upgrade fixture',
           producer,
           authority: { kind: 'direct', instructionReference: 'fixture:upgrade-from-previous' },
-          changeRequest: { requestId: randomUUID(), inputDigest: `sha256:${sha256(content)}` },
+          changeRequest: {
+            requestId: randomUUID(),
+            inputDigest: `sha256:${sha256(JSON.stringify(changes))}`,
+          },
           sourceReferences: [],
         },
       });
@@ -474,10 +505,8 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
     const notebook = new o.notebook.KnowledgeNotebook({
       repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
     });
-    const candidatePage = o.records.serializeUserAuthoredKnowledgePage(
+    const candidatePage = o.pageFixture.serializeKnowledgePageFixture(
       {
-        id: 'candidate',
-        kind: 'project-context',
         title: 'Public synthetic candidate',
         content: FIXTURE.text,
         createdAt: FIXTURE.at,
@@ -511,47 +540,6 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
       actor: producer,
       decidedAt: FIXTURE.at,
       verifiedExternalReferences: [],
-    });
-    selectors.claimId = o.protocol.allocateEntityId('kc');
-    ctx.store.recordKnowledgeClaim({
-      id: selectors.claimId,
-      workspaceId: workspace.id,
-      statement: 'Public synthetic retained claim.',
-      sourceReferences: ['knowledge:continuity'],
-      scope: 'workspace',
-      producer: 'upgrade-corpus',
-      confidence: 1,
-      freshness: 'current',
-      reviewState: 'accepted',
-      conflictStatus: 'none',
-      createdAt: FIXTURE.at,
-      updatedAt: FIXTURE.at,
-    });
-    ctx.store.recordKnowledgeObservation({
-      id: o.protocol.allocateEntityId('ko'),
-      workspaceId: workspace.id,
-      kind: 'maintenance',
-      summary: 'Public synthetic observation.',
-      sourceReferences: [`claim:${selectors.claimId}`],
-      scope: 'workspace',
-      producer: 'upgrade-corpus',
-      confidence: 1,
-      freshness: 'current',
-      status: 'retained',
-      observedAt: FIXTURE.at,
-      createdAt: FIXTURE.at,
-    });
-    ctx.store.recordKnowledgeConflict({
-      id: o.protocol.allocateEntityId('kf'),
-      workspaceId: workspace.id,
-      subjectReferences: ['knowledge:continuity', `claim:${selectors.claimId}`],
-      sourceReferences: ['knowledge:continuity'],
-      status: 'needs_review',
-      summary: 'Public synthetic historical conflict.',
-      suggestedActions: ['Inspect synthetic fixture.'],
-      producer: 'upgrade-corpus',
-      createdAt: FIXTURE.at,
-      updatedAt: FIXTURE.at,
     });
     await seedRemainingFiles(o, ctx, r, selectors, producer, workspaceRoot);
   } finally {
@@ -832,17 +820,6 @@ export async function readFileCorpus({ appRoot, dataRoot, retainedRoot, selector
       ctx.store.listKnowledgeProposalReviewDecisions(selectors.workspaceId, selectors.proposalId),
       [`${workspacePath}/knowledge/reviews/${selectors.proposalId}.json`]
     );
-    record(
-      'Knowledge observation ledger',
-      ctx.store.listKnowledgeObservations(selectors.workspaceId),
-      [`${workspacePath}/knowledge/observations`]
-    );
-    record('Knowledge claim ledger', ctx.store.listKnowledgeClaims(selectors.workspaceId), [
-      `${workspacePath}/knowledge/claims`,
-    ]);
-    record('Knowledge conflict ledger', ctx.store.listKnowledgeConflicts(selectors.workspaceId), [
-      `${workspacePath}/knowledge/conflicts`,
-    ]);
     const sourceOwner = {
       dataRoot: r.data,
       ownerScope: { kind: 'workspace', workspaceId: selectors.workspaceId },
