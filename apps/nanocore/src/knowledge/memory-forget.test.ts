@@ -265,7 +265,7 @@ describe('Item-confirmed self Memory forget', () => {
       requestId: randomUUID(),
       baseRevision: removed.notebookRevision,
       pageId: 'new-preference',
-      content: f.content('new-preference', 'Explicit new human interpretation.'),
+      content: f.content('Explicit new human interpretation.'),
       summary: 'Save under a new identity',
     });
     expect(await f.apply(prepared.pendingRequestId)).toEqual(removed);
@@ -540,7 +540,7 @@ describe('Item-confirmed self Memory forget', () => {
       requestId: randomUUID(),
       baseRevision: f.saved.notebookRevision,
       pageId: 'preference',
-      content: f.content('preference', 'Later human text.'),
+      content: f.content('Later human text.'),
       summary: 'Edit my preference',
     });
     await expect(f.apply(prepared.pendingRequestId)).rejects.toMatchObject({
@@ -571,7 +571,7 @@ describe('Item-confirmed self Memory forget', () => {
       requestId: randomUUID(),
       baseRevision: removed.notebookRevision,
       pageId: 'new-preference',
-      content: f.content('new-preference', 'Later saved content.'),
+      content: f.content('Later saved content.'),
       summary: 'Save a new preference',
     });
     f.writer.workspaceDb.sqlite.close();

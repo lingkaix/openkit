@@ -89,6 +89,7 @@ import {
 import { StructuredWorkerDelegationRequestSchema } from './internal-agents/delegation.js';
 import * as workerCoordinator from './internal-agents/worker-coordinator.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
+import { parseOkfDocument } from './knowledge/okf.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import {
   ALREADY_DECIDED_PUBLICATION_ADMISSION,

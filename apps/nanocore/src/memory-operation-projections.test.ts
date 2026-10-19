@@ -167,7 +167,7 @@ describe('public explicit self Memory', () => {
       requestId: randomUUID(),
       baseRevision: null,
       pageId: 'starter',
-      content: f.content('Retain this page.', 'starter'),
+      content: f.content('Retain this page.'),
       summary: 'First explicit save',
     });
     expect(initialized.status).toBe(200);
@@ -212,7 +212,7 @@ describe('public explicit self Memory', () => {
       requestId: randomUUID(),
       baseRevision: null,
       pageId: 'replacement',
-      content: f.content('Do not create a replacement.', 'replacement'),
+      content: f.content('Do not create a replacement.'),
       summary: 'Another first-save attempt',
     });
     expect({ response, databaseExists: existsSync(database) }).toMatchObject({

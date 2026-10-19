@@ -90,7 +90,7 @@ describe('public self Memory search', () => {
     let baseRevision: string | null = null;
     for (let index = 0; index < 6; index += 1) {
       const pageId = `preference-${index}`;
-      const content = f.content(0, pageId, 'I prefer auroramarker explanations.\r\n');
+      const content = f.content(0, 'I prefer auroramarker explanations.\r\n');
       const saved = await f.call(0, 'memory.create', {
         requestId: randomUUID(),
         baseRevision,
@@ -106,7 +106,7 @@ describe('public self Memory search', () => {
       requestId: randomUUID(),
       baseRevision: null,
       pageId: 'preference-0',
-      content: f.content(1, 'preference-0', 'auroramarker foreign-private-body'),
+      content: f.content(1, 'auroramarker foreign-private-body'),
       summary: 'Save another User preference',
     });
     expect(foreign.status).toBe(200);

@@ -64,7 +64,7 @@ function fixture() {
 describe('public Item-confirmed self Memory forget', () => {
   it('denies an absent Workspace before either forget operation creates its storage', async () => {
     const f = fixture();
-    const content = f.content(f.userId, 'preferences', 'Keep this existing personal preference.');
+    const content = f.content(f.userId, 'Keep this existing personal preference.');
     const saved = await f.call('memory.create', {
       requestId: randomUUID(),
       baseRevision: null,
@@ -111,7 +111,7 @@ describe('public Item-confirmed self Memory forget', () => {
   it('separates the public approval grant from removal and suppresses public projections while preserving exact replay', async () => {
     const f = fixture();
     const pageId = 'private-preference';
-    const content = f.content(f.userId, pageId, 'Exact forgotten preference.\r\n');
+    const content = f.content(f.userId, 'Exact forgotten preference.\r\n');
     const summary = 'Private save summary that must become unavailable';
     const saved = await f.call('memory.create', {
       requestId: randomUUID(),
@@ -260,7 +260,7 @@ describe('public Item-confirmed self Memory forget', () => {
     expect(restore.status).toBe(404);
     expect(JSON.stringify(restore.body)).not.toContain('Exact forgotten preference.');
     expect(notebook.publishedRevision()).toBe(removed.body.notebookRevision);
-    const laterContent = f.content(f.userId, 'new-preference', 'A later explicit preference.');
+    const laterContent = f.content(f.userId, 'A later explicit preference.');
     const later = await f.call('memory.create', {
       requestId: randomUUID(),
       baseRevision: removed.body.notebookRevision,
@@ -309,7 +309,7 @@ describe('public Item-confirmed self Memory forget', () => {
       [otherUserId, other, 'Second private preference.'],
     ] as const) {
       const authorization = `Bearer ${issued.secret}`;
-      const content = f.content(userId, 'same-id', body);
+      const content = f.content(userId, body);
       const saved = await f.call(
         'memory.create',
         {
@@ -341,12 +341,8 @@ describe('public Item-confirmed self Memory forget', () => {
     );
     expect(first.status).toBe(200);
     expect(second.status).toBe(200);
-    expect(first.body.page.content).toBe(
-      f.content(f.userId, 'same-id', 'First private preference.')
-    );
-    expect(second.body.page.content).toBe(
-      f.content(otherUserId, 'same-id', 'Second private preference.')
-    );
+    expect(first.body.page.content).toBe(f.content(f.userId, 'First private preference.'));
+    expect(second.body.page.content).toBe(f.content(otherUserId, 'Second private preference.'));
     expect(
       await f.call(
         'memory.read',
