@@ -606,11 +606,11 @@ export function prepareUserMemoryMaintenance(
     const tool = (
       name: string,
       key: string,
+      description: string,
       execute: (value: string) => Promise<unknown>
     ): AgentTool => ({
       name,
-      description:
-        'Edit only the admitted User Memory snapshot. Four changes, 2 MiB per file, 32 MiB total, 64 KiB script/output. Publication requires current native authority.',
+      description: `${description} Four changes, 2 MiB per file, 32 MiB total, 64 KiB script/output. Publication requires current native authority.`,
       inputSchema: {
         type: 'object',
         properties: { [key]: { type: 'string' } },
@@ -654,15 +654,24 @@ export function prepareUserMemoryMaintenance(
     });
     const tools = [
       history.tool,
-      tool('knowledge.notebook-workspace.update', 'script', (script) =>
-        editor.workspaceUpdate({ script })
+      tool(
+        'knowledge.notebook-workspace.update',
+        'script',
+        'Run an edit script against the admitted virtual User Memory snapshot. This edits pages but does not publish them; submit the prior edits with knowledge.notebook.update.',
+        (script) => editor.workspaceUpdate({ script })
       ),
-      tool('knowledge.notebook.update', 'summary', async (summary) => {
-        const result = await editor.notebookUpdate({ summary });
-        if (result.outcome === 'no_change') outcome = response('no-change', summary);
-        if (outcome) record(outcome);
-        return result;
-      }),
+      tool(
+        'knowledge.notebook.update',
+        'summary',
+        'Submit prior knowledge.notebook-workspace.update edits for Memory page publication. The summary describes the edits and is not page content. Literal Source capture is not Memory page publication. A native no_change outcome means no page changes were published.',
+        async (summary) => {
+          const result = await editor.notebookUpdate({ summary });
+          if (result.outcome === 'no_change')
+            outcome = response('no-change', 'No Memory page changes were published.');
+          if (outcome) record(outcome);
+          return result;
+        }
+      ),
     ];
     const previous = priorRuns.filter((prior) => prior.status === 'completed').at(-1)
       ?.internalExecution?.knowledge?.baseRevision;
