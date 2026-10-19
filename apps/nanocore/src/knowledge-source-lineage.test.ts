@@ -594,25 +594,34 @@ describe('direct Knowledge saved-source lineage', () => {
         content: 'Retained original bytes.',
       });
       const reference = `source:${source.id}@${source.contentDigest}`;
-      const current = await f.client.operations['knowledge.list']({
+      const current = await f.client.operations['knowledge.notebook.list']({
         workspaceId: DEMO_WORKSPACE_ID,
       });
+      const page = knowledgePageFixture(
+        {
+          id: 'independent-saved-page',
+          title: 'Independent saved page',
+          content: 'Saved bytes remain exact.',
+          sourceReferences: [reference],
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        },
+        { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID }
+      );
       const command = {
         workspaceId: DEMO_WORKSPACE_ID,
         requestId: crypto.randomUUID(),
         baseRevision: current.notebookRevision,
-        knowledgePageId: 'independent-saved-page',
-        kind: 'project-context' as const,
-        title: 'Independent saved page',
-        content: 'Saved bytes remain exact.',
-        sourceReferences: [reference],
+        path: page.path,
+        content: page.content,
+        summary: 'Save the exact Source-backed page.',
       };
-      const entry = await f.client.operations['knowledge.create'](command);
-      const before = await f.client.operations['knowledge.list']({
+      const entry = await f.client.operations['knowledge.notebook.create'](command);
+      const before = await f.client.operations['knowledge.notebook.list']({
         workspaceId: DEMO_WORKSPACE_ID,
       });
-      const saved = before.items.find((item) => item.id === entry.id)!;
-      expect(saved).toMatchObject(entry);
+      const saved = before.pages.find((item) => item.id === page.id)!;
+      expect(saved.content).toBe(page.content);
       const path = join(
         f.dataRoot,
         'workspaces',
@@ -635,16 +644,16 @@ describe('direct Knowledge saved-source lineage', () => {
           })
         ).status
       ).not.toBe('ok');
-      expect(await f.client.operations['knowledge.create'](command)).toEqual(entry);
-      const retained = await f.client.operations['knowledge.list']({
+      expect(await f.client.operations['knowledge.notebook.create'](command)).toEqual(entry);
+      const retained = await f.client.operations['knowledge.notebook.list']({
         workspaceId: DEMO_WORKSPACE_ID,
       });
-      expect(retained.items.find((item) => item.id === entry.id)).toEqual(saved);
+      expect(retained.pages.find((item) => item.id === page.id)).toEqual(saved);
       const indexes = await f.client.operations['knowledge.indexes']({
         workspaceId: DEMO_WORKSPACE_ID,
       });
       expect(indexes.sourceReferences.references).toContainEqual(
-        expect.objectContaining({ conceptId: entry.id, reference, resolved: true })
+        expect.objectContaining({ conceptId: page.id, reference, resolved: true })
       );
     } finally {
       f.close();
