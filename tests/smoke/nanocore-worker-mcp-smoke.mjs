@@ -749,6 +749,7 @@ async function seedFixture(dataRoot, fixtureRoot, callFile, nanoHostPort) {
     schemaVersion: 1,
   });
   await writeJson(join(dataRoot, 'config', 'providers', 'agent-openrouter.provider.jsonc'), {
+    schemaVersion: 1,
     displayName: 'Agent OpenRouter',
     id: 'agent-openrouter',
     kind: 'local',
