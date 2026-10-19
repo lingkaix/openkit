@@ -1,4 +1,7 @@
+import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer, type IncomingMessage } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { SpanStatusCode, trace } from '@opentelemetry/api';
 import {
   InMemorySpanExporter,
@@ -8,7 +11,7 @@ import {
 } from '@opentelemetry/sdk-trace-base';
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
 import { Hono } from 'hono';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   captureTelemetryContext,
   createHttpTelemetryMiddleware,
@@ -16,47 +19,51 @@ import {
   recordNanoHostEffectAcceptance,
   resolveTelemetryConfiguration,
   shutdownTelemetry,
-  startTelemetry,
+  startTelemetry as startProductionTelemetry,
   tracesExportUrl,
   withTurnDispatchTelemetry,
 } from './telemetry.js';
 
 const VALID_ENDPOINT = 'http://127.0.0.1:4318';
 const TEST_BOOT_ID = 'boot_telemetry-instance';
+let logDirectory: string;
 
-afterEach(async () => {
-  await shutdownTelemetry();
-  vi.restoreAllMocks();
+beforeEach(async () => {
+  logDirectory = await mkdtemp(join(tmpdir(), 'telemetry-lifecycle-'));
 });
 
+afterEach(async () => {
+  try {
+    await shutdownTelemetry();
+  } finally {
+    vi.restoreAllMocks();
+    await rm(logDirectory, { recursive: true, force: true });
+  }
+});
+
+/** Keeps every lifecycle test's optional local sink inside its own disposable directory. */
+function startTelemetry(options: Parameters<typeof startProductionTelemetry>[0]) {
+  const localOptions = { ...options, logDirectory, readReserveBytes: () => 1_000_000_000 };
+  return startProductionTelemetry(localOptions);
+}
+
 describe('process.telemetry configuration', () => {
-  it('treats absent and malformed endpoints as disabled and unconfigured', () => {
-    expect(resolveTelemetryConfiguration({})).toEqual({
-      enabled: false,
-      exportConfigured: false,
-    });
-    expect(resolveTelemetryConfiguration({ OTEL_EXPORTER_OTLP_ENDPOINT: 'not-a-url' })).toEqual({
-      enabled: false,
-      exportConfigured: false,
-    });
-    expect(
-      resolveTelemetryConfiguration({
-        OTEL_EXPORTER_OTLP_ENDPOINT: 'http://user:pass@127.0.0.1:4318',
-      })
-    ).toEqual({ enabled: false, exportConfigured: false });
-    expect(
-      resolveTelemetryConfiguration({
-        OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:4318?q=1',
-      })
-    ).toEqual({ enabled: false, exportConfigured: false });
-    expect(
-      resolveTelemetryConfiguration({
-        OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:4318#frag',
-      })
-    ).toEqual({ enabled: false, exportConfigured: false });
+  it('keeps local capture enabled when external export is absent or malformed', () => {
+    for (const endpoint of [
+      undefined,
+      'not-a-url',
+      'http://user:pass@127.0.0.1:4318',
+      'http://127.0.0.1:4318?q=1',
+      'http://127.0.0.1:4318#frag',
+    ]) {
+      expect(resolveTelemetryConfiguration({ OTEL_EXPORTER_OTLP_ENDPOINT: endpoint })).toEqual({
+        enabled: true,
+        exportConfigured: false,
+      });
+    }
   });
 
-  it('enables only when the base endpoint is valid and the SDK is not disabled', () => {
+  it('disables all capture only by SDK disablement, not unsupported external headers', () => {
     expect(resolveTelemetryConfiguration({ OTEL_EXPORTER_OTLP_ENDPOINT: VALID_ENDPOINT })).toEqual({
       enabled: true,
       exportConfigured: true,
@@ -67,18 +74,14 @@ describe('process.telemetry configuration', () => {
         OTEL_SDK_DISABLED: 'TRUE',
       })
     ).toEqual({ enabled: false, exportConfigured: true });
-    expect(
-      resolveTelemetryConfiguration({
-        OTEL_EXPORTER_OTLP_ENDPOINT: VALID_ENDPOINT,
-        OTEL_EXPORTER_OTLP_HEADERS: 'Authorization=secret-token',
-      })
-    ).toEqual({ enabled: false, exportConfigured: true });
-    expect(
-      resolveTelemetryConfiguration({
-        OTEL_EXPORTER_OTLP_ENDPOINT: VALID_ENDPOINT,
-        OTEL_EXPORTER_OTLP_TRACES_HEADERS: 'X-Trace-Secret=tracetoken',
-      })
-    ).toEqual({ enabled: false, exportConfigured: true });
+    for (const header of ['OTEL_EXPORTER_OTLP_HEADERS', 'OTEL_EXPORTER_OTLP_TRACES_HEADERS']) {
+      expect(
+        resolveTelemetryConfiguration({
+          OTEL_EXPORTER_OTLP_ENDPOINT: VALID_ENDPOINT,
+          [header]: 'Authorization=secret-token',
+        })
+      ).toEqual({ enabled: true, exportConfigured: true });
+    }
   });
 
   it('appends the stock traces suffix to the base OTLP endpoint', () => {
@@ -280,12 +283,13 @@ describe('telemetry lifecycle', () => {
     expect(
       startTelemetry({
         bootId: TEST_BOOT_ID,
-        env: {},
+        env: { OTEL_SDK_DISABLED: 'true' },
         exporter: disabled,
       })
     ).toEqual({ enabled: false, exportConfigured: false });
     await httpApp().request('/items/abc');
     expect(disabled.getFinishedSpans()).toEqual([]);
+    await shutdownTelemetry();
 
     const restarted = new InMemorySpanExporter();
     startTelemetry({
@@ -308,7 +312,7 @@ describe('telemetry lifecycle', () => {
     await expect(shutdownTelemetry()).resolves.toBeUndefined();
   });
 
-  it('disables telemetry when exporter header env is nonempty without leaking values', async () => {
+  it('disables only external export for unsupported header env without leaking values', async () => {
     const warnings: string[] = [];
     vi.spyOn(console, 'warn').mockImplementation((message: unknown) => {
       warnings.push(String(message));
@@ -323,7 +327,7 @@ describe('telemetry lifecycle', () => {
         },
         exporter,
       })
-    ).toEqual({ enabled: false, exportConfigured: true });
+    ).toEqual({ enabled: true, exportConfigured: true });
     await httpApp().request('/items/abc');
     expect(exporter.getFinishedSpans()).toEqual([]);
     expect(warnings).toEqual([
@@ -334,9 +338,9 @@ describe('telemetry lifecycle', () => {
 
   it('exports to /v1/traces with NanoCore boot identity and does not inherit env resource maps', async () => {
     const captured: Array<{
-      authorization?: string;
+      authorization: string | undefined;
       body: string;
-      url?: string;
+      url: string | undefined;
     }> = [];
     const server = createServer((request, response) => {
       const chunks: Buffer[] = [];
