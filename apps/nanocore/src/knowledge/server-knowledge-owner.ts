@@ -1,6 +1,4 @@
 import { createHash } from 'node:crypto';
-import { lstatSync } from 'node:fs';
-import { join } from 'node:path';
 import { RegisterKnowledgeSourceRequestSchema } from '@openkit/app-api-schemas';
 import { allocateEntityId, KnowledgeSourceIdSchema, RequestIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
@@ -13,13 +11,9 @@ import {
   runIdempotentCommand,
 } from '../runtime/idempotent-command.js';
 import type { CoreDb } from '../storage/db.js';
-import {
-  readSourcePointers,
-  type SourceMetadataSchema,
-  type SourcePointer,
-  sourceNotebookRoot,
-} from './source-pointers.js';
-import { publishCapturedSource } from './source-publication.js';
+import { NotebookError } from './notebook.js';
+import type { SourceMetadataSchema, SourcePointer } from './source-pointers.js';
+import { publishCapturedSource, readPublishedSourcePointers } from './source-publication.js';
 import { readManagedSourceText } from './source-reading.js';
 
 const OPERATION = 'knowledge.source.register';
@@ -61,24 +55,17 @@ function owner(input: ServerKnowledgeContext) {
 /** Distinguishes a source-free scope from lost established Notebook authority. */
 function pointers(input: ServerKnowledgeContext): ReadonlyMap<string, SourcePointer> {
   const scope = owner(input);
-  const root = sourceNotebookRoot(scope);
-  if (!lstatSync(join(root, 'notebook.git'), { throwIfNoEntry: false })) {
-    if (
-      lstatSync(root, { throwIfNoEntry: false }) ||
-      input.coreDb.sqlite
-        .prepare(
-          "SELECT 1 FROM audit_events WHERE workspace_id IS NULL AND action IN ('knowledge.notebook.initialize', 'knowledge.source.register') LIMIT 1"
-        )
-        .get()
-    )
+  try {
+    return readPublishedSourcePointers(scope, { kind: 'server', coreDb: input.coreDb });
+  } catch (error) {
+    if (error instanceof NotebookError && error.code === 'recovery_required')
       throw new OperationError(
         'recovery_required',
         'Server Source storage requires recovery.',
         503
       );
-    return new Map();
+    throw error;
   }
-  return readSourcePointers(scope);
 }
 /** Lists current Server metadata from published pointers; no registry or raw byte scan is used. */
 export function listServerKnowledgeSources(input: ServerKnowledgeContext): ServerKnowledgeSource[] {

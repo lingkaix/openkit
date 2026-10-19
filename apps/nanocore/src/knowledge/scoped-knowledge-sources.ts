@@ -5,7 +5,10 @@ import { RegisterKnowledgeSourceRequestSchema } from '@openkit/app-api-schemas';
 import { allocateEntityId, KnowledgeSourceIdSchema, RequestIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import { OperationError } from '../operation-error.js';
-import { runIdempotentCommand } from '../runtime/idempotent-command.js';
+import {
+  IdempotencyKeyConflictError,
+  runIdempotentCommand,
+} from '../runtime/idempotent-command.js';
 import { userDbPath } from '../storage/fs-layout.js';
 import { assertCanonicalDirectory } from '../storage/workspace-file-records.js';
 import { admitMemoryContext, type MemoryContext, type MemoryWriter } from './memory-lifecycle.js';
@@ -17,12 +20,8 @@ import {
   stringFrontmatterField,
   stringListFrontmatterField,
 } from './okf.js';
-import {
-  readSourcePointers,
-  type SourceMetadataSchema,
-  sourceNotebookRoot,
-} from './source-pointers.js';
-import { publishCapturedSource } from './source-publication.js';
+import { type SourceMetadataSchema, sourceNotebookRoot } from './source-pointers.js';
+import { publishCapturedSource, readPublishedSourcePointers } from './source-publication.js';
 import { readManagedSourceText } from './source-reading.js';
 
 const OPERATION = 'knowledge.source.register';
@@ -80,21 +79,8 @@ function suppressed(input: MemoryContext): ReadonlySet<string> {
 /** Reads the published Source family; a never-created scope is empty and lost established storage is unavailable. */
 function pointers(input: MemoryContext) {
   const scope = owner(input);
-  const root = sourceNotebookRoot(scope);
-  if (!lstatSync(join(root, 'notebook.git'), { throwIfNoEntry: false })) {
-    if (
-      lstatSync(root, { throwIfNoEntry: false }) ||
-      input.userDb.sqlite
-        .prepare(
-          "SELECT 1 FROM audit_events WHERE action IN ('knowledge.notebook.initialize', 'knowledge.source.register') LIMIT 1"
-        )
-        .get()
-    )
-      unavailable();
-    return new Map<string, import('./source-pointers.js').SourcePointer>();
-  }
   try {
-    return readSourcePointers(scope);
+    return readPublishedSourcePointers(scope, { kind: 'user', userDb: input.userDb });
   } catch {
     return unavailable();
   }
@@ -205,56 +191,63 @@ export async function registerUserKnowledgeSource(
   if (!parsed.success || Buffer.from(parsed.data.content).toString('utf8') !== parsed.data.content)
     throw new OperationError('invalid_request', 'Invalid literal Source request.', 400);
   const command = parsed.data;
-  return runIdempotentCommand({
-    store: input.store,
-    receiptDb: input.userDb,
-    inflightCommands: input.inflightCommands,
-    command: OPERATION,
-    requestId: command.requestId,
-    scope: { userId: input.userDb.userId, actorId: input.actor!.userId },
-    input: { ownerScope: scope.ownerScope, ...command },
-    responseKind: 'knowledge_source',
-    responseId: (source) => source.id,
-    replay: (receipt) => {
-      const retained = readUserKnowledgeSourceMetadata(input, receipt.response.id);
-      if (!retained) unavailable();
-      return retained;
-    },
-    execute: async () => {
-      const now = new Date().toISOString();
-      const pointer = await publishCapturedSource(
-        {
-          owner: scope,
-          database: { kind: 'user', userDb: input.userDb },
-          access: {
-            coreDb: input.coreDb,
-            actor: { kind: 'user', id: input.actor!.userId },
-            requestActor: input.actor,
+  try {
+    return await runIdempotentCommand({
+      store: input.store,
+      receiptDb: input.userDb,
+      inflightCommands: input.inflightCommands,
+      command: OPERATION,
+      requestId: command.requestId,
+      scope: { userId: input.userDb.userId, actorId: input.actor!.userId },
+      input: { ownerScope: scope.ownerScope, ...command },
+      responseKind: 'knowledge_source',
+      responseId: (source) => source.id,
+      replay: (receipt) => {
+        const retained = readUserKnowledgeSourceMetadata(input, receipt.response.id);
+        if (!retained) unavailable();
+        return retained;
+      },
+      execute: async () => {
+        pointers(input);
+        const now = new Date().toISOString();
+        const pointer = await publishCapturedSource(
+          {
+            owner: scope,
+            database: { kind: 'user', userDb: input.userDb },
+            access: {
+              coreDb: input.coreDb,
+              actor: { kind: 'user', id: input.actor!.userId },
+              requestActor: input.actor,
+            },
+            producer: { kind: 'user', id: input.actor!.userId },
+            requestId: command.requestId,
+            commandInput: { ownerScope: scope.ownerScope, ...command },
+            captureChannel: OPERATION,
+            revalidatePublication: () => {
+              owner(input);
+            },
           },
-          producer: { kind: 'user', id: input.actor!.userId },
-          requestId: command.requestId,
-          commandInput: { ownerScope: scope.ownerScope, ...command },
-          captureChannel: OPERATION,
-          revalidatePublication: () => {
-            owner(input);
+          {
+            id: allocateEntityId('ks'),
+            kind: command.kind,
+            title: command.title,
+            uri: null,
+            contentDigest: `sha256:${createHash('sha256').update(command.content).digest('hex')}`,
+            originatingThreadId: null,
+            originatingTurnId: null,
+            originatingFileId: null,
+            capturedAt: now,
+            createdAt: now,
+            updatedAt: now,
           },
-        },
-        {
-          id: allocateEntityId('ks'),
-          kind: command.kind,
-          title: command.title,
-          uri: null,
-          contentDigest: `sha256:${createHash('sha256').update(command.content).digest('hex')}`,
-          originatingThreadId: null,
-          originatingTurnId: null,
-          originatingFileId: null,
-          capturedAt: now,
-          createdAt: now,
-          updatedAt: now,
-        },
-        Buffer.from(command.content)
-      );
-      return { ...pointer.source, ownerScope: scope.ownerScope };
-    },
-  });
+          Buffer.from(command.content)
+        );
+        return { ...pointer.source, ownerScope: scope.ownerScope };
+      },
+    });
+  } catch (error) {
+    if (error instanceof OperationError || error instanceof IdempotencyKeyConflictError)
+      throw error;
+    return unavailable();
+  }
 }

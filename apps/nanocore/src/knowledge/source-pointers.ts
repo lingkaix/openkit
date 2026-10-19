@@ -1,3 +1,4 @@
+import { lstatSync } from 'node:fs';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { KnowledgeSourceSchema } from '@openkit/app-api-schemas';
@@ -73,7 +74,11 @@ export function parseSourcePointer(
     if (!parsed.ok || parsed.document.frontmatter.type !== 'SourceSummary')
       throw new NotebookError('recovery_required');
     const profile = validateOpenKitKnowledgeProfile(parsed.document, owner.ownerScope);
-    if (profile.conformance !== 'OpenKit-profile-valid' || profile.errors.length)
+    if (
+      profile.conformance !== 'OpenKit-profile-valid' ||
+      profile.errors.length ||
+      parsed.document.frontmatter.schema_version !== DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION
+    )
       throw new NotebookError('recovery_required');
     const fields = SourcePointerFieldsSchema.parse(parsed.document.frontmatter);
     if (
@@ -149,6 +154,8 @@ export function readSourcePointers(
   owner: SourcePointerOwner,
   revision?: string
 ): ReadonlyMap<string, SourcePointer> {
+  const root = lstatSync(sourceNotebookRoot(owner), { throwIfNoEntry: false });
+  if (!root?.isDirectory() || root.isSymbolicLink()) throw new NotebookError('recovery_required');
   const notebook = new KnowledgeNotebook({
     repositoryPath: join(sourceNotebookRoot(owner), 'notebook.git'),
   });

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, lstatSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import {
   type ActorRef,
@@ -20,7 +20,7 @@ import {
 } from '../audit-events.js';
 import { initializeDefaultKnowledgeBaseId, readKnowledgeMounts } from '../config/knowledge-base.js';
 import { OperationError } from '../operation-error.js';
-import { commandInputHash } from '../runtime/idempotent-command.js';
+import { commandInputHash, IdempotencyKeyConflictError } from '../runtime/idempotent-command.js';
 import { ensureCanonicalDirectory, writeFileAtomic } from '../storage/workspace-file-records.js';
 import { deriveManagedSourceAccess, type ManagedSourceAdmission } from './managed-source-access.js';
 import { KnowledgeNotebook, NotebookError } from './notebook.js';
@@ -59,7 +59,7 @@ function requireStorage<T>(result: StorageResult<T>): T {
 }
 
 /** Resolves the existing scoped database into the exact durable Notebook owner. */
-function validateDatabase(input: SourcePublication): void {
+function validateDatabase(input: Pick<SourcePublication, 'owner' | 'database'>): void {
   const database =
     input.database.kind === 'workspace'
       ? input.database.workspaceDb
@@ -79,6 +79,48 @@ function validateDatabase(input: SourcePublication): void {
     throw new NotebookError('invalid_request');
 }
 
+/** Checks established capture identities against the sole published pointer tree, without repairing missing content. */
+export function readPublishedSourcePointers(
+  owner: SourcePointerOwner,
+  database: NotebookPublicationOwner
+): ReadonlyMap<string, SourcePointer> {
+  validateDatabase({ owner, database });
+  const db =
+    database.kind === 'workspace'
+      ? database.workspaceDb
+      : database.kind === 'user'
+        ? database.userDb
+        : database.coreDb;
+  const workspaceId = owner.ownerScope.kind === 'workspace' ? owner.ownerScope.workspaceId : null;
+  const captures = db.sqlite
+    .prepare(
+      "SELECT resource FROM audit_events WHERE workspace_id IS ? AND action = 'knowledge.source.register'"
+    )
+    .all(workspaceId) as { resource: string | null }[];
+  const root = sourceNotebookRoot(owner);
+  if (!lstatSync(join(root, 'notebook.git'), { throwIfNoEntry: false })) {
+    if (
+      lstatSync(root, { throwIfNoEntry: false }) ||
+      captures.length ||
+      db.sqlite
+        .prepare(
+          "SELECT 1 FROM audit_events WHERE workspace_id IS ? AND action = 'knowledge.notebook.initialize' LIMIT 1"
+        )
+        .get(workspaceId)
+    )
+      throw new NotebookError('recovery_required');
+    return new Map();
+  }
+  const pointers = readSourcePointers(owner);
+  for (const { resource } of captures)
+    if (
+      !resource?.startsWith('knowledge-source:') ||
+      !pointers.has(resource.slice('knowledge-source:'.length))
+    )
+      throw new NotebookError('recovery_required');
+  return pointers;
+}
+
 /** Captures exact managed originals and publishes their sole SourceSummary through the existing Git/Audit boundary. */
 export async function publishCapturedSource(
   input: SourcePublication,
@@ -87,6 +129,30 @@ export async function publishCapturedSource(
 ): Promise<SourcePointer> {
   input.revalidatePublication();
   validateDatabase(input);
+  readPublishedSourcePointers(input.owner, input.database);
+  const database =
+    input.database.kind === 'workspace'
+      ? input.database.workspaceDb
+      : input.database.kind === 'user'
+        ? input.database.userDb
+        : input.database.coreDb;
+  const prior = database.sqlite
+    .prepare(
+      "SELECT notebook_admission_json FROM audit_events WHERE workspace_id IS ? AND request_id = ? AND action = 'knowledge.notebook.admit' AND resource LIKE 'knowledge-source:%' LIMIT 1"
+    )
+    .get(
+      input.owner.ownerScope.kind === 'workspace' ? input.owner.ownerScope.workspaceId : null,
+      input.requestId
+    ) as { notebook_admission_json: string | null } | undefined;
+  // An admitted capture without its command completion is unknown, never a second capture or inferred success.
+  if (prior) {
+    const evidence = prior.notebook_admission_json
+      ? (JSON.parse(prior.notebook_admission_json) as KnowledgeNotebookAdmission)
+      : null;
+    if (evidence && evidence.inputDigest !== commandInputHash(input.commandInput))
+      throw new IdempotencyKeyConflictError();
+    throw new NotebookError('recovery_required');
+  }
   if (
     !input.access.requestActor ||
     responsibleUserIdForActor(input.producer) !== input.access.requestActor.userId
