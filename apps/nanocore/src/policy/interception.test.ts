@@ -241,6 +241,103 @@ describe('bounded native Policy pipeline', () => {
     expect(events.filter((event) => event.policyInvocation?.mode === 'gate')).toHaveLength(2);
   });
 
+  it.each([
+    false,
+    true,
+  ])('exports actual matched Kernel IDs for final decisions with prohibited=%s', async (prohibited) => {
+    const input = fixture([binding('review')]);
+    const policy: PolicyState = {
+      elements: [
+        { id: 'u', kind: 'user' },
+        { id: 'ua', kind: 'userAttribute' },
+        { id: 'o', kind: 'object' },
+        { id: 'oa', kind: 'objectAttribute' },
+        { id: 'pc', kind: 'policyClass' },
+      ],
+      assignments: [
+        { child: 'u', parent: 'ua' },
+        { child: 'ua', parent: 'pc' },
+        { child: 'o', parent: 'oa' },
+        { child: 'oa', parent: 'pc' },
+      ],
+      operations: [{ id: 'tool.use', accessRights: ['tool-use', 'tool-review'] }],
+      associations: [
+        { id: 'grant:use', userAttribute: 'ua', targetAttribute: 'oa', accessRights: ['tool-use'] },
+        {
+          id: 'grant:review',
+          userAttribute: 'ua',
+          targetAttribute: 'oa',
+          accessRights: ['tool-review'],
+        },
+      ],
+      prohibitions: prohibited
+        ? [
+            {
+              id: 'deny:use',
+              kind: 'user',
+              subject: 'u',
+              accessRights: ['tool-use'],
+              range: { type: 'disjunctive', include: ['oa'] },
+            },
+            {
+              id: 'deny:review',
+              kind: 'user',
+              subject: 'u',
+              accessRights: ['tool-review'],
+              range: { type: 'disjunctive', include: ['oa'] },
+            },
+          ]
+        : [],
+    };
+    const pipeline = new PolicyInterception({
+      id: 'test',
+      version: participantVersion,
+      invoke: async () => ({ decision: 'allow' }),
+    });
+    const result = await pipeline.decide({
+      ...input,
+      finalKernel: () => evaluateAccess(policy, { user: 'u', operation: 'tool.use', target: 'o' }),
+    });
+    expect(result.result).toBe(prohibited ? 'deny' : 'allow');
+    const rows = listExportableWorkspacePermissionDecisions(input.workspaceDb, workspaceId);
+    expect(rows).toHaveLength(2);
+    const gate = rows.find((row) => row.mediation?.role === 'gate')!;
+    const final = rows.find((row) => row.decisionId === result.decisionId)!;
+    expect(gate.result).toBe('allow');
+    expect(gate.contextSummary).not.toHaveProperty('kernelTrace');
+    expect(final.contextSummary).toEqual({
+      capabilityCallId: proposal.capabilityCallId,
+      packageSnapshotId: proposal.packageDigest,
+      catalogRevision: proposal.catalogRevision,
+      threadId: proposal.subject.process!.threadId,
+      turnId: proposal.subject.process!.turnId,
+      kernelTrace: {
+        matchedAssociations: ['grant:use', 'grant:review'],
+        matchedProhibitions: prohibited ? ['deny:use', 'deny:review'] : [],
+      },
+    });
+    expect(final).toMatchObject({
+      policyEngineVersion: 'nanocore-policy:v1',
+      policySnapshotId: policyDigest(input.document),
+      result: prohibited ? 'deny' : 'allow',
+      reasonCode: prohibited ? 'prohibited' : 'granted',
+      mediation: {
+        authorizationRevision: input.authorizationRevision,
+        kernel: {
+          effect: prohibited ? 'deny' : 'allow',
+          reason: prohibited ? 'restriction' : 'association-grant',
+        },
+      },
+    });
+    const events = audit.listWorkspaceAuditEvents(input.workspaceDb, workspaceId);
+    expect(events).toHaveLength(2);
+    expect(events.find((event) => event.id === final.auditEventId)).toMatchObject({
+      permissionDecisionId: final.decisionId,
+      action: 'permission.decision',
+      outcome: prohibited ? 'denied' : 'succeeded',
+    });
+  });
+
   it('does not disclose a selected proposal outside the binding input scope', async () => {
     const guarded = binding('private-review');
     const other = { kind: 'human' as const, id: 'usr_00000000-0000-7000-8000-000000000002' };
@@ -305,6 +402,11 @@ describe('bounded native Policy pipeline', () => {
         (row) => row.decisionId === result.decisionId
       )
     ).toMatchObject({ result: 'error', mediation: { kernel: null, consumedStatements: [] } });
+    expect(
+      listExportableWorkspacePermissionDecisions(input.workspaceDb, workspaceId).every(
+        (row) => !Object.hasOwn(row.contextSummary as object, 'kernelTrace')
+      )
+    ).toBe(true);
   });
 
   it('keeps a real Kernel configuration error distinct from a substantive denial', async () => {

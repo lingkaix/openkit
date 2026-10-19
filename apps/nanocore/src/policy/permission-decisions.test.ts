@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -5,8 +6,10 @@ import {
   ListServerPermissionDecisionsResponseSchema,
   ListWorkspacePermissionDecisionsResponseSchema,
 } from '@openkit/app-api-schemas';
+import { evaluateAccess } from '@openkit/policy-kernel';
 import {
   allocateEntityId,
+  canonicalIdentifierName,
   isEntityId,
   type PolicyDecisionV1,
   type PolicyInvocationV1,
@@ -350,15 +353,40 @@ describe('permission decision recorder', () => {
     }
   });
 
-  it('records a policy-kernel decision as a durable server-scope row', () => {
+  it('retains all matched Kernel rule IDs through server list and Core reopen', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-decision-'));
-    const coreDb = openCoreDb(dataRoot);
+    let coreDb = openCoreDb(dataRoot);
 
     try {
       applyMigrations(coreDb);
 
-      const kernel = loadBootPolicyKernel();
-      const policyDecision = kernel.evaluate({
+      const baseline = loadBootPolicyKernel().policy;
+      const policy = {
+        ...baseline,
+        operations: baseline.operations.map((operation) =>
+          operation.id === 'vault.use'
+            ? { ...operation, accessRights: ['ar:vault-use', 'ar:vault-extra'] }
+            : operation
+        ),
+        associations: [
+          ...baseline.associations,
+          {
+            id: 'assoc:vault-extra',
+            userAttribute: 'ua:core-process',
+            targetAttribute: 'oa:vault-secrets',
+            accessRights: ['ar:vault-extra'],
+          },
+        ],
+        prohibitions: [
+          ...baseline.prohibitions!,
+          {
+            ...baseline.prohibitions![0]!,
+            id: 'deny:vault-extra',
+            accessRights: ['ar:vault-extra'],
+          },
+        ],
+      };
+      const policyDecision = evaluateAccess(policy, {
         process: 'process:nanocore',
         operation: 'vault.use',
         target: 'object:baseline-vault-secret',
@@ -370,7 +398,7 @@ describe('permission decision recorder', () => {
         ownerScope: 'server',
         policyDecision,
         policyEngineVersion: 'policy-kernel:v1',
-        policySnapshotId: 'policy_snapshot_boot_baseline',
+        policySnapshotId: `sha256:${'b'.repeat(64)}`,
         subjectSummary: { id: 'process:nanocore', kind: 'process' },
         action: 'vault.use',
         resourceSummary: { id: 'object:baseline-vault-secret', kind: 'vault-reference' },
@@ -412,9 +440,30 @@ describe('permission decision recorder', () => {
         id: 'object:baseline-vault-secret',
         kind: 'vault-reference',
       });
-      expect(JSON.parse(row.context_summary_json)).toEqual({ boot: true });
+      const expectedContext = {
+        boot: true,
+        kernelTrace: {
+          matchedAssociations: ['assoc:baseline-vault-use', 'assoc:vault-extra'],
+          matchedProhibitions: ['deny:baseline-vault-use', 'deny:vault-extra'],
+        },
+      };
+      coreDb.sqlite.close();
+      coreDb = openCoreDb(dataRoot);
+      const response = ListServerPermissionDecisionsResponseSchema.parse({
+        permissionDecisions: listServerPermissionDecisions(coreDb),
+      });
+      expect(response.permissionDecisions).toHaveLength(1);
+      expect(response.permissionDecisions[0]).toMatchObject({
+        policyEngineVersion: 'policy-kernel:v1',
+        policySnapshotId: `sha256:${'b'.repeat(64)}`,
+        result: 'deny',
+        reasonCode: 'restriction',
+        contextSummary: expectedContext,
+      });
+      expect(response.permissionDecisions[0]?.contextSummary).toEqual(expectedContext);
     } finally {
       coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 
@@ -445,8 +494,19 @@ describe('permission decision recorder', () => {
         )
       ).toBe(true);
       expect(original.map((row) => row.contextSummary)).toEqual([
-        { boot: true, bootId: 'boot_policy_test' },
-        { boot: true, bootId: 'boot_policy_test' },
+        {
+          boot: true,
+          bootId: 'boot_policy_test',
+          kernelTrace: { matchedAssociations: ['assoc:core-api-call'], matchedProhibitions: [] },
+        },
+        {
+          boot: true,
+          bootId: 'boot_policy_test',
+          kernelTrace: {
+            matchedAssociations: ['assoc:baseline-vault-use'],
+            matchedProhibitions: ['deny:baseline-vault-use'],
+          },
+        },
       ]);
       const auditCount = () =>
         coreDb.sqlite.prepare('SELECT count(*) AS count FROM audit_events').get();
@@ -500,6 +560,69 @@ describe('permission decision recorder', () => {
       ).toEqual(partialAudits);
     } finally {
       if (coreDb.sqlite.open) coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('pins boot rule versions to the canonical evaluated PolicyState despite unchanged rule IDs', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-boot-snapshot-'));
+    const coreDb = openCoreDb(dataRoot);
+    const baseline = loadBootPolicyKernel();
+    const changed = loadBootPolicyKernel({
+      associations: baseline.policy.associations.map((association) => ({
+        ...association,
+        accessRights: [...association.accessRights, 'ar:additional-right'],
+      })),
+    });
+    try {
+      applyMigrations(coreDb);
+      recordBootPolicySelfCheckDecisions({ bootId: 'boot_original', coreDb, kernel: baseline });
+      recordBootPolicySelfCheckDecisions({ bootId: 'boot_same', coreDb, kernel: baseline });
+      recordBootPolicySelfCheckDecisions({ bootId: 'boot_changed', coreDb, kernel: changed });
+      const rows = listServerPermissionDecisions(coreDb);
+      const original = rows.filter(
+        (row) => (row.contextSummary as { bootId: string }).bootId === 'boot_original'
+      );
+      const same = rows.filter(
+        (row) => (row.contextSummary as { bootId: string }).bootId === 'boot_same'
+      );
+      const revised = rows.filter(
+        (row) => (row.contextSummary as { bootId: string }).bootId === 'boot_changed'
+      );
+      expect(original).toHaveLength(2);
+      expect(same).toHaveLength(2);
+      expect(revised).toHaveLength(2);
+      const baselineDigest = `sha256:${createHash('sha256')
+        .update(canonicalIdentifierName(baseline.policy))
+        .digest('hex')}`;
+      const changedDigest = `sha256:${createHash('sha256')
+        .update(canonicalIdentifierName(changed.policy))
+        .digest('hex')}`;
+      expect(changedDigest).not.toBe(baselineDigest);
+      expect(original.map((row) => row.policySnapshotId)).toEqual([baselineDigest, baselineDigest]);
+      expect(same.map((row) => row.policySnapshotId)).toEqual([baselineDigest, baselineDigest]);
+      expect(revised.map((row) => row.policySnapshotId)).toEqual([changedDigest, changedDigest]);
+      const verdicts = (decisions: typeof rows) =>
+        decisions
+          .map((row) => ({
+            action: row.action,
+            result: row.result,
+            reasonCode: row.reasonCode,
+            kernelTrace: (row.contextSummary as { kernelTrace: unknown }).kernelTrace,
+          }))
+          .sort((left, right) => left.action.localeCompare(right.action));
+      expect(verdicts(revised)).toEqual(verdicts(original));
+      const retained = listServerPermissionDecisions(coreDb);
+      expect(() =>
+        recordBootPolicySelfCheckDecisions({
+          bootId: 'boot_original',
+          coreDb,
+          kernel: changed,
+        })
+      ).toThrow('Boot policy self-check record is contradictory.');
+      expect(listServerPermissionDecisions(coreDb)).toEqual(retained);
+    } finally {
+      coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
