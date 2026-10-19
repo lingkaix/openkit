@@ -1,5 +1,5 @@
 [workspace]
-members = ["apps/retrieval-kernel"]
+members = ["packages/retrieval-kernel"]
 exclude = ["apps/nanohost"]
 resolver = "3"
 
