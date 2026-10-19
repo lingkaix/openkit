@@ -60,7 +60,10 @@ import { OperationError, projectOperationError } from './operation-error.js';
 import { preflightPendingToolRequest } from './pending-request-operations.js';
 import { readAdmittedPolicyDocument } from './policy/configuration.js';
 import { type InterceptionInput, PolicyInterception } from './policy/interception.js';
-import { recordProductPermissionDecision } from './policy/permission-decisions.js';
+import {
+  readPolicyStatementUseCount,
+  recordProductPermissionDecision,
+} from './policy/permission-decisions.js';
 import { readPermissionDecisionRowV1 } from './policy/retained-records-v1.js';
 import {
   policyDigest,
@@ -2001,16 +2004,33 @@ function mcpInterceptionInput(
       currentMcpBindingAuthor(input, principal.responsibleHumanId, true)
     );
   };
+  // Freeze eligibility before this call consumes its final use. The same effect
+  // still rechecks authority before dispatch; later calls omit ended gates.
+  const eligibleAgentBindings = document.statements.some(
+    (statement) =>
+      statement.kind === 'binding' &&
+      statement.participant.kind === 'agent' &&
+      statement.state === 'active'
+  )
+    ? selectPolicyBindings({
+        document,
+        proposal,
+        authorCurrent,
+        anchorCurrent,
+        now: Date.now(),
+      }).filter(
+        (binding) =>
+          binding.participant.kind === 'agent' &&
+          binding.state === 'active' &&
+          (binding.lifetime.uses === undefined ||
+            readPolicyStatementUseCount(input.workspaceDb, {
+              id: binding.id,
+              digest: policyDigest(binding),
+            }) < binding.lifetime.uses)
+      )
+    : [];
   const agentBindingsCurrent = () => {
-    const bindings = selectPolicyBindings({
-      document,
-      proposal,
-      authorCurrent,
-      anchorCurrent,
-      now: Date.now(),
-    });
-    for (const binding of bindings) {
-      if (binding.participant.kind !== 'agent' || binding.state !== 'active') continue;
+    for (const binding of eligibleAgentBindings) {
       try {
         if (
           binding.author.kind !== 'human' ||
@@ -2049,13 +2069,7 @@ function mcpInterceptionInput(
     stillCurrent: () =>
       !input.signal.aborted &&
       lifecycleCurrent() &&
-      (!document.statements.some(
-        (statement) =>
-          statement.kind === 'binding' &&
-          statement.participant.kind === 'agent' &&
-          statement.state === 'active'
-      ) ||
-        agentBindingsCurrent()) &&
+      agentBindingsCurrent() &&
       currentCatalogRevision() === proposal.catalogRevision &&
       policyDigest({
         caller: currentMcpPolicyAuthority(input).revision,

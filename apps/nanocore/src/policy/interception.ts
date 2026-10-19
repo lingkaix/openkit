@@ -168,9 +168,7 @@ export class PolicyInterception {
     if (!current) results.push('error');
     // Recheck agent authority after participant work and before the final mandatory Kernel.
     // Only active gates decide; shadow failures remain evidence without a veto.
-    for (const binding of bindings.filter(
-      (value) => value.participant.kind === 'agent' && value.state === 'active'
-    )) {
+    for (const binding of used.filter((value) => value.participant.kind === 'agent')) {
       try {
         readPolicyAgentPrincipal({ ...input, binding, now: Date.now() });
         if (!input.participantAuthorized(binding))
