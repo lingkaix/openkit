@@ -216,6 +216,198 @@ describe('authoritative NanoHost session dispatch', () => {
     }
   });
 
+  it('carries bounded delete resource summaries without changing cleanup or receipt identity', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-delete-resources-'));
+    const coreDb = openCoreDb(root);
+    applyMigrations(coreDb);
+    const authority = createNanoHostTransportSessionAuthority();
+    const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+    const target = { deploymentId: 'resources', identityId: 'resources', targetId: 'resources' };
+    allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      ...target,
+      observedAt: new Date().toISOString(),
+    });
+    const app = new Hono<{ Variables: AuthVariables }>();
+    registerNanoHostSessionSemanticRoutes({ app, coreDb, dispatch, nanoHostConfig: target });
+    registerNanoHostSessionEffectRoutes({ app, dispatch });
+    const listener = getRequestListener(app.fetch);
+    let physicalConnection: object | undefined;
+    const server = createHttp2Server((request, response) => {
+      if (!physicalConnection) {
+        physicalConnection = readNanoHostPhysicalConnectionContext(request)!;
+        authority.admit({
+          connectionGeneration: 1,
+          identityId: target.identityId,
+          physicalConnection,
+        });
+      }
+      void listener(request, response);
+    });
+    let client: ReturnType<typeof connectHttp2> | undefined;
+    try {
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const address = server.address();
+      if (!address || typeof address === 'string')
+        throw new Error('Missing resource-summary fixture address.');
+      client = connectHttp2(`http://127.0.0.1:${address.port}`);
+      const post = async (path: string, body: unknown) => {
+        const stream = client!.request({
+          ':method': 'POST',
+          ':path': path,
+          'content-type': 'application/json',
+        });
+        const received = once(stream, 'response');
+        stream.end(JSON.stringify(body));
+        const [headers] = await received;
+        const chunks: Buffer[] = [];
+        for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+        return { status: headers[':status'], body: Buffer.concat(chunks).toString() };
+      };
+      expect(
+        await post('/api/nanohost/transport/session/readiness', { physicalEpoch: 'a'.repeat(64) })
+      ).toEqual({ status: 204, body: '' });
+      let serial = 0;
+      const queue = async (kind: 'sandbox.delete' | 'bridge.close' = 'sandbox.delete') => {
+        const requestId = (++serial).toString(16).padStart(64, '0');
+        const sandboxId = `sandbox-resources-${serial}`;
+        const result = dispatch
+          .effect({ kind, requestId, input: { sandboxId } })
+          .catch((error: unknown) => error);
+        const path = `/api/nanohost/transport/effects/${kind}`;
+        const command = await post(path, {});
+        expect(command.status).toBe(200);
+        expect(JSON.parse(command.body)).toMatchObject({ requestId, sandboxId });
+        return { path, requestId, sandboxId, result };
+      };
+
+      // Values and limits come from the resource owner, not production constants.
+      const summary = {
+        memoryPeakBytes: 9007199254740991,
+        oomKillCount: 2,
+        backendOomKilled: true,
+        cpuUsageSeconds: 1.25,
+        cpuThrottledSeconds: 0.125,
+        pidsPeak: 7,
+        exitState: 'dead',
+      };
+      const complete = await queue();
+      const response = {
+        requestId: complete.requestId,
+        sandboxId: complete.sandboxId,
+        state: 'deleted',
+        resourceSummary: summary,
+        note: 'PRIVATE_IGNORED_ADDITION',
+      };
+      expect(
+        (await post(`${complete.path}/result`, { ...response, sandboxId: 'different-sandbox' }))
+          .status
+      ).toBe(409);
+      expect(await post(`${complete.path}/result`, response)).toEqual({ status: 204, body: '' });
+      const completed = await complete.result;
+      // Soft comparisons let the independent fallback and receipt assertions run on baseline.
+      expect.soft(completed).toEqual({
+        sandboxId: complete.sandboxId,
+        state: 'deleted',
+        resourceSummary: summary,
+      });
+
+      // Diagnostic changes, omission and invalidity cannot change the receipt's cleanup identity.
+      for (const resourceFields of [
+        { resourceSummary: summary },
+        { resourceSummary: { backendOomKilled: false, exitState: 'exited' } },
+        {},
+        { resourceSummary: { memoryPeakBytes: -1 } },
+      ]) {
+        expect(
+          await post(`${complete.path}/result`, {
+            requestId: complete.requestId,
+            sandboxId: complete.sandboxId,
+            state: 'deleted',
+            ...resourceFields,
+          })
+        ).toEqual({ status: 204, body: '' });
+      }
+      for (const changedCore of [{ state: 'running' }, { sandboxId: 'different-sandbox' }]) {
+        expect(
+          (await post(`${complete.path}/result`, { ...response, ...changedCore })).status
+        ).toBe(409);
+      }
+      expect(await post(complete.path, {})).toEqual({ status: 204, body: '' });
+
+      const partial = await queue();
+      const sparseSummary = { oomKillCount: 0, backendOomKilled: false, cpuUsageSeconds: 0.25 };
+      expect(
+        await post(`${partial.path}/result`, {
+          requestId: partial.requestId,
+          sandboxId: partial.sandboxId,
+          state: 'deleted',
+          resourceSummary: sparseSummary,
+        })
+      ).toEqual({ status: 204, body: '' });
+      expect.soft(await partial.result).toEqual({
+        sandboxId: partial.sandboxId,
+        state: 'deleted',
+        resourceSummary: sparseSummary,
+      });
+
+      const oversized = { memoryPeakBytes: 1, log: 'PRIVATE_RESOURCE_TEXT'.repeat(64) };
+      expect(Buffer.byteLength(JSON.stringify(oversized))).toBeGreaterThan(1024);
+      // One invalid field drops the whole summary, including otherwise valid fields.
+      for (const resourceFields of [
+        {},
+        { resourceSummary: null },
+        { resourceSummary: { memoryPeakBytes: 9007199254740992, pidsPeak: 1 } },
+        { resourceSummary: { oomKillCount: 0.5, backendOomKilled: false } },
+        { resourceSummary: { cpuUsageSeconds: -0.5, memoryPeakBytes: 1 } },
+        { resourceSummary: { cpuThrottledSeconds: 'PRIVATE_RESOURCE_TEXT', pidsPeak: 1 } },
+        { resourceSummary: { exitState: 'oom-killed', oomKillCount: 1 } },
+        { resourceSummary: oversized },
+      ]) {
+        const pending = await queue();
+        expect(
+          await post(`${pending.path}/result`, {
+            requestId: pending.requestId,
+            sandboxId: pending.sandboxId,
+            state: 'deleted',
+            ...resourceFields,
+          })
+        ).toEqual({ status: 204, body: '' });
+        expect(await pending.result).toEqual({ sandboxId: pending.sandboxId, state: 'deleted' });
+      }
+      const bridge = await queue('bridge.close');
+      expect(
+        await post(`${bridge.path}/result`, {
+          requestId: bridge.requestId,
+          sandboxId: bridge.sandboxId,
+          state: 'closed',
+          resourceSummary: summary,
+        })
+      ).toEqual({ status: 204, body: '' });
+      expect(await bridge.result).toEqual({ sandboxId: bridge.sandboxId, state: 'closed' });
+
+      const failed = await queue();
+      expect(
+        await post(`${failed.path}/result`, {
+          requestId: failed.requestId,
+          failureCode: 'effect_failed',
+          resourceSummary: summary,
+        })
+      ).toEqual({ status: 204, body: '' });
+      expect(await failed.result).toMatchObject({
+        message: 'NanoHost effect failed: effect_failed.',
+      });
+      expect(await post(failed.path, {})).toEqual({ status: 204, body: '' });
+      expect(authority.mayCarryWork(physicalConnection!)).toBe(true);
+    } finally {
+      client?.destroy();
+      server.close();
+      await once(server, 'close');
+      coreDb.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('carries strict directory and executable Skill imports over native H2', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-skill-import-h2-'));
     const coreDb = openCoreDb(root);
