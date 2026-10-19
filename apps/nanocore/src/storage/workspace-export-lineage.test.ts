@@ -2297,15 +2297,22 @@ describe('workspace auxiliary lineage reminting', () => {
     };
     const packagePath = `workspace-files/threads/${source.threadId}/turns/${source.turnId}/context-package/package.json`;
     const tracePath = `workspace-files/threads/${source.threadId}/turns/${source.turnId}/context-package.json`;
+    const sourceTrace = JSON.parse(
+      JSON.stringify(
+        parseWorkerContextPackageTrace(
+          JSON.parse(readFileSync(join(input.exportRoot, tracePath), 'utf8')),
+          readFileSync(join(input.exportRoot, packagePath))
+        )
+      )
+    );
     const packageManifest = JSON.parse(readFileSync(join(input.exportRoot, packagePath), 'utf8'));
     packageManifest.annotation = { '10': 'ten', '2': 'two' };
     packageManifest.materialSelections[0].annotation = 'source Material selection';
     packageManifest.knowledgeSelections[0].annotation = 'source Knowledge selection';
     const packageBytes = canonical(packageManifest);
-    const sourceTrace = JSON.parse(readFileSync(join(input.exportRoot, tracePath), 'utf8'));
     sourceTrace.annotation = 'source trace';
-    sourceTrace.materialSelections[0].annotation = 'source selection';
-    sourceTrace.knowledgeSelections[0].annotation = 'source Knowledge';
+    sourceTrace.materialSelections = structuredClone(packageManifest.materialSelections);
+    sourceTrace.knowledgeSelections = structuredClone(packageManifest.knowledgeSelections);
     sourceTrace.knowledgeSelectionInput.annotation = 'source retrieval';
     const packageEntry = sourceTrace.fileInventory.find(
       (entry: { path: string }) => entry.path === 'package.json'
@@ -2317,7 +2324,7 @@ describe('workspace auxiliary lineage reminting', () => {
     const packageRootDigest = `sha256:${createHash('sha256').update(canonical(sourceTrace.fileInventory)).digest('hex')}`;
     for (const [path, bytes] of [
       [packagePath, packageBytes],
-      [tracePath, canonical(sourceTrace)],
+      [tracePath, serializeWorkerContextPackageTrace(sourceTrace)],
     ]) {
       writeFileSync(join(input.exportRoot, path!), bytes!);
       const entry = manifest.contentInventory.find(
