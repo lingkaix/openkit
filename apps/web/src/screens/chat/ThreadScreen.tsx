@@ -99,7 +99,12 @@ function SidePanel({
         {artifacts.length === 0 ? (
           <p className="text-xs text-fg-muted">No outputs or file changes yet.</p>
         ) : (
-          artifacts.map((item) => <ItemView key={`${item.workspaceId}:${item.id}`} item={item} />)
+          artifacts.map((item) => (
+            <ItemView
+              key={`${item.owner.kind === 'workspace' ? item.owner.workspaceId : 'server'}:${item.id}`}
+              item={item}
+            />
+          ))
         )}
       </div>
     </aside>

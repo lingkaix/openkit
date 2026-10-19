@@ -2,6 +2,7 @@ import type { ReactComponentImplementation } from '@a2ui/react/v0_9';
 import { A2uiSurface } from '@a2ui/react/v0_9';
 import { MessageProcessor } from '@a2ui/web_core/v0_9';
 import { createRequestId } from '@openkit/core-client';
+import { workspaceIdForOwner } from '@openkit/protocol';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useCoreClient } from '../../app/core-client';
@@ -39,11 +40,13 @@ export function GenerativePresentationView({
   source?: GenerativeTextSource;
 }) {
   const client = useCoreClient();
+  const itemWorkspaceId = item.owner.kind === 'workspace' ? item.owner.workspaceId : null;
   const query = useQuery({
-    queryKey: ['generative-presentation', item.workspaceId, item.presentationId],
+    queryKey: ['generative-presentation', itemWorkspaceId, item.presentationId],
+    enabled: itemWorkspaceId !== null,
     queryFn: () =>
       client.operations['generative-ui.get']({
-        workspaceId: item.workspaceId,
+        workspaceId: itemWorkspaceId as string,
         presentationId: item.presentationId,
       }),
   });
@@ -60,7 +63,7 @@ export function GenerativePresentationView({
   const refresh = useMutation({
     mutationFn: async (event: { name: string; surfaceId: string; sourceComponentId: string }) =>
       client.operations['generative-ui.refresh']({
-        workspaceId: item.workspaceId,
+        workspaceId: workspaceIdForOwner(item.owner),
         presentationId: item.presentationId,
         version: 'v0.9',
         action: { ...event, timestamp: new Date().toISOString() },
@@ -88,7 +91,7 @@ export function GenerativePresentationView({
     }) => {
       submitRequestId.current ??= createRequestId();
       return client.operations['generative-ui.action']({
-        workspaceId: item.workspaceId,
+        workspaceId: workspaceIdForOwner(item.owner),
         presentationId: item.presentationId,
         version: 'v0.9',
         action: {

@@ -6,7 +6,7 @@ import {
   ThreadDashboardResponseSchema,
 } from '@openkit/app-api-schemas';
 import { createCoreClient, createRequestId } from '@openkit/core-client';
-import { ThreadSchema } from '@openkit/protocol';
+import { ThreadSchema, workspaceIdForOwner } from '@openkit/protocol';
 import { expect, type Page, test } from '@playwright/test';
 import { isQuestionAnswerResponse } from './_lib/question-answer-response.js';
 import { type IsolatedWebStack, startIsolatedWebStack } from './_lib/servers.js';
@@ -58,7 +58,8 @@ test('completes the local Workspace self-check', async ({ page }) => {
   await page.getByRole('button', { name: /^Assistant$/ }).click();
   const assistant = ThreadSchema.parse(await (await firstOpening).json());
   expect(assistant.visibility).toBe('private');
-  const selector = { workspaceId: assistant.workspaceId, threadId: assistant.id };
+  const assistantWorkspaceId = workspaceIdForOwner(assistant.owner);
+  const selector = { workspaceId: assistantWorkspaceId, threadId: assistant.id };
   const client = createCoreClient({ baseUrl: stack.coreUrl });
   expect((await client.operations['thread.dashboard'](selector)).turns).toEqual([]);
 
@@ -88,7 +89,7 @@ test('completes the local Workspace self-check', async ({ page }) => {
   ).toBeVisible({ timeout: 15_000 });
   await expect(page.getByRole('heading', { name: assistant.name })).toBeVisible();
   expect(
-    (await client.operations['thread.list']({ workspaceId: assistant.workspaceId })).items.map(
+    (await client.operations['thread.list']({ workspaceId: assistantWorkspaceId })).items.map(
       (thread) => ({ id: thread.id, visibility: thread.visibility })
     )
   ).toEqual([{ id: assistant.id, visibility: 'private' }]);

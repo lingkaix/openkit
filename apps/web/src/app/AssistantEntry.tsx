@@ -1,4 +1,5 @@
 import { createRequestId } from '@openkit/core-client';
+import { workspaceIdForOwner } from '@openkit/protocol';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { Button, ErrorBanner, Icon } from '../primitives';
@@ -23,7 +24,7 @@ export function AssistantEntry({ workspaceId }: { workspaceId: string }) {
     opening.mutate(input, {
       // Sidebar keys this entry by Workspace. Per-call callbacks stop on unmount,
       // so a departed Workspace cannot redirect the current navigation.
-      onSuccess: (thread) => navigate(chatThreadPath(thread.workspaceId, thread.id)),
+      onSuccess: (thread) => navigate(chatThreadPath(workspaceIdForOwner(thread.owner), thread.id)),
     });
   }
 

@@ -25,6 +25,7 @@ import { isSurfaceLive } from '../../app/flags';
 import { AppRoutes } from '../../app/routes';
 import { surfaceById } from '../../app/surfaces';
 import { useWorkspaceStore } from '../workspace-store';
+import { isAuthoritativeIntroduceItem } from './data';
 
 const TIMESTAMP = '2026-08-29T02:00:00.000Z';
 const POISON_SECRET = 'sk-secret-should-never-render';
@@ -119,7 +120,7 @@ const THREAD = ThreadSchema.parse({
   visibility: 'workspace',
   entryPath: 'conversation',
   id: 'th_00000000-0000-7795-b51b-fdaf75668bc1',
-  workspaceId: WORKSPACE.id,
+  owner: { kind: 'workspace', workspaceId: WORKSPACE.id },
   name: THREAD_NAME,
   preview: THREAD_NAME,
   status: 'active',
@@ -129,7 +130,7 @@ const THREAD = ThreadSchema.parse({
 const THREAD_B = ThreadSchema.parse({
   ...THREAD,
   id: 'th_00000000-0000-7c50-b3e8-778872f15252',
-  workspaceId: WORKSPACE_B.id,
+  owner: { kind: 'workspace', workspaceId: WORKSPACE_B.id },
   name: 'Ops thread',
   preview: 'Ops thread',
 });
@@ -274,7 +275,7 @@ function introduceItem(input: {
 }) {
   const item = ItemSchema.parse({
     id: input.id,
-    workspaceId: input.workspaceId ?? WORKSPACE.id,
+    owner: { kind: 'workspace', workspaceId: input.workspaceId ?? WORKSPACE.id },
     threadId: input.threadId ?? THREAD.id,
     turnId: input.turnId ?? INTRODUCE_TURN_ID,
     type: 'artifact-reference',
@@ -297,7 +298,7 @@ function introduceItem(input: {
 function extraNonArtifactItem() {
   return ItemSchema.parse({
     id: 'it_00000000-0000-7e24-8e25-a1905413624b',
-    workspaceId: WORKSPACE.id,
+    owner: { kind: 'workspace', workspaceId: WORKSPACE.id },
     threadId: THREAD.id,
     turnId: INTRODUCE_TURN_ID,
     type: 'status',
@@ -325,7 +326,7 @@ function introduceTurn(
   const completed = status === 'completed';
   return TurnReadProjectionSchema.parse({
     id: extras.id ?? INTRODUCE_TURN_ID,
-    workspaceId: extras.workspaceId ?? WORKSPACE.id,
+    owner: { kind: 'workspace', workspaceId: extras.workspaceId ?? WORKSPACE.id },
     threadId: extras.threadId ?? THREAD.id,
     triggerActor: { kind: 'user', id: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b' },
     items: extras.extraItems ? [item, ...extras.extraItems] : [item],
@@ -340,7 +341,7 @@ function introduceTurn(
 }
 
 /** Matching completed artifact-reference Item for the frozen introduction receipt. */
-function matchedIntroduceItem(requestId: string) {
+function matchedIntroduceItem(requestId: string, workspaceId = WORKSPACE.id) {
   return introduceItem({
     id: INTRODUCE_MUTATION.itemId,
     artifactId: INTRODUCE_MUTATION.artifactId,
@@ -348,6 +349,7 @@ function matchedIntroduceItem(requestId: string) {
     lastMutationRequestId: requestId,
     title: IMPORTED_ARTIFACT.title,
     summary: IMPORTED_ARTIFACT.summary,
+    workspaceId,
   });
 }
 
@@ -1670,7 +1672,9 @@ describe('Artifacts', () => {
     {
       name: 'the Turn workspace disagrees with the request',
       turn: (requestId: string) =>
-        introduceTurn(matchedIntroduceItem(requestId), { workspaceId: WORKSPACE_B.id }),
+        introduceTurn(matchedIntroduceItem(requestId, WORKSPACE_B.id), {
+          workspaceId: WORKSPACE_B.id,
+        }),
     },
     {
       name: 'the Turn thread disagrees with the request',
@@ -1720,10 +1724,12 @@ describe('Artifacts', () => {
           summary: IMPORTED_ARTIFACT.summary,
           workspaceId: WORKSPACE_B.id,
         });
-        const turn = introduceTurn(item);
-        expect(item.workspaceId).toBe(WORKSPACE_B.id);
-        expect(turn.workspaceId).toBe(WORKSPACE.id);
-        expect(item.workspaceId).not.toBe(turn.workspaceId);
+        const turn = introduceTurn(item, { workspaceId: WORKSPACE_B.id });
+        expect(item.owner.kind).toBe('workspace');
+        expect(item.owner.workspaceId).toBe(WORKSPACE_B.id);
+        expect(turn.owner.kind).toBe('workspace');
+        expect(turn.owner.workspaceId).toBe(WORKSPACE_B.id);
+        expect(turn.owner.workspaceId).not.toBe(WORKSPACE.id);
         return turn;
       },
     },
@@ -2073,5 +2079,34 @@ describe('Artifacts', () => {
     await waitFor(() => expect(getArtifact).toHaveBeenCalledTimes(2));
     expect(await screen.findByText(PREVIEW_BODY)).toBeInTheDocument();
     assertNoLeakedInternals();
+  });
+});
+
+describe('isAuthoritativeIntroduceItem workspace admission', () => {
+  it('returns false for a server-owned Turn without throwing', () => {
+    const requestId = 'req_boundary_introduce';
+    const item = matchedIntroduceItem(requestId);
+    const workspaceTurn = introduceTurn(item);
+    const turn = {
+      ...workspaceTurn,
+      owner: { kind: 'server' as const },
+      items: workspaceTurn.items.map((entry) => ({ ...entry, owner: { kind: 'server' as const } })),
+    } as typeof workspaceTurn;
+    expect(
+      isAuthoritativeIntroduceItem(
+        {
+          result: INTRODUCE_MUTATION,
+          turn,
+          input: {
+            workspaceId: WORKSPACE.id,
+            threadId: THREAD.id,
+            artifactId: IMPORTED_ARTIFACT.id,
+            expectedArtifactVersion: IMPORTED_ARTIFACT.version,
+            requestId,
+          },
+        },
+        requestId
+      )
+    ).toBe(false);
   });
 });

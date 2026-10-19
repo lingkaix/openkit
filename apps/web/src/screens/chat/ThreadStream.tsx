@@ -109,7 +109,8 @@ export function ThreadStream({
     focusTurnId &&
     !live.isError &&
     dashboard?.thread.id === threadId &&
-    dashboard.thread.workspaceId === workspaceId
+    dashboard.thread.owner.kind === 'workspace' &&
+    dashboard.thread.owner.workspaceId === workspaceId
       ? dashboard
       : undefined;
   const selectedTurn = focusedDashboard?.turns.find((turn) => turn.id === focusTurnId);
