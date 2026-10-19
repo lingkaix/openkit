@@ -12,9 +12,9 @@ P08 checked the locked graph on 2026-10-15 with Rust/Cargo 1.97.1. `containers/a
 | --- | --- |
 | Root `Cargo.lock` | `88be6b21f6430d1aa5bf3b730822905e37ed7514a2378a49b454265797a0947a` |
 | Root `Cargo.toml` | `37df6268b46a4fe8934dcd4acdcc9a3fc4c9701acb9bad13e41dcfdd9d18692c` |
-| `apps/retrieval-kernel/Cargo.toml` | `d04a4ba566f11591761cbdbfb6b1098c532b16aff64fe88ee18f57e2d1def5a7` |
+| `packages/retrieval-kernel/Cargo.toml` | `d04a4ba566f11591761cbdbfb6b1098c532b16aff64fe88ee18f57e2d1def5a7` |
 
-From `apps/retrieval-kernel`, use the shared command slot and `CARGO_BUILD_JOBS=1` to run the complete normal graph for each target:
+From `packages/retrieval-kernel`, use the shared command slot and `CARGO_BUILD_JOBS=1` to run the complete normal graph for each target:
 
 ```sh
 cargo tree --locked --offline --target <target> -e normal --prefix none --format '{p}'
@@ -57,10 +57,10 @@ Before #249 closes, build both target-native App images and compare the packaged
 
 ## Prepared Image Notice Check
 
-`apps/retrieval-kernel/verify-image-notices.py` checks the full notice tree from both built App images. Run it on the Docker-capable merge train or release CI host that builds the App images, from the selected source checkout, against the loaded candidate images. It requires Python 3, the pinned Cargo toolchain and already-fetched locked crate sources, and Docker API 1.49 or later for [explicit platform inspection](https://docs.docker.com/reference/cli/docker/image/inspect/). Supply platform-specific image references, or a locally loaded multi-platform reference that the engine can select for both platforms. The check never builds or pulls an image.
+`packages/retrieval-kernel/verify-image-notices.py` checks the full notice tree from both built App images. Run it on the Docker-capable merge train or release CI host that builds the App images, from the selected source checkout, against the loaded candidate images. It requires Python 3, the pinned Cargo toolchain and already-fetched locked crate sources, and Docker API 1.49 or later for [explicit platform inspection](https://docs.docker.com/reference/cli/docker/image/inspect/). Supply platform-specific image references, or a locally loaded multi-platform reference that the engine can select for both platforms. The check never builds or pulls an image.
 
 ```sh
-CARGO_BUILD_JOBS=1 python3 apps/retrieval-kernel/verify-image-notices.py --amd64-image <loaded-amd64-App-reference> --arm64-image <loaded-arm64-App-reference>
+CARGO_BUILD_JOBS=1 python3 packages/retrieval-kernel/verify-image-notices.py --amd64-image <loaded-amd64-App-reference> --arm64-image <loaded-arm64-App-reference>
 ```
 
 Use the dispatch's shared command slot when running this command on the shared development machine. The expected tree is generated once by the existing source collector plus the source IPADIC COPYING file. Both images must have the exact same complete regular-file inventory and bytes, including `CRATES.json`, both provenance inventories, all upstream and elected licenses, dictionary COPYING, and an empty `GAPS.json`. Missing, extra, changed, linked, or nonregular entries fail the check.

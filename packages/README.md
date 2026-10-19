@@ -28,6 +28,7 @@ This directory holds reusable libraries, shared configuration packages, internal
 - `@openkit/worker-protocol`: canonical `Core <-> Worker` schemas for governed container worker records, control envelopes, transcript records, capability summaries, workspace-change manifests, and worker errors.
 - `@openkit/codex-app-server-schema`: vendored Codex app-server JSON Schema snapshot for the NanoCore host adapter boundary.
 - `@openkit/models-dev-catalog`: vendored `models.dev` catalog snapshots for provider-template traceability.
+- `@openkit/retrieval-kernel`: subordinate Retrieval Kernel executable supervised by NanoCore and shipped inside the App image.
 
 ## Related documentation
 

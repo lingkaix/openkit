@@ -376,8 +376,8 @@ function resolveKernelExecutable(): string {
   const candidates = [
     join(REPOSITORY_ROOT, 'target/debug/retrieval-kernel'),
     join(REPOSITORY_ROOT, 'target/release/retrieval-kernel'),
-    join(REPOSITORY_ROOT, 'apps/retrieval-kernel/target/debug/retrieval-kernel'),
-    join(REPOSITORY_ROOT, 'apps/retrieval-kernel/target/release/retrieval-kernel'),
+    join(REPOSITORY_ROOT, 'packages/retrieval-kernel/target/debug/retrieval-kernel'),
+    join(REPOSITORY_ROOT, 'packages/retrieval-kernel/target/release/retrieval-kernel'),
   ];
   const executable = candidates.find((candidate) => existsSync(candidate));
   if (!executable) {
