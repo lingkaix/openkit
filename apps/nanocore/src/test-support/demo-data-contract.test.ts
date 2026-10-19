@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -9,6 +10,7 @@ import {
 } from '../../../../tests/support/demo-data.mjs';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { readWorkspaceNotebookIndexSource } from '../knowledge/notebook-index-source.js';
+import { parseOkfDocument } from '../knowledge/okf.js';
 import { FsStore } from '../lib/store.js';
 import { readWorkspaceKnowledgeDerivedIndexes } from '../storage/index-rebuild.js';
 import { DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from './demo-store.js';
@@ -88,9 +90,20 @@ describe('shared black-box demo fixture contract', () => {
     seedDemoWorkspaceDataRoot(root);
     await seedDemoWorkspaceAuthority(root);
     const reopened = new FsStore({ dataRoot: root });
-    expect(reopened.listKnowledge(DEMO_WORKSPACE_ID)).toMatchObject([
-      { id: 'mem_project', title: 'Product focus' },
+    const pages = reopened.listKnowledge(DEMO_WORKSPACE_ID);
+    const content = publications.get(DEMO_WORKSPACE_ID)!.pages.get('mem_project')!;
+    expect(pages).toEqual([
+      {
+        id: 'mem_project',
+        path: 'mem_project.md',
+        content,
+        contentDigest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
+      },
     ]);
+    expect(parseOkfDocument({ path: pages[0]!.path, content: pages[0]!.content })).toMatchObject({
+      ok: true,
+      document: { frontmatter: { title: 'Product focus' } },
+    });
     for (const workspaceId of workspaceIds) {
       expect(
         readDefaultKnowledgeBaseId({
