@@ -130,7 +130,7 @@ function unitProperties() {
   const canonical = {
     ...properties,
     ExecStart: JSON.stringify([start]),
-    ExecStop: JSON.stringify([stop]),
+    ExecStop: JSON.stringify([]),
     ExecStopPost: JSON.stringify([stop]),
   };
   const effectiveStateDigest = hash(
@@ -146,7 +146,7 @@ function unitProperties() {
     `{ path=${command.path} ; argv[]=${command.argv.join(' ')} ; ignore_errors=${command.ignoreErrors ? 'yes' : 'no'} ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0 }`;
   Object.assign(properties, {
     ExecStart: format(start),
-    ExecStop: format(stop),
+    ExecStop: '',
     ExecStopPost: format(stop),
     MainPID: 'FIXTURE_PID',
     ActiveState: 'active',

@@ -68,7 +68,7 @@ import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-ledger.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 
-import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
+import { loadRuntimeConfig } from '../config/runtime-config.js';
 
 import * as knowledgeOverviewReader from '../context/knowledge-overview.js';
 import { parseWorkerContextPackageTrace } from '../context/worker-context-package.js';
@@ -2029,8 +2029,23 @@ describe('WorkerGovernanceTurnExecutor', () => {
         expect(refusal).toMatchObject({ code: 'recovery_required', status: 409, cause });
         expect(Object.keys(refusal as Error)).not.toContain('cause');
         expect(JSON.stringify(refusal)).not.toContain('secret-error-name');
-        expect((refusal as Error).message).toBe(
+        expect((refusal as Error).message).toContain(
           'The worker backend materialization capacity cannot be safely inspected.'
+        );
+        expect((refusal as Error).message).toContain(
+          scenario === 'native-proof'
+            ? 'WorkerNativeProofValidationError'
+            : scenario === 'retained-aep'
+              ? 'AgentEnvironmentSnapshotReadError'
+              : 'Error'
+        );
+        expect((refusal as Error).message).toContain(
+          scenario === 'native-proof'
+            ? 'package-binding-lineage/attachment-target'
+            : 'materialization-capacity-inspection'
+        );
+        expect((refusal as Error).message).not.toMatch(
+          /credential-canary|package-path|received|secret-error-name/
         );
       }
       expect(backend.calls).toEqual([]);
@@ -11721,7 +11736,7 @@ async function assertNativePreSubmissionFault(fault: NativePreSubmissionFault): 
     fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
     coreDb,
     store,
-    readRuntimeConfig: () => createInMemoryRuntimeConfigSnapshot({ dataRoot: coreDb.dataRoot }),
+    readRuntimeConfig: () => loadRuntimeConfig(coreDb.dataRoot),
     env: {},
     workerControlGateway: new WorkerControlGateway(),
     nanoHostSessionDispatch: {

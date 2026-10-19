@@ -188,7 +188,7 @@ class SystemdMaintenance:
         facts = self._service_facts()
         expected = {"MainPID": "0", "Slice": "openkit-nanohost.slice", "Restart": "no",
                     "DropInPaths": self.guard, "FragmentPath": _FRAGMENT, "LoadState": "loaded"}
-        # The stock ExecStop kills its complete slice and can leave failed/failed.
+        # Older installed units can leave failed/failed after their slice-killing ExecStop.
         # Neither stopped state replaces the full kernel-domain checks below.
         if (any(facts[key] != value for key, value in expected.items()) or
                 (facts["ActiveState"], facts["SubState"]) not in (("inactive", "dead"), ("failed", "failed"))):
