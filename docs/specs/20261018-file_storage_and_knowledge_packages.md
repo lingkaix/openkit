@@ -114,6 +114,19 @@ Ablation: admitted originals need versioned, portable Source identity without pu
 
 Each admitted Source has one small OKF `SourceSummary` pointer at `sources/<source-id>.md` in Notebook Git. Frontmatter carries its digest, size, sniffed media type, Knowledge Base-relative raw path (`raw/<path>` for the default mount, `raw/<mount>/<path>` for additional mounts), capture time/channel, availability and authored title/description/tags; existing source disclosure and governance metadata remain binding. The body is the Knowledge Manager's source summary. Raw bytes and backend locations never enter the pointer; the mount table alone maps its logical path to a backend. Relocation changes that declaration, not every pointer.
 
+The SourceSummary uses the existing governed OKF profile and owner `scope`. Its identity is the Source ID in `sources/<source-id>.md`, not a second ID in frontmatter. The following core fields have one meaning in all three scopes; unknown descriptive extension fields remain allowed. Only the native Source publisher can change the captured facts. Ordinary notebook edits can change the summary and descriptive fields, but cannot create, remove or change captured facts. Capture and pointer publication retain the actual producer and authority in existing Notebook commit metadata and the existing Source command Audit and receipt.
+
+| SourceSummary field | Necessity |
+| --- | --- |
+| `contentRef` | Existing shared descriptor binds the exact Knowledge Base, original digest, logical mount/path, range `null` and availability; without it a pointer cannot name an authorized original. |
+| `byteLength`, `mediaType` | Existing shared content facts verify exact bytes and distinguish binary formats without trusting an upload name. |
+| `sourceKind`, `uri` | Preserve the existing Source category and nullable external origin; a category never chooses a capture channel or grants network access. |
+| `capturedAt`, `captureChannel` | Preserve the actual capture time and native operation ID; without the native channel an imported or model-supplied label could misstate how content entered the scope. |
+| `originatingThreadId`, `originatingTurnId`, `originatingFileId` | Preserve the existing nullable Source lineage used by audience admission; these fields cannot grant access. |
+| `title`, optional `description` and `tags` | Reuse authored OKF descriptions for inspection and discovery, without another Source registry. |
+
+The existing profile `created_at` and `updated_at` carry Source creation and pointer-change times. Captured fields are read from that published Git revision, never from a sidecar. A source-free scope lists no Sources. An established notebook with missing or invalid pointer bytes fails explicitly. Text tools decode a verified original as exact UTF-8 or report it unavailable for that text tool; binary bytes remain available through the shared Storage contract. Source byte reads are asynchronous and recheck current scope and Source admission at the delivery boundary; synchronous notebook validation checks pointer identities and closure, never starts another byte backend or substitutes current bytes for a historical digest.
+
 A changed original updates its pointer through one Notebook commit. Historical `source:<id>@<old digest>` references resolve only while Storage still has the authorized matching bytes; otherwise they are unavailable. Deletion keeps the pointer marked unavailable. Pointer edits cannot rewrite a historical digest or authorize disclosure.
 
 Storage's rebuildable mount index covers every file with path, size, modification time, media type and digest on demand. Only admitted Sources get Git pointer pages; small local libraries may auto-admit under current capture Policy, while large mounts admit on demand. The current whole-revision in-memory Notebook reader is a known scale limit; bounded loading is later additive work.
