@@ -135,7 +135,8 @@ it('preserves exact historical bytes, parents and publication lineage through Wo
   const rawHead = JSON.parse(verified.fileContents.get(descriptorPath)!);
   const invalidHeads = [
     { ...rawHead, schemaVersion: 2 },
-    { ...rawHead, version: { ...rawHead.version, parentVersion: null } },
+    // The parent derives from the canonical version; contradict that path-bound version.
+    { ...rawHead, artifact: { ...rawHead.artifact, version: 3 } },
     {
       ...rawHead,
       version: {
