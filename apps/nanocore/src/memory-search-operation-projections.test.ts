@@ -69,7 +69,7 @@ function fixture() {
     });
     return { status: response.status, body: await response.json() };
   };
-  const content = (user: number, id: string, body: string) =>
+  const content = (user: number, body: string) =>
     serializeKnowledgePageFixture(
       {
         title: 'My saved preference',

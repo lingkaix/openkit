@@ -350,8 +350,8 @@ describe('published Workspace notebook reads', () => {
     );
     const source = await registerSource(f, sourceThread.id);
     const destination = f.store.createThread(f.workspaceId, 'Shared destination');
-    // The public aggregate projects admitted Knowledge entries, including their required timestamps.
-    const entryBytes = (id: string, title: string, sourceReferences: string[], content: string) =>
+    // The public aggregate projects exact admitted Notebook pages; authored timestamps remain in OKF bytes.
+    const entryBytes = (title: string, sourceReferences: string[], content: string) =>
       serializeKnowledgePageFixture(
         {
           title,
@@ -363,14 +363,13 @@ describe('published Workspace notebook reads', () => {
         { kind: 'workspace', workspaceId: f.workspaceId }
       );
     const secret = entryBytes(
-      'denied-path-marker',
       'DENIED-TITLE-MARKER',
       [`source:${source.id}@${source.contentDigest}`],
       'DENIED-BODY-MARKER\n'
     );
     const revision = publish(f, {
       'denied-path-marker.md': secret,
-      'public.md': entryBytes('public', 'Public page', [], 'Public control page.\n'),
+      'public.md': entryBytes('Public page', [], 'Public control page.\n'),
     });
     // A later ordinary Store mutation refreshes the cached aggregate from both published pages.
     f.store.createThread(f.workspaceId, 'Count refresh');

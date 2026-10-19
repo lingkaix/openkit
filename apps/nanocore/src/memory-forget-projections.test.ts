@@ -47,7 +47,7 @@ function fixture() {
     });
     return { status: response.status, body: await response.json() };
   };
-  const content = (ownerUserId: string, pageId: string, body: string) =>
+  const content = (ownerUserId: string, body: string) =>
     serializeKnowledgePageFixture(
       {
         title: 'Personal preference',

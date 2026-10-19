@@ -92,7 +92,7 @@ async function fixture(sourceBacked = false) {
     target: { kind: 'user' },
     initialization: { requestId: randomUUID(), instructionReference: 'test:memory-forget' },
   });
-  const content = (pageId: string, body: string) =>
+  const content = (body: string) =>
     serializeKnowledgePageFixture(
       {
         title: 'Personal preference',
@@ -107,7 +107,7 @@ async function fixture(sourceBacked = false) {
     requestId: randomUUID(),
     baseRevision: base,
     pageId: 'preference',
-    content: content('preference', 'Private exact forgotten text.'),
+    content: content('Private exact forgotten text.'),
     summary: 'Save my preference',
   });
   const thread = openAssistantTimeline(store, DEMO_WORKSPACE_ID, userId, 'Private Timeline');

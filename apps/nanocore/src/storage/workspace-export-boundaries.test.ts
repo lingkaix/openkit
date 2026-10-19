@@ -1,3 +1,4 @@
+import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 // openkit-test-platform: posix
 
 import { execFileSync } from 'node:child_process';
@@ -607,7 +608,7 @@ describe('workspace export route boundaries', () => {
     });
     const pagePath = `knowledge/pages/${'a'.repeat(60)}/${'b'.repeat(60)}.md`;
     const notebookResponse = await sourceApp.request(
-      ...operationRequest('knowledge.list', {
+      ...operationRequest('knowledge.notebook.list', {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       })
     );
@@ -615,14 +616,22 @@ describe('workspace export route boundaries', () => {
     const { notebookRevision } = await notebookResponse.json();
     const created = await sourceApp.request(
       ...operationRequest(
-        'knowledge.create',
+        'knowledge.notebook.create',
         {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           baseRevision: notebookRevision,
-          knowledgePageId: pagePath.slice('knowledge/pages/'.length, -3),
-          kind: 'project-context',
-          title: 'Unicode archive',
-          content: 'Portable.',
+          path: pagePath.slice('knowledge/pages/'.length, -3) + '.md',
+          content: serializeKnowledgePageFixture(
+            {
+              title: 'Unicode archive',
+              content: 'Portable.',
+              sourceReferences: [],
+              createdAt: '2026-10-19T00:00:00.000Z',
+              updatedAt: '2026-10-19T00:00:00.000Z',
+            },
+            { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }
+          ),
+          summary: 'Publish explicit full-page fixture',
         },
         { headers: { 'x-openkit-request-id': '00000000-0000-4000-8000-000000000991' } }
       )

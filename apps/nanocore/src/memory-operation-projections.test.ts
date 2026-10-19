@@ -49,7 +49,7 @@ function fixture() {
         : { text: await response.text() },
     };
   };
-  const content = (body: string, id = 'preferences') =>
+  const content = (body: string) =>
     serializeKnowledgePageFixture(
       {
         title: 'My preference',
