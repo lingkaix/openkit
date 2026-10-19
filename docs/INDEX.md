@@ -154,7 +154,7 @@ and are not listed here.
 - `docs/specs/20261017-retained_format_register.md` — Accepted, Implemented — The register owns the family inventory, authority classification, current marker evidence, reader boundary, fixture pointers and identified gaps.
 - `docs/specs/20261018-file_storage_and_knowledge_packages.md` — Accepted, Partial — Ablation: shared file contracts must not create competing product authorities.
 - `docs/specs/20261018-nanocore_interception_and_information_consolidation.md` — Accepted, Partial — Needed for the approved unified mediation and information-consolidation decisions.
-- `docs/specs/20261019-durable_execution_and_control_store.md` — Draft, Not Started — This specification proposes the single control-store commit boundary, durable execution mechanism, per-scope placement, global dispatch seam, and replacement o…
+- `docs/specs/20261019-durable_execution_and_control_store.md` — Draft, Not Started — Scope-owned transactional control, durable execution, dispatch, immutable-content placement, and replacement of split-store recovery under the engineer decisio…
 
 ## Terminal Specifications
 

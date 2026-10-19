@@ -8,320 +8,442 @@ date: "2026-10-19"
 
 ## Owns
 
-This specification proposes the single control-store commit boundary, durable execution mechanism, per-scope placement, global dispatch seam, and replacement of split-store recovery. The [engineer decision](../decisions/20261019-durable_execution_and_control_store.md) accepts the direction and pre-`v0.1.0` deadline; this Draft does not claim accepted implementation detail or completed implementation.
+Scope-owned transactional control, durable execution, dispatch, immutable-content placement, and replacement of split-store recovery under the [engineer decision](../decisions/20261019-durable_execution_and_control_store.md).
 
 ## Does Not Own
 
-Product Task or Goal structures, authorization decisions, native runtime replay, Knowledge meaning, capture defaults, telemetry delivery, or backup/move operations. [Goal structures remain frozen](../decisions/20260928-goal_freeze_and_export_backup_boundary.md). Existing concept owners retain their semantics. There is no workflow DSL, user-facing workflow product, general event bus, Temporal/DBOS dependency, additional server process, or second blob service.
+Product/Goal structures, authorization, Knowledge semantics, retention schemas/defaults, telemetry delivery or backup/move commands; no public Run, DSL, code replay, external workflow server or second blob service.
 
 ## Core References
 
-- [Foundation](../core/foundation.md), [Architecture](../core/architecture.md), [Storage](../core/storage.md), and [Runtime Model](../core/runtime-model.md).
-- [Fault Tolerance](../core/fault-tolerance.md), [Communication](../core/communication.md), [Protocol](../core/protocol.md), [AgentSession](../core/agent-session.md), [Permissions](../core/permissions.md), and [Contract Evolution](../core/contract-evolution.md).
+- [Storage](../core/storage.md) and [Runtime Model](../core/runtime-model.md).
+- [Fault Tolerance](../core/fault-tolerance.md) and [Contract Evolution](../core/contract-evolution.md).
+- [Permissions](../core/permissions.md) and [AgentSession](../core/agent-session.md).
 
 ## Related Docs
 
-- [Storage Layout](20260703-storage_layout_record_ownership.md), [File Storage And Knowledge Packages](20261018-file_storage_and_knowledge_packages.md), and [Notebook](20260909-knowledge_notebook_editing.md).
-- [Durable Scheduler](20260703-durable_scheduler_design.md), [Scheduling Scale](20260703-runtime_scheduling_scale.md), [Bootstrap](20260704-nanocore_bootstrap_readiness.md), and [NanoHost](20260802-nanohost_runtime_and_transport.md).
-- [Work Data Retention](20260921-work_data_retention_format.md), [Backup/Export](20260704-workspace_backup_export_import.md), [Recurring Triggers](20260711-scheduler_recurring_event_triggers.md), and [Operational Telemetry](20260731-operational_telemetry_standardization.md).
-- [Pending Requests](20260531-human_attention_intervention_model.md), [Evaluation Harness](20260711-evaluation_harness_design.md), and [Test Strategy](20260529-test_strategy.md).
+- [Storage Layout](20260703-storage_layout_record_ownership.md), [Storage Service](20261018-file_storage_and_knowledge_packages.md), and [Notebook](20260909-knowledge_notebook_editing.md).
+- [Scheduler](20260703-durable_scheduler_design.md), [Scale](20260703-runtime_scheduling_scale.md), [Bootstrap](20260704-nanocore_bootstrap_readiness.md), and [NanoHost](20260802-nanohost_runtime_and_transport.md).
+- [Pending Requests](20260531-human_attention_intervention_model.md), [Recurring Triggers](20260711-scheduler_recurring_event_triggers.md), and [Test Strategy](20260529-test_strategy.md).
 
 ## Commit Rule And Scope Layout
 
-One state transition commits in exactly one transaction in its owning SQLite database. The transaction contains the state change, journal update, local dependent records, and applicable request receipt. Content is written, digest-verified and synchronized before that transaction references it. Readers, memory caches and notifications publish only committed state. A failed commit exposes the old state, never a partly updated cache. An uncertain commit acknowledgement is resolved by reading the same request identity after reopening; it does not authorize a new request.
+One owning SQLite transaction commits state, journal, dependent local records and receipt; resolve uncertain acknowledgement through that request identity.
 
-SQLite is the control store itself, not a fourth store beside mutable files, server SQL and Workspace SQL. WAL ATTACH does not supply crash-atomic commits across databases. No transition relies on a transaction across database files, a file rename plus SQL, or a Host effect plus SQL. A cross-scope action is an effect with its own local commits.
+Synchronize and verify content before references; publish caches/notifications after commit.
 
-| Scope and location | Canonical contents | Not authority here |
-| --- | --- | --- |
-| `workspaces/<workspaceId>/db/workspace.sqlite` | Workspace/Thread/Turn/AgentSession records; ordered Item revisions; local requests and receipts; execution and step rows; Pending Requests; recurring definitions/occurrences; Workspace Policy and configuration revisions; Knowledge heads; local audit, usage, observations and evidence descriptors. | Server membership, physical placement, live volume attachment or global capacity. |
-| `workspaces/<workspaceId>/content/` | Immutable managed content through the existing Storage Service local backend: AEP/context manifests, work payloads, message/part blobs, prompt/tool definitions, Artifact/evidence bytes and immutable configuration revisions. | A competing object catalog, authorization store, or mutable record truth. |
-| `workspaces/<workspaceId>/knowledge/` | Existing Knowledge Base layout, immutable Notebook history and managed originals under their existing mounts; local schema/content revisions remain owned by Knowledge. | Git branch refs or materialized pages as a second mutable publication head. |
-| `workspaces/<workspaceId>/projections/` | Optional human/agent-readable record files and read models, including `turn.json` and Item JSONL. | Accepted writes, restart instructions or backup-required authority. |
-| `server/db/core.sqlite` and server-owned Storage roots | Users, server membership and registry, authored server configuration heads, server Knowledge heads, server evidence, Host/Epoch/Sandbox/Harness/physical bindings, and capacity reservations. | Workspace execution status or a persistent global work queue. |
-| Existing user scope database and Storage roots | User-private preferences, Memory heads, receipts and retained content. | Workspace ownership, membership authority, or portable Workspace content. |
-| Existing derived index roots | Rebuildable retrieval, search and read projections with their existing audiences. | Recovery input for missing canonical data. |
+WAL ATTACH cannot make cross-database effects atomic.
 
-The paths above define ownership and containment, not a new Storage API or digest codec. Reuse `@openkit/storage`, its staged-write handoff, existing content descriptors and admitted `contentRef` projections. Content-addressed placement uses the existing `sha256:` identity; the local backend verifies immutable bytes and never overwrites a different value at that identity. Non-Knowledge owners do not acquire invented Knowledge Base identities. Existing managed Knowledge paths remain valid locations; deduplication is local to the authorized scope and never exposes cross-scope content existence.
+| Location | Authority |
+| --- | --- |
+| `workspaces/<id>/db/workspace.sqlite` | Workspace, Thread, Turn, AgentSession, ordered Items, receipts, executions/steps, signals/timers, Policy/configuration/catalog/Knowledge heads, local Audit/usage/observations/evidence. |
+| `workspaces/<id>/content/` | Existing Storage immutable AEP/context, messages/parts, prompt/tool definitions, configuration revisions, Artifact/evidence payloads. |
+| `workspaces/<id>/knowledge/` | Existing managed originals, schema revisions and immutable Notebook history. |
+| `workspaces/<id>/projections/` | Disposable readable records, never accepted writes or recovery authority. |
+| `server/db/core.sqlite` and server Storage | Users, membership/registry, configuration/Knowledge heads, server executions/evidence, physical bindings and capacity. |
+| Existing user databases/Storage | Private preferences, Memory, receipts and content. |
+| Derived indexes | Rebuildable audience-scoped projections only. |
 
-Files containing retained control inputs are immutable revisions. Authored server configuration remains server-scoped; its admitted revision head changes in the server transaction. Workspace executions pin its revision/digest in their existing AEP lineage, not by copying server authority. Human-readable editable configuration is an admission input or projection, never a second committed head. A failed admission preserves the prior revision. Reload outcome remains distinct from persisted revision and from a running Turn's pinned input.
+Reuse `@openkit/storage`, staged handoff, `sha256:` and content references; prohibit immutable overwrites and cross-scope deduplication disclosure.
 
-Knowledge retains Source IDs, OKF page meaning, immutable Git content/history, reviews, and reference-may-miss semantics. Its scope database owns only mutable publication heads and associated local decision/receipt commits. Prepare and synchronize the immutable Notebook commit/tree before the database changes its head. Git refs and page materializations derive from that head and can lag without changing accepted content. Do not copy external originals merely to make a historical reference resolvable. Missing published content fails closed; a valid unavailable external reference does not become corruption.
+Server configuration stays server-owned; AEP pins revisions/digests, distinct from reload outcome and running-Turn input.
 
-Vault ciphertext and keys remain behind Vault, outside generic content storage. Opaque Worker volumes stay on their execution host and preserve their existing retention and audience rules. The following inventory closes the Workspace boundary; an unknown mutable authority cannot be omitted from backup or admitted as an undocumented control store.
+Vault and host-owned Worker volumes retain their owners.
 
 ### Workspace Authorities Outside The Control Database
 
-| Current location or owner | Target authority and commit rule | Quiesced and hot snapshot rule |
-| --- | --- | --- |
-| Knowledge `notebook.git/` refs, pages and Source pointers | The head, expected revision, Audit and receipt commit in Workspace SQL. Git commits/trees remain immutable content; refs/pages are projections. No independent mutable Git publication authority remains. | Capture the SQL head and its transitive immutable history/content closure. Pin it before Git/Storage pruning and prevent repack from invalidating the captured file inventory until copied; neither backup mode reads a moving branch ref. |
-| `config/workspace.jsonc`, `config/data-sources.jsonc`, authored schemas and mount declarations | Preserve exact authored revision bytes as immutable content; admitted current heads and authority-bearing values commit in Workspace SQL. Editable files are input drafts until admitted, never a second truth. | Both modes capture admitted heads and revision bytes. Unadmitted drafts are separately labeled user files, not executable configuration; do not silently omit them when full-directory backup is promised. |
-| Mutable `catalog/` entries, versions, pins and bindings | Existing Skill/MCP/Plugin/Light App catalog semantics remain; mutable heads, selected pins, binding associations, Audit and receipts commit together in Workspace SQL. Installed snapshots remain immutable. | Capture SQL plus all retained version/snapshot roots, including historical holds. No live catalog file scan chooses the active version. |
-| `light-apps/<appId>/data.sqlite` and immutable definitions | Keep the accepted per-app database: dynamic business DDL, schema/data rollback and app-local receipt/Audit must remain one independent recovery unit, not contaminate control-store DDL or locking. All writes use existing Workspace mutation admission. A Turn-to-app operation is an effect step, with exact app-local request receipt; inspect that receipt after a lost reply. No cross-database transaction or second app execution journal. | Quiesce admitted writers and produce a static SQLite snapshot plus exact definition closure. Hot full-Workspace capture uses the common cut below; independent online app snapshots alone do not prove a common cut. |
-| `mcp-data/<packageDataKey>/` | Retained opaque binding-owned application data, not catalog/control authority and not assumed to be immutable or transactional. Its MCP process owns byte writes. Core records effect intent/outcome, cannot invent its commit protocol, and must not retry an unknown mutation. Preserve data across rollback/uninstall while referenced. | Stop or pause every owning writer and obtain its supported flush/snapshot proof before copying. If a binding has no such proof, only a verified stopped/quiesced copy qualifies; no generic hot-consistency claim. Include its bytes and binding references, but re-admit execution at the destination. |
-| Managed Workspace `files/`, `data/`, `sources/`, Artifact/evidence and transcript metadata | Mutable Core-owned publication heads/records join Workspace SQL; admitted original/version payloads are immutable Storage objects. External source roots stay external; opaque application roots must be declared under the preceding binding rule. | Capture SQL and its local closure. Do not follow an external mount merely because its locator lies under a logical Workspace namespace. |
-| `runtime/`, staging, `indexes/`, logs and readable record projections | No mutable product/control authority. Runtime credentials remain disposable under their owner; indexes/projections rebuild. Logs are lossy diagnostics, not retained work. Unfinished staging is not accepted content. | May be excluded with declared coverage. Never restore them as authority or infer a completed publication from their presence. |
+| Existing owner | Target commit and complete-snapshot boundary |
+| --- | --- |
+| Notebook Git refs/pages/Source pointers | SQL head, expected-base check, Audit and receipt commit over synchronized immutable Git history; refs/pages become projections. Copy the referenced history, not a moving branch. Preserve Source identities, semantics and reference-may-miss behavior. |
+| Authored configuration, schemas, mounts | SQL admitted heads over exact immutable revision bytes; editable files are drafts. Full-directory capture labels and includes unadmitted drafts without activating them. Failed admission preserves the prior head. |
+| Skill/MCP/Plugin/Light App catalogs | SQL heads, pins, binding associations and receipts; installed snapshots remain immutable. Include retained historical versions. |
+| `light-apps/<appId>/data.sqlite` | Keep independent business DDL/schema-data rollback and app-local receipt/Audit authority. Turn writes are keyed effects resolved through app receipts, not another execution journal. Snapshot each database and exact definitions. |
+| `mcp-data/<packageDataKey>/` | Opaque binding-owned mutable business data; preserve referenced data across rollback/uninstall. Pause/stop every writer and obtain supported flush/snapshot proof; otherwise refuse hot capture. Unknown mutations cannot be retried. |
+| Managed `files/`, `data/`, `sources/`, Artifact/transcript metadata | Mutable Core heads/records move to SQL; payloads remain immutable. External mounts remain explicit external references, not implicit backup coverage. |
+| Runtime/staging/indexes/logs/projections | Disposable or diagnostic, never product authority; exclusion requires declared coverage. |
 
-The only additional canonical SQLite databases retained inside the Workspace are the accepted per-Light-App business databases. They are not queue, journal or metadata companions. Fewer databases would be preferable absent their existing independent schema/data recovery contract; changing that contract is outside this replacement. Their app-local receipt resolves an applied effect without replay, and their exact schema inventory remains mandatory.
+Only accepted per-Light-App business databases remain additional canonical Workspace databases because their independent schema/data recovery contract requires them.
 
-A full hot Workspace snapshot needs one logical cut across control SQL, every app database and any opaque mutable MCP roots. Reuse existing Workspace mutation admission: block new mutations, drain or explicitly settle cross-database effects, establish read snapshots for all databases and a supported frozen snapshot of each opaque root, then release the gate only after every snapshot is stable. Acquire snapshots with bounded resources; inability to freeze any admitted writer refuses the full hot snapshot rather than silently omit it. Read transactions may need a longer gate when the supported SQLite snapshot API cannot pin all databases at once. Other Workspaces continue serving. With no app/opaque roots, only the control-database snapshot and immutable closure are needed.
+### Snapshot Cut And Capture Protection
 
-A quiesced capture first settles executions and stops all app/MCP writers, then snapshots databases and copies stable opaque bytes plus immutable closure. It never copies a live SQLite/WAL pair as ordinary files. An unresolved cross-database effect prevents declaring an application-consistent cut; a separately labeled forensic copy is not a successful backup. These are layout and consistency preconditions for the [backup/move owner](20260704-workspace_backup_export_import.md), not new operation commands or a second backup coordinator.
+Before snapshots, the backup owner durably creates a Workspace SQL capture record excluding Storage GC and Notebook prune/repack for that Workspace.
+
+This specific capture obligation is new, not an existing hold implementation or generic service.
+
+Existing mutation admission blocks writes, settles cross-database effects and establishes one common control/app/opaque-root cut; release the gate only after all snapshots stabilize.
+
+Other Workspaces continue; an unfreezable writer refuses hot capture, and independent database copies do not prove consistency.
+
+Quiesced capture settles executions/stops writers; never file-copy live SQLite/WAL or declare unresolved effects application-consistent.
+
+The owner durably finishes after verifying transitive blob/history closure, or explicitly abandons; GC/prune/repack resumes only without active captures.
+
+Restart, unavailable authority, process loss and wall-clock passage cannot release protection; abandoned partial bundles cannot restore as complete.
 
 ## Minimal Engine
 
-The engine has executions, steps, signals and timers, driven by one NanoCore reconciler. These are implementation mechanisms attached to existing work identities, not new public Run or Task products. One worker execution belongs to one Turn; Task-owned operations carry their existing Task lineage. No new Goal structures or Goal progression rules are implied.
+One NanoCore reconciler advances executions, steps, existing signals and timers.
 
-| Primitive | Retained authority and reason | Lifecycle and failure |
+| Primitive | Retained contract |
+| --- | --- |
+| Execution | Existing work/operation identity, immutable scope/input identity, execution-definition version, current step, terminal cause and exclusion. Worker execution belongs to one Turn; Task lineage remains unchanged. |
+| Step | Exact invocation/actor, intent/outcome, fingerprint, permitting decision, authority/fences, references, retry declaration and deadline. Intent precedes effects; outcome and next transition commit together. |
+| Signal | Existing Pending Request identity, first valid decision and delivery linkage; same identity/content returns the result, changed content conflicts. Existing withdrawal/late-outcome rules apply. |
+| Timer | Existing deadline/next-due and recurring families; conditional consumption in the owning transaction, preserving due instants across restart. |
+
+Execution phases: `open`, `closing`, `closed`; step states: `intent`, `completed`, `failed`, `unknown`, `cancelled`; only intent is nonterminal, ended steps immutable/skipped.
+
+One release-authored execution-definition version and closed step kinds govern interpretation; unsupported required semantics fail closed, descriptive additions remain ignorable.
+
+Claims and outcomes condition on unchanged execution/current step; constraints enforce Thread/AgentSession single flight and effects recheck authority.
+
+Worker/network/user waits occur outside SQL.
+
+### Worker-Turn Transitions
+
+W is Workspace SQL, S is server SQL; these closed transitions apply normally and after restart.
+
+| Transition / owner | Effect identity and receipt; retry | Next step / exclusion proof |
 | --- | --- | --- |
-| Execution | One row keyed by existing work/operation identity, with immutable scope/input identity, owner version, current step, terminal cause, and single-flight exclusion. Replaces queue/attempt/checkpoint joins. | Admission commits it with the pending Turn and receipt. Only its owner advances it. Unknown kind/version or contradictory linkage quarantines the Workspace; never select a newer-looking record. |
-| Step | One row per exact step invocation, including OpenTelemetry (OTel) span fields and closed control fields described below. Removes effect-intent/result and product-publication gaps. | Intent commits before effects; result and next local transition commit together. An open step is visible. Ended steps are immutable and skipped, not executed again. |
-| Signal | Existing Pending Request identity, decision and delivery fields; internal wake facts use the owning execution row. Prevents lost human outcomes without another inbox family. | First valid decision wins. Duplicate identity/content returns its result; changed content conflicts. Withdrawal, stale authority and late outcomes follow the existing request owner. |
-| Timer | Step/execution deadline or next-due field; existing recurring definition and occurrence families for schedules. Prevents volatile-only waits. | The reconciler conditionally consumes due state in the owning transaction. Restart preserves the original due instant; duplicate wakes add no work. |
+| Admission / W | Request identity/hash; atomic Turn/source/execution/receipt. Identical input returns receipt; changed input conflicts. | Reservation; Thread/AgentSession exclusion. |
+| Reservation / W intent, S apply, W result | Reserve invocation key defined below; exact S receipt. Same-key inspection/apply only. | Held -> preparation; definite refusal -> due admission with fresh invocation; cancellation -> fencing/release. No Worker starts before W accepts held result. |
+| Preparation / W and receiver | Execution/attempt/step invocation, fingerprint/fences and retained receipt; retry only under receiver idempotence. | Consume receipts, then start; failure/cancellation -> terminal publication. Missing proof retains exclusion. |
+| Start / W and Harness | Exact command invocation/fingerprint; Harness receipt and Worker identity. Proven non-receipt permits delivery within deadline; ambiguous native start never permits replay. | Observation/collection, or terminal publication on definite failure/unknown. Dispatch alone proves neither completion nor absence. |
+| Observation/collection / W and receiver | Attempt/process/sequence/payload fingerprint; keyed collection receipt. Deduplicate identical content; reject divergent replay. | Observe or publish terminal result/prefix/coverage; never invent output. |
+| Terminal publication / W | Turn outcome, ordered Items, Task fact, `turn.reap`, evidence, receipt and next cleanup step commit together. Same request resolves uncertain commit. | Execution becomes closing; product terminality does not release physical or local exclusion. |
+| Fencing/release / W intent, S apply, W result | Exact reservation/binding identities, stop/absence and attachment proofs; idempotent release receipt/tombstone. | Close execution and release local exclusion only after physical no-writer/release proof or proved no-allocation. Otherwise remain closing and fenced. |
+| Cancellation / W | Commit first cause/revocation; cancel definite unstarted work, inspect possibly applied effects. | Terminal publication then fencing/release; late evidence cannot reopen work. |
+| Human wait / W | Pending Request and owner's terminal Turn outcome commit; no paused Turn or default response expiry. | Terminal publication and cleanup; decision delivery admits a later Turn under current authority and exclusion. |
 
-Execution control retains the existing closed phases `open`, `closing`, and `closed`: open work holds exclusion, closing revokes new execution while settling outcomes/fences, and closed releases exclusion only after the owning proof. Queue eligibility and waiting derive from its current step, not another execution status. Step control states are `intent`, `completed`, `failed`, `unknown`, and `cancelled`; only intent is nonterminal. One conditional transition ends a step. Ended steps are immutable; an allowed retry is a new step/span linked to its predecessor, with the same effect key where the receiver's deduplication contract requires it. A local transaction retry proved rolled back creates no committed step outcome.
+Lost replies leave intent open for bounded inspection, without dependency-driven deadline extension. Deadline, cancellation or proved Worker loss ends unproved effects `unknown`; definite non-execution permits failed/cancelled settlement.
 
-Step kinds and execution-definition versions are release-authored closed core values, not user-supplied workflows. Unsupported control versions or required semantics quarantine the owning scope. Descriptive additions remain ignorable under Contract Evolution. Execution/step retention follows the associated work, evidence and legal-hold owners; expiry never releases a physical fence or authorizes replay.
+Later inspection is linked cleanup evidence, never revision of the original outcome.
 
-Creation records the request hash, exact actor and required decision, immutable input references, scope and protocol lineage, execution definition version, and initial step before effects. Constraints enforce one in-flight worker Turn per Thread and AgentSession. Current authority is rechecked at each governed effect; a recorded allow is evidence, not an enduring grant.
+Native loss interrupts its Turn; continuation requires newly admitted work and proved native resume, with the existing new-linked-Thread rule on resume failure.
 
-A normal iteration reads committed state, claims the exact next transition within the single writer, performs bounded work outside a transaction, then commits the result conditionally against the unchanged owner/step. Restart uses this same iteration. There is no separate boot classifier deciding which workflow to run. An interrupted local pre-effect step resumes from its retained state; no native agent code is replayed. Process-local wakeups accelerate discovery but do not carry authority. Missing dependencies leave the same owner inspectable and blocked; they never fabricate empty inputs.
-
-Cancellation first commits revocation and the first terminal cause. An already-dispatched effect remains accounted for until inspected or fenced. Late results may supply evidence but cannot reopen completed work, reverse cancellation, or start another Turn. Record later inspection in a new linked step or the existing evidence owner; do not mutate an ended span to pretend the result was known earlier. A known product outcome with incomplete cleanup keeps the resource fence; cleanup does not rewrite that outcome. A terminal transaction publishes the Turn result, ordered Items, evidence references, receipt and local exclusion changes together. Cross-scope resource release remains a separate effect.
-
-Human waiting is durable through the existing Pending Request. It does not keep a native Worker running or add a paused Turn state. A later outcome enters a later Turn under current admission, including successor native-session resume when required. There is no default human-response expiry. Recurring timers preserve the existing cadence, overlap, missed-occurrence and admission-only retry semantics; an accepted occurrence never retries a failed or unknown execution.
+Recurring cadence, overlap, missed-occurrence and admission-only retry semantics remain unchanged; accepted failed/unknown execution is not retried as an occurrence.
 
 ## Step Journal And Span Model
 
-The SQLite journal uses the OpenTelemetry span data model as its field model. It is not an SDK span buffer or an OTLP file. An intent must be visible while the step is open and must commit atomically with control state; ordinary SDK export of ended spans cannot supply either property.
+The journal uses the OpenTelemetry span model, not an SDK buffer; fields contain bounded diagnostics, never prompts, tool arguments, output bodies, credentials or private reasoning.
 
-| Field group | Stored meaning and constraints |
+| Field group | Required representation |
 | --- | --- |
-| Correlation | One `traceId` per execution, 16 bytes encoded as 32 lowercase hexadecimal digits; one `spanId` per step, 8 bytes encoded as 16 lowercase hexadecimal digits; neither ID may be all zero. Optional parent span ID has the same span-ID width. W3C identities are correlation only. |
-| Span description | Name, OTel span kind, integer Unix-nanosecond start time, nullable end time while open, status code (`UNSET`, `OK`, `ERROR`) and description under OTel status rules. Store integer nanoseconds without JavaScript floating-point loss. |
-| Attributes | Typed OTel AnyValue attributes, using applicable semantic-convention keys, including GenAI keys, and `openkit.*` for execution-specific facts. Pin the semantic-convention schema URL. Do not stringify typed values or use attribute keys as control enums. |
-| Events and links | Ordered timestamped events with typed attributes; links with trace/span IDs and permitted trace flags/state; preserve optional fields and dropped-count fields if present. New journal writes must not silently truncate required facts. |
-| Export envelope | Stable instrumentation-scope and resource descriptors, schema URLs and flags needed to render the same OTLP span; descriptors may be shared immutable content. |
-| Control, not telemetry | Existing work/attempt identity, step kind/version, intent state, input/output content references, request fingerprint, authority references, retry declaration, absolute deadline, and relevant Host/Worker fences. These decide execution; trace IDs never do. |
+| Correlation | Execution trace: 16 bytes/32 lowercase hexadecimal digits; root/step spans: 8 bytes/16 digits; optional parent has span width. Nonzero IDs confer no authority. |
+| Description | Name, span kind, integer Unix-nanosecond start, nullable end, OTel `UNSET`/`OK`/`ERROR` status and description; no floating-point timestamp loss. |
+| Attributes | Typed AnyValue preserves double versus int and exact int64; applicable semantic conventions/GenAI keys, `openkit.*`, pinned schema URL; no stringification or attribute-controlled execution. |
+| Events/links | Ordered timestamped typed events, trace/span links, permitted flags/state, optional fields and dropped counts; no silent loss of required facts. |
+| Envelope | Stable instrumentation scope, resource descriptors, schema URLs and flags; immutable descriptor sharing is permitted. |
+| Separate control | Work/attempt identity, step kind, input/output references, fingerprint, authority, retry permission, deadline and physical fences. |
 
-The journal is the sole exception to the earlier prohibition on durable trace state in canonical records. Persist its correlation fields, events and links here, not in Thread, Turn, Audit, AEP, transport bodies or an additional trace ledger. The [decision](../decisions/20261019-durable_execution_and_control_store.md) narrows the earlier [NanoHost trace decision](../decisions/20261016-nanohost_trace_headers_and_startup_link.md) only for this journal. It does not revive a process-lifetime root or make an incoming trace authoritative.
+Projection must preserve stored types, values, counts and metadata exactly; the telemetry owner chooses the typed OTLP/JSON path, not a narrowing SDK-span conversion.
 
-Each ended step projects losslessly to exactly one OTLP span: all stored span-model fields retain their identity, type, order and values. Control columns are separate and are not secretly discarded span fields. Parent/child structure follows actual causality; links represent distinct related executions. An open step has no end time and is shown only as open in a journal view. Export begins only after its terminal transaction commits. `unknown` is an execution outcome, not a fourth OTel status; an interrupted unknown step ends with `ERROR` and a controlled description while its uncertainty remains in control facts and fixed `openkit.*` attributes.
+Open roots/steps remain inspectable but unexported; unknown ends with `ERROR`, controlled description and uncertainty attributes.
 
-One span representation does not promise exactly-once exporter delivery. A lossy exporter may drop it or deliver the same span identity again. Export failure cannot roll back, block or retry product work. Journal-backed inspection remains complete under its retention owner even when no telemetry was delivered. Missing native timing is not reconstructed as measured timing. Restart may end an orphaned step at the detection time with a fixed observation event, not invent its physical completion time.
+Export may drop/duplicate spans, never delay, roll back or retry work.
 
-Span attributes/events contain bounded diagnostic facts, not prompts, tool arguments, credentials, output bodies or private reasoning. Full retained content belongs in the existing work/evidence records referenced by control columns. The [Sandbox boundary](../decisions/20261015-sandbox_telemetry_and_public_gateway_boundary.md) still forbids an in-Sandbox SDK, OTLP exporter, new telemetry egress or credential. The narrow amendment recorded in the [2026-10-19 engineer decision](../decisions/20261019-durable_execution_and_control_store.md) permits Worker-reported phase markers through existing worker control. The [telemetry owner](20260731-operational_telemetry_standardization.md) supplies the peer amendment and owns its allowlist and limits.
+Orphan detection is observed time, not physical completion.
 
-Before any journal write, Core validates the marker's release-defined enum name, timestamp and optional fixed-enum outcome/error code, its exact Turn/step association, per-Turn count cap and byte cap. Check accumulated limits and append atomically so concurrent delivery cannot exceed them. Clamp its timestamp into the Core-observed parent window, with receipt time as the upper bound while the step is open. Reject unknown names, arbitrary text, overflow and mismatched or ended-step input without changing control state. Accepted markers are bounded span events with `openkit.origin=worker` and `openkit.verified=false`. Their claimed outcome is only event data: it NEVER changes step status, actual outcome, retry, recovery, deadline or fences. Do not append late markers to an ended span. Marker loss/refusal is diagnostic, not a failed work-data capture or a reason to rerun work.
+Journal retention follows work/evidence/holds, not diagnostic-file limits; expiry never releases fences.
 
-Core emits the resulting projections. Native work-data capture remains distinct from phase markers and telemetry export. The telemetry owner defines sinks, views and delivery, not journal durability.
+This journal alone narrows the [no-durable-trace decision](../decisions/20261016-nanohost_trace_headers_and_startup_link.md); other canonical records and transport bodies gain no trace fields.
+
+### Journal-To-Lifecycle Mapping
+
+Admission persists the root span model/identity/start on the execution row; restart preserves it, cleanup/release closure ends it without a step-duration sample. Steps use that trace and causal parent/root; distinct executions link rather than reparent.
+
+Preparation follows resolve -> check -> materialize -> open/inspect; actual invocations map to the telemetry owner's ten stages:
+
+| Step kind | Lifecycle stage |
+| --- | --- |
+| Admit, queue/capacity wait | Admission/queue |
+| Resolve setup | Preparation |
+| Reserve, validate setup | Validation |
+| Materialize | Materialization |
+| Open/inspect session | Session open/inspect |
+| Deliver start | turn.start delivery |
+| Observe native execution | Native run |
+| Record this Turn's human wait | Pending request wait |
+| Collect evidence | Collection |
+| Consume receipt, inspect cleanup, fence, release | Cleanup/release |
+
+Local terminal/cancellation commits inherit the settling step's stage; they create no synthetic stage or sample.
+
+Each ended step supplies one span/sample; label linked retries separately, report invalid durations, never resample repeated reads/exports.
+
+Attach Host summaries before step end; late observations use linked inspection/cleanup, never ended spans.
+
+### Unverified Worker Markers
+
+Use the [telemetry owner's closed marker schema](20260731-operational_telemetry_standardization.md): phase, environment preflight, native exit and shim error code; do not define another variant grammar.
+
+Bind the exact Core-selected parent, validate the closed schema/budgets, and atomically check accumulated limits with append.
+
+Clamp to the observed parent/receipt window; reject overflow, wrong ownership and ended-step input.
+
+At admission, set `openkit.report.origin=worker` and boolean `openkit.report.verified=false`; marker events never decide outcome, retry, recovery, deadline or fences.
+
+Marker loss is diagnostic, not work-data capture failure; no Sandbox SDK, OTLP exporter, new egress or credential is admitted.
 
 ## Effect And Deadline Semantics
 
-For every effect: commit exact intent and permitting decision, perform under current authority, then commit observed outcome. No network, Worker, Storage byte transfer or user wait occurs inside an SQLite transaction. A crash after intent means the effect may have happened. Inspect the same effect identity or accept a proved original result. An unknown external effect is never automatically executed again. A safe declaration alone does not prove non-execution or a remote deduplication contract. Inspection of an existing keyed receipt is result recovery, not a new invocation of the external effect.
+Retry needs the retained declaration, actual receiver idempotence/non-execution proof, current authority and remaining allowance; changed declarations may revoke permission, never upgrade unsafe intent.
 
-Retry requires both the stored declaration and the current owner to permit idempotence, valid current authority, and remaining allowance. A changed declaration may revoke retry, never upgrade an unsafe recorded intent. A keyed server-local apply can return its already committed result without repeating the effect. If neither receipt nor non-execution can be proved, preserve unknown and fence the affected resources. Expired requests and late transport responses cannot revive authority.
+Never blindly redeliver unknown effects; missing dependencies preserve fences.
 
-Native agent execution is not replayable. If the exact Worker is lost, close that step as unknown, interrupt its Turn truthfully, preserve collected work, and finish cleanup through ordinary steps. Continuation is a newly admitted Turn with a proved native resume, not replay of old code. Failed native resume follows the existing new-linked-Thread rule. Exact survivor adoption after Core restart is an ablation candidate, not assumed removed without its named proof.
+One deadline covers operation slot wait/delivery/execution/collection/retries; durable queue residence and human response retain their semantics.
 
-One operation deadline covers queue-slot waiting within that operation, delivery, execution allowance, result collection and retries. Durable queue residence and a human Pending Request retain their own owner semantics; they do not silently consume an unstarted native-operation budget or acquire a new expiry. A child deadline is no later than its parent's, and its local timeout is the minimum of the remaining allowance and any justified shorter bound. Heartbeats do not renew the parent deadline.
+Persist absolute expiry once; use monotonic remaining time locally, conservatively clamped after restart or clock uncertainty.
 
-Persist the absolute expiry once. Within a process use a monotonic remaining-budget calculation; after restart derive remaining time from the recorded expiry, conservatively refusing when clock uncertainty could extend authority. Never transport a raw monotonic timestamp between machines. Transport an authenticated absolute deadline with a bounded remaining allowance and clamp both to the receiver's already admitted authority; account for transit and clock uncertainty rather than starting a fresh allowance on receipt. Cleanup retains a separate bounded attempt and can remain unresolved after execution authority expires.
+Children cannot extend parents; heartbeats cannot renew authority; cleanup has separate bounded attempts without implied successful release.
 
-Execution context carries both the deadline and trace correlation. Use optional W3C `traceparent`/`tracestate` NanoHost headers, not body fields. The new operation-deadline header is execution control, not telemetry: where the operation requires a deadline, missing, invalid or extending carriage refuses the effect. Its authenticated value is checked against the stored operation, not trusted as a grant. Header carriage leaves exact JSON/file-body identity unchanged and supports both body kinds. Worker control receives the same bound through its authenticated operation context, never an in-Sandbox OTLP path. No carrier may extend the recorded deadline or create a second durable trace owner.
+Authenticate absolute expiry/remaining allowance, accounting for transit; never transport monotonic timestamps.
+
+Optional W3C headers stay diagnostic; required deadline headers bind stored operations without changing JSON/file fingerprints, refusing missing/invalid/extending carriage.
 
 ## Global Dispatch And Physical Capacity
 
-Workspace queues remain in their Workspace databases. A process-local ready index holds eligible execution identities and earliest due times; it stores no authoritative payload or duplicate status. Boot opens each registered Workspace database once, verifies that scope, loads bounded pages of queued/open/due identities and closes idle handles. Admission, cancellation, signal and timer commits update the index only after commit. A failed in-process index update invalidates that Workspace's index and rebuilds it before further dispatch; it never acknowledges an uncommitted candidate. Crash rebuilds the whole index from the owning databases. Ordinary dispatch does not scan every database.
+The in-memory index holds eligible identities/earliest due times; boot pages server and validated Workspace open/due executions.
 
-The index uses the scheduler's existing queue order and fairness, with a stable identity tie-break, rather than introducing a new scheduling policy. Before every selection, reread and conditionally claim the execution from its Workspace database. Stale index entries are removed; duplicate entries cannot create duplicate execution. A quarantined Workspace supplies no candidates. Server capacity changes wake blocked candidates through the in-memory index, not another persistent queue. Future due work is represented by indexed timer deadlines, not one open connection per timer.
+Both scopes' commits wake the same index/reconciler, including server-only image settlement.
 
-Use a bounded database-handle cache with a current default of 32 handles and bounded boot-open concurrency of 4, both implementation defaults rather than retained fields. Pin a handle only during a bounded local operation/transaction; never across a Worker call or durable wait. Evict only unpinned idle handles. When all handles are busy, apply bounded backpressure within the caller's deadline rather than exceed the limit. Scope/version validation on reopen precedes reads and writes. Handle eviction does not cancel execution or lose index entries.
+Index-update failure invalidates that scope's index and rebuilds it before dispatch; every selection rereads and conditionally claims its owning row.
 
-Global physical reservations live in the server database, keyed by the immutable execution/attempt identity and Workspace identity. The row owns requested resource quantities, selected physical boundary, exact request fingerprint, and held/released disposition with fence evidence. It has no Turn outcome or Workspace current-step column. Allocation checks and capacity debit commit in one server transaction. Active-execution capacity derives from held reservations, not an additional mutable counter; resident Sandbox/Harness/session capacity keeps its distinct physical meaning. Same-key/same-input apply returns the same result; changed input conflicts. No-effect capacity refusal changes no usage. Release is idempotent and retains enough same-key terminal identity to reject late reallocation; identity retention follows the associated execution and effect replay horizon.
+Preserve ordering/fairness with identity ties; reject stale/duplicate candidates, wake on capacity changes, and avoid all-database dispatch scans.
 
-| Last committed fact | Normal-path continuation |
+Resource tests select bounded handle/boot concurrency limits; deadline-bound backpressure cannot exceed them.
+
+Pin only during local operations; eviction preserves work, reopen validates scope/version.
+
+### Reservation Identity And Commit Gaps
+
+A reserve invocation key is `(Workspace, execution, attempt, reservation-step invocation)` with immutable fingerprint and absolute admission deadline.
+
+Its server row retains requested quantities, selected physical boundary, exact result and `held`, `refused` or `released` disposition, including cancellation tombstones.
+
+Capacity debit and held result commit together; active-execution capacity derives from held rows, distinct from resident physical capacity.
+
+Same key/input returns the exact result; changed input conflicts.
+
+| Committed situation | Required continuation |
 | --- | --- |
-| Workspace reserve intent; server has no reservation | Apply the same key after current admission. A proved absence permits first application; unavailable server storage remains blocked, not absent. |
-| Server reservation held; Workspace outcome absent | Query the same key and commit its result locally. Do not debit again, allocate a different resource, or run the Worker before local acceptance. |
-| Workspace cancels before reserve reply | Retain the reserve identity and journal release/inspection. A late reserve result cannot start execution; if held, release only through its owner. |
-| Workspace release intent; server still held | Apply release under exact cleanup/absence proof. Unproved writer absence retains capacity even if the Turn is terminal. |
-| Server released; Workspace acknowledgement absent | Return the retained released result and finish the local step. No second decrement and no resurrection by a delayed reserve. |
-| Workspace unavailable; server reservation held | Exclude the reservation from free capacity; inspect or fence through the server's physical owner. Do not infer release from a missing database. Preserve Workspace diagnosis and unknown work outcome. |
-| Server authority unreadable | Refuse server boot/admission; Workspace records cannot reconstruct global capacity or live physical ownership. |
+| W intent; no S row | Current, unexpired admission may apply same key; unavailable storage is not absence. |
+| S held; W result absent | Inspect same key, commit W result; no second allocation or premature Worker start. |
+| Definite no-capacity refusal | Retain refusal without debit. Later eligible admission uses a fresh invocation identity; never mutate/replay the refusal into success. |
+| Cancel/release; S key absent | Atomically install released tombstone; delayed reserve must reject it. |
+| Cancel; S held | Keep exact identity; prevent start and release only with required physical proof. |
+| S released; W acknowledgement absent | Return retained terminal result; no double decrement or resurrection. |
+| W unavailable; S held | Preserve capacity exclusion until physical inspection/fencing proves release. |
+| S authority unreadable | Refuse server boot/admission; never reconstruct capacity from Workspace projections. |
 
-The same intent/apply/outcome rule covers other cross-scope effects, including current server authorization and configuration operations. Server physical bindings and Harness command receipts remain authoritative for their own effects; a Workspace step references their exact results, not a copied physical lifecycle. Fences travel with the effect and the endpoint rejects stale holders. A fresh physical Epoch proves predecessor absence under its contract, never success of prior work.
+Retain terminal identity until the original invocation cannot be admitted, at least through its deadline, with supported snapshot/restore preserving that protection.
+
+A restore lacking that identity must refuse pre-restore invocations, not reopen admission for them.
+
+### Physical Receipt Consumption
+
+Every physical receiver, including Harness, retains its keyed result until the Workspace outcome transaction durably schedules consumption acknowledgement, retried by the reconciler after crashes.
+
+The receiver conditionally accepts the exact consumer identity/receipt acknowledgement; only then may a successor retire the result.
+
+Unavailable consumers block retirement and competing dispatch rather than discard evidence; this uses existing receiver receipts, not another ledger.
+
+Receivers reject stale process/connection/Epoch/attachment identities; absence proof never establishes prior work success.
+
+### Cross-Workspace Activation
+
+Activation A->B is keyed: A commits intent; B atomically commits admission/execution, source evidence and receipt; A records the result.
+
+B's eligibility depends only on B's local tuple, never scanning A's receipt or waiting for A's outcome commit.
+
+Changed input under the same key conflicts; duplicates return B's result and first admission checks current target authority.
+
+Server configuration/physical changes remain separate keyed effects.
 
 ## Failure Scope And Boot
 
-The storage-neutral [Fault Tolerance rule](../core/fault-tolerance.md) and [Bootstrap contract](20260704-nanocore_bootstrap_readiness.md) apply before this redesign. The replacement makes one Workspace database open/validation the quarantine unit. Unknown required semantics, unreadable authority, failed migration, missing expected content or contradictory local lineage refuse that Workspace only. Keep bytes in place, expose an authorized recovery-required diagnosis, and block its reads that cannot be trusted, writes, dispatch and timer effects. Do not initialize an empty replacement or serve projections as truth. Readable unaffected history remains available where its owner can validate it.
+[Owning-scope failure](../core/fault-tolerance.md) applies before cutover: unreadable/unsupported Workspace authority, missing required content or contradictory lineage quarantines that Workspace, preserving bytes and blocking unsafe operations.
 
-Server configuration, users, server Knowledge, global registry/ownership and Host/capacity failures refuse the whole boot when authoritative integrity cannot be established. User-private failures block that user's dependent operations unless shared server authority is affected. A rebuildable index failure degrades dependent reads; it is not canonical data loss. Cross-scope symlink, writer or containment uncertainty is evaluated at its actual owner and can justify a wider fence, never cross-scope disclosure.
+Expose authorized diagnosis; never initialize empty replacement authority or trust projections.
 
-Boot first establishes the server lock and trustworthy server foundations, then validates each Workspace and builds the ready index with bounded handles. It starts one ordinary listener and the ordinary reconciler. No pre-listen physical cleanup waits for the very transport that listener must admit. Quarantine excludes only the affected scope; held server reservations remain held until exact fence/release proof. A successful boot does not certify every Workspace as usable. Restart does not reset deadlines, rerun ended steps or adopt an unproved Worker.
+Server/shared-authority failure refuses boot; user-private failure blocks dependent operations; rebuildable-index failure is not canonical loss.
 
-### NanoHost Restart Backoff
+Containment/writer uncertainty fences its actual affected scope; healthy Workspaces remain usable.
 
-[NanoHost Core-Outage Restart Backoff](20260802-nanohost_runtime_and_transport.md#core-outage-restart-backoff) owns the proposed stock systemd defaults, older-version fixed-delay fallback, preserved non-restartable exit semantics and reset precondition. The engine adds no retry daemon or durable restart counter. A restart delay is neither an execution deadline nor proof of cleanup; bounded restart frequency does not promise bounded outage duration.
+Establish server lock/foundations, validate scopes, build the index, then start the ordinary listener/reconciler without listener-dependent pre-listen cleanup.
+
+[NanoHost backoff](20260802-nanohost_runtime_and_transport.md#core-outage-restart-backoff) remains stock systemd policy, not another retry daemon or deadline.
 
 ## Portability, Snapshot Closure And Garbage Collection
 
-A Workspace directory contains its canonical control database, all locally retained immutable content reachable from its records, local Knowledge history/originals and schema revisions, plus optional disposable projections/indexes. Local canonical locators must resolve inside that directory through the existing Storage owner. References outside it must be explicit and typed: Vault references, server users/membership and configuration origin, server Knowledge shares, external mounts and repositories, physical Host bindings and retained Worker volumes. A digest does not make an external reference locally present.
+Workspace databases and all locally retained immutable closure travel together, independently readable without a source-server join.
 
-Workspace-owned restrictions, history, AEP/context provenance and captured evidence travel. Server membership, grants, credentials and live physical authority do not become destination authority. A captured server configuration revision or server Knowledge excerpt already admitted as Workspace work evidence travels as evidence under its retention owner; it is not the server's live head or a new access grant. External reference-only content remains unavailable when the destination cannot authorize and resolve it. Retained Worker volumes require separately declared transfer/backup coverage; a portable native-session reference alone does not transfer those bytes.
+Vault, server users/membership/configuration origin, server Knowledge shares, mounts/repositories, Host bindings and Worker volumes remain explicit external references with declared coverage.
 
-Before a move, settle in-flight executions, pending physical effects and release/fence obligations. Durable human decisions and their history may travel, but unconsumed executable authority cannot be carried as a live destination grant. The separate move owner decides destination identity and authorization admission; this layout neither remints product identities nor defines backup/restore commands. It must be possible to validate the Workspace independently without joining a source server database. Historical external IDs remain provenance, not foreign keys required to read local history.
+Historical grants and server snapshots are evidence, not destination authority; unavailable external references remain unavailable.
 
-A hot backup is consistent if the following ordering holds: protect the selected snapshot's content closure, create a consistent static SQLite snapshot, then copy and verify every locally retained immutable object it references before declaring the backup complete. Do not synchronize a live database file and WAL independently. Snapshot protection must begin before garbage collection can remove any member read by that snapshot and cover transitive manifests, Notebook history, prompts, definitions and message parts. Concurrent writers can add new objects not in the snapshot; those objects are unnecessary for that backup.
+Move requires settled effects and fencing; durable human history travels, unconsumed executable authority does not.
 
-The backup/move owner chooses the operation protocol and retention of its existing snapshot holds; this spec requires the invariant, not a new hold family. Crashed or abandoned copies cannot release protection merely because a process vanished or a wall-clock lease expired; either the completed copy is verified or the owner explicitly abandons it before protected content becomes collectible. An offline filesystem sync of the completed snapshot and its closure needs no source-server database. Restore validates that closure before admission and never treats a partial copy as a new empty Workspace.
+Restore verifies complete closure before admission and preserves active capture protection.
 
-Garbage collection uses the existing Storage/content owners: roots are live database references, retained history, legal holds, and protected snapshots. Unreferenced pre-commit objects can be collected only when no in-progress publisher or protected snapshot can still reference them. Serialize root publication against mark/sweep or use an equivalent owner-proved epoch barrier; do not delete a staged object racing a reference commit. Reference-only sources do not become GC-owned copies. Quarantine is not permission to sweep unreadable roots. Failed collection preserves bytes and reports pressure; it never evicts retained work silently.
+Outside capture, GC roots include live references, retained history and legal holds; serialize publication against sweep so pre-commit objects cannot race accepted references.
 
-The engineer's later 2026-10-19 confirmation requires minimal Workspace backup, restore and move operations for `v0.1.0`, replacing the earlier permission to defer those operations. Their separate owner defines the minimal commands and acceptance. This layout must supply complete per-Workspace database snapshots and immutable-content closure, including the classified Notebook, app and MCP-data boundaries; neither operations nor enabling layout may be deferred.
+Quarantine forbids sweeping unreadable roots; failed GC preserves bytes and reports pressure.
 
 ## Retained Work Data And Cost
 
-[Work Data Retention](20260921-work_data_retention_format.md) owns what is collected, its audience, coverage and use constraints. Retention completeness supports later extraction, comparison, improvement, scoring, evaluation and training without predicting which use will occur. Later processing, including anonymization, occurs at use time. Its separate, engineer-approved amendment makes Capture Coverage default on, retains model I/O losslessly through message-blob references, stores system prompts/tool definitions once per digest, and retains native transcripts verbatim by default. All admitted Workspace capture lives in its immutable Storage roots and travels in snapshot closure. This mechanism supplies placement and cost, not a second retention-record schema or defaults owner. Journal control references those records by their existing ID/digest. Historical authority never becomes executable, and existing credential and capture admission remains binding.
+Retention owns records, privacy exclusions and default-on capture; steps reference IDs/digests.
 
-| Retention slot | Scope database | Existing Storage immutable content |
-| --- | --- | --- |
-| User/agent instructions, Items, Task/Turn lineage and human interventions | Ordered records, actor/causation, exact pending decisions and delivery linkage. | Original admitted attachments and message parts. |
-| Model request/response and requested sampling | Observation identity, coverage, provider/physical model/snapshot, actual semantic boundary, sampling and request/response root references. | Lossless admitted semantic messages/parts; prompt, tool-definition and response-event manifests. |
-| Tool call/result and native runtime output | Existing retention records hold correlation, observer, definition reference, outcome, sequence and coverage; journal steps reference their IDs/digests. | Admitted arguments/results and verbatim native transcripts under the default-on retention amendment, stored in Workspace immutable blobs; native volumes alone are not collection. |
-| Environment and delivered context | AEP/package identity, prompt digest/reference, Agent/Skill/MCP versions, image/resources, accepted delivery and Task-instance pairing. | Pinned AEP, context/delivery manifests and independently retained inputs; external references may still miss. |
-| Decisions, permission, audit, usage and cost | Existing authoritative families; journal references rather than duplicate ledgers. | Existing bounded evidence bodies where admitted. |
-| Files, Artifacts, changes and acceptance | Version/review/collection lineage and exact outcome labels. | Existing Artifact versions, collected work, test/build results and evidence. |
-| Evaluation dimensions | Existing candidate sets, review/judge references, model and rubric version, configuration identity and coverage. | Retained rubric/check/input versions when their owners require them; no Evaluation Harness activation. |
-| Lifecycle/process signals | Step start/end, status, actual outcome, failed check, retry/fence facts and timing basis; retained OTel fields. | Shared immutable descriptors only when needed; no OTLP file authority. |
-| Missing, failed, unsupported or disabled capture | Bound policy, structural observations, expected/publication references, `turn.reap` and unavailability facts. | Accepted prefixes remain; absence never becomes an empty successful body. |
+| Retained slot | Workspace placement |
+| --- | --- |
+| Instructions, Items, Task/Turn and human interventions | SQL identity/order/decision/delivery; immutable messages and attachments. |
+| Model I/O, requested sampling | SQL observer/model/snapshot/coverage and immutable ordered request/response roots. |
+| Tool/native work | SQL correlation/outcome/coverage; admitted arguments/results and verbatim native transcripts in immutable blobs. |
+| Environment/context | AEP/package/configuration/delivery/resource identities and retained inputs, prompts, Agent/Skill/MCP definitions. |
+| Audit, permissions, usage/cost | Existing domain records, not duplicate journal ledgers. |
+| Artifacts, changes, acceptance/evaluation | Version/review/outcome and candidate/rubric/model identities; retained outputs/check evidence, without activating Evaluation Harness. |
+| Lifecycle and absent capture | Step timings/outcomes, failed checks, `turn.reap`, expected/unpublished and unavailable facts. |
 
-Full capture stores request/response content as references to deduplicated message and part blobs. These are immutable Storage representations of retention-owned records, not new independently mutable families; the retention owner defines their format and version. Store a system prompt or tool definition once per exact digest, then reference it from requests. Represent ordered messages with immutable, structurally shared sequence manifests: a request points to its sequence root, not another serialization of the whole conversation. Appending creates only new messages/parts and the changed manifest path. Edits and compaction create new roots without mutating historical requests. Preserve order, role, tool correlation, original admitted string content and the exact distinction between omitted and present values.
+Share lossless messages/parts, prompts and tool definitions by digest within authorized scope; preserve order, role, tool correlation and omitted-versus-present values.
 
-Streaming capture writes immutable bounded chunks once and commits ordered publication references after verification; it does not rewrite the complete growing response for each token. A prefix is explicitly incomplete until terminal coverage is committed. Admission scans and restricted-content rules remain with the capture owner. Do not persist transport credentials or wire bodies merely to fill a semantic capture slot.
+Immutable request roots share content rather than repeatedly storing conversation prefixes; the retention owner chooses representation.
 
-Cost is unique retained content bytes plus changed sequence-manifest nodes, per-request metadata and journal rows, not repeated conversation-prefix bytes. For append-only conversations, payload storage grows with newly admitted bytes; persistent sequence updates cost bounded chunk metadata or logarithmic path nodes per changed message. Hashing and temporary buffers remain bounded. Identical bytes deduplicate only within authorized retention scope; legal holds and all referring records keep them live. Retention expiry can remove bodies without rewriting historical identities, leaving truthful unavailable references. No numerical compression ratio is promised.
+Stream bounded chunks with verified ordered references; incomplete prefixes remain incomplete.
 
-### Current Capture Gaps
+Cost follows unique retained bytes plus references/journal metadata; expiry leaves truthful unavailable references and respects holds.
 
-The following are loss boundaries to address with the retention owner, not claims that a new database recovers absent history. The current implementation projection in the retention spec is older than this source baseline and cannot alone establish current coverage.
-
-| Current boundary | Permanently absent after source loss | Proposed location, without changing default here |
-| --- | --- | --- |
-| Baseline Capture Coverage defaults off for full I/O | Full model request/response and switched runtime bodies were never retained; structural metadata cannot recreate them. | Workspace message/part blobs under the separately owned default-on amendment; historical absence stays absent. |
-| System prompt retained as digest only | Exact prompt bytes cannot be recovered from its digest or today's setup. | One admitted immutable prompt object per digest, referenced by the exact request. |
-| Gateway CapabilityCall metadata-only records | Metadata, counts and cost do not reconstruct model bodies; a separate enabled observation producer is needed. | Existing observation/evidence content references, never raw bytes added to CapabilityCall. |
-| Native transcripts/tool I/O retained only inside native runtimes or opaque volumes | Unstreamed details can disappear or become unreadable; whole-volume retention is not verified Core collection. | Incremental admitted runtime observations and transcript/tool parts with explicit collector coverage. |
-| Wire digest, context eviction and layer-3 runtime context manifest marked unsupported | No producer supplies these slots; neither journal timing nor telemetry fills them. | Preserve unsupported labels until the owning producer exists. |
-| Workspace-attributed Gateway calls without Thread, or calls without lineage/database | Existing CapabilityCall plus declared gap, or fully blind call, respectively. | No invented Thread or observation owner; retention owner must decide any future producer. |
-| Collector crash, overflow, rejected body or missing source events | Only the committed prefix and failure facts survive. | Expected-but-unpublished and unavailable facts; never fabricate a successful capture. |
+| Current capture gap | Required receiver |
+| --- | --- |
+| Default-off full I/O | Default-on peer amendment; absent history stays absent. |
+| Digest-only prompts | Retain exact admitted bytes once per digest. |
+| CapabilityCall metadata only | Enabled observation producer; counts cannot reconstruct bodies. |
+| Native-only transcripts/volumes | Verbatim incremental collector with explicit coverage; volumes alone are not collection. |
+| Unsupported wire digest/context eviction/runtime context manifests | Preserve unsupported labels until a producer exists. |
+| Gateway without Thread or lineage/database | Explicit gap; never invent an observation owner. |
+| Crash, overflow, rejection, missing events | Preserve committed prefixes/failure facts, never successful empty capture. |
 
 ## Replacement Inventory
 
-This is an implementation projection against `fc0f43545`, not a license to delete unrelated product records. Paths below are relative to `apps/nanocore/src/` unless qualified. A listed module loses only the named responsibility when it also contains preserved domain logic. Every removal lands with its replacement; there is no dual-write period.
+Paths use `apps/nanocore/src/`; preserve domain logic.
 
-| Current family/table or path | Replacement and deletion |
+| Existing authority/path | Replacement / deletion |
 | --- | --- |
-| `workspace-record.json`, `thread.json`, `turn.json`, AgentSession `session.json`, canonical `items.jsonl`; `lib/store.ts` persistence and `storage/workspace-file-records.ts` mutable writers | Same product families become Workspace SQL records and ordered Item revisions. Delete file-as-truth reads, whole-Workspace rewrites, cache-before-persist and record-by-record publication repair; optional files are projections. |
-| Artifact/version metadata, reviews, Knowledge proposals/reviews, configuration heads and other scope-owned mutable file metadata | Move mutable heads/records to the owning database; retain immutable originals/version bytes and existing identities. Delete mutable-file acknowledgement as a control commit. |
-| Notebook published Git ref and related cross-file Audit/receipt repair in `knowledge/notebook-publication.ts` and `knowledge/scoped-notebook-publication.ts` | Database head plus local receipt/Audit commit over synchronized immutable Git content. Delete Git-ref-as-commit-point and separate publication-repair authority, not Notebook history or semantics. |
-| `scheduler_admission_entries`; `scheduler-records.ts`, `runtime/scheduler-dispatch-loop.ts` | Execution rows and rebuilt ready index. Delete server-global durable queue and incomplete-source publication predicates. |
-| `scheduler_execution_attempts`; `runtime/execution-attempt-records.ts`, `runtime/nanohost-attempt-records.ts` | Execution/step control attributes retain attempt identity, exclusion, deadlines, authority and necessary fences. Delete the separate attempt lifecycle table and its duplicate phase advancement. |
-| `worker_turn_checkpoints`; `runtime/worker-checkpoints.ts`, `runtime/worker-turn-loop.ts` | Step intent/outcome and atomic product records. Delete checkpoint family, stage mirroring and checkpoint-versus-Turn repair joins. |
-| `worker_backend_sessions`; `runtime/worker-backend-sessions.ts` | Preparation/cleanup steps reference preserved server physical bindings. Delete its parallel lifecycle, `workspace_handoff_state` and cross-database handoff marker. |
-| `worker_control_records`, `worker_control_sequence_fingerprints`; `runtime/worker-control-records.ts` | Accepted control payloads/fingerprints join existing observation records; execution sequence watermarks and step final evidence commit with them. Delete server receipt versus Workspace observation repair; preserve exact replay/conflict checks. |
-| `worker_image_settlements`; `runtime/worker-image-settlements.ts` | Server-scoped preparation execution/step outcome under the same engine. Delete separate deferred-settlement lifecycle; image identity and immutable result remain. |
-| `pending_requests`; `runtime/pending-request-flow.ts`, `runtime/pending-requests.ts`, `runtime/captured-pending-call.ts` | Preserve request family and human decision semantics as signals. Merge boot recovery/delivery scheduling into reconciler steps; delete partial-publication repair, not approval checks. |
-| `recurring_schedules`, `recurring_occurrences`, `recurring_expired_ranges`, `external_trigger_admissions`; `runtime/recurring-*` | Move Workspace-owned families to Workspace SQL. Same transaction commits occurrence acceptance and execution admission. Replace scanner/restart publication repair with engine timers; preserve cadence and event deduplication. |
-| `runtime/scheduler-restart-recovery.ts`, `runtime/nanohost-attempt-recovery.ts`, `runtime/scheduler-attempt-maintenance-service.ts` | Delete separate boot classification and recovery-maintenance loops; use ordinary step inspection, deadline and cleanup transitions. |
-| `runtime/worker-recovery.ts`, `runtime/worker-recovery-operations.ts`, `runtime/worker-turn-failure.ts`, `runtime/cancelled-admission-checkpoint-cleanup.ts`, `runtime/worker-backend-cleanup-projection.ts`, Task-entry closeout repair in `mode-entry-routes.ts` | Delete checkpoint reconstruction/release and fill-only cross-store terminal repair. Keep diagnostics and explicit new-request admission; no generic repair endpoint. |
-| `runtime/aep-snapshot-ledger.ts`, `context/worker-context-package.ts` publication plumbing | Existing Storage staged immutable handoff and database references. Delete separate unsynchronized publishers and publication marker joins; retain package/trace verification. |
-| `runtime/workspace-sync-records.ts`, `runtime/workspace-snapshot-chain.ts` handoff/closeout joins | Workspace-local result/handle/cursor commit with the step. Keep materialization, collection, review, apply and quarantine families and external-effect proofs; delete only split-store completion flags. |
-| `runtime/turn-executor-factory.ts` independent command waiter; `packages/worker-shim/src/harness.ts` renewed outage budgets | Remaining-deadline operation context and engine settlement. Delete untimed slot wait plus fresh result allowance; retain serialization, exact result receipt and proven-non-receipt delivery. |
+| Canonical Workspace/Thread/Turn/AgentSession JSON, Items JSONL; `lib/store.ts`, `storage/workspace-file-records.ts` | Product SQL; delete file truth, whole-Workspace rewrite, cache-before-persist and publication repair. |
+| Artifact/review/proposal/configuration metadata; Notebook publishers | SQL records/heads/receipt/Audit over immutable versions; delete Git-ref commit authority and cross-file repair. |
+| `scheduler_admission_entries` | Executions/index; delete global durable queue and local publication predicates. |
+| `worker-environments/worker-environment-activation.ts`, dispatch `activationPublicationComplete` | Keyed A->B admission and B-local evidence/receipt; delete cross-Workspace source scans. |
+| `scheduler_execution_attempts` | Execution/step attributes; delete duplicate phase lifecycle. |
+| `worker_turn_checkpoints`, `runtime/worker-checkpoints.ts` | Intent/outcome plus atomic products; delete stage mirroring/checkpoint joins. |
+| `worker_backend_sessions` | Preparation/cleanup steps; delete parallel lifecycle and handoff flags. |
+| `worker_control_records`, `worker_control_sequence_fingerprints` | Workspace observation/fingerprint and step evidence commit together; preserve divergent-replay rejection. |
+| `worker_image_settlements` | Server execution/steps in ordinary discovery; delete deferred-settlement lifecycle. |
+| `pending_requests`, pending flow/captured-call modules | Existing signals plus ordinary delivery steps; delete boot-only delivery/publication repair. |
+| Recurring schedules/occurrences/expired ranges/external admissions | Workspace records and engine timers; delete scanner/restart publication repair. |
+| Scheduler restart, NanoHost attempt recovery, maintenance service | Ordinary inspection/deadline/cleanup; delete separate classifiers/loops. |
+| Worker recovery/operations/failure, cancelled-checkpoint cleanup, backend-cleanup projection, mode-entry closeout | Delete checkpoint reconstruction/release and fill-only repair; preserve diagnostics/new-request admission. |
+| `recoverRunningCapabilityCalls` in `capability/usage-ledger.ts` and its boot call | Ordinary call-loss step settlement; preserve usage family, delete boot-only unknown classifier. |
+| `storage/work-observation-recovery.ts` | Publish `turn.reap` in ordinary terminal transition, not restart-only recovery. |
+| `runtime/task-terminal-fact.ts` repair | Fact and Turn share transaction; delete fact-to-file scan, preserve Task facts/Goals. |
+| `storage/work-observations.ts`, mutable `observations.jsonl` | SQL observation metadata/order/sequence; immutable bodies; delete mutable-file publication. |
+| `runtime/worker-control-rebuild.ts` | Retain only disposable handle reconstruction from committed authority, or delete; no outcome classification. |
+| AEP/context publishers, workspace-sync/snapshot-chain joins | Storage handoff and local result/handle/cursor commit; delete unsynchronized publication and completion flags. |
+| Executor command waiter; worker-shim Harness outage budgets | Remaining-deadline context; delete untimed wait/fresh allowances, preserve serialization/exact receipts. |
 
-Preserved independent authorities include `sandbox_runtime_records`, `harness_instance_records`, `agent_session_runtime_bindings`, binding image digests, `nanohost_runtime_targets`, transport identities/tokens, `worker_storage_bindings` and contributors, rejected-control evidence, Workspace synchronization/review/apply records, all existing audit/permission/usage/evidence families, and app/business records. Harness operation receipts remain server effect receipts, not a second Turn state. `task_turn_terminal_facts` and Goal tables retain their existing owner; this design does not redesign or remove them. Their already-owned local publication joins the same Workspace transaction where applicable.
+Preserve physical runtime/transport/binding/token/image authorities, rejected-control evidence, synchronization/review/apply, Audit/permission/usage/evidence, app business and Goal/Task fact families.
 
-**Count boundary:** seven coordination families are replaced: admission, execution attempts, checkpoints, backend sessions, accepted control records, sequence fingerprints and image settlements. They become two engine families (`executions` and `execution_steps`) plus one server reservation family (`execution_resource_reservations`): **7 before, 3 after, net minus 4**. This counts logical families, not one copy of their tables per scope. Pending Requests and the four recurring/event-admission families are reused, not counted as new signal/timer families. Product families moved from files to SQL remain the same semantic families. This is not a count of every database table or every retained family in OpenKit; implementation must preserve this named census and report any additional family before adding it.
+Seven coordination families become `executions`, `execution_steps`, `execution_resource_reservations`: **7 -> 3**; signals, four recurring/event families and moved product families are reused.
+
+The separate capture-record family prevents snapshot-versus-GC loss.
 
 ## Disposition Of The 27 Recovery-Required Ingress Classes
 
-The census counts normalized lifecycle causes, not every throw site. Eliminated means the split-publication cause is removed by one transaction, not that corrupt data becomes valid. Integrity checks, current authority and physical fences remain.
-
-| Class | Fate under the replacement |
+| Class | Replacement fate |
 | --- | --- |
-| 01 Incomplete command/source publication | Eliminated by atomic admission, source linkage and receipt. Corruption quarantines the Workspace. |
-| 02 Request/checkpoint/input mismatch | Checkpoint join deleted; same-key input conflict still refuses, corrupt execution linkage quarantines. |
-| 03 Duplicate current or ambiguous predecessor session | Local uniqueness prevents ordinary duplicates; native predecessor proof remains a step dependency. Contradiction quarantines/fences. |
-| 04 Apparent active Turn/session conflict | One local exclusion transaction; real active work waits, incompatible persisted ownership quarantines. |
-| 05 Unsupported backend continuity inspection | Explicit blocked/unknown step; restore the dependency or fence, never infer native continuity. |
-| 06 Missing AEP or native proof | Missing referenced local content quarantines; native proof absence blocks resume and preserves history. |
-| 07 Storage association/generation conflict | Server physical inspection/fencing; no successor attachment until writer absence is proved. |
-| 08 Prepared setup changed | Immutable input pin and conditional step transition refuse the change; new admission only after old effects settle. |
-| 09 Capture binding unavailable | Admission commits the binding locally; missing retained binding is an integrity failure, never current-default substitution. |
-| 10 Task/Knowledge/Item authority contradiction | Validate exact references before intent. Quarantine corrupt local authority; external unavailable references remain explicit dependencies. |
-| 11 Partial materialization/handoff | Local publication gap eliminated; cross-scope effects use same-key result inspection, not a handoff flag. |
-| 12 Missing/invalid Context trace or bytes | Verified immutable publication precedes reference. Later loss remains explicit content failure; no reconstruction from current data. |
-| 13 Unknown command/result | Open intent stays unknown until exact result/non-execution/fence proof; never blind redelivery. |
-| 14 Receipt/sequence/observation contradiction | Accepted control and local observation publication commit together; divergent replay still conflicts. |
-| 15 Pending request/grant/effect/delivery gap | Existing signal and step transitions; local publication is atomic, external effect uncertainty remains unknown. |
-| 16 Collection/baseline/cursor/transcript mismatch | Local cursor/result transition atomic; source loss or incomplete capture stays explicit and does not invent completion. |
-| 17 Terminal result/checkpoint/receipt disagreement | Terminal local transaction eliminates repair tuple. Lost referenced content still fails explicitly. |
-| 18 Cleanup/release proof unavailable | Ordinary cleanup step remains blocked/fenced; operator inspection may still be necessary. |
-| 19 Restart adoption ineligible, cleanup unresolved | Same ordinary unknown/cleanup steps; R adoption is separately ablated, not a boot-only workflow. |
-| 20 Retry classifier: missing checkpoint | Classifier and checkpoint deleted; read committed execution and original receipt. |
-| 21 Retry classifier: missing Turn | Local integrity failure quarantines, not retry from a surviving checkpoint. |
-| 22 Retry classifier: assignment mismatch | Atomic local assignment plus constraints; corruption quarantines and server resources remain fenced. |
-| 23 Retry classifier: missing AgentSession | Local dependency integrity failure; never synthesize an identity. |
-| 24 Retry classifier: wrong AgentSession scope | Scope constraint/refusal; never move a session to repair work. |
-| 25 Retry classifier: absent/multiple attempts | Single execution/attempt linkage and exclusion replace join; physical disputed owners still require fencing. |
-| 26 Retry classifier: incompatible terminal tuple | Atomic terminal records replace checkpoint-release operation; a new Turn requires existing terminal/fence eligibility. |
-| 27 Deferred image-settlement persistence | Server step retains exact intent; query original result and settle normally after storage recovery. Lost witness stays unknown. |
+| 01 Incomplete command/source publication | Local gaps eliminated by admission tuple; cross-Workspace activation remains keyed effect/result gap, without source scans. |
+| 02 Request/checkpoint/input mismatch | Delete checkpoint join; input conflicts refuse, corrupt linkage quarantines. |
+| 03 Duplicate/ambiguous session | Local uniqueness; native predecessor proof remains required. |
+| 04 Active Turn/session conflict | Atomic exclusion; real work waits, contradictory ownership quarantines. |
+| 05 Unsupported continuity inspection | Block inspection, then unknown at closure boundary; restore dependency or fence. |
+| 06 Missing AEP/native proof | Missing required content quarantines; absent native proof blocks resume. |
+| 07 Storage generation conflict | Physical fencing; no successor attachment without absence proof. |
+| 08 Prepared setup changed | Pinned input and conditional transition refuse; settle old effects before new admission. |
+| 09 Missing capture binding | Local admission binding; no current-default substitution. |
+| 10 Task/Knowledge/Item contradiction | Validate references; quarantine corrupt authority, preserve external unavailability. |
+| 11 Partial handoff | Atomic local publication; cross-scope exact-result inspection. |
+| 12 Invalid Context trace/bytes | Immutable-before-reference; lost content never rebuilt from current data. |
+| 13 Unknown command/result | Intent permits bounded inspection; deadline/cancellation/Worker loss ends unknown; later inspection is linked, never blind redelivery. |
+| 14 Receipt/sequence contradiction | Atomic local observations; divergent replay conflicts. |
+| 15 Pending/grant/effect/delivery gap | Signals/steps; external uncertainty remains explicit. |
+| 16 Collection/cursor/transcript mismatch | Atomic cursor/result; source loss stays incomplete. |
+| 17 Terminal/checkpoint/receipt disagreement | Atomic terminal tuple; lost referenced bytes still fail. |
+| 18 Missing cleanup proof | Closing remains fenced; explicit inspection may be necessary. |
+| 19 Ineligible adoption/unresolved cleanup | Ordinary unknown/cleanup; R remains an ablation candidate. |
+| 20 Retry: missing checkpoint | Classifier deleted; read execution/original receipt. |
+| 21 Retry: missing Turn | Quarantine integrity failure. |
+| 22 Retry: assignment mismatch | Atomic assignment; corruption quarantines and fences. |
+| 23 Retry: missing AgentSession | Quarantine, never synthesize identity. |
+| 24 Retry: wrong session scope | Refuse; never relocate session to repair. |
+| 25 Retry: absent/multiple attempts | Execution linkage/exclusion; disputed physical owners require fencing. |
+| 26 Retry: terminal disagreement | Atomic terminal tuple; successor still requires fence eligibility. |
+| 27 Deferred image settlement | Server boot/commit discovery; exact-result inspection, lost witness remains unknown. |
 
 ## Ablation Plan
 
-Run one removal at a time against the unmodified fault predicate, then restore it unless evidence supports deletion. A test name is a proposed implementation gate, not proof from this documentation change. Existing tests may move to the replacement seam but must not lose their behavioral oracle. Any accepted exact-survivor availability change still requires the engineer's final ablation decision.
+Remove one mechanism at a time against unchanged fault oracles; retain it unless evidence and the governing decision permit deletion.
 
-| Mechanism removed | Named failure and required gate |
+| Removal | Failure / gate |
 | --- | --- |
-| R: Core-restart adoption of surviving Worker | Core dies while Worker runs. `scheduler-restart-recovery.test.ts` and `worker-first-release-faults.test.ts` must prove either exact observation without relaunch or truthful interruption with complete fencing, no lost acknowledged work and new-Turn resume. Report availability cost explicitly. |
-| Preparation 25-minute clock | Stalled image/preparation cannot hold unbounded authority. `worker-first-release-faults.test.ts`, `turn-executor-factory.test.ts`; parent operation deadline must cover it. |
-| Image 300-second, Sandbox-ready 120-second, native-open 60-second and native-request 8-second clocks, each separately | Stalled dependency and unproved native stop remain bounded by the parent; `turn-executor-factory.test.ts`, worker-shim `native-startup.test.ts` and adapter fault tests. |
-| Core command 300-second timer and untimed slot wait | Blocked slot, lost dispatch and late result; `nanohost-harness-records.test.ts`, `worker-first-release-faults.test.ts` and worker-shim `harness.test.ts`. Replace with one producer-to-result bound. |
-| Worker poll and result 300-second outage clocks, each separately | Lost header/body/acknowledgement; worker-shim `harness.test.ts` and `control-client.test.ts` must retain exact receipt semantics without extending allowance. |
-| One-second exchange limit and 250-millisecond retry pacing, each separately | Hung exchange versus hot-loop outage; same Harness/control tests with faulted transport. Deadline correctness does not alone prove bounded resource use. |
-| Two-hour execution authority | Live heartbeat with runaway work; scheduler restart and first-release faults must still stop authority at the parent expiry. |
-| Thirty-second heartbeat liveness | Dead Worker still owns capacity; control gateway and first-release faults must prove timely detection without treating silence as non-execution. |
-| Worker-control reconnect allowance and boot adoption five-minute cap, each separately | Repeated Core restart must not renew authority; scheduler restart and control-client tests. |
-| Ten-second native stop and four-second cleanup tail, each separately | Hung interrupt/close retains fence; worker-shim `lifecycle-deadline.test.ts` and adapter fault tests. |
-| Core live-export and Host helper 300-second clocks, each separately | Lost collection result cannot become complete capture; `workspace-snapshot-chain.test.ts`, `turn-executor-factory.test.ts` and NanoHost collection tests. |
-| Gateway pre-commit 120 seconds, 1/2/4-second waits and 10-second Retry-After ceiling, each separately | Pre-commit outage and post-commit uncertainty; existing Gateway execution tests must preserve no retry after accepted output. |
-| MCP per-call SDK/fetch bounds, 15-second health interval and 60-second idle reclamation, each separately | Hung call, stale session and resource leak; `worker-mcp-gateway.test.ts`. Health/reclamation clocks are not call authority. |
-| Host startup 120 seconds, stop 30 seconds and restart delay, each separately | Unready Epoch, surviving member and Core outage storm; NanoHost Epoch/installer/service tests. Backoff replaces cadence, not fencing. |
-| Process key | Different Worker claims an old execution; `scheduler-restart-recovery.test.ts` and `worker-control-gateway.test.ts`. Keep unless another exact-survivor proof rejects it. |
-| Connection generation | Delayed old carriage mutates current connection; `nanohost-harness-records.test.ts` and NanoHost transport tests. |
-| Physical Epoch | Replaced Host claims old writers absent or adopts old work; scheduler restart and NanoHost Epoch tests. |
-| Attachment generation | Old writer reaches a reattached retained volume; `worker-storage-bindings.test.ts` and NanoHost persistent-volume tests. |
+| R survivor adoption | Core dies during work: `scheduler-restart-recovery.test.ts`/`worker-first-release-faults.test.ts` prove exact observation or truthful interruption, fencing and new-Turn resume; report availability cost. |
+| Preparation 25-minute clock | Stalled preparation: `worker-first-release-faults.test.ts`/`turn-executor-factory.test.ts` prove parent deadline bounds authority. |
+| Image 300s, Sandbox-ready 120s, native-open 60s, native-request 8s, separately | Stalled dependency/uncertain stop: `turn-executor-factory.test.ts`, shim `native-startup.test.ts`, adapter faults. |
+| Core command 300s and untimed slot wait | Blocked/lost dispatch, late result: `nanohost-harness-records.test.ts`, `worker-first-release-faults.test.ts`, shim `harness.test.ts`. |
+| Worker poll/result 300s, separately | Lost header/body/ack: shim `harness.test.ts`/`control-client.test.ts` exact receipts. |
+| Exchange 1s / retry pacing 250ms, separately | Hung exchange/hot loop: same transport faults; resource bounds remain necessary. |
+| Execution authority 2h | Runaway live Worker: `scheduler-restart-recovery.test.ts`/`worker-first-release-faults.test.ts` enforce expiry. |
+| Heartbeat 30s | Dead Worker holds capacity: `worker-control-gateway.test.ts`/`worker-first-release-faults.test.ts`; silence is not non-execution. |
+| Reconnect allowance / boot adoption 5m, separately | Repeated restart cannot renew authority: `scheduler-restart-recovery.test.ts`/`control-client.test.ts`. |
+| Native stop 10s / cleanup tail 4s, separately | Hung close remains fenced: shim `lifecycle-deadline.test.ts`/adapter faults. |
+| Core live-export / Host helper 300s, separately | Lost collection remains incomplete: `workspace-snapshot-chain.test.ts`/`turn-executor-factory.test.ts`/Host collection tests. |
+| Gateway pre-commit 120s, waits 1/2/4s, Retry-After 10s, separately | Outage/accepted-output uncertainty: Gateway execution tests, no post-commit retry. |
+| MCP SDK/fetch bounds, health 15s, idle 60s, separately | Hung call/stale session/leak: `worker-mcp-gateway.test.ts`. |
+| Host startup 120s, stop 30s, restart delay, separately | Unready Epoch/survivor/outage storm: Host Epoch/installer/service tests. |
+| Process key | Wrong survivor: `scheduler-restart-recovery.test.ts`/`worker-control-gateway.test.ts`. |
+| Connection generation | Delayed old carriage: `nanohost-harness-records.test.ts`/Host transport tests. |
+| Physical Epoch | Replaced Host claims absence: `scheduler-restart-recovery.test.ts`/Host Epoch tests. |
+| Attachment generation | Old writer reaches reattached volume: `worker-storage-bindings.test.ts`/Host volume tests. |
 
-Queue limits are capacity, not clocks. Queue waiting has no implied SLA. Human Pending Request lifetime is not a transport clock. Poll cadence and cleanup pacing can remain justified resource controls even when deadline propagation removes their independent authority. No blanket fence deletion follows from using SQLite.
+Capacity, human waits, health/reclamation and cleanup pacing are not execution clocks.
 
 ## Implementation Plan And Acceptance
 
-Land documentation first, then coherent replacement increments behind the unreleased cutover, never dual writes or a compatibility path. Each increment removes its obsolete responsibility before it is accepted. The named seven-to-three family reduction above is the count baseline; any new retained shape must name the failure it removes and update that comparison.
+Remove obsolete responsibilities with replacements; move tests without weakening oracles.
 
-| Order | Landable increment | Existing fault-injection gates to extend without weakening |
+| Order | Increment | Gates to extend |
 | --- | --- | --- |
-| 1 | Storage-neutral Workspace quarantine and stock NanoHost backoff, independently of the new engine. | `storage/startup-layout.test.ts`, `storage/fs-layout.test.ts`, bootstrap phase/readiness tests and NanoHost service/installer tests: bad Workspace preserves bytes while a healthy Workspace serves; corrupt server authority still refuses boot. |
-| 2 | Existing Storage immutable handoff and scope database product/control commits, replacing mutable-file truth. | `storage/canonical-write-capacity-faults.test.ts`, `storage/work-observation-recovery.test.ts`, `runtime/pending-publication-recovery.test.ts`: crash before/after blob sync and SQL commit, no dangling acknowledged reference or stale cache. |
-| 3 | Execution/step rows, same-path reconciliation, OTel field projection, signals/timers and deadline carriage; remove checkpoint and restart classifiers. | `runtime/worker-first-release-faults.test.ts`, `runtime/scheduler-restart-recovery.test.ts`, `runtime/pending-requests.test.ts`, recurring publication tests and worker-shim deadline/Harness tests: open intent survives, ended step skips, human outcome uses a later Turn, no replay. |
-| 4 | Global rebuilt ready index, bounded handles and server idempotent reservations; remove global durable queue and backend handoff flags. | Scheduler restart, Harness records and storage binding tests: inject both commit gaps, cancellation/late reserve, duplicate release, missing Workspace and cache eviction; no double allocation or premature free capacity. |
-| 5 | Finish retained-slot and shared-content placement, snapshot/GC closure and one-at-a-time ablations. | Observation/recovery/export tests, workspace snapshot-chain tests and the ablation gates: verify message sharing, prompt/tool bytes, incomplete prefixes, snapshot racing deletion, exact external-reference coverage and unchanged holds. |
+| 1 | Workspace quarantine and stock Host backoff | Startup/layout/readiness and service/installer faults; healthy siblings serve, corrupt server refuses boot. |
+| 2 | Immutable handoff and product/control SQL | Canonical-write-capacity, observation-recovery, pending-publication faults; crash before/after sync/commit, no dangling acknowledged reference/cache. |
+| 3 | Engine/journal/signals/timers/deadlines | First-release/restart/pending/recurring/shim faults; open intent survives, ended steps skip, later-Turn delivery, no replay. |
+| 4 | Global index/handles/reservations | Both commit gaps; absent-key cancel then delayed reserve; refusal then fresh admission; restored tombstone; missing Workspace/cache eviction. |
+| 5 | Retention placement, snapshot closure, ablations | Observation/export/snapshot-chain faults; exact shared content/prefix coverage; capture crash and explicit abandonment; Storage GC and Git prune/repack remain excluded. |
 
-Pre-`v0.1.0` deployment data crosses this redesign by **one explicitly authorized reset**, not converters, legacy readers, dual writes or an automatic boot repair. Implementation may land in unreleased increments, but no supported deployment serves mixed canonical layouts. Post-`v0.1.0` retained-data continuity remains governed by Core and is not waived by this pre-stable choice.
+Additional deciding crash cases:
 
-Acceptance also requires one ended journal row to round-trip all span-model fields into one OTLP span, an open row to remain unexported, dropped telemetry to leave the journal intact, stale scope/fence/deadline values to refuse effects, snapshot closure to remain local and complete, and every one of the 27 ingress classes to have the stated observable disposition. Use fault injection at the actual database/Storage/transport seam; passing a schema check alone proves none of these outcomes.
+- `runtime/nanohost-harness-records.test.ts`: settlement -> crash before Workspace outcome -> competing dispatch cannot retire the result; acknowledgement replay permits succession.
+- B activation admission -> crash before A outcome -> B is locally eligible and A recovers the exact receipt without duplicate Turn or source scanning.
+- Server-only image-settlement restart test: with no Workspace execution, the ordinary reconciler discovers and settles the retained image effect/result.
+- Lost native result -> terminal unknown and separate linked inspection; product terminality alone never releases exclusion.
+- Call loss, `turn.reap` and Task terminal fact settle through ordinary transitions without boot-only scans.
+- Span round-trip preserves double `1.0`, exact int64 beyond JavaScript safe integers and dropped counts; all marker variants preserve stored/exported trust keys. Open roots/steps and late Host observations obey lifecycle/sample rules without changing control.
 
-## Current Implementation And Open Decisions
+### Acceptance Dependencies
 
-No production code or tests change in this documentation slice. Source inspection establishes split file/Workspace/server ownership and existing test locations, not execution of those tests or completeness of live capture. Exact systemd backoff behavior must be qualified against the supported package version; older systems use the declared fallback. The first-release backup/move commands and the default-on retention amendment belong to separate owners. The seven-to-three count is scoped to the explicitly replaced coordination families, not a whole-repository complexity claim.
+Acceptance is conditional on integrated peer amendments, not promises of later alignment:
 
-Independent review must decide whether the proposed step/control field split, reservation receipt retention horizon, handle-cache defaults and snapshot-root handoff are sufficient and minimal. Integration must align the telemetry owner's no-durable-trace wording with the journal-only exception, and the retention and backup/move owners must link their physical clauses to this layout without changing scope by implication. Ablation outcomes are unmeasured; necessary fences stay until their fault evidence and governing decision permit removal. The engine supplies no new Goal design, exactly-once external execution claim, or promise to recover bytes never captured.
+- [Work Data Retention](20260921-work_data_retention_format.md): default-on admitted model I/O/native transcripts, separate privacy exclusions, exact-byte/prompt/tool/prefix coverage tests.
+- [Backup/Restore/Move](20260704-workspace_backup_export_import.md): minimal `v0.1.0` operations, common-cut writer coverage, durable capture exclusion, closure and restore tests.
+- [Operational Telemetry](20260731-operational_telemetry_standardization.md): journal-only durable-trace exception and bounded unverified marker validation/export tests.
+- Integrate/link the decisions-directory record `20261019-worker_reported_phase_markers.md` with telemetry; it is not yet on this branch.
+
+Qualify systemd versions, resource limits, all 27 dispositions and individual ablations through direct tests; this documentation supplies no runtime proof.
+
+Cutover uses one authorized pre-`v0.1.0` reset, without converters/legacy readers/dual writes/mixed deployments; subsequent continuity follows Core.
