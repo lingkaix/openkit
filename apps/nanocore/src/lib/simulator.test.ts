@@ -19,6 +19,8 @@ import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
 } from '../config/runtime-config.js';
+import { createWorkerContextPackageAuthorityReader } from '../context/worker-context-authorities.js';
+import { readWorkerContextPackageTrace } from '../context/worker-context-package.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { listExportableAgentEnvironmentPackageSnapshots } from '../runtime/aep-snapshot-ledger.js';
 import {
@@ -1200,33 +1202,33 @@ describe('SimulatedTurnExecutor', () => {
           resource: { materialId: material.materialId },
         },
       });
-      const trace = JSON.parse(
-        readFileSync(
-          join(
-            coreDb.dataRoot,
-            'workspaces',
-            'ws_00000000-0000-7000-8000-000000000001',
-            'threads',
-            'th_00000000-0000-7000-8000-000000000001',
-            'turns',
-            workerTurn.id,
-            'context-package.json'
-          ),
-          'utf8'
-        )
-      ) as Record<string, unknown>;
-      expect(trace).toMatchObject({
-        materialSelections: [
-          expect.objectContaining({
-            materialId: material.materialId,
-            revisionId: revision.revisionId,
-          }),
-        ],
-        requestId,
-        turnId: workerTurn.id,
-      });
       const replayDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
+        const trace = readWorkerContextPackageTrace({
+          authorities: createWorkerContextPackageAuthorityReader({
+            coreDb,
+            store,
+            workspaceDb: replayDb,
+          }),
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          turnId: workerTurn.id,
+          workspaceRoot: join(
+            coreDb.dataRoot,
+            'workspaces',
+            'ws_00000000-0000-7000-8000-000000000001'
+          ),
+        });
+        expect(trace).toMatchObject({
+          materialSelections: [
+            expect.objectContaining({
+              materialId: material.materialId,
+              revisionId: revision.revisionId,
+            }),
+          ],
+          requestId,
+          turnId: workerTurn.id,
+        });
         const snapshot = listExportableAgentEnvironmentPackageSnapshots(
           replayDb,
           'ws_00000000-0000-7000-8000-000000000001'
