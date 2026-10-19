@@ -1027,6 +1027,8 @@ describe('remote MCP App endpoint', () => {
         'artifact.version-file-commit',
         'bootstrap.consume',
         'channel.discord.pair',
+        'knowledge.package.export',
+        'knowledge.package.import',
         'token.create',
         'token.rotate',
         'workspace.archive-download',

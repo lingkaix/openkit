@@ -6,6 +6,7 @@ import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
 import { stableJson } from '@openkit/config-schema';
 import { allocateEntityId, formatReferenceUri } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT } from '../knowledge/okf.js';
 import {
   verifyWorkspaceExportTree,
   writeWorkspaceExportTree,
@@ -570,7 +571,7 @@ describe('Light App definition catalog', () => {
             defaultKnowledgeBaseId: allocateEntityId('kb'),
           },
         }),
-        workspaceSchema: null,
+        workspaceSchema: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
       },
       agentResourceCatalog: projectWorkspaceCatalogExport(input.dataRoot, input.workspaceId),
     });
