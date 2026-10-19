@@ -8,6 +8,7 @@ import { allocateEntityId, type PolicyDocumentV1 } from '@openkit/protocol';
 import { parse } from 'jsonc-parser';
 import { describe, expect, it, vi } from 'vitest';
 import { isCurrentDeploymentAdministrator } from '../auth/operation-authorizer.js';
+import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
@@ -26,6 +27,7 @@ import {
   checkResourcePolicyCommandIntent,
   raiseResourcePolicyRequest,
 } from './resource-policy-requests.js';
+import * as workspaceResourcePolicy from './workspace-resource-access.js';
 import { evaluateWorkspaceResourceAccess } from './workspace-resource-access.js';
 
 /** Creates real configuration and Pending Request storage; no model, provider or external effect is used. */
@@ -227,7 +229,7 @@ describe('resource Policy Pending Request commands', () => {
     }
   });
 
-  it('requires an unused human grant and distinct confirmation, then preserves the empty managed boundary', () => {
+  it('requires confirmed apply and preserves the empty boundary when its author loses authority', () => {
     const f = fixture();
     try {
       expect(
@@ -271,6 +273,25 @@ describe('resource Policy Pending Request commands', () => {
         futureOptional: true,
       });
       expect(() => applyResourcePolicyRequest(f, input)).toThrow('unused approval');
+      const loaded = f.manager
+        .current()
+        .workspaceConfigs.find((entry) => entry.workspaceId === f.workspace.id)?.config.workspace
+        .policy?.mediation;
+      expect(loaded?.statements).toHaveLength(1);
+      const admission = { coreDb: f.coreDb, workspaceId: f.workspace.id, policy: loaded };
+      expect(workspaceResourcePolicy.readCurrentWorkspacePolicy(admission)).toEqual(loaded);
+      expect(
+        f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, f.actor.userId))()
+      ).toMatchObject({ changed: true, user: { userId: f.actor.userId, status: 'disabled' } });
+      expect(() => workspaceResourcePolicy.readCurrentWorkspacePolicy(admission)).toThrow();
+      expect(readFileSync(f.configPath, 'utf8')).toBe(saved);
+      expect(
+        f.manager.current().workspaceConfigs.find((entry) => entry.workspaceId === f.workspace.id)
+          ?.config.workspace.policy?.mediation
+      ).toBe(loaded);
+      expect(loaded?.statements).toEqual([
+        expect.objectContaining({ kind: 'managed-boundary', scope: f.boundary.scope }),
+      ]);
     } finally {
       f.close();
     }
