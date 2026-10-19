@@ -134,7 +134,7 @@ it('preserves exact historical bytes, parents and publication lineage through Wo
   const descriptorPath = `artifacts/${artifactId}/versions/2/version-record.json`;
   const rawHead = JSON.parse(verified.fileContents.get(descriptorPath)!);
   const invalidHeads = [
-    { ...rawHead, formatVersion: 2 },
+    { ...rawHead, schemaVersion: 2 },
     { ...rawHead, version: { ...rawHead.version, parentVersion: null } },
     {
       ...rawHead,

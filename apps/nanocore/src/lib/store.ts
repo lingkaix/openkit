@@ -197,6 +197,9 @@ function projectArtifactVersion(record: ArtifactVersionRecord): ArtifactVersion 
     summary: artifact.summary,
     contentDigest: artifact.contentDigest,
     ...version,
+    parentVersion: artifact.version === 1 ? null : artifact.version - 1,
+    requestId: artifact.lastMutationRequestId,
+    recordedAt: artifact.updatedAt,
   };
 }
 
@@ -1596,7 +1599,7 @@ export class FsStore {
                 item.turnId === lineage.turnId &&
                 item.artifactId === artifact.id &&
                 item.artifactVersion === record.artifact.version &&
-                item.lastMutationRequestId === lineage.requestId &&
+                item.lastMutationRequestId === record.artifact.lastMutationRequestId &&
                 item.title === record.artifact.title &&
                 item.summary === record.artifact.summary
             )
@@ -4209,13 +4212,10 @@ export class FsStore {
     const versionRecord = ArtifactVersionRecordSchema.parse({
       artifact,
       version: {
-        parentVersion: null,
         actor:
           artifact.origin.kind === 'imported' ? artifact.origin.actor : producingTurn!.triggerActor,
         threadId: artifact.threadId,
         turnId: artifact.turnId,
-        requestId: artifact.lastMutationRequestId,
-        recordedAt: artifact.updatedAt,
       },
     });
 
@@ -4608,12 +4608,9 @@ export class FsStore {
     const record = ArtifactVersionRecordSchema.parse({
       artifact,
       version: {
-        parentVersion: current.version,
         actor: input.actor,
         threadId: input.threadId,
         turnId,
-        requestId: input.requestId,
-        recordedAt: input.recordedAt,
       },
     });
     const item = ItemSchema.parse({

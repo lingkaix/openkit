@@ -4,7 +4,7 @@ import {
   JudgementRecordSchema,
   type RecordEvaluationJudgementRequest,
 } from '@openkit/app-api-schemas';
-import { UserActorRefSchema } from '@openkit/protocol';
+import { UserActorRefSchema, writeRetainedV1 } from '@openkit/protocol';
 import { appendArtifactJudgement, readArtifactJudgement } from './artifact-judgements.js';
 import { isWorkspaceOperationAuthorized } from './auth/operation-authorizer.js';
 import {
@@ -78,14 +78,15 @@ function appendAssessment(access: CandidateSetCommands, input: RecordEvaluationJ
       );
     }
     case 'material-range': {
-      const judgement = JudgementRecordSchema.parse({
-        ...assessment,
-        formatVersion: 1,
-        workspaceId: input.workspaceId,
-        requestId: input.requestId,
-        actor: { kind: 'user', id: access.actor.userId },
-        recordedAt: new Date().toISOString(),
-      });
+      const judgement = JudgementRecordSchema.parse(
+        writeRetainedV1({
+          ...assessment,
+          workspaceId: input.workspaceId,
+          requestId: input.requestId,
+          actor: { kind: 'user', id: access.actor.userId },
+          recordedAt: new Date().toISOString(),
+        })
+      );
       return appendMaterialJudgement(access.workspaceDb, judgement);
     }
   }

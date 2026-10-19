@@ -507,7 +507,7 @@ for (const point of ['before-rename', 'after-rename'] as const) {
       readFileSync(join(directory, 'versions', '1', 'version-record.json'), 'utf8')
     );
     expect(descriptor).toMatchObject({
-      formatVersion: 1,
+      schemaVersion: 1,
       version: { parentVersion: null, actor: localActor },
       artifact: { version: 1, contentDigest },
     });

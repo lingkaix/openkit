@@ -971,7 +971,7 @@ export function assertPortableArtifactHistory(
               item.turnId === publication.turnId &&
               item.artifactId === artifact.id &&
               item.artifactVersion === record.artifact.version &&
-              item.lastMutationRequestId === publication.requestId &&
+              item.lastMutationRequestId === record.artifact.lastMutationRequestId &&
               item.title === record.artifact.title &&
               item.summary === record.artifact.summary
           )
