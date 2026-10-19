@@ -2265,7 +2265,20 @@ describe('Knowledge OpenAPI derivation', () => {
       ...KNOWLEDGE_OPERATION_DEFINITIONS,
       ...KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS,
     };
-    expect(Object.keys(definitions)).toHaveLength(31);
+    expect(Object.keys(definitions)).toHaveLength(24);
+    for (const id of [
+      'knowledge.observation.list',
+      'knowledge.observation.record',
+      'knowledge.claim.list',
+      'knowledge.claim.record',
+      'knowledge.conflict.list',
+      'knowledge.conflict.record',
+      'knowledge.conflict.resolve',
+    ]) {
+      expect(document.paths).not.toHaveProperty(operationHttpPath(id));
+      expect(document.components.schemas).not.toHaveProperty(`${id}.input`);
+      expect(document.components.schemas).not.toHaveProperty(`${id}.output`);
+    }
     expect(Object.keys(definitions)).toEqual(
       expect.arrayContaining([
         'knowledge.ask',
