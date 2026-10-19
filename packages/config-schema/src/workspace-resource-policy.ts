@@ -59,6 +59,7 @@ export const WorkspacePolicyDocumentSchema = PolicyDocumentV1Schema.superRefine(
     } else {
       if (
         !['ordinary', 'agent-process'].includes(statement.grant.kind) ||
+        (statement.state === 'active' && !['allow', 'prohibit'].includes(statement.effect)) ||
         statement.scope.subjects.length !== 1 ||
         statement.scope.subjects[0]?.kind !== 'human' ||
         statement.scope.actions.some((action) => !ProductOperationSchema.safeParse(action).success)
