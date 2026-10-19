@@ -733,6 +733,15 @@ schedulerAttemptMaintenance = startSchedulerAttemptMaintenanceService({
   intervalMs: SCHEDULER_ATTEMPT_MAINTENANCE_INTERVAL_MS,
 });
 
+/** The account owner joins overlapping passes; the process owns this opt-in timer and cancellation. */
+const codexResetMaintenanceAbort = new AbortController();
+const codexResetMaintenance = setInterval(() => {
+  void providerSubscriptionAccountManager
+    .checkExpiringCodexResets(codexResetMaintenanceAbort.signal)
+    .catch(() => console.warn('Codex reset maintenance requires inspection.'));
+}, 5 * 60_000);
+codexResetMaintenance.unref();
+
 /** Schedules at most one process-local closeout for an accepted `final_status`. */
 function scheduleCommittedFinalStatusCloseout(input: WorkerControlFinalStatusAcceptedInput): void {
   const database = coreDb;
@@ -771,6 +780,8 @@ function scheduleCommittedFinalStatusCloseout(input: WorkerControlFinalStatusAcc
 function shutdown(signal: NodeJS.Signals): void {
   console.log(`Received ${signal}; shutting down NanoCore.`);
   bootReadiness = createShutdownReadinessSnapshot(bootReadiness);
+  clearInterval(codexResetMaintenance);
+  codexResetMaintenanceAbort.abort();
   recurringSchedules?.stop();
   schedulerDispatchRetry?.stop();
   schedulerAttemptMaintenance?.stop();

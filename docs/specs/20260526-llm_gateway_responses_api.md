@@ -195,7 +195,7 @@ The pi-ai boundary produces one failure value under [the backend owner](20260708
 | Kind | Meaning | Same-member retry | Failover when enabled |
 | --- | --- | --- | --- |
 | `auth_rejected` | Missing or rejected route credential | No | Yes |
-| `quota_exhausted` | Provider quota or subscription allowance exhausted | No | Yes |
+| `quota_exhausted` | Provider quota or subscription allowance exhausted | Only after a confirmed opt-in Codex weekly reset below | Yes |
 | `rate_limited` | Transient Provider throttling | Bounded | Yes, after retry handling |
 | `provider_unavailable` | Provider 5xx, overload, network, timeout, or start failure | Bounded | Yes, after retry handling |
 | `context_overflow` | Input exceeds the model context | No | No |
@@ -219,6 +219,12 @@ A non-streaming attempt commits when its validated successful result is released
 Before commit, the transient kinds admitted by the table may receive up to three same-member retries with exponential backoff, independently of `autoFailover`. This means one initial attempt plus at most three retries. One absolute request deadline covers all attempts and waits. A retry requires that no Provider effect may already have started and that the next delay fits the remaining deadline. A private buffer or absence of output alone does not supply that proof. The backoff delays and the `retry-after` ceiling are fixed Gateway constants, each small relative to the request deadline, so that retry waiting never consumes the time a backup needs. An exposed `retry-after` replaces the computed delay only when it is within that ceiling and fits the remaining deadline; a longer `retry-after` is not waited out, and the Gateway advances when failover is eligible or terminates. Other kinds are never retried unchanged. Cancellation aborts the active attempt or wait. Pi-ai retries stay unset under the backend owner. The fixed retry count and its reason are recorded in [the tier-routing decision record](../decisions/20261001-gateway_tier_routing_rulings.md).
 
 Commit is a one-way request-local boundary, not a durable record. It is created with each attempt, can advance only from private to committed, and ends with that attempt's terminal outcome. Buffer bounds, dependency failure, and cancellation settle privately before commit or terminate the committed response. Deadline expiry settles only the pre-commit phase and never terminates a committed response. It cannot be reset, recovered, or reopened after failure or restart. Restart cannot replay a committed or uncertain attempt; later work is a new owning request.
+
+### Codex Subscription Controls
+
+The [subscription account owner](20260721-provider_subscription_accounts.md#codex-credits-and-banked-resets) supplies the account settings, fresh quota observation and banked-reset operation. With Codex credits disabled, a successful observation no older than about one minute that shows a window at 100% produces a settled pre-dispatch `quota_exhausted` failure. Normal ordered failover applies. A failed, missing or stale observation does not refuse inference, and credits use defaults to disabled when the account setting is absent.
+
+Only after an actual settled quota failure and no successful eligible failover target may the Gateway ask an opted-in account owner to consume one reset for an exhausted weekly window. A five-hour window never qualifies. The account owner serializes spending and guards one attempt per weekly window through its existing reset Audit. Only a confirmed reset permits one retry of that affected member, under the original deadline, cancellation and pre-commit bounds. Unknown reset results, committed or unsettled inference, and failed reset consumption never permit a retry. This exception adds no new routing strategy or general quota retry policy.
 
 ### Terminal Error And Private Lineage
 
