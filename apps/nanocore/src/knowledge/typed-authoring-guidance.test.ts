@@ -204,7 +204,8 @@ function fixture(scope: Scope) {
         threshold: 64_000,
         knowledge: input.inputs!,
       };
-      if (input.turn.owner.kind === 'workspace') store.updateTurn(input.turn.id, { internalExecution });
+      if (input.turn.owner.kind === 'workspace')
+        store.updateTurn(input.turn.id, { internalExecution });
       else store.updateServerTurn(input.turn.id, { internalExecution });
     },
   };
