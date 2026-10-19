@@ -65,7 +65,6 @@ function page(id: string, body: string, source: string): string {
     'sensitivity: normal',
     'freshness: current',
     `openkit_entry_id: ${id}`,
-    'openkit_entry_kind: project-context',
     'created_at: "2026-10-16T00:00:00.000Z"',
     'updated_at: "2026-10-16T00:00:00.000Z"',
     'custom: {preserved: [one, two]}',
@@ -313,12 +312,13 @@ describe('native fixed-base Knowledge Review and removal', () => {
     ).toBe(replacement);
     const deletion = {
       requestId: randomUUID(),
-      knowledgeEntryId: 'alpha',
+      path: 'alpha.md',
+      summary: 'Remove reviewed alpha',
       baseRevision: restored.body.application.notebookRevision,
       expectedContentDigest: digest(replacement),
     };
-    expect((await call(f, 'knowledge.delete', deletion)).status).toBe(400);
-    const deleted = await call(f, 'knowledge.delete', {
+    expect((await call(f, 'knowledge.notebook.delete', deletion)).status).toBe(400);
+    const deleted = await call(f, 'knowledge.notebook.delete', {
       ...deletion,
       requestId: randomUUID(),
       confirmRemoval: true,
@@ -336,7 +336,7 @@ describe('native fixed-base Knowledge Review and removal', () => {
     ).toBe(replacement);
     const evidence = f.workspaceDb.sqlite
       .prepare(
-        "SELECT action FROM audit_events WHERE action IN ('knowledge.proposal.decide','knowledge.proposal.reverse','knowledge.delete') AND outcome = 'succeeded'"
+        "SELECT action FROM audit_events WHERE action IN ('knowledge.proposal.decide','knowledge.proposal.reverse','knowledge.notebook.delete') AND outcome = 'succeeded'"
       )
       .all();
     expect(evidence).toHaveLength(5);

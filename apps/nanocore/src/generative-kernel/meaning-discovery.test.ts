@@ -17,9 +17,9 @@ import { commandInputHash } from '../runtime/idempotent-command.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
-import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
+import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { managedThreadPolicy } from '../test-support/resource-policy.js';
@@ -106,7 +106,7 @@ function publish(f: ReturnType<typeof fixture>, content: string) {
 
 /** Native authored serialization preserves exact page bytes and optional Source lineage. */
 function page(f: ReturnType<typeof fixture>, sourceReferences: string[] = []) {
-  return serializeUserAuthoredKnowledgePage(
+  return serializeKnowledgePageFixture(
     {
       id: 'domain',
       kind: 'project-context',

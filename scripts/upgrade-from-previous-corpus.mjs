@@ -72,6 +72,7 @@ async function owners(appRoot) {
     notebookOwner: 'knowledge/scoped-notebook-owner.js',
     knowledgeBase: 'config/knowledge-base.js',
     okf: 'knowledge/okf.js',
+    pageFixture: 'test-support/knowledge-page.js',
     sources: 'knowledge/scoped-knowledge-sources.js',
     memory: 'knowledge/memory-maintenance.js',
     membership: 'workspace-membership.js',
@@ -374,10 +375,8 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
           : scope === 'user'
             ? { kind: scope, userId }
             : { kind: scope };
-      const content = o.records.serializeUserAuthoredKnowledgePage(
+      const content = o.pageFixture.serializeKnowledgePageFixture(
         {
-          id: 'continuity',
-          kind: 'project-context',
           title: 'Public synthetic continuity',
           content: FIXTURE.text,
           createdAt: FIXTURE.at,
@@ -453,10 +452,8 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
     const notebook = new o.notebook.KnowledgeNotebook({
       repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
     });
-    const candidatePage = o.records.serializeUserAuthoredKnowledgePage(
+    const candidatePage = o.pageFixture.serializeKnowledgePageFixture(
       {
-        id: 'candidate',
-        kind: 'project-context',
         title: 'Public synthetic candidate',
         content: FIXTURE.text,
         createdAt: FIXTURE.at,

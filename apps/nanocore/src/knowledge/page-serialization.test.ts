@@ -1,6 +1,6 @@
 import type { KnowledgeOwnerScope } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
-import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
+import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import {
   parseOkfDocument,
   REQUIRED_SCOPED_KNOWLEDGE_FEATURES,
@@ -17,10 +17,8 @@ describe('direct human page bytes at the scoped profile boundary', () => {
   it.each(
     scopes
   )('serializes exact complete owner $kind with required semantics and no counter', (ownerScope) => {
-    const content = serializeUserAuthoredKnowledgePage(
+    const content = serializeKnowledgePageFixture(
       {
-        id: 'human-note',
-        kind: 'project-context',
         title: 'Human note',
         content: 'Exact human text.',
         createdAt: '2026-10-16T00:00:00.000Z',
@@ -34,6 +32,7 @@ describe('direct human page bytes at the scoped profile boundary', () => {
     expect(parsed.document?.frontmatter.requiredFeatures).toEqual(
       REQUIRED_SCOPED_KNOWLEDGE_FEATURES
     );
+    expect(parsed.document?.frontmatter).not.toHaveProperty('openkit_entry_kind');
     expect(parsed.document?.frontmatter).not.toHaveProperty('owner_scope');
     expect(parsed.document?.frontmatter).not.toHaveProperty('openkit_revision');
     expect(parsed.document?.body).toBe('Exact human text.\n');

@@ -21,13 +21,13 @@ import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { allocateRetrievalTraceId, readRetrievalTrace } from '../storage/retrieval-traces.js';
-import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
 import { readWorkspacePortableFileState } from '../storage/workspace-portable-file-state.js';
 import {
   createVerifiedWorkspaceExport,
   importVerifiedWorkspace,
 } from '../storage/workspace-transfer-routes.js';
 import { createApp } from '../test-support/app.js';
+import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
@@ -76,10 +76,8 @@ function source() {
   });
   const content = updateOkfFrontmatter({
     path: 'notes/portable.md',
-    content: serializeUserAuthoredKnowledgePage(
+    content: serializeKnowledgePageFixture(
       {
-        id: 'notes/portable',
-        kind: 'project-context',
         title: 'Exact portable note',
         content: 'Exact Unicode body: 漢字.\r\n\t  ',
         createdAt: '2026-10-16T00:00:00Z',
@@ -125,10 +123,8 @@ describe('canonical Notebook Workspace portability', () => {
     const page = (id: string, sourceReferences: string[]) =>
       updateOkfFrontmatter({
         path: `${id}.md`,
-        content: serializeUserAuthoredKnowledgePage(
+        content: serializeKnowledgePageFixture(
           {
-            id,
-            kind: 'project-context',
             title: id,
             content: `Exact ${id} body.\r\n\t  `,
             sourceReferences,
@@ -312,10 +308,8 @@ describe('canonical Notebook Workspace portability', () => {
     const assessmentPath = 'assessments/historical.md';
     const assessment = updateOkfFrontmatter({
       path: assessmentPath,
-      content: serializeUserAuthoredKnowledgePage(
+      content: serializeKnowledgePageFixture(
         {
-          id: 'assessments/historical',
-          kind: 'project-context',
           title: 'Assessment of the original target version',
           content: 'Only the exact original target bytes remain disputed.',
           sourceReferences: [],

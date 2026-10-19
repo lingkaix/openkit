@@ -292,7 +292,6 @@ export interface ResolvedWorkspaceKnowledgeRetrievalPage {
   /** Markdown body from the verified authoritative bytes. */
   body: string;
   /** Existing App API projection kind, defaulted for native OKF pages. */
-  kind: 'preference' | 'project-context' | 'task-summary';
 }
 
 /** Options for boot-time derived index rebuild scans. */
@@ -1497,7 +1496,6 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
         ['stale', 'expired'].includes(stringFrontmatterField(document, 'freshness') ?? '')
       )
         throw knowledgeTraceUnavailable();
-      const kind = stringFrontmatterField(document, 'openkit_entry_kind');
       pages.push({
         notebookRevision,
         knowledgeBaseId,
@@ -1508,7 +1506,6 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
         content,
         title: stringFrontmatterField(document, 'title')!,
         body: document.body.trim(),
-        kind: kind === 'preference' || kind === 'task-summary' ? kind : 'project-context',
       });
     }
     admit();
@@ -1566,7 +1563,6 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
     const sensitivity = document ? stringFrontmatterField(document, 'sensitivity') : null;
     const freshness = document ? stringFrontmatterField(document, 'freshness') : null;
     const title = document ? stringFrontmatterField(document, 'title') : null;
-    const entryKind = document ? stringFrontmatterField(document, 'openkit_entry_kind') : null;
 
     if (
       !parsed.ok ||
@@ -1603,12 +1599,6 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
       content,
       title,
       body: document.body.trim(),
-      kind:
-        entryKind === 'preference' ||
-        entryKind === 'project-context' ||
-        entryKind === 'task-summary'
-          ? entryKind
-          : 'project-context',
     });
   }
 

@@ -112,7 +112,6 @@ function page(id: string, body: string): string {
     'sensitivity: normal',
     'freshness: current',
     `openkit_entry_id: ${id}`,
-    'openkit_entry_kind: project-context',
     'created_at: "2026-10-16T00:00:00.000Z"',
     'updated_at: "2026-10-16T00:00:00.000Z"',
     'custom: {preserved: [one, two]}',
@@ -124,7 +123,7 @@ function page(id: string, body: string): string {
 
 /** Read the public pinned revision; missing initialization is a product failure, never a fake base. */
 async function listing(f: ReturnType<typeof fixture>) {
-  const response = await f.app.request('/api/app/operations/knowledge.list', {
+  const response = await f.app.request('/api/app/operations/knowledge.notebook.list', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ workspaceId: DEMO_WORKSPACE_ID }),
@@ -132,10 +131,15 @@ async function listing(f: ReturnType<typeof fixture>) {
   expect(response.status).toBe(200);
   const body = (await response.json()) as {
     notebookRevision: string;
-    items: Array<{ id: string; content: string }>;
+    knowledgeBaseId: string;
+    pages: Array<{ id: string; path: string; content: string; contentDigest: string }>;
   };
   expect(body, 'fresh scope initialization must expose its actual published Git revision').toEqual(
-    expect.objectContaining({ notebookRevision: expect.any(String), items: expect.any(Array) })
+    expect.objectContaining({
+      notebookRevision: expect.any(String),
+      knowledgeBaseId: expect.any(String),
+      pages: expect.any(Array),
+    })
   );
   expect(body.notebookRevision).not.toBe('');
   return body;
@@ -191,10 +195,10 @@ afterEach(() => {
   }
 });
 
-/** Submit retained entry commands through their public native binding, never through a nested notebook command. */
-async function entryCommand(
+/** Submit public commands through their actual native binding and original receipt identity. */
+async function command(
   f: ReturnType<typeof fixture>,
-  operation: 'knowledge.create' | 'knowledge.update',
+  operation: string,
   requestId: string,
   input: Record<string, unknown>
 ) {
@@ -207,24 +211,28 @@ async function entryCommand(
 }
 
 describe('native Workspace notebook publication with real Git and SQLite', () => {
-  it('publishes existing entry commands once and replays their exact old bytes after later edits and reopen', async () => {
+  it('publishes page commands once and replays their exact old bytes after later edits and reopen', async () => {
     const f = fixture();
     const initial = await listing(f);
     const baseRevision = initial.notebookRevision;
     const createRequestId = randomUUID();
     const input = {
       baseRevision,
-      knowledgePageId: 'notes/human-entry',
-      kind: 'project-context',
-      title: 'Original human title',
-      content: 'Original human bytes.',
+      path: 'notes/human-entry.md',
+      content: updateOkfFrontmatter({
+        path: 'notes/human-entry.md',
+        content: page('notes/human-entry', 'Original human bytes.'),
+        updates: { title: 'Original human title' },
+      }),
+      summary: 'Create original human page',
     };
-    const created = await entryCommand(f, 'knowledge.create', createRequestId, input);
+    const created = await command(f, 'knowledge.notebook.create', createRequestId, input);
     expect(created.status, JSON.stringify(created.body)).toBe(200);
     expect(created.body).toMatchObject({
-      id: 'notes/human-entry',
-      title: input.title,
-      content: input.content,
+      outcome: 'published',
+      baseRevision,
+      changedPageIds: ['notes/human-entry'],
+      receiptRef: { operation: 'knowledge.notebook.create', requestId: createRequestId },
     });
     for (const operation of ['workspace.read', 'workspace.dashboard']) {
       const response = await f.app.request(`/api/app/operations/${operation}`, {
@@ -236,43 +244,52 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
       const body = (await response.json()) as {
         counts: { knowledgeEntryCount: number };
       };
-      expect(body.counts.knowledgeEntryCount).toBe(initial.items.length + 1);
+      expect(body.counts.knowledgeEntryCount).toBe(initial.pages.length + 1);
     }
     const createdRevision = (await listing(f)).notebookRevision;
     expect(createdRevision).not.toBe(baseRevision);
-    const updated = await entryCommand(f, 'knowledge.update', randomUUID(), {
-      knowledgeEntryId: 'notes/human-entry',
+    const laterBytes = updateOkfFrontmatter({
+      path: input.path,
+      content: input.content,
+      updates: { title: 'Later title' },
+      body: 'Later bytes.\n',
+    });
+    const updated = await command(f, 'knowledge.notebook.update', randomUUID(), {
       baseRevision: createdRevision,
-      title: 'Later title',
-      content: 'Later bytes.',
+      changes: [{ path: input.path, content: laterBytes }],
+      summary: 'Update human page',
     });
     expect(updated.status, JSON.stringify(updated.body)).toBe(200);
     const currentRevision = (await listing(f)).notebookRevision;
     reopen(f);
-    const replay = await entryCommand(f, 'knowledge.create', createRequestId, input);
+    const replay = await command(f, 'knowledge.notebook.create', createRequestId, input);
     expect(replay).toEqual(created);
     expect((await listing(f)).notebookRevision).toBe(currentRevision);
     expect(
-      (await listing(f)).items.find((entry) => entry.id === 'notes/human-entry')?.content
-    ).toBe('Later bytes.');
+      (await listing(f)).pages.find((entry) => entry.id === 'notes/human-entry')?.content
+    ).toBe(laterBytes);
+    expect(git(f, ['show', `${currentRevision}:pages/${input.path}`])).toBe(laterBytes);
+    expect(git(f, ['show', `${created.body.notebookRevision}:pages/${input.path}`])).toBe(
+      input.content
+    );
     const receipts = f.workspaceDb.sqlite
       .prepare(
         'SELECT command_name AS command, response_kind AS kind FROM idempotency_requests WHERE request_id = ?'
       )
       .all(createRequestId);
     expect(receipts).toEqual([
-      { command: 'knowledge.create', kind: 'knowledge_notebook_revision' },
+      { command: 'knowledge.notebook.create', kind: 'knowledge_notebook_revision' },
     ]);
     expect(
       f.workspaceDb.sqlite
         .prepare(
-          "SELECT COUNT(*) AS count FROM idempotency_requests WHERE command_name = 'knowledge.notebook.update'"
+          "SELECT COUNT(*) AS count FROM idempotency_requests WHERE command_name = 'knowledge.notebook.update' AND request_id = ?"
         )
-        .get()
+        .get(createRequestId)
     ).toEqual({ count: 0 });
-    const changed = await entryCommand(f, 'knowledge.create', createRequestId, {
+    const changed = await command(f, 'knowledge.notebook.create', createRequestId, {
       ...input,
-      content: 'Changed under the old key.',
+      content: page('notes/human-entry', 'Changed under the old key.'),
     });
     expect(changed.status).toBe(409);
     expect(changed.body).toMatchObject({ code: 'idempotency_key_conflict' });
@@ -281,7 +298,7 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
 
   it('replays an updated page after removal without resurrection and still rechecks its Source audience', async () => {
     const f = fixture();
-    const source = await entryCommand(f, 'knowledge.source.register', randomUUID(), {
+    const source = await command(f, 'knowledge.source.register', randomUUID(), {
       kind: 'document',
       title: 'Replay source',
       content: 'Independent retained source.',
@@ -289,37 +306,53 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
     });
     expect(source.status, JSON.stringify(source.body)).toBe(200);
     const id = 'notes/replay';
-    const created = await entryCommand(f, 'knowledge.create', randomUUID(), {
+    const created = await command(f, 'knowledge.notebook.create', randomUUID(), {
       baseRevision: (await listing(f)).notebookRevision,
-      knowledgePageId: id,
-      kind: 'project-context',
-      title: 'Replay page',
-      content: 'Original bytes.',
-      sourceReferences: [`source:${source.body.source.id}@${source.body.source.contentDigest}`],
+      path: `${id}.md`,
+      content: updateOkfFrontmatter({
+        path: `${id}.md`,
+        content: page(id, 'Original bytes.'),
+        updates: {
+          title: 'Replay page',
+          source_refs: [`source:${source.body.source.id}@${source.body.source.contentDigest}`],
+        },
+      }),
+      summary: 'Create replay page',
     });
     expect(created.status, JSON.stringify(created.body)).toBe(200);
     const requestId = randomUUID();
     const input = {
       baseRevision: (await listing(f)).notebookRevision,
-      knowledgeEntryId: id,
-      content: 'Updated historical bytes.',
+      changes: [
+        {
+          path: `${id}.md`,
+          content: updateOkfFrontmatter({
+            path: `${id}.md`,
+            content: git(f, ['show', `${created.body.notebookRevision}:pages/${id}.md`]),
+            updates: {},
+            body: 'Updated historical bytes.\n',
+          }),
+        },
+      ],
+      summary: 'Update historical page',
     };
-    const updated = await entryCommand(f, 'knowledge.update', requestId, input);
+    const updated = await command(f, 'knowledge.notebook.update', requestId, input);
     expect(updated.status, JSON.stringify(updated.body)).toBe(200);
     const revision = (await listing(f)).notebookRevision;
     const content = git(f, ['show', `${revision}:pages/${id}.md`]);
-    const deleted = await entryCommand(f, 'knowledge.delete', randomUUID(), {
+    const deleted = await command(f, 'knowledge.notebook.delete', randomUUID(), {
       baseRevision: revision,
-      knowledgeEntryId: id,
+      path: `${id}.md`,
+      summary: 'Remove replay page',
       expectedContentDigest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
       confirmRemoval: true,
     });
     expect(deleted.status, JSON.stringify(deleted.body)).toBe(200);
     const removedRevision = (await listing(f)).notebookRevision;
     reopen(f);
-    expect(await entryCommand(f, 'knowledge.update', requestId, input)).toEqual(updated);
+    expect(await command(f, 'knowledge.notebook.update', requestId, input)).toEqual(updated);
     expect((await listing(f)).notebookRevision).toBe(removedRevision);
-    expect((await listing(f)).items.some((entry) => entry.id === id)).toBe(false);
+    expect((await listing(f)).pages.some((entry) => entry.id === id)).toBe(false);
     expect(git(f, ['show', `${revision}:pages/${id}.md`])).toBe(content);
 
     // Change the fixture's actual current audience; metadata-only updateThread does not alter it.
@@ -327,21 +360,24 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
       visibility: 'private',
       privateOwnerUserId: LOCAL_USER_ID,
     });
-    const denied = await entryCommand(f, 'knowledge.update', requestId, input);
+    const denied = await command(f, 'knowledge.notebook.update', requestId, input);
     expect(denied.status, JSON.stringify(denied.body)).toBe(403);
     expect(JSON.stringify(denied.body)).not.toContain('Updated historical bytes.');
     expect(git(f, ['rev-parse', 'refs/heads/published']).trim()).toBe(removedRevision);
   });
 
-  it('preserves unknown nested OKF metadata through the native entry update and restart', async () => {
+  it('preserves unknown nested OKF metadata through the native full-page update and restart', async () => {
     const f = fixture();
     const id = 'notes/metadata';
-    const created = await entryCommand(f, 'knowledge.create', randomUUID(), {
+    const created = await command(f, 'knowledge.notebook.create', randomUUID(), {
       baseRevision: (await listing(f)).notebookRevision,
-      knowledgePageId: id,
-      kind: 'project-context',
-      title: 'Original title',
-      content: 'Original body.',
+      path: `${id}.md`,
+      content: updateOkfFrontmatter({
+        path: `${id}.md`,
+        content: page(id, 'Original body.'),
+        updates: { title: 'Original title' },
+      }),
+      summary: 'Create metadata page',
     });
     expect(created.status, JSON.stringify(created.body)).toBe(200);
     const originalRevision = (await listing(f)).notebookRevision;
@@ -364,11 +400,20 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
       summary: 'Retain authored extension metadata',
     });
     reopen(f);
-    const updated = await entryCommand(f, 'knowledge.update', randomUUID(), {
+    const updated = await command(f, 'knowledge.notebook.update', randomUUID(), {
       baseRevision: annotated.notebookRevision,
-      knowledgeEntryId: id,
-      title: 'Updated title',
-      content: 'Updated body.',
+      changes: [
+        {
+          path: `${id}.md`,
+          content: updateOkfFrontmatter({
+            path: `${id}.md`,
+            content: git(f, ['show', `${annotated.notebookRevision}:pages/${id}.md`]),
+            updates: { title: 'Updated title' },
+            body: 'Updated body.\n',
+          }),
+        },
+      ],
+      summary: 'Update metadata page',
     });
     expect(updated.status, JSON.stringify(updated.body)).toBe(200);
     const revision = (await listing(f)).notebookRevision;
@@ -381,9 +426,12 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
     expect(parsed.document.frontmatter.title).toBe('Updated title');
     expect(parsed.document.body).toBe('Updated body.\n');
     reopen(f);
-    expect((await listing(f)).items).toContainEqual(
-      expect.objectContaining({ id, title: 'Updated title', content: 'Updated body.' })
-    );
+    expect((await listing(f)).pages).toContainEqual({
+      id,
+      path: `${id}.md`,
+      content,
+      contentDigest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
+    });
     expect(git(f, ['show', `${revision}:pages/${id}.md`])).toBe(content);
     expect(git(f, ['show', `${originalRevision}:pages/${id}.md`])).toBe(original);
   });
@@ -391,9 +439,7 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
   it('retains generic valid pages without managed entry fields or body text across reopen', async () => {
     const f = fixture();
     const initial = await listing(f);
-    const raw = page('rough', '')
-      .replace(/^openkit_entry_id:.*\n/m, '')
-      .replace(/^openkit_entry_kind:.*\n/m, '');
+    const raw = page('rough', '').replace(/^openkit_entry_id:.*\n/m, '');
     const published = await publish(f, {
       requestId: randomUUID(),
       baseRevision: initial.notebookRevision,
@@ -401,13 +447,19 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
       summary: 'Keep an unfinished note',
     });
     expect(git(f, ['show', `${published.notebookRevision}:pages/rough.md`])).toBe(raw);
-    expect((await listing(f)).items).toContainEqual(
-      expect.objectContaining({ id: 'rough', content: '' })
-    );
+    expect((await listing(f)).pages).toContainEqual({
+      id: 'rough',
+      path: 'rough.md',
+      content: raw,
+      contentDigest: `sha256:${createHash('sha256').update(raw).digest('hex')}`,
+    });
     reopen(f);
-    expect((await listing(f)).items).toContainEqual(
-      expect.objectContaining({ id: 'rough', content: '' })
-    );
+    expect((await listing(f)).pages).toContainEqual({
+      id: 'rough',
+      path: 'rough.md',
+      content: raw,
+      contentDigest: `sha256:${createHash('sha256').update(raw).digest('hex')}`,
+    });
     expect(git(f, ['show', `${published.notebookRevision}:pages/rough.md`])).toBe(raw);
   });
 
@@ -571,7 +623,7 @@ describe('native Workspace notebook publication with real Git and SQLite', () =>
     reopen(f);
     const retained = await listing(f);
     expect(retained.notebookRevision).toBe(published.notebookRevision);
-    expect(retained.items.find((item) => item.id === 'alpha')?.content).toContain(
+    expect(retained.pages.find((item) => item.id === 'alpha')?.content).toContain(
       'Only the notebook owns these bytes.'
     );
     expect(publishedCount(f)).toBe(count);

@@ -1,6 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import type { KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS, OperationId } from '@openkit/app-api-schemas';
+import type {
+  KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS,
+  OperationId,
+} from '@openkit/app-api-schemas';
 import {
   KNOWLEDGE_OPERATION_DEFINITIONS,
   KnowledgeDerivedIndexesResponseSchema,
@@ -10,6 +13,7 @@ import {
   KnowledgeManagerPrepareContextResponseSchema,
   KnowledgeManagerSuggestRepairResponseSchema,
   KnowledgeRetrievalResponseSchema,
+  ListKnowledgeNotebookResponseSchema,
   ListKnowledgeSourcesResponseSchema,
   ReadKnowledgeSourceResponseSchema,
   RegisterKnowledgeSourceResponseSchema,
@@ -19,7 +23,6 @@ import {
   type ActorRef,
   allocateEntityId,
   deriveEntityId,
-  ListKnowledgeEntriesResponseSchema,
   parseReferenceScope,
   parseReferenceUri,
 } from '@openkit/protocol';
@@ -35,10 +38,6 @@ import {
 } from './capability/usage-ledger.js';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { KnowledgeNotebook, NotebookError } from './knowledge/notebook.js';
-import {
-  type NotebookEntryEdit,
-  publishWorkspaceNotebookEntry,
-} from './knowledge/notebook-entry-publication.js';
 import { createNotebookHistoryOperations } from './knowledge/notebook-history.js';
 import {
   type NotebookPublicationDependencies,
@@ -48,7 +47,8 @@ import {
 import { readWorkspaceNotebookAdmission } from './knowledge/notebook-workspace-admission.js';
 import {
   KnowledgePageValidationError,
-  resolveRegisteredKnowledgeSourceReference,
+  parseOkfDocument,
+  stringFrontmatterField,
 } from './knowledge/okf.js';
 import {
   checkKnowledgeHealth,
@@ -93,7 +93,6 @@ import {
   retrieveWorkspaceKnowledge,
 } from './storage/index-rebuild.js';
 import { applyScopedMigrations } from './storage/migrate.js';
-import { parseOwnedKnowledgeEntry } from './storage/workspace-file-records.js';
 
 /** Projects known Knowledge command, record and decoder refusals; arbitrary exceptions escape. */
 function commandFailure(error: unknown, code: string, status = 404): OperationError {
@@ -330,7 +329,7 @@ type KnowledgeImplementations = Pick<
   OperationImplementations,
   Extract<
     | Exclude<keyof typeof KNOWLEDGE_OPERATION_DEFINITIONS, 'knowledge.proposal.read'>
-    | keyof typeof KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS,
+    | keyof typeof KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS,
     OperationId
   >
 >;
@@ -411,64 +410,6 @@ export function createKnowledgeOperationImplementations(
     }
   };
 
-  /** Binds existing entry commands to current native authority and the one Git/Audit/receipt publisher. */
-  const publishEntry = async (input: NotebookEntryEdit, context: AdmittedOperationContext) => {
-    const dataRoot = store.getDataRoot();
-    const { runtimeConfigManager, workspaceMutationAdmission } = dependencies;
-    if (!coreDb || !dataRoot || !runtimeConfigManager || !workspaceMutationAdmission)
-      throw new OperationError(
-        'operation_storage_unavailable',
-        'Notebook publication storage is unavailable.',
-        503
-      );
-    const requestActor = publicOperationActor(context);
-    const actor = context.actorRef;
-    if (actor.kind !== 'user')
-      throw new OperationError(
-        'workspace_access_denied',
-        'Notebook publication access denied.',
-        403
-      );
-    const workspaceDb = repositoryWorkspaceDb(input.workspaceId);
-    try {
-      const notebook = new KnowledgeNotebook({
-        repositoryPath: join(
-          dataRoot,
-          'workspaces',
-          input.workspaceId,
-          'knowledge',
-          'notebook.git'
-        ),
-      });
-      return await publishWorkspaceNotebookEntry(
-        {
-          store,
-          workspaceDb,
-          notebook,
-          producer: actor,
-          inflightCommands,
-          revalidate: (request) =>
-            readWorkspaceNotebookAdmission({
-              store,
-              coreDb,
-              workspaceDb,
-              notebook,
-              request,
-              requestActor,
-              actor,
-              runtimeConfigManager,
-              workspaceMutationAdmission,
-            }),
-        },
-        input
-      );
-    } catch (error) {
-      notebookCommandFailure(error);
-    } finally {
-      workspaceDb.sqlite.close();
-    }
-  };
-
   /** Binds governed changes to the same current authority and single Git publication sequence. */
   const withGovernedNotebook = async <T>(
     request: NotebookUpdate,
@@ -527,6 +468,25 @@ export function createKnowledgeOperationImplementations(
       workspaceDb.sqlite.close();
     }
   };
+  /** Existing receipt/in-flight identity precedes path or digest conflicts for page intents. */
+  function assertNotebookPageCommandIdentity(
+    name: 'knowledge.notebook.create' | 'knowledge.notebook.delete',
+    input: { readonly workspaceId: string; readonly requestId: string },
+    owner: NotebookPublicationDependencies
+  ): void {
+    const scope = { workspaceId: input.workspaceId, actorId: owner.producer.id };
+    const receipt = store.getCommandRequest(name, input.requestId, scope, owner.workspaceDb);
+    const inflight = inflightCommands
+      .get(store)
+      ?.get(commandRequestKey(name, input.requestId, scope));
+    const inputHash = commandInputHash(input);
+    if (
+      (receipt && receipt.inputHash !== inputHash) ||
+      (inflight && inflight.inputHash !== inputHash)
+    )
+      throw new IdempotencyKeyConflictError();
+  }
+
   /** Trusted current caller and query audience for the existing Source reader. */
   function sourceReadInput(workspaceId: string, context: AdmittedOperationContext) {
     return {
@@ -550,36 +510,6 @@ export function createKnowledgeOperationImplementations(
   ): void {
     if (!knowledgeSourceAudienceReadable(sourceReadInput(workspaceId, context), sourceId))
       throw new OperationError('workspace_access_denied', 'Knowledge source is unavailable.', 403);
-  }
-
-  /** Source selection preserves private origin restrictions; selection itself grants no sharing authority. */
-  function requireSourceReferenceAudience(
-    workspaceId: string,
-    references: readonly string[],
-    context: AdmittedOperationContext
-  ): void {
-    if (!references.some((reference) => reference.startsWith('source:'))) return;
-    const sources = new Map(
-      store.listKnowledgeSources(workspaceId).map((source) => [source.id, source.contentDigest])
-    );
-    for (const reference of references) {
-      if (!reference.startsWith('source:')) continue;
-      const resolution = resolveRegisteredKnowledgeSourceReference(reference, sources);
-      // The existing save validator retains invalid reference and digest failure semantics.
-      if (!resolution.resolved || !resolution.targetId) continue;
-      requireSourceAudience(workspaceId, resolution.targetId, context);
-      const source = store.getKnowledgeSource(workspaceId, resolution.targetId);
-      if (
-        source.originatingThreadId &&
-        store.getWorkspace(workspaceId).kind !== 'personal' &&
-        store.getThread(workspaceId, source.originatingThreadId).visibility === 'private'
-      )
-        throw new OperationError(
-          'workspace_access_denied',
-          'Knowledge source is unavailable.',
-          403
-        );
-    }
   }
 
   return {
@@ -669,6 +599,17 @@ export function createKnowledgeOperationImplementations(
           },
           input
         );
+        recordKnowledgeGatewayUsage({
+          authorityActor: context.actorRef,
+          capabilityId: 'knowledge.notebook.update',
+          operation: 'knowledge.notebook.update',
+          requestId: input.requestId,
+          serviceRef: 'knowledge-store',
+          summary: 'Human Notebook update published.',
+          usageSource: 'knowledge-notebook-update',
+          workspaceId: input.workspaceId,
+          ...(coreDb ? { coreDb } : {}),
+        });
         return {
           ...publication,
           changedPageIds: [...publication.changedPageIds],
@@ -745,13 +686,13 @@ export function createKnowledgeOperationImplementations(
               'Knowledge Manager citation is unavailable.',
               500
             );
-          const entry = parseOwnedKnowledgeEntry(page.path, page.id, page.content);
-          const body = entry.content.replace(/\s+/g, ' ').trim();
+          const document = parseOkfDocument({ path: page.path, content: page.content }).document!;
+          const title = stringFrontmatterField(document, 'title')!;
+          const body = document.body.replace(/\s+/g, ' ').trim();
           return {
             reference: { scopeId, objectId: id },
-            kind: entry.kind,
-            title: entry.title,
-            excerpt: body.length > 240 ? `${body.slice(0, 237)}...` : body || entry.title,
+            title,
+            excerpt: body.length > 240 ? `${body.slice(0, 237)}...` : body || title,
           };
         });
         return KnowledgeManagerAnswerResponseSchema.parse({
@@ -1464,9 +1405,7 @@ export function createKnowledgeOperationImplementations(
         notebookCommandFailure(error);
       }
     },
-    'knowledge.list': async (input, context) => {
-      const { workspaceId } = input;
-
+    'knowledge.notebook.list': async (input, context) => {
       try {
         const dataRoot = store.getDataRoot();
         if (!dataRoot)
@@ -1477,7 +1416,7 @@ export function createKnowledgeOperationImplementations(
           );
         const snapshot = readAuthorizedWorkspaceNotebookPages({
           dataRoot,
-          workspaceId,
+          workspaceId: input.workspaceId,
           access: {
             store,
             coreDb,
@@ -1487,125 +1426,101 @@ export function createKnowledgeOperationImplementations(
             outputTurnId: context.queryContext?.turnId,
           },
         });
-        return ListKnowledgeEntriesResponseSchema.parse({
+        return ListKnowledgeNotebookResponseSchema.parse({
           knowledgeBaseId: snapshot.knowledgeBaseId,
           notebookRevision: snapshot.notebookRevision,
-          items: snapshot.pages.map(({ path, id, content }) => ({
-            ...parseOwnedKnowledgeEntry(path, id, content),
-            contentDigest: `sha256:${createHash('sha256').update(content, 'utf8').digest('hex')}`,
-          })),
+          pages: snapshot.pages,
         });
       } catch (error) {
         throw commandFailure(error, 'not_found');
       }
     },
-    'knowledge.create': async (input, context) => {
-      const actor = context.actorRef;
-      const { workspaceId, ...commandInput } = input;
-
-      try {
-        requireSourceReferenceAudience(workspaceId, commandInput.sourceReferences ?? [], context);
-        const knowledge = await publishEntry({ ...input, operation: 'knowledge.create' }, context);
-        requireSourceReferenceAudience(workspaceId, knowledge.sourceReferences ?? [], context);
-        recordKnowledgeGatewayUsage({
-          authorityActor: actor,
-          capabilityId: 'knowledge.entry.create',
-          operation: 'knowledge.entry.create',
-          requestId: commandInput.requestId,
-          serviceRef: 'knowledge-store',
-          summary: `Knowledge entry ${knowledge.id} created.`,
-          usageSource: 'knowledge-entry-create',
-          workspaceId,
-          ...(coreDb ? { coreDb: coreDb } : {}),
-        });
-
-        return knowledge;
-      } catch (error) {
-        throw commandFailure(error, 'knowledge_create_failed');
-      }
+    'knowledge.notebook.create': async (input, context) => {
+      const request: NotebookUpdate = {
+        workspaceId: input.workspaceId,
+        requestId: input.requestId,
+        baseRevision: input.baseRevision,
+        changes: [{ path: input.path, content: input.content }],
+        summary: input.summary,
+      };
+      const publication = await withGovernedNotebook(request, context, (owner) => {
+        assertNotebookPageCommandIdentity('knowledge.notebook.create', input, owner);
+        if (owner.notebook.inspectRevision(input.baseRevision).entries[input.path])
+          throw new OperationError(
+            'conflict',
+            'Notebook page already exists at the selected base.',
+            409
+          );
+        return publishWorkspaceNotebook(
+          { ...owner, command: { name: 'knowledge.notebook.create', input } },
+          request
+        );
+      });
+      recordKnowledgeGatewayUsage({
+        authorityActor: context.actorRef,
+        capabilityId: 'knowledge.notebook.create',
+        operation: 'knowledge.notebook.create',
+        requestId: input.requestId,
+        serviceRef: 'knowledge-store',
+        summary: 'Human Notebook create published.',
+        usageSource: 'knowledge-notebook-create',
+        workspaceId: input.workspaceId,
+        ...(coreDb ? { coreDb } : {}),
+      });
+      return {
+        ...publication,
+        changedPageIds: [...publication.changedPageIds],
+        receiptRef: { ...publication.receiptRef, operation: 'knowledge.notebook.create' as const },
+      };
     },
-    'knowledge.update': async (input, context) => {
-      const actor = context.actorRef;
-      const { workspaceId, ...commandInput } = input;
-
-      try {
-        // The publisher rechecks the fixed candidate's Sources before replay; a later removal must not hide its completed result.
-        const knowledge = await publishEntry({ ...input, operation: 'knowledge.update' }, context);
-        requireSourceReferenceAudience(workspaceId, knowledge.sourceReferences ?? [], context);
-        recordKnowledgeGatewayUsage({
-          authorityActor: actor,
-          capabilityId: 'knowledge.entry.update',
-          operation: 'knowledge.entry.update',
-          requestId: commandInput.requestId,
-          serviceRef: 'knowledge-store',
-          summary: `Knowledge entry ${knowledge.id} updated.`,
-          usageSource: 'knowledge-entry-update',
-          workspaceId,
-          ...(coreDb ? { coreDb: coreDb } : {}),
-        });
-
-        return knowledge;
-      } catch (error) {
-        throw commandFailure(error, 'knowledge_update_failed');
-      }
-    },
-    'knowledge.delete': async (input, context) => {
-      const actor = context.actorRef;
-      const { workspaceId, knowledgeEntryId, ...commandInput } = input;
-
-      try {
-        const dataRoot = store.getDataRoot();
-        if (!dataRoot)
-          throw new OperationError('recovery_required', 'Notebook storage is unavailable.', 503);
-        const notebook = new KnowledgeNotebook({
-          repositoryPath: join(dataRoot, 'workspaces', workspaceId, 'knowledge', 'notebook.git'),
-        });
-        const path = `${knowledgeEntryId}.md`;
-        const content = notebook.readRevision(commandInput.baseRevision).files[path];
+    'knowledge.notebook.delete': async (input, context) => {
+      const request: NotebookUpdate = {
+        workspaceId: input.workspaceId,
+        requestId: input.requestId,
+        baseRevision: input.baseRevision,
+        changes: [{ path: input.path, content: null }],
+        summary: input.summary,
+      };
+      const publication = await withGovernedNotebook(request, context, (owner) => {
+        assertNotebookPageCommandIdentity('knowledge.notebook.delete', input, owner);
+        const content = owner.notebook.readRevision(input.baseRevision, [input.path]).files[
+          input.path
+        ];
         if (
           content === undefined ||
           `sha256:${createHash('sha256').update(content).digest('hex')}` !==
-            commandInput.expectedContentDigest
+            input.expectedContentDigest
         )
           throw new OperationError(
             'conflict',
             'Knowledge removal conflicts with its fixed base.',
             409
           );
-        const request: NotebookUpdate = {
-          workspaceId,
-          requestId: commandInput.requestId,
-          baseRevision: commandInput.baseRevision,
-          changes: [{ path, content: null }],
-          summary: 'Explicit Knowledge removal; Git history retained',
-        };
-        await withGovernedNotebook(request, context, (owner) =>
-          publishWorkspaceNotebook(
-            {
-              ...owner,
-              command: { name: 'knowledge.delete', input },
-              confirmedRemovals: { [path]: content },
-            },
-            request
-          )
+        return publishWorkspaceNotebook(
+          {
+            ...owner,
+            command: { name: 'knowledge.notebook.delete', input },
+            confirmedRemovals: { [input.path]: content },
+          },
+          request
         );
-        recordKnowledgeGatewayUsage({
-          authorityActor: actor,
-          capabilityId: 'knowledge.entry.delete',
-          operation: 'knowledge.entry.delete',
-          requestId: commandInput.requestId,
-          serviceRef: 'knowledge-store',
-          summary: `Knowledge entry ${knowledgeEntryId} deleted.`,
-          usageSource: 'knowledge-entry-delete',
-          workspaceId,
-          ...(coreDb ? { coreDb: coreDb } : {}),
-        });
-
-        return null;
-      } catch (error) {
-        if (error instanceof NotebookError) notebookCommandFailure(error);
-        throw commandFailure(error, 'knowledge_delete_failed');
-      }
+      });
+      recordKnowledgeGatewayUsage({
+        authorityActor: context.actorRef,
+        capabilityId: 'knowledge.notebook.delete',
+        operation: 'knowledge.notebook.delete',
+        requestId: input.requestId,
+        serviceRef: 'knowledge-store',
+        summary: 'Human Notebook delete published.',
+        usageSource: 'knowledge-notebook-delete',
+        workspaceId: input.workspaceId,
+        ...(coreDb ? { coreDb } : {}),
+      });
+      return {
+        ...publication,
+        changedPageIds: [...publication.changedPageIds],
+        receiptRef: { ...publication.receiptRef, operation: 'knowledge.notebook.delete' as const },
+      };
     },
   } satisfies KnowledgeImplementations;
 }

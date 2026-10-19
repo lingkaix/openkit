@@ -35,8 +35,8 @@ import { dispatchOpenkitWorkTool } from '../runtime/openkit-work-mcp.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { readTurnRetrievalTraces } from '../storage/retrieval-traces.js';
-import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -45,7 +45,7 @@ import { askKnowledgeAgent, type KnowledgeAgentDependencies } from './knowledge-
 import { saveMemoryPage } from './memory-lifecycle.js';
 import { appendMemorySuppression } from './memory-maintenance.js';
 import { KnowledgeNotebook } from './notebook.js';
-import { publishWorkspaceNotebookEntry } from './notebook-entry-publication.js';
+import { publishWorkspaceNotebook } from './notebook-publication.js';
 import { readWorkspaceNotebookAdmission } from './notebook-workspace-admission.js';
 import {
   readUserKnowledgeSource,
@@ -110,37 +110,48 @@ async function fixture(withServerKnowledge = false, emptyOverview = false) {
   });
   const publicationConfig = createInMemoryRuntimeConfigSnapshot({ dataRoot });
   const workspaceMutationAdmission = new WorkspaceMutationAdmission();
-  await publishWorkspaceNotebookEntry(
+  const publicationRequest = {
+    requestId: randomUUID(),
+    workspaceId: workspace.id,
+    baseRevision: notebook.publishedRevision(),
+    summary: 'Record launch evidence',
+    changes: [
+      {
+        path: 'launch-evidence.md',
+        content: serializeKnowledgePageFixture(
+          {
+            title: 'Heliotrope launch',
+            content: captured,
+            sourceReferences: [sourceReference],
+            createdAt: now,
+            updatedAt: now,
+          },
+          { kind: 'workspace', workspaceId: workspace.id }
+        ),
+      },
+    ],
+  };
+  await publishWorkspaceNotebook(
     {
       store,
       workspaceDb,
       notebook,
       producer: actor,
       inflightCommands: new WeakMap(),
-      revalidate: (request) =>
+      revalidate: () =>
         readWorkspaceNotebookAdmission({
           store,
           coreDb,
           workspaceDb,
           notebook,
-          request,
+          request: publicationRequest,
           requestActor: { kind: 'local', userId },
           actor,
           runtimeConfigManager: { current: () => publicationConfig },
           workspaceMutationAdmission,
         }),
     },
-    {
-      operation: 'knowledge.create',
-      requestId: randomUUID(),
-      workspaceId: workspace.id,
-      knowledgePageId: 'launch-evidence',
-      baseRevision: notebook.publishedRevision(),
-      kind: 'project-context',
-      title: 'Heliotrope launch',
-      content: captured,
-      sourceReferences: [sourceReference],
-    }
+    publicationRequest
   );
   // A valid shared publication does not retain disclosure authority after its Source becomes private.
   Object.assign(sourceThread, { visibility: 'private', privateOwnerUserId: userId });
@@ -180,10 +191,8 @@ async function fixture(withServerKnowledge = false, emptyOverview = false) {
     const repositoryPath = join(resolveScopedNotebookOwner(context).notebookRoot, 'notebook.git');
     const serverNotebook = new KnowledgeNotebook({ repositoryPath });
     const timestamp = new Date().toISOString();
-    const content = serializeUserAuthoredKnowledgePage(
+    const content = serializeKnowledgePageFixture(
       {
-        id: 'launch-evidence',
-        kind: 'project-context',
         title: 'Heliotrope launch policy',
         content: 'The heliotrope launch requires cobalt approval from the Server owner.',
         sourceReferences: [],
@@ -1064,10 +1073,8 @@ async function memoryFixture() {
     baseRevision,
     pageId,
     summary: 'Save private preference',
-    content: serializeUserAuthoredKnowledgePage(
+    content: serializeKnowledgePageFixture(
       {
-        id: pageId,
-        kind: 'preference',
         title: 'Meridian tea preference',
         content: 'I prefer meridian violet tea. USER_PRIVATE_PAGE',
         sourceReferences: [`source:${source.id}@${source.contentDigest}`],

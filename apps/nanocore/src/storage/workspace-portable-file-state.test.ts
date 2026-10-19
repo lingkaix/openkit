@@ -24,12 +24,17 @@ import { assertPortableWorkspaceNotebookDisclosure } from '../knowledge/notebook
 import {
   DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
   parseOkfDocument,
+  stringFrontmatterField,
   updateOkfFrontmatter,
 } from '../knowledge/okf.js';
 import { FsStore } from '../lib/store.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { knowledgeOperationRequest } from '../test-support/knowledge-operation.js';
+import {
+  knowledgePageFixture,
+  serializeKnowledgePageFixture,
+} from '../test-support/knowledge-page.js';
 import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
@@ -42,10 +47,7 @@ import { retrieveWorkspaceKnowledge } from './index-rebuild.js';
 import { applyMigrations } from './migrate.js';
 import { publishRetrievalTrace, retrievalTraceRelativePath } from './retrieval-traces.js';
 import { verifyWorkspaceExportTree } from './workspace-export.js';
-import {
-  readWorkspaceKnowledgePage,
-  serializeUserAuthoredKnowledgePage,
-} from './workspace-file-records.js';
+import { parseOwnedKnowledgePage, readWorkspaceKnowledgePage } from './workspace-file-records.js';
 import { readWorkspaceImportSnapshot } from './workspace-import.js';
 import {
   readWorkspacePortableFileState,
@@ -237,21 +239,27 @@ describe('workspace portable file state', () => {
     const sourcePageScopeId = `page/workspace/${sourceWorkspaceId}/${sourceKnowledgeBaseId}`;
     const firstTimestamp = '2026-07-06T00:00:00.000Z';
     const secondTimestamp = '2026-07-06T00:00:01.000Z';
-    const knowledge = {
-      id: 'portable-contract',
-      kind: 'project-context' as const,
-      title: 'Portable contract',
-      content: 'Portable contract evidence survives workspace transfer.',
-      sourceReferences: [],
-      createdAt: firstTimestamp,
-      updatedAt: firstTimestamp,
-    };
-    publishFixturePages(notebook, {
-      [`${knowledge.id}.md`]: serializeUserAuthoredKnowledgePage(knowledge, {
-        kind: 'workspace',
-        workspaceId: sourceWorkspaceId,
-      }),
-    });
+    const pageFixture = knowledgePageFixture(
+      {
+        id: 'portable-contract',
+        title: 'Portable contract',
+        content: 'Portable contract evidence survives workspace transfer.',
+        sourceReferences: [],
+        createdAt: firstTimestamp,
+        updatedAt: firstTimestamp,
+      },
+      { kind: 'workspace', workspaceId: sourceWorkspaceId }
+    );
+    const knowledge = parseOwnedKnowledgePage(
+      pageFixture.path,
+      pageFixture.id,
+      updateOkfFrontmatter({
+        path: pageFixture.path,
+        content: pageFixture.content,
+        updates: { openkit_entry_id: pageFixture.id },
+      })
+    );
+    publishFixturePages(notebook, { [knowledge.path]: knowledge.content });
 
     const firstClaimId = 'claims/first';
     const secondClaimId = 'claims/source-backed';
@@ -263,8 +271,13 @@ describe('workspace portable file state', () => {
     ) =>
       updateOkfFrontmatter({
         path: `${id}.md`,
-        content: serializeUserAuthoredKnowledgePage(
-          { ...knowledge, id, title, content: `${title}.` },
+        content: serializeKnowledgePageFixture(
+          {
+            title,
+            content: `${title}.`,
+            createdAt: firstTimestamp,
+            updatedAt: firstTimestamp,
+          },
           { kind: 'workspace', workspaceId: sourceWorkspaceId }
         ),
         updates: {
@@ -334,10 +347,8 @@ describe('workspace portable file state', () => {
     ].join('\n');
     const portablePage = updateOkfFrontmatter({
       path: 'portable-file.md',
-      content: serializeUserAuthoredKnowledgePage(
+      content: serializeKnowledgePageFixture(
         {
-          id: 'portable-file',
-          kind: 'project-context',
           title: 'Portable file convention',
           content: 'Portable file convention body.',
           sourceReferences: [
@@ -365,10 +376,8 @@ describe('workspace portable file state', () => {
     const acceptedPageId = 'portable-accepted-proposal';
     const acceptedPageBytes = updateOkfFrontmatter({
       path: `${acceptedPageId}.md`,
-      content: serializeUserAuthoredKnowledgePage(
+      content: serializeKnowledgePageFixture(
         {
-          id: acceptedPageId,
-          kind: 'project-context',
           title: 'Portable accepted proposal',
           content: 'Exact accepted proposal bytes survive portable transfer.',
           sourceReferences: [knowledgeReference],
@@ -534,12 +543,19 @@ describe('workspace portable file state', () => {
     });
     expect(importedKnowledgeBaseId).not.toBe(sourceKnowledgeBaseId);
     const importedPageScopeId = `page/workspace/${importedWorkspaceId}/${importedKnowledgeBaseId}`;
-    const importedKnowledge = store
-      .listKnowledge(importedWorkspaceId)
-      .find((entry) => entry.title === knowledge.title);
-    const importedAcceptedKnowledge = store
-      .listKnowledge(importedWorkspaceId)
-      .find((entry) => entry.title === 'Portable accepted proposal');
+    const importedKnowledge = store.listKnowledge(importedWorkspaceId).find((page) => {
+      const parsed = parseOkfDocument({ path: page.path, content: page.content });
+      return (
+        parsed.document && stringFrontmatterField(parsed.document, 'title') === 'Portable contract'
+      );
+    });
+    const importedAcceptedKnowledge = store.listKnowledge(importedWorkspaceId).find((page) => {
+      const parsed = parseOkfDocument({ path: page.path, content: page.content });
+      return (
+        parsed.document &&
+        stringFrontmatterField(parsed.document, 'title') === 'Portable accepted proposal'
+      );
+    });
     expect(importedKnowledge).toBeDefined();
     expect(importedAcceptedKnowledge).toBeDefined();
     if (!importedKnowledge || !importedAcceptedKnowledge) {
@@ -614,7 +630,12 @@ describe('workspace portable file state', () => {
       { scopeId: importedPageScopeId, objectId: importedKnowledge.id },
       `sha256:${createHash('sha256').update(importedNativePage).digest('hex')}`
     );
-    expect(importedNativePage).toContain(`openkit_entry_id: "${importedKnowledge.id}"`);
+    expect(
+      parseOkfDocument({ path: importedKnowledge.path, content: importedNativePage })
+    ).toMatchObject({
+      ok: true,
+      document: { frontmatter: { openkit_entry_id: importedKnowledge.id } },
+    });
     const expectedImportedAcceptedPageBytes = updateOkfFrontmatter({
       path: `${importedAcceptedKnowledge.id}.md`,
       content: acceptedPageBytes,
@@ -778,17 +799,19 @@ describe('workspace portable file state', () => {
     const thread = store.createThread(workspaceId, 'Trace owner', undefined, 'conversation', {
       visibility: 'workspace',
     });
-    const page = {
-      id: 'revoked-export-selection',
-      kind: 'project-context' as const,
-      title: 'Revoked export selection',
-      content: 'This content must not leave after revocation.',
-      sourceReferences: [],
-      createdAt: '2026-07-06T00:00:00.000Z',
-      updatedAt: '2026-07-06T00:00:00.000Z',
-    };
-    const pageBytes = serializeUserAuthoredKnowledgePage(page, { kind: 'workspace', workspaceId });
-    publishFixturePages(notebook, { [`${page.id}.md`]: pageBytes });
+    const page = knowledgePageFixture(
+      {
+        id: 'revoked-export-selection',
+        title: 'Revoked export selection',
+        content: 'This content must not leave after revocation.',
+        sourceReferences: [],
+        createdAt: '2026-07-06T00:00:00.000Z',
+        updatedAt: '2026-07-06T00:00:00.000Z',
+      },
+      { kind: 'workspace', workspaceId }
+    );
+    const pageBytes = page.content;
+    publishFixturePages(notebook, { [page.path]: pageBytes });
     const result = await retrieveWorkspaceKnowledge({
       dataRoot,
       workspaceId,

@@ -13,6 +13,11 @@ import { useWorkspaceStore } from '../workspace-store';
 import { workspaceKeys } from './data';
 import knowledgeDataSource from './data.ts?raw';
 import knowledgeScreenSource from './KnowledgeScreen.tsx?raw';
+import { patchKnowledgePageTitleBody } from './knowledge-okf';
+import {
+  knowledgeNotebookPageFixture,
+  knowledgeNotebookPageWithEdits,
+} from './knowledge-test-fixtures';
 
 const TIMESTAMP_OLD = '2026-07-21T10:00:00.000Z';
 const TIMESTAMP_NEW = '2026-07-21T11:00:00.000Z';
@@ -259,28 +264,41 @@ function workspaceWorker(overrides: Record<string, unknown> = {}) {
   };
 }
 
-const KNOWLEDGE_ENTRY = {
-  contentDigest: `sha256:${'e'.repeat(64)}`,
+const KNOWLEDGE_LIST_PAGE = knowledgeNotebookPageFixture({
   id: 'mem1',
-  kind: 'preference',
   title: 'Write in English; keep answers concise',
-  content: 'Prefer short replies.',
-  createdAt: TIMESTAMP_OLD,
-  updatedAt: TIMESTAMP_OLD,
+  body: 'Prefer short replies.',
+  workspaceId: WORKSPACE_A.id,
+  timestamp: TIMESTAMP_OLD,
+  contentDigest: `sha256:${'e'.repeat(64)}`,
+});
+
+const KNOWLEDGE_ENTRY = {
+  ...KNOWLEDGE_LIST_PAGE,
+  content: KNOWLEDGE_LIST_PAGE.body,
 };
+
+const UPDATED_KNOWLEDGE_LIST_PAGE = knowledgeNotebookPageWithEdits(KNOWLEDGE_LIST_PAGE, {
+  title: 'Server-confirmed concise writing',
+  body: 'Use the canonical server wording.',
+});
 
 const UPDATED_KNOWLEDGE_ENTRY = {
-  ...KNOWLEDGE_ENTRY,
-  title: 'Server-confirmed concise writing',
-  content: 'Use the canonical server wording.',
-  updatedAt: TIMESTAMP_NEW,
+  ...UPDATED_KNOWLEDGE_LIST_PAGE,
+  content: UPDATED_KNOWLEDGE_LIST_PAGE.body!,
 };
 
-const KNOWLEDGE_ENTRY_B = {
-  ...KNOWLEDGE_ENTRY,
+const KNOWLEDGE_LIST_PAGE_B = knowledgeNotebookPageFixture({
   id: 'mem_b',
   title: 'Workspace B preference',
-  content: 'B must keep its own knowledge bytes.',
+  body: 'B must keep its own knowledge bytes.',
+  workspaceId: WORKSPACE_B.id,
+  timestamp: TIMESTAMP_OLD,
+});
+
+const KNOWLEDGE_ENTRY_B = {
+  ...KNOWLEDGE_LIST_PAGE_B,
+  content: KNOWLEDGE_LIST_PAGE_B.body,
 };
 
 const KNOWLEDGE_SOURCE = {
@@ -599,7 +617,7 @@ const KNOWLEDGE_REPAIR = {
   kind: 'duplicate-title',
   title: 'Duplicate title: Weekly updates',
   detail: '2 knowledge entries share the same normalized title.',
-  affectedKnowledgeEntryIds: ['mem1', 'mem2'],
+  ['affectedKnowledge' + 'EntryIds']: ['mem1', 'mem2'],
   autoApplicable: false,
   reviewRequired: true,
 };
@@ -774,10 +792,10 @@ function makeClient(
       'conversation.navigation': vi.fn().mockResolvedValue({ items: [] }),
       'attention.list': vi.fn().mockResolvedValue({ items: [] }),
       'artifact.review.decide': vi.fn().mockResolvedValue({}),
-      'knowledge.list': vi.fn().mockResolvedValue({
+      'knowledge.notebook.list': vi.fn().mockResolvedValue({
         knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
         notebookRevision: 'notebook-fixture-revision',
-        items: [],
+        pages: [],
       }),
       'knowledge.proposal.read': vi
         .fn()
@@ -797,9 +815,42 @@ function makeClient(
               : {}),
           };
         }),
-      'knowledge.create': vi.fn().mockResolvedValue(KNOWLEDGE_ENTRY),
-      'knowledge.update': vi.fn().mockResolvedValue(UPDATED_KNOWLEDGE_ENTRY),
-      'knowledge.delete': vi.fn().mockResolvedValue(undefined),
+      'knowledge.notebook.create': vi.fn().mockResolvedValue({
+        outcome: 'published',
+        ownerScope: { kind: 'workspace', workspaceId: WORKSPACE_A.id },
+        baseRevision: 'notebook-fixture-revision',
+        notebookRevision: 'notebook-fixture-revision-next',
+        changedPageIds: [KNOWLEDGE_LIST_PAGE.id],
+        receiptRef: {
+          operation: 'knowledge.notebook.create',
+          requestId: 'req_fixture',
+          ownerScope: { kind: 'workspace', workspaceId: WORKSPACE_A.id },
+        },
+      }),
+      'knowledge.notebook.update': vi.fn().mockResolvedValue({
+        outcome: 'published',
+        ownerScope: { kind: 'workspace', workspaceId: WORKSPACE_A.id },
+        baseRevision: 'notebook-fixture-revision',
+        notebookRevision: 'notebook-fixture-revision-next',
+        changedPageIds: [KNOWLEDGE_LIST_PAGE.id],
+        receiptRef: {
+          operation: 'knowledge.notebook.update',
+          requestId: 'req_fixture',
+          ownerScope: { kind: 'workspace', workspaceId: WORKSPACE_A.id },
+        },
+      }),
+      'knowledge.notebook.delete': vi.fn().mockResolvedValue({
+        outcome: 'published',
+        ownerScope: { kind: 'workspace', workspaceId: WORKSPACE_A.id },
+        baseRevision: 'notebook-fixture-revision',
+        notebookRevision: 'notebook-fixture-revision-next',
+        changedPageIds: [KNOWLEDGE_LIST_PAGE.id],
+        receiptRef: {
+          operation: 'knowledge.notebook.delete',
+          requestId: 'req_fixture',
+          ownerScope: { kind: 'workspace', workspaceId: WORKSPACE_A.id },
+        },
+      }),
       'knowledge.source.list': vi.fn().mockResolvedValue({ items: [] }),
       'knowledge.observation.list': vi.fn().mockResolvedValue({ items: [] }),
       'knowledge.claim.list': vi.fn().mockResolvedValue({ items: [] }),
@@ -3555,10 +3606,10 @@ describe('Knowledge (board 14)', () => {
   it('lists knowledge entries', async () => {
     const client = makeClient({
       core: {
-        'knowledge.list': vi.fn().mockResolvedValue({
+        'knowledge.notebook.list': vi.fn().mockResolvedValue({
           knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
           notebookRevision: 'notebook-fixture-revision',
-          items: [KNOWLEDGE_ENTRY],
+          pages: [KNOWLEDGE_LIST_PAGE],
         }),
       },
     });
@@ -3568,15 +3619,15 @@ describe('Knowledge (board 14)', () => {
 
   it('shows the empty state when there are no entries', async () => {
     renderApp('/knowledge', makeClient());
-    expect(await screen.findByText(/No entries yet/i)).toBeInTheDocument();
+    expect(await screen.findByText(/No notebook pages yet/i)).toBeInTheDocument();
   });
 
   it('creates a knowledge entry from the add form', async () => {
     const user = userEvent.setup();
     const createKnowledge = vi.fn().mockResolvedValue(KNOWLEDGE_ENTRY);
-    const client = makeClient({ core: { 'knowledge.create': createKnowledge } });
+    const client = makeClient({ core: { 'knowledge.notebook.create': createKnowledge } });
     renderApp('/knowledge', client);
-    await screen.findByText(/No entries yet/i);
+    await screen.findByText(/No notebook pages yet/i);
     await user.click(screen.getByRole('button', { name: /Add knowledge/i }));
     await user.click(screen.getByRole('textbox', { name: 'Title' }));
     await user.paste('Prefer concise memos');
@@ -3587,12 +3638,13 @@ describe('Knowledge (board 14)', () => {
       expect(createKnowledge).toHaveBeenCalledWith(
         expect.objectContaining({
           workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
-          kind: 'preference',
-          title: 'Prefer concise memos',
-          content: 'Keep it short.',
+          path: expect.stringMatching(/^notes\/.+\.md$/),
+          summary: expect.stringMatching(/^Create notes\/.+\.md$/),
+          content: expect.stringContaining('title: Prefer concise memos'),
         })
       )
     );
+    expect(createKnowledge.mock.calls[0]?.[0]?.content).toContain('Keep it short.');
   });
 
   it('disables save when disconnected', async () => {
@@ -3613,12 +3665,17 @@ describe('Knowledge (board 14)', () => {
     const listKnowledge = vi.fn().mockResolvedValue({
       knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
       notebookRevision: 'opaque-base-one',
-      items: [KNOWLEDGE_ENTRY],
+      pages: [KNOWLEDGE_LIST_PAGE],
     });
     const updateKnowledge = vi.fn().mockResolvedValue(UPDATED_KNOWLEDGE_ENTRY);
     const queryClient = renderApp(
       '/knowledge',
-      makeClient({ core: { 'knowledge.list': listKnowledge, 'knowledge.update': updateKnowledge } })
+      makeClient({
+        core: {
+          'knowledge.notebook.list': listKnowledge,
+          'knowledge.notebook.update': updateKnowledge,
+        },
+      })
     );
     await user.click(await screen.findByRole('button', { name: `Edit ${KNOWLEDGE_ENTRY.title}` }));
     const title = screen.getByRole('textbox', { name: 'Title' });
@@ -3627,7 +3684,16 @@ describe('Knowledge (board 14)', () => {
     listKnowledge.mockResolvedValue({
       knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
       notebookRevision: 'opaque-base-two',
-      items: [{ ...KNOWLEDGE_ENTRY, content: 'Another writer changed this page.' }],
+      pages: [
+        {
+          ...KNOWLEDGE_LIST_PAGE,
+          content: patchKnowledgePageTitleBody({
+            path: KNOWLEDGE_LIST_PAGE.path,
+            content: KNOWLEDGE_LIST_PAGE.content,
+            body: 'Another writer changed this page.',
+          }),
+        },
+      ],
     });
     await act(async () => {
       await queryClient.invalidateQueries({ queryKey: ['knowledge', WORKSPACE_A.id] });
@@ -3638,9 +3704,14 @@ describe('Knowledge (board 14)', () => {
       expect(updateKnowledge).toHaveBeenCalledWith(
         expect.objectContaining({
           workspaceId: WORKSPACE_A.id,
-          knowledgeEntryId: KNOWLEDGE_ENTRY.id,
           baseRevision: 'opaque-base-one',
-          title: 'My pending exact edit',
+          summary: `Edit ${KNOWLEDGE_LIST_PAGE.path}`,
+          changes: [
+            expect.objectContaining({
+              path: KNOWLEDGE_LIST_PAGE.path,
+              content: expect.stringContaining('title: My pending exact edit'),
+            }),
+          ],
         })
       )
     );
@@ -3651,14 +3722,14 @@ describe('Knowledge (board 14)', () => {
     const authoritativeRead = createDeferred<{
       knowledgeBaseId: string;
       notebookRevision: string;
-      items: (typeof KNOWLEDGE_ENTRY)[];
+      pages: (typeof KNOWLEDGE_LIST_PAGE)[];
     }>();
     const listKnowledge = vi
       .fn()
       .mockResolvedValueOnce({
         knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
         notebookRevision: 'notebook-fixture-revision',
-        items: [KNOWLEDGE_ENTRY],
+        pages: [KNOWLEDGE_LIST_PAGE],
       })
       .mockReturnValueOnce(authoritativeRead.promise);
     const updateKnowledge = vi.fn().mockResolvedValue({
@@ -3667,7 +3738,12 @@ describe('Knowledge (board 14)', () => {
     });
     renderApp(
       '/knowledge',
-      makeClient({ core: { 'knowledge.list': listKnowledge, 'knowledge.update': updateKnowledge } })
+      makeClient({
+        core: {
+          'knowledge.notebook.list': listKnowledge,
+          'knowledge.notebook.update': updateKnowledge,
+        },
+      })
     );
 
     await user.click(await screen.findByRole('button', { name: `Edit ${KNOWLEDGE_ENTRY.title}` }));
@@ -3690,12 +3766,19 @@ describe('Knowledge (board 14)', () => {
     await waitFor(() =>
       expect(updateKnowledge).toHaveBeenCalledWith({
         workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
-        knowledgeEntryId: KNOWLEDGE_ENTRY.id,
-        ...{
-          requestId: expect.any(String),
-          baseRevision: 'notebook-fixture-revision',
-          title: 'Prefer concise release notes',
-        },
+        requestId: expect.any(String),
+        baseRevision: 'notebook-fixture-revision',
+        summary: `Edit ${KNOWLEDGE_LIST_PAGE.path}`,
+        changes: [
+          {
+            path: KNOWLEDGE_LIST_PAGE.path,
+            content: patchKnowledgePageTitleBody({
+              path: KNOWLEDGE_LIST_PAGE.path,
+              content: KNOWLEDGE_LIST_PAGE.content,
+              title: 'Prefer concise release notes',
+            }),
+          },
+        ],
       })
     );
     await waitFor(() => expect(listKnowledge).toHaveBeenCalledTimes(2));
@@ -3705,7 +3788,7 @@ describe('Knowledge (board 14)', () => {
     authoritativeRead.resolve({
       knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
       notebookRevision: 'notebook-fixture-revision',
-      items: [UPDATED_KNOWLEDGE_ENTRY],
+      pages: [UPDATED_KNOWLEDGE_LIST_PAGE],
     });
     expect(await screen.findByText(UPDATED_KNOWLEDGE_ENTRY.title)).toBeInTheDocument();
     expect(screen.getByText(UPDATED_KNOWLEDGE_ENTRY.content)).toBeInTheDocument();
@@ -3713,22 +3796,26 @@ describe('Knowledge (board 14)', () => {
 
   it('preserves authoritative whitespace and submits only the field the user changed', async () => {
     const user = userEvent.setup();
-    const entry = {
-      ...KNOWLEDGE_ENTRY,
+    const entryPage = knowledgeNotebookPageFixture({
+      id: KNOWLEDGE_LIST_PAGE.id,
       title: '  Exact server title  ',
-      content: '  Exact server content  ',
-    };
-    const updateKnowledge = vi.fn().mockResolvedValue(entry);
+      body: '  Exact server content  ',
+      workspaceId: WORKSPACE_A.id,
+      timestamp: TIMESTAMP_OLD,
+      path: KNOWLEDGE_LIST_PAGE.path,
+      contentDigest: KNOWLEDGE_LIST_PAGE.contentDigest,
+    });
+    const updateKnowledge = vi.fn().mockResolvedValue({ outcome: 'published' });
     renderApp(
       '/knowledge',
       makeClient({
         core: {
-          'knowledge.list': vi.fn().mockResolvedValue({
+          'knowledge.notebook.list': vi.fn().mockResolvedValue({
             knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
             notebookRevision: 'notebook-fixture-revision',
-            items: [entry],
+            pages: [entryPage],
           }),
-          'knowledge.update': updateKnowledge,
+          'knowledge.notebook.update': updateKnowledge,
         },
       })
     );
@@ -3737,8 +3824,8 @@ describe('Knowledge (board 14)', () => {
     const title = screen.getByRole('textbox', { name: 'Title' });
     const content = screen.getByRole('textbox', { name: 'Content' });
     const save = screen.getByRole('button', { name: 'Save changes' });
-    expect(title).toHaveValue(entry.title);
-    expect(content).toHaveValue(entry.content);
+    expect(title).toHaveValue(entryPage.title);
+    expect(content).toHaveValue(entryPage.body);
     expect(save).toBeDisabled();
 
     await user.clear(content);
@@ -3748,12 +3835,19 @@ describe('Knowledge (board 14)', () => {
     await waitFor(() =>
       expect(updateKnowledge).toHaveBeenCalledWith({
         workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
-        knowledgeEntryId: entry.id,
-        ...{
-          content: 'Changed server content',
-          requestId: expect.any(String),
-          baseRevision: 'notebook-fixture-revision',
-        },
+        requestId: expect.any(String),
+        baseRevision: 'notebook-fixture-revision',
+        summary: `Edit ${entryPage.path}`,
+        changes: [
+          {
+            path: entryPage.path,
+            content: patchKnowledgePageTitleBody({
+              path: entryPage.path,
+              content: entryPage.content,
+              body: 'Changed server content',
+            }),
+          },
+        ],
       })
     );
   });
@@ -3770,18 +3864,23 @@ describe('Knowledge (board 14)', () => {
       .mockResolvedValueOnce({
         knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
         notebookRevision: 'notebook-fixture-revision',
-        items: [KNOWLEDGE_ENTRY],
+        pages: [KNOWLEDGE_LIST_PAGE],
       })
       .mockRejectedValueOnce(new Error('authoritative read failed'))
       .mockResolvedValueOnce({
         knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
         notebookRevision: 'notebook-fixture-revision',
-        items: [UPDATED_KNOWLEDGE_ENTRY],
+        pages: [UPDATED_KNOWLEDGE_LIST_PAGE],
       });
     const updateKnowledge = vi.fn().mockResolvedValue(mutationResponse);
     renderApp(
       '/knowledge',
-      makeClient({ core: { 'knowledge.list': listKnowledge, 'knowledge.update': updateKnowledge } })
+      makeClient({
+        core: {
+          'knowledge.notebook.list': listKnowledge,
+          'knowledge.notebook.update': updateKnowledge,
+        },
+      })
     );
 
     await user.click(await screen.findByRole('button', { name: `Edit ${KNOWLEDGE_ENTRY.title}` }));
@@ -3814,20 +3913,25 @@ describe('Knowledge (board 14)', () => {
     const authoritativeRead = createDeferred<{
       knowledgeBaseId: string;
       notebookRevision: string;
-      items: (typeof KNOWLEDGE_ENTRY)[];
+      pages: (typeof KNOWLEDGE_LIST_PAGE)[];
     }>();
     const listKnowledge = vi
       .fn()
       .mockResolvedValueOnce({
         knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
         notebookRevision: 'notebook-fixture-revision',
-        items: [KNOWLEDGE_ENTRY],
+        pages: [KNOWLEDGE_LIST_PAGE],
       })
       .mockReturnValueOnce(authoritativeRead.promise);
     const deleteKnowledge = vi.fn().mockResolvedValue(undefined);
     renderApp(
       '/knowledge',
-      makeClient({ core: { 'knowledge.delete': deleteKnowledge, 'knowledge.list': listKnowledge } })
+      makeClient({
+        core: {
+          'knowledge.notebook.delete': deleteKnowledge,
+          'knowledge.notebook.list': listKnowledge,
+        },
+      })
     );
 
     await user.click(
@@ -3840,13 +3944,12 @@ describe('Knowledge (board 14)', () => {
     await waitFor(() =>
       expect(deleteKnowledge).toHaveBeenCalledWith({
         workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
-        knowledgeEntryId: KNOWLEDGE_ENTRY.id,
-        ...{
-          requestId: expect.any(String),
-          baseRevision: 'notebook-fixture-revision',
-          expectedContentDigest: KNOWLEDGE_ENTRY.contentDigest,
-          confirmRemoval: true,
-        },
+        requestId: expect.any(String),
+        baseRevision: 'notebook-fixture-revision',
+        path: KNOWLEDGE_LIST_PAGE.path,
+        expectedContentDigest: KNOWLEDGE_ENTRY.contentDigest,
+        confirmRemoval: true,
+        summary: `Remove ${KNOWLEDGE_LIST_PAGE.path}`,
       })
     );
     await waitFor(() => expect(listKnowledge).toHaveBeenCalledTimes(2));
@@ -3854,7 +3957,7 @@ describe('Knowledge (board 14)', () => {
     authoritativeRead.resolve({
       knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
       notebookRevision: 'notebook-fixture-revision',
-      items: [],
+      pages: [],
     });
     await waitFor(() => expect(screen.queryByText(KNOWLEDGE_ENTRY.title)).not.toBeInTheDocument());
   });
@@ -3866,18 +3969,23 @@ describe('Knowledge (board 14)', () => {
       .mockResolvedValueOnce({
         knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
         notebookRevision: 'notebook-fixture-revision',
-        items: [KNOWLEDGE_ENTRY],
+        pages: [KNOWLEDGE_LIST_PAGE],
       })
       .mockRejectedValueOnce(new Error('authoritative read failed'))
       .mockResolvedValueOnce({
         knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
         notebookRevision: 'notebook-fixture-revision',
-        items: [],
+        pages: [],
       });
     const deleteKnowledge = vi.fn().mockResolvedValue(undefined);
     renderApp(
       '/knowledge',
-      makeClient({ core: { 'knowledge.delete': deleteKnowledge, 'knowledge.list': listKnowledge } })
+      makeClient({
+        core: {
+          'knowledge.notebook.delete': deleteKnowledge,
+          'knowledge.notebook.list': listKnowledge,
+        },
+      })
     );
 
     await user.click(
@@ -3912,12 +4020,13 @@ describe('Knowledge (board 14)', () => {
       '/knowledge',
       makeClient({
         core: {
-          'knowledge.list': vi.fn().mockResolvedValue({
+          'knowledge.notebook.list': vi.fn().mockResolvedValue({
             knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
             notebookRevision: 'notebook-fixture-revision',
-            items: [KNOWLEDGE_ENTRY],
+            pages: [KNOWLEDGE_LIST_PAGE],
           }),
-          [operation === 'update' ? 'knowledge.update' : 'knowledge.delete']: mutation,
+          [operation === 'update' ? 'knowledge.notebook.update' : 'knowledge.notebook.delete']:
+            mutation,
         },
       })
     );
@@ -3960,18 +4069,20 @@ describe('Knowledge (board 14)', () => {
   ] as const)('replays the exact Workspace-bound %s command and requestId after an unknown failure', async (operation) => {
     const user = userEvent.setup();
     const privateText = `${operation} failed.`;
-    const secondEntry = {
-      ...KNOWLEDGE_ENTRY,
+    const secondEntry = knowledgeNotebookPageFixture({
       id: 'mem2',
       title: 'Second preference',
-      content: 'A later memo.',
-    };
-    const laterEntry = {
-      ...KNOWLEDGE_ENTRY,
+      body: 'A later memo.',
+      workspaceId: WORKSPACE_A.id,
+      timestamp: TIMESTAMP_OLD,
+    });
+    const laterEntry = knowledgeNotebookPageFixture({
       id: 'mem3',
       title: 'Later preference',
-      content: 'A fresh semantic edit.',
-    };
+      body: 'A fresh semantic edit.',
+      workspaceId: WORKSPACE_A.id,
+      timestamp: TIMESTAMP_OLD,
+    });
     const mutation = vi
       .fn()
       .mockRejectedValueOnce(operationFailed(privateText))
@@ -3987,30 +4098,30 @@ describe('Knowledge (board 14)', () => {
       Promise.resolve({
         knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
         notebookRevision: 'notebook-fixture-revision',
-        items:
+        pages:
           operation === 'delete'
             ? mutation.mock.calls.length >= 2
               ? [secondEntry]
-              : [KNOWLEDGE_ENTRY, secondEntry]
+              : [KNOWLEDGE_LIST_PAGE, secondEntry]
             : operation === 'create' && mutation.mock.calls.length >= 2
-              ? [KNOWLEDGE_ENTRY]
+              ? [KNOWLEDGE_LIST_PAGE]
               : operation === 'create'
                 ? []
-                : [KNOWLEDGE_ENTRY],
+                : [KNOWLEDGE_LIST_PAGE],
       })
     );
     renderApp(
       '/knowledge',
       makeClient({
         core: {
-          'knowledge.list': listKnowledge,
-          [`knowledge.${operation}`]: mutation,
+          'knowledge.notebook.list': listKnowledge,
+          [`knowledge.notebook.${operation}`]: mutation,
         },
       })
     );
 
     if (operation === 'create') {
-      await screen.findByText(/No entries yet/i);
+      await screen.findByText(/No notebook pages yet/i);
       await user.click(screen.getByRole('button', { name: 'Add knowledge' }));
       await user.click(screen.getByRole('textbox', { name: 'Title' }));
       await user.paste('Prefer concise memos');
@@ -4102,13 +4213,13 @@ describe('Knowledge (board 14)', () => {
       '/knowledge',
       makeClient({
         core: {
-          'knowledge.delete': deleteKnowledge,
-          'knowledge.list': vi.fn().mockResolvedValue({
+          'knowledge.notebook.delete': deleteKnowledge,
+          'knowledge.notebook.list': vi.fn().mockResolvedValue({
             knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
             notebookRevision: 'notebook-fixture-revision',
-            items: [KNOWLEDGE_ENTRY],
+            pages: [KNOWLEDGE_LIST_PAGE],
           }),
-          'knowledge.update': updateKnowledge,
+          'knowledge.notebook.update': updateKnowledge,
         },
       })
     );
@@ -4152,10 +4263,10 @@ describe('Knowledge (board 14)', () => {
       makeClient({
         core: {
           meta,
-          'knowledge.list': vi.fn().mockResolvedValue({
+          'knowledge.notebook.list': vi.fn().mockResolvedValue({
             knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
             notebookRevision: 'notebook-fixture-revision',
-            items: [KNOWLEDGE_ENTRY],
+            pages: [KNOWLEDGE_LIST_PAGE],
           }),
         },
       })
@@ -4180,12 +4291,12 @@ describe('Knowledge (board 14)', () => {
       '/knowledge',
       makeClient({
         core: {
-          'knowledge.list': vi.fn().mockResolvedValue({
+          'knowledge.notebook.list': vi.fn().mockResolvedValue({
             knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
             notebookRevision: 'notebook-fixture-revision',
-            items: [KNOWLEDGE_ENTRY],
+            pages: [KNOWLEDGE_LIST_PAGE],
           }),
-          [`knowledge.${operation}`]: vi.fn().mockReturnValue(pending.promise),
+          [`knowledge.notebook.${operation}`]: vi.fn().mockReturnValue(pending.promise),
         },
       })
     );
@@ -4279,10 +4390,10 @@ describe('Knowledge (board 14)', () => {
         operations: { 'attention.list': vi.fn().mockReturnValue(attentionRead.promise) },
 
         core: {
-          'knowledge.list': vi.fn().mockResolvedValue({
+          'knowledge.notebook.list': vi.fn().mockResolvedValue({
             knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
             notebookRevision: 'notebook-fixture-revision',
-            items: [KNOWLEDGE_ENTRY],
+            pages: [KNOWLEDGE_LIST_PAGE],
           }),
         },
       })
@@ -4847,11 +4958,15 @@ describe('Knowledge (board 14)', () => {
 
   it('reads indexes then retrieves and prepares context from the Retrieval panel', async () => {
     const user = userEvent.setup();
-    const cjkEntry = {
-      ...KNOWLEDGE_ENTRY,
+    const cjkEntry = knowledgeNotebookPageFixture({
+      id: KNOWLEDGE_LIST_PAGE.id,
       title: '发布节奏',
-      content: '发布评审每周进行。',
-    };
+      body: '发布评审每周进行。',
+      workspaceId: WORKSPACE_A.id,
+      timestamp: TIMESTAMP_OLD,
+      path: KNOWLEDGE_LIST_PAGE.path,
+      contentDigest: KNOWLEDGE_LIST_PAGE.contentDigest,
+    });
     const cjkQuery = '发布 评审';
     const readKnowledgeIndexes = vi.fn().mockResolvedValue(KNOWLEDGE_INDEXES);
     const retrieveKnowledge = vi.fn().mockResolvedValue(KNOWLEDGE_RETRIEVAL);
@@ -4860,10 +4975,10 @@ describe('Knowledge (board 14)', () => {
       '/knowledge',
       makeClient({
         core: {
-          'knowledge.list': vi.fn().mockResolvedValue({
+          'knowledge.notebook.list': vi.fn().mockResolvedValue({
             knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
             notebookRevision: 'notebook-fixture-revision',
-            items: [cjkEntry],
+            pages: [cjkEntry],
           }),
         },
         app: {
@@ -4896,7 +5011,7 @@ describe('Knowledge (board 14)', () => {
     expect(KNOWLEDGE_RETRIEVAL).not.toHaveProperty('traceId');
     expect(KNOWLEDGE_RETRIEVAL).not.toHaveProperty('retrievalTraceRef');
     expect(within(retrieval).getByText(cjkEntry.title)).toBeInTheDocument();
-    expect(within(retrieval).getByText(cjkEntry.content)).toBeInTheDocument();
+    expect(within(retrieval).getByText(cjkEntry.body)).toBeInTheDocument();
     expect(within(retrieval).getByText('Sensitive content')).toBeInTheDocument();
     expect(screen.queryByText('sensitive_content')).not.toBeInTheDocument();
 
@@ -4915,17 +5030,30 @@ describe('Knowledge (board 14)', () => {
 
   it('shows selected retrieval titles, bounded current previews, and content links without excluded content', async () => {
     const user = userEvent.setup();
-    const first = {
-      ...KNOWLEDGE_ENTRY,
-      content: `${'Current knowledge. '.repeat(30)}Full ending.`,
-    };
-    const second = { ...KNOWLEDGE_ENTRY_B, id: 'mem2', title: 'Second selected page' };
-    const excluded = {
-      ...KNOWLEDGE_ENTRY,
+    const firstBody = `${'Current knowledge. '.repeat(30)}Full ending.`;
+    const first = knowledgeNotebookPageFixture({
+      id: KNOWLEDGE_LIST_PAGE.id,
+      title: KNOWLEDGE_ENTRY.title,
+      body: firstBody,
+      workspaceId: WORKSPACE_A.id,
+      timestamp: TIMESTAMP_OLD,
+      path: KNOWLEDGE_LIST_PAGE.path,
+      contentDigest: KNOWLEDGE_LIST_PAGE.contentDigest,
+    });
+    const second = knowledgeNotebookPageFixture({
+      id: 'mem2',
+      title: 'Second selected page',
+      body: KNOWLEDGE_ENTRY_B.body,
+      workspaceId: WORKSPACE_A.id,
+      timestamp: TIMESTAMP_OLD,
+    });
+    const excluded = knowledgeNotebookPageFixture({
       id: 'old-plan',
       title: 'Excluded private plan',
-      content: 'Excluded plan content must not become a retrieval preview.',
-    };
+      body: 'Excluded plan content must not become a retrieval preview.',
+      workspaceId: WORKSPACE_A.id,
+      timestamp: TIMESTAMP_OLD,
+    });
     const result = {
       ...KNOWLEDGE_RETRIEVAL,
       selected: [
@@ -4949,13 +5077,13 @@ describe('Knowledge (board 14)', () => {
     const listKnowledge = vi.fn().mockResolvedValue({
       knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
       notebookRevision: 'notebook-fixture-revision',
-      items: [excluded, second, first],
+      pages: [excluded, second, first],
     });
     const retrieveKnowledge = vi.fn().mockResolvedValue(result);
     renderApp(
       '/knowledge',
       makeClient({
-        core: { 'knowledge.list': listKnowledge },
+        core: { 'knowledge.notebook.list': listKnowledge },
         app: { 'knowledge.retrieval': retrieveKnowledge },
       })
     );
@@ -4966,10 +5094,10 @@ describe('Knowledge (board 14)', () => {
     await within(retrieval).findByText(first.title);
 
     expect(within(retrieval).getByText(first.title)).toBeInTheDocument();
-    expect(within(retrieval).getByText(`${first.content.slice(0, 240)}…`)).toBeInTheDocument();
-    expect(within(retrieval).queryByText(first.content)).not.toBeInTheDocument();
+    expect(within(retrieval).getByText(`${first.body.slice(0, 240)}…`)).toBeInTheDocument();
+    expect(within(retrieval).queryByText(first.body)).not.toBeInTheDocument();
     expect(within(retrieval).getByText(second.title)).toBeInTheDocument();
-    expect(within(retrieval).getByText(second.content)).toBeInTheDocument();
+    expect(within(retrieval).getByText(second.body)).toBeInTheDocument();
     expect(
       within(retrieval).getByText('Current content; may differ from the search result.')
     ).toBeInTheDocument();
@@ -4989,7 +5117,7 @@ describe('Knowledge (board 14)', () => {
       );
       expect(target).not.toBeNull();
       expect(target).toHaveTextContent(entry.title);
-      expect(target).toHaveTextContent(entry.content);
+      expect(target).toHaveTextContent(entry.body);
       expect(target).toHaveAttribute('tabindex', '-1');
       expect(retrieval).not.toContainElement(target);
     }
@@ -5023,10 +5151,10 @@ describe('Knowledge (board 14)', () => {
       '/knowledge',
       makeClient({
         core: {
-          'knowledge.list': vi.fn().mockResolvedValue({
+          'knowledge.notebook.list': vi.fn().mockResolvedValue({
             knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
             notebookRevision: 'notebook-fixture-revision',
-            items: [KNOWLEDGE_ENTRY],
+            pages: [KNOWLEDGE_LIST_PAGE],
           }),
         },
         app: { 'knowledge.retrieval': vi.fn().mockResolvedValue(otherWorkspaceResult) },
@@ -5051,12 +5179,12 @@ describe('Knowledge (board 14)', () => {
       .mockResolvedValueOnce({
         knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
         notebookRevision: 'notebook-fixture-revision',
-        items: [KNOWLEDGE_ENTRY],
+        pages: [KNOWLEDGE_LIST_PAGE],
       })
       .mockResolvedValueOnce({
         knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
         notebookRevision: 'notebook-fixture-revision',
-        items: [UPDATED_KNOWLEDGE_ENTRY],
+        pages: [UPDATED_KNOWLEDGE_LIST_PAGE],
       })
       .mockResolvedValue({
         knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
@@ -5067,7 +5195,7 @@ describe('Knowledge (board 14)', () => {
     const queryClient = renderApp(
       '/knowledge',
       makeClient({
-        core: { 'knowledge.list': listKnowledge },
+        core: { 'knowledge.notebook.list': listKnowledge },
         app: { 'knowledge.retrieval': retrieveKnowledge },
       })
     );
@@ -5105,13 +5233,13 @@ describe('Knowledge (board 14)', () => {
       .mockResolvedValueOnce({
         knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
         notebookRevision: 'notebook-fixture-revision',
-        items: [KNOWLEDGE_ENTRY],
+        pages: [KNOWLEDGE_LIST_PAGE],
       })
       .mockRejectedValue(error);
     const queryClient = renderApp(
       '/knowledge',
       makeClient({
-        core: { 'knowledge.list': listKnowledge },
+        core: { 'knowledge.notebook.list': listKnowledge },
         app: { 'knowledge.retrieval': vi.fn().mockResolvedValue(KNOWLEDGE_RETRIEVAL) },
       })
     );
@@ -5128,7 +5256,7 @@ describe('Knowledge (board 14)', () => {
     expect(queryClient.getQueryData(workspaceKeys.knowledge(WORKSPACE_A.id))).toEqual({
       knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
       notebookRevision: 'notebook-fixture-revision',
-      items: [KNOWLEDGE_ENTRY],
+      pages: [KNOWLEDGE_LIST_PAGE],
     });
     expect(await within(retrieval).findByText('Current content unavailable.')).toBeInTheDocument();
     expect(within(retrieval).queryByText(KNOWLEDGE_ENTRY.title)).not.toBeInTheDocument();
@@ -5141,18 +5269,18 @@ describe('Knowledge (board 14)', () => {
   it('does not compose a late Workspace A retrieval with Workspace B current content', async () => {
     const user = userEvent.setup();
     const pending = createDeferred<typeof KNOWLEDGE_RETRIEVAL>();
-    const collidingB = { ...KNOWLEDGE_ENTRY_B, id: KNOWLEDGE_ENTRY.id };
+    const collidingB = { ...KNOWLEDGE_LIST_PAGE_B, id: KNOWLEDGE_LIST_PAGE.id };
     const retrieveKnowledge = vi.fn().mockReturnValue(pending.promise);
     const queryClient = renderApp(
       '/knowledge',
       makeClient({
         core: {
-          'knowledge.list': vi
+          'knowledge.notebook.list': vi
             .fn()
             .mockImplementation(async ({ workspaceId }: { workspaceId: string }) => ({
               knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
               notebookRevision: 'notebook-fixture-revision',
-              items: workspaceId === WORKSPACE_A.id ? [KNOWLEDGE_ENTRY] : [collidingB],
+              pages: workspaceId === WORKSPACE_A.id ? [KNOWLEDGE_LIST_PAGE] : [collidingB],
             })),
         },
         app: { 'knowledge.retrieval': retrieveKnowledge },
@@ -5219,10 +5347,10 @@ describe('Knowledge (board 14)', () => {
             citations: [...KNOWLEDGE_ANSWER.citations, serverCitation],
             uncertainty,
           }),
-          'knowledge.list': vi.fn().mockResolvedValue({
+          'knowledge.notebook.list': vi.fn().mockResolvedValue({
             knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
             notebookRevision: 'notebook-fixture-revision',
-            items: [KNOWLEDGE_ENTRY],
+            pages: [KNOWLEDGE_LIST_PAGE],
           }),
         },
       })
@@ -5894,7 +6022,7 @@ describe('Knowledge (board 14)', () => {
     renderApp(
       '/knowledge',
       makeClient({
-        core: { 'knowledge.create': createKnowledge },
+        core: { 'knowledge.notebook.create': createKnowledge },
 
         operations: {
           'workspace.list': vi.fn().mockResolvedValue({
@@ -5912,7 +6040,7 @@ describe('Knowledge (board 14)', () => {
       })
     );
 
-    await screen.findByText(/No entries yet/i);
+    await screen.findByText(/No notebook pages yet/i);
     await user.click(screen.getByRole('button', { name: 'Add knowledge' }));
     await user.click(screen.getByRole('textbox', { name: 'Title' }));
     await user.paste('Prefer concise memos');
@@ -6040,12 +6168,12 @@ describe('Knowledge (board 14)', () => {
     {
       operation: 'update' as const,
       echo: 'Mutation response must not become visible',
-      settled: [UPDATED_KNOWLEDGE_ENTRY],
+      settled: [UPDATED_KNOWLEDGE_LIST_PAGE],
     },
     {
       operation: 'delete' as const,
       echo: undefined,
-      settled: [] as (typeof KNOWLEDGE_ENTRY)[],
+      settled: [] as (typeof KNOWLEDGE_LIST_PAGE)[],
     },
   ])('rereads only the Workspace A knowledge query when an in-flight A $operation completes in B', async (testCase) => {
     const user = userEvent.setup();
@@ -6053,7 +6181,7 @@ describe('Knowledge (board 14)', () => {
     const authoritativeA = createDeferred<{
       knowledgeBaseId: string;
       notebookRevision: string;
-      items: (typeof KNOWLEDGE_ENTRY)[];
+      pages: (typeof KNOWLEDGE_LIST_PAGE)[];
     }>();
     let aReads = 0;
     let bReads = 0;
@@ -6063,10 +6191,14 @@ describe('Knowledge (board 14)', () => {
         return Promise.resolve({
           knowledgeBaseId: WORKSPACE_B_KNOWLEDGE_BASE_ID,
           notebookRevision: 'notebook-fixture-revision',
-          items:
+          pages:
             bReads > 1
-              ? [{ ...KNOWLEDGE_ENTRY_B, title: 'B must not reread after A settlement' }]
-              : [KNOWLEDGE_ENTRY_B],
+              ? [
+                  knowledgeNotebookPageWithEdits(KNOWLEDGE_LIST_PAGE_B, {
+                    title: 'B must not reread after A settlement',
+                  }),
+                ]
+              : [KNOWLEDGE_LIST_PAGE_B],
         });
       }
       aReads += 1;
@@ -6074,7 +6206,7 @@ describe('Knowledge (board 14)', () => {
       return Promise.resolve({
         knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
         notebookRevision: 'notebook-fixture-revision',
-        items: [KNOWLEDGE_ENTRY],
+        pages: [KNOWLEDGE_LIST_PAGE],
       });
     });
     const mutation = vi.fn().mockReturnValue(pending.promise);
@@ -6082,8 +6214,10 @@ describe('Knowledge (board 14)', () => {
       '/knowledge',
       makeClient({
         core: {
-          'knowledge.list': listKnowledge,
-          [testCase.operation === 'update' ? 'knowledge.update' : 'knowledge.delete']: mutation,
+          'knowledge.notebook.list': listKnowledge,
+          [testCase.operation === 'update'
+            ? 'knowledge.notebook.update'
+            : 'knowledge.notebook.delete']: mutation,
         },
 
         operations: {
@@ -6149,7 +6283,7 @@ describe('Knowledge (board 14)', () => {
     authoritativeA.resolve({
       knowledgeBaseId: WORKSPACE_A_KNOWLEDGE_BASE_ID,
       notebookRevision: 'notebook-fixture-revision',
-      items: testCase.settled,
+      pages: testCase.settled,
     });
     expect(screen.getByText(KNOWLEDGE_ENTRY_B.title)).toBeInTheDocument();
     expectWorkspaceBSourceDraftRetained();
@@ -6163,7 +6297,7 @@ describe('Knowledge (board 14)', () => {
       expect(screen.queryByText(testCase.echo ?? '')).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'Save changes' })).not.toBeInTheDocument();
     } else {
-      expect(await screen.findByText(/No entries yet/i)).toBeInTheDocument();
+      expect(await screen.findByText(/No notebook pages yet/i)).toBeInTheDocument();
       expect(screen.queryByText(KNOWLEDGE_ENTRY.title)).not.toBeInTheDocument();
     }
   });

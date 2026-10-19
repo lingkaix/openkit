@@ -182,6 +182,7 @@ External domain systems own their raw source-of-truth records; OpenKit may cite,
 
 - Reviewed knowledge MUST remain human-authoritative and MUST NOT become agent-owned.
 - Direct human creates and edits MUST pass current validation and MUST NOT preserve a reviewed-proposal acceptance label across changed bytes.
+- Workspace Knowledge MUST expose one typed OKF Notebook page contract for direct human list/create/edit/delete and history. A second KnowledgeEntry type system or `openkit_entry_kind` metadata MUST NOT be retained; the existing OKF type owns page meaning. The Notebook owner defines public projections and one publication mechanism.
 - Generated learning MUST retain source lineage and explicit publication authority; a model MUST NOT self-authorize or self-confirm its factual claims.
 - Ordinary delegated publication requires explicit current maintenance authority; only an authorized human can supply a required Knowledge Review.
 - A required Review is not proof of publication. Published revision, exact content and existing operation evidence must agree; missing Audit or command receipt prevents a success or replay claim even when the content ref advanced.

@@ -23,7 +23,6 @@ import {
 import { isValidCredentialDestination } from './openkit-secrets.mjs';
 
 const EMPTY_INPUT = z.object({}).strict();
-const IDENTIFIER = z.string().min(1);
 const CREDENTIAL_DESTINATION = z
   .string()
   .refine(isValidCredentialDestination, {

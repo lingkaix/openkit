@@ -9,6 +9,7 @@ import { openCoreDb } from './storage/db.js';
 import { recordDataRootDeploymentMove } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
+import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import {
@@ -622,22 +623,30 @@ describe('workspace membership foundation', () => {
         store,
       });
       const notebookResponse = await exporterApp.request(
-        ...operationRequest('knowledge.list', { workspaceId: source.id })
+        ...operationRequest('knowledge.notebook.list', { workspaceId: source.id })
       );
       expect(notebookResponse.status).toBe(200);
       const notebook = await notebookResponse.json();
       const saveRequestId = randomUUID();
       const saved = await exporterApp.request(
         ...operationRequest(
-          'knowledge.create',
+          'knowledge.notebook.create',
           {
             workspaceId: source.id,
             baseRevision: notebook.notebookRevision,
-            knowledgePageId: 'private-export',
             requestId: saveRequestId,
-            content: 'Private export knowledge.',
-            kind: 'project-context',
-            title: 'Private export knowledge',
+            path: 'private-export' + '.md',
+            content: serializeKnowledgePageFixture(
+              {
+                title: 'Private export knowledge',
+                content: 'Private export knowledge.',
+                sourceReferences: [],
+                createdAt: '2026-10-19T00:00:00.000Z',
+                updatedAt: '2026-10-19T00:00:00.000Z',
+              },
+              { kind: 'workspace', workspaceId: source.id }
+            ),
+            summary: 'Publish explicit full-page fixture',
           },
           { headers: { 'x-openkit-request-id': saveRequestId } }
         )

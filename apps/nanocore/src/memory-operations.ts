@@ -90,7 +90,7 @@ function createFreshMemory(writer: MemoryWriter, input: OperationInput<'memory.c
       notebookRevision: revision,
       changedPageIds: [input.pageId],
       receiptRef: {
-        operation: 'knowledge.create' as const,
+        operation: 'knowledge.notebook.create' as const,
         requestId: input.requestId,
         ownerScope,
       },
@@ -100,7 +100,7 @@ function createFreshMemory(writer: MemoryWriter, input: OperationInput<'memory.c
     store: writer.store,
     receiptDb: writer.userDb,
     inflightCommands: writer.inflightCommands,
-    command: 'knowledge.create',
+    command: 'knowledge.notebook.create',
     requestId: input.requestId,
     scope: { userId: writer.userDb.userId, actorId: writer.actor!.userId },
     input,

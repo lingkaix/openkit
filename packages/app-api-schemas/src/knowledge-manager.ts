@@ -334,7 +334,6 @@ export const KnowledgeManagerAnswerRequestSchema = z
 /** Source citation returned by one Knowledge Manager answer. */
 export const KnowledgeManagerAnswerCitationSchema = z.object({
   reference: KnowledgePageReferenceSchema,
-  kind: z.enum(['preference', 'project-context', 'task-summary']),
   title: z.string().min(1),
   excerpt: z.string().min(1),
 });

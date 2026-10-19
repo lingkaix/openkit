@@ -111,7 +111,7 @@ function git(f: ReturnType<typeof fixture>, ...args: string[]): string {
 
 /** Public list supplies the request's immutable publication base. */
 async function revision(f: ReturnType<typeof fixture>): Promise<string> {
-  return (await ok(f, 'knowledge.list')).notebookRevision;
+  return (await ok(f, 'knowledge.notebook.list')).notebookRevision;
 }
 
 /** Fix the accepted profile and assessment values before any implementation change. */
