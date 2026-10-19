@@ -22,7 +22,7 @@ Package and app unit, contract, integration, and browser tests remain with their
 
 The finite governance contract tests project declared document and role seams. They check registration and instruction consistency, not semantic completeness, live dispatch, fresh attention, or operational effectiveness; independent artifact review supplies the relevant engineering judgment.
 
-The Web operation census counts deployment-admin App-update preflight in the server partition and keeps it outside the canonical-user and Workspace surface inventory.
+The Web operation census counts deployment-admin App-update preflight and the two Codex account settings/reset mutations in the server partition and keeps them outside the canonical-user and Workspace surface inventory. The 336-operation catalog has 85 server operations; the included user/Workspace inventory remains 248.
 
 The census also excludes administrator cleanup from the ordinary-user inventory. Current-caller read maps to the Account workflow, which projects authenticated identity and current Workspace ownership and membership. This disposition does not claim a Web retained-record count viewer; the optional explicit count read remains available through the canonical operation and operator CLI.
 

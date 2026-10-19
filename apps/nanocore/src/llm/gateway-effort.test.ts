@@ -246,7 +246,12 @@ function fixture(
         ? {
             providerSubscriptionAccountManager: {
               gatewayUnavailableReason: () => null,
-              getPairHandle: async () => ({ models }),
+              // This effort fixture explicitly admits quota; real-manager tests own default policy.
+              codexInferenceAllowed: async () => true,
+              getPairHandle: async () => ({
+                models,
+                getCredentialVersion: async () => 'synthetic-slot:1',
+              }),
             } as unknown as ProviderSubscriptionAccountManager,
           }
         : {}),

@@ -1120,6 +1120,104 @@
         }
       }
     },
+    "/api/app/operations/provider-subscription.codex-settings": {
+      "post": {
+        "operationId": "provider-subscription.codex-settings",
+        "tags": [
+          "provider-subscription"
+        ],
+        "summary": "Update one Codex subscription account’s reset and credit settings.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/provider-subscription.codex-settings.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Update one Codex subscription account’s reset and credit settings.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/provider-subscription.codex-settings.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/provider-subscription.account-use-reset": {
+      "post": {
+        "operationId": "provider-subscription.account-use-reset",
+        "tags": [
+          "provider-subscription"
+        ],
+        "summary": "Use one available Codex reset with an explicit request identity.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/provider-subscription.account-use-reset.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Use one available Codex reset with an explicit request identity.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/provider-subscription.account-use-reset.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/operations/provider-subscription.account-delete": {
       "post": {
         "operationId": "provider-subscription.account-delete",
@@ -21350,6 +21448,15 @@
                       "additionalProperties": false,
                       "minProperties": 1
                     },
+                    "codexAutoUseWeeklyReset": {
+                      "type": "boolean"
+                    },
+                    "codexAutoUseExpiringReset": {
+                      "type": "boolean"
+                    },
+                    "codexUseCredits": {
+                      "type": "boolean"
+                    },
                     "status": {
                       "type": "string",
                       "const": "logged_out"
@@ -21443,6 +21550,15 @@
                       "additionalProperties": false,
                       "minProperties": 1
                     },
+                    "codexAutoUseWeeklyReset": {
+                      "type": "boolean"
+                    },
+                    "codexAutoUseExpiringReset": {
+                      "type": "boolean"
+                    },
+                    "codexUseCredits": {
+                      "type": "boolean"
+                    },
                     "status": {
                       "type": "string",
                       "const": "logged_in"
@@ -21535,6 +21651,15 @@
                       },
                       "additionalProperties": false,
                       "minProperties": 1
+                    },
+                    "codexAutoUseWeeklyReset": {
+                      "type": "boolean"
+                    },
+                    "codexAutoUseExpiringReset": {
+                      "type": "boolean"
+                    },
+                    "codexUseCredits": {
+                      "type": "boolean"
                     },
                     "status": {
                       "type": "string",
@@ -21663,6 +21788,15 @@
                       "additionalProperties": false,
                       "minProperties": 1
                     },
+                    "codexAutoUseWeeklyReset": {
+                      "type": "boolean"
+                    },
+                    "codexAutoUseExpiringReset": {
+                      "type": "boolean"
+                    },
+                    "codexUseCredits": {
+                      "type": "boolean"
+                    },
                     "status": {
                       "type": "string",
                       "const": "unavailable"
@@ -21760,6 +21894,15 @@
                       },
                       "additionalProperties": false,
                       "minProperties": 1
+                    },
+                    "codexAutoUseWeeklyReset": {
+                      "type": "boolean"
+                    },
+                    "codexAutoUseExpiringReset": {
+                      "type": "boolean"
+                    },
+                    "codexUseCredits": {
+                      "type": "boolean"
                     },
                     "status": {
                       "type": "string",
@@ -21893,6 +22036,15 @@
                 "additionalProperties": false,
                 "minProperties": 1
               },
+              "codexAutoUseWeeklyReset": {
+                "type": "boolean"
+              },
+              "codexAutoUseExpiringReset": {
+                "type": "boolean"
+              },
+              "codexUseCredits": {
+                "type": "boolean"
+              },
               "status": {
                 "type": "string",
                 "const": "logged_out"
@@ -21986,6 +22138,15 @@
                 "additionalProperties": false,
                 "minProperties": 1
               },
+              "codexAutoUseWeeklyReset": {
+                "type": "boolean"
+              },
+              "codexAutoUseExpiringReset": {
+                "type": "boolean"
+              },
+              "codexUseCredits": {
+                "type": "boolean"
+              },
               "status": {
                 "type": "string",
                 "const": "logged_in"
@@ -22078,6 +22239,15 @@
                 },
                 "additionalProperties": false,
                 "minProperties": 1
+              },
+              "codexAutoUseWeeklyReset": {
+                "type": "boolean"
+              },
+              "codexAutoUseExpiringReset": {
+                "type": "boolean"
+              },
+              "codexUseCredits": {
+                "type": "boolean"
               },
               "status": {
                 "type": "string",
@@ -22206,6 +22376,15 @@
                 "additionalProperties": false,
                 "minProperties": 1
               },
+              "codexAutoUseWeeklyReset": {
+                "type": "boolean"
+              },
+              "codexAutoUseExpiringReset": {
+                "type": "boolean"
+              },
+              "codexUseCredits": {
+                "type": "boolean"
+              },
               "status": {
                 "type": "string",
                 "const": "unavailable"
@@ -22303,6 +22482,15 @@
                 },
                 "additionalProperties": false,
                 "minProperties": 1
+              },
+              "codexAutoUseWeeklyReset": {
+                "type": "boolean"
+              },
+              "codexAutoUseExpiringReset": {
+                "type": "boolean"
+              },
+              "codexUseCredits": {
+                "type": "boolean"
               },
               "status": {
                 "type": "string",
@@ -22429,6 +22617,15 @@
                 "additionalProperties": false,
                 "minProperties": 1
               },
+              "codexAutoUseWeeklyReset": {
+                "type": "boolean"
+              },
+              "codexAutoUseExpiringReset": {
+                "type": "boolean"
+              },
+              "codexUseCredits": {
+                "type": "boolean"
+              },
               "status": {
                 "type": "string",
                 "const": "logged_out"
@@ -22522,6 +22719,15 @@
                 "additionalProperties": false,
                 "minProperties": 1
               },
+              "codexAutoUseWeeklyReset": {
+                "type": "boolean"
+              },
+              "codexAutoUseExpiringReset": {
+                "type": "boolean"
+              },
+              "codexUseCredits": {
+                "type": "boolean"
+              },
               "status": {
                 "type": "string",
                 "const": "logged_in"
@@ -22614,6 +22820,15 @@
                 },
                 "additionalProperties": false,
                 "minProperties": 1
+              },
+              "codexAutoUseWeeklyReset": {
+                "type": "boolean"
+              },
+              "codexAutoUseExpiringReset": {
+                "type": "boolean"
+              },
+              "codexUseCredits": {
+                "type": "boolean"
               },
               "status": {
                 "type": "string",
@@ -22742,6 +22957,15 @@
                 "additionalProperties": false,
                 "minProperties": 1
               },
+              "codexAutoUseWeeklyReset": {
+                "type": "boolean"
+              },
+              "codexAutoUseExpiringReset": {
+                "type": "boolean"
+              },
+              "codexUseCredits": {
+                "type": "boolean"
+              },
               "status": {
                 "type": "string",
                 "const": "unavailable"
@@ -22840,6 +23064,15 @@
                 "additionalProperties": false,
                 "minProperties": 1
               },
+              "codexAutoUseWeeklyReset": {
+                "type": "boolean"
+              },
+              "codexAutoUseExpiringReset": {
+                "type": "boolean"
+              },
+              "codexUseCredits": {
+                "type": "boolean"
+              },
               "status": {
                 "type": "string",
                 "const": "error"
@@ -22861,6 +23094,666 @@
             "additionalProperties": false
           }
         ]
+      },
+      "provider-subscription.codex-settings.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "settings": {
+            "type": "object",
+            "properties": {
+              "codexAutoUseWeeklyReset": {
+                "type": "boolean"
+              },
+              "codexAutoUseExpiringReset": {
+                "type": "boolean"
+              },
+              "codexUseCredits": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          },
+          "subscriptionProviderId": {
+            "type": "string",
+            "const": "openai-codex"
+          },
+          "accountSlotId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "settings",
+          "subscriptionProviderId",
+          "accountSlotId"
+        ],
+        "additionalProperties": false
+      },
+      "provider-subscription.codex-settings.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "subscriptionProviderId": {
+                "type": "string",
+                "enum": [
+                  "openai-codex",
+                  "xai"
+                ]
+              },
+              "accountSlotId": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+              },
+              "boundProviderIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "updatedAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "displayName": {
+                "type": "string",
+                "minLength": 1
+              },
+              "accountLabel": {
+                "type": "string",
+                "minLength": 1
+              },
+              "planLabel": {
+                "type": "string",
+                "minLength": 1
+              },
+              "inferenceObservation": {
+                "type": "object",
+                "properties": {
+                  "accessRejected": {
+                    "type": "object",
+                    "properties": {
+                      "observedAt": {
+                        "type": "string",
+                        "format": "date-time",
+                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                      }
+                    },
+                    "required": [
+                      "observedAt"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "quotaExhausted": {
+                    "type": "object",
+                    "properties": {
+                      "observedAt": {
+                        "type": "string",
+                        "format": "date-time",
+                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                      }
+                    },
+                    "required": [
+                      "observedAt"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false,
+                "minProperties": 1
+              },
+              "codexAutoUseWeeklyReset": {
+                "type": "boolean"
+              },
+              "codexAutoUseExpiringReset": {
+                "type": "boolean"
+              },
+              "codexUseCredits": {
+                "type": "boolean"
+              },
+              "status": {
+                "type": "string",
+                "const": "logged_out"
+              }
+            },
+            "required": [
+              "subscriptionProviderId",
+              "accountSlotId",
+              "boundProviderIds",
+              "createdAt",
+              "updatedAt",
+              "status"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "subscriptionProviderId": {
+                "type": "string",
+                "enum": [
+                  "openai-codex",
+                  "xai"
+                ]
+              },
+              "accountSlotId": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+              },
+              "boundProviderIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "updatedAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "displayName": {
+                "type": "string",
+                "minLength": 1
+              },
+              "accountLabel": {
+                "type": "string",
+                "minLength": 1
+              },
+              "planLabel": {
+                "type": "string",
+                "minLength": 1
+              },
+              "inferenceObservation": {
+                "type": "object",
+                "properties": {
+                  "accessRejected": {
+                    "type": "object",
+                    "properties": {
+                      "observedAt": {
+                        "type": "string",
+                        "format": "date-time",
+                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                      }
+                    },
+                    "required": [
+                      "observedAt"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "quotaExhausted": {
+                    "type": "object",
+                    "properties": {
+                      "observedAt": {
+                        "type": "string",
+                        "format": "date-time",
+                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                      }
+                    },
+                    "required": [
+                      "observedAt"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false,
+                "minProperties": 1
+              },
+              "codexAutoUseWeeklyReset": {
+                "type": "boolean"
+              },
+              "codexAutoUseExpiringReset": {
+                "type": "boolean"
+              },
+              "codexUseCredits": {
+                "type": "boolean"
+              },
+              "status": {
+                "type": "string",
+                "const": "logged_in"
+              }
+            },
+            "required": [
+              "subscriptionProviderId",
+              "accountSlotId",
+              "boundProviderIds",
+              "createdAt",
+              "updatedAt",
+              "status"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "subscriptionProviderId": {
+                "type": "string",
+                "enum": [
+                  "openai-codex",
+                  "xai"
+                ]
+              },
+              "accountSlotId": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+              },
+              "boundProviderIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "updatedAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "displayName": {
+                "type": "string",
+                "minLength": 1
+              },
+              "accountLabel": {
+                "type": "string",
+                "minLength": 1
+              },
+              "planLabel": {
+                "type": "string",
+                "minLength": 1
+              },
+              "inferenceObservation": {
+                "type": "object",
+                "properties": {
+                  "accessRejected": {
+                    "type": "object",
+                    "properties": {
+                      "observedAt": {
+                        "type": "string",
+                        "format": "date-time",
+                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                      }
+                    },
+                    "required": [
+                      "observedAt"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "quotaExhausted": {
+                    "type": "object",
+                    "properties": {
+                      "observedAt": {
+                        "type": "string",
+                        "format": "date-time",
+                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                      }
+                    },
+                    "required": [
+                      "observedAt"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false,
+                "minProperties": 1
+              },
+              "codexAutoUseWeeklyReset": {
+                "type": "boolean"
+              },
+              "codexAutoUseExpiringReset": {
+                "type": "boolean"
+              },
+              "codexUseCredits": {
+                "type": "boolean"
+              },
+              "status": {
+                "type": "string",
+                "const": "pending"
+              },
+              "interaction": {
+                "type": "object",
+                "properties": {
+                  "mode": {
+                    "type": "string",
+                    "const": "device_code"
+                  },
+                  "interactionId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "verificationUrl": {
+                    "type": "string",
+                    "format": "uri"
+                  },
+                  "userCode": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "expiresAt": {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                  }
+                },
+                "required": [
+                  "mode",
+                  "interactionId",
+                  "verificationUrl",
+                  "userCode"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "subscriptionProviderId",
+              "accountSlotId",
+              "boundProviderIds",
+              "createdAt",
+              "updatedAt",
+              "status",
+              "interaction"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "subscriptionProviderId": {
+                "type": "string",
+                "enum": [
+                  "openai-codex",
+                  "xai"
+                ]
+              },
+              "accountSlotId": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+              },
+              "boundProviderIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "updatedAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "displayName": {
+                "type": "string",
+                "minLength": 1
+              },
+              "accountLabel": {
+                "type": "string",
+                "minLength": 1
+              },
+              "planLabel": {
+                "type": "string",
+                "minLength": 1
+              },
+              "inferenceObservation": {
+                "type": "object",
+                "properties": {
+                  "accessRejected": {
+                    "type": "object",
+                    "properties": {
+                      "observedAt": {
+                        "type": "string",
+                        "format": "date-time",
+                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                      }
+                    },
+                    "required": [
+                      "observedAt"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "quotaExhausted": {
+                    "type": "object",
+                    "properties": {
+                      "observedAt": {
+                        "type": "string",
+                        "format": "date-time",
+                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                      }
+                    },
+                    "required": [
+                      "observedAt"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false,
+                "minProperties": 1
+              },
+              "codexAutoUseWeeklyReset": {
+                "type": "boolean"
+              },
+              "codexAutoUseExpiringReset": {
+                "type": "boolean"
+              },
+              "codexUseCredits": {
+                "type": "boolean"
+              },
+              "status": {
+                "type": "string",
+                "const": "unavailable"
+              },
+              "message": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "subscriptionProviderId",
+              "accountSlotId",
+              "boundProviderIds",
+              "createdAt",
+              "updatedAt",
+              "status",
+              "message"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "subscriptionProviderId": {
+                "type": "string",
+                "enum": [
+                  "openai-codex",
+                  "xai"
+                ]
+              },
+              "accountSlotId": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+              },
+              "boundProviderIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "createdAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "updatedAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              "displayName": {
+                "type": "string",
+                "minLength": 1
+              },
+              "accountLabel": {
+                "type": "string",
+                "minLength": 1
+              },
+              "planLabel": {
+                "type": "string",
+                "minLength": 1
+              },
+              "inferenceObservation": {
+                "type": "object",
+                "properties": {
+                  "accessRejected": {
+                    "type": "object",
+                    "properties": {
+                      "observedAt": {
+                        "type": "string",
+                        "format": "date-time",
+                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                      }
+                    },
+                    "required": [
+                      "observedAt"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "quotaExhausted": {
+                    "type": "object",
+                    "properties": {
+                      "observedAt": {
+                        "type": "string",
+                        "format": "date-time",
+                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                      }
+                    },
+                    "required": [
+                      "observedAt"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": false,
+                "minProperties": 1
+              },
+              "codexAutoUseWeeklyReset": {
+                "type": "boolean"
+              },
+              "codexAutoUseExpiringReset": {
+                "type": "boolean"
+              },
+              "codexUseCredits": {
+                "type": "boolean"
+              },
+              "status": {
+                "type": "string",
+                "const": "error"
+              },
+              "message": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "subscriptionProviderId",
+              "accountSlotId",
+              "boundProviderIds",
+              "createdAt",
+              "updatedAt",
+              "status",
+              "message"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "provider-subscription.account-use-reset.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "redeemRequestId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
+          },
+          "subscriptionProviderId": {
+            "type": "string",
+            "const": "openai-codex"
+          },
+          "accountSlotId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "redeemRequestId",
+          "subscriptionProviderId",
+          "accountSlotId"
+        ],
+        "additionalProperties": false
+      },
+      "provider-subscription.account-use-reset.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "subscriptionProviderId": {
+            "type": "string",
+            "const": "openai-codex"
+          },
+          "accountSlotId": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+          },
+          "redeemRequestId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "reset",
+              "nothing_to_reset",
+              "no_credit",
+              "already_redeemed",
+              "unknown"
+            ]
+          },
+          "creditId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "windowsReset": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "subscriptionProviderId",
+          "accountSlotId",
+          "redeemRequestId",
+          "outcome"
+        ],
+        "additionalProperties": false
       },
       "provider-subscription.account-delete.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -22981,6 +23874,15 @@
                 "additionalProperties": false,
                 "minProperties": 1
               },
+              "codexAutoUseWeeklyReset": {
+                "type": "boolean"
+              },
+              "codexAutoUseExpiringReset": {
+                "type": "boolean"
+              },
+              "codexUseCredits": {
+                "type": "boolean"
+              },
               "status": {
                 "type": "string",
                 "const": "logged_out"
@@ -23074,6 +23976,15 @@
                 "additionalProperties": false,
                 "minProperties": 1
               },
+              "codexAutoUseWeeklyReset": {
+                "type": "boolean"
+              },
+              "codexAutoUseExpiringReset": {
+                "type": "boolean"
+              },
+              "codexUseCredits": {
+                "type": "boolean"
+              },
               "status": {
                 "type": "string",
                 "const": "logged_in"
@@ -23166,6 +24077,15 @@
                 },
                 "additionalProperties": false,
                 "minProperties": 1
+              },
+              "codexAutoUseWeeklyReset": {
+                "type": "boolean"
+              },
+              "codexAutoUseExpiringReset": {
+                "type": "boolean"
+              },
+              "codexUseCredits": {
+                "type": "boolean"
               },
               "status": {
                 "type": "string",
@@ -23294,6 +24214,15 @@
                 "additionalProperties": false,
                 "minProperties": 1
               },
+              "codexAutoUseWeeklyReset": {
+                "type": "boolean"
+              },
+              "codexAutoUseExpiringReset": {
+                "type": "boolean"
+              },
+              "codexUseCredits": {
+                "type": "boolean"
+              },
               "status": {
                 "type": "string",
                 "const": "unavailable"
@@ -23391,6 +24320,15 @@
                 },
                 "additionalProperties": false,
                 "minProperties": 1
+              },
+              "codexAutoUseWeeklyReset": {
+                "type": "boolean"
+              },
+              "codexAutoUseExpiringReset": {
+                "type": "boolean"
+              },
+              "codexUseCredits": {
+                "type": "boolean"
               },
               "status": {
                 "type": "string",
@@ -23517,6 +24455,15 @@
                 "additionalProperties": false,
                 "minProperties": 1
               },
+              "codexAutoUseWeeklyReset": {
+                "type": "boolean"
+              },
+              "codexAutoUseExpiringReset": {
+                "type": "boolean"
+              },
+              "codexUseCredits": {
+                "type": "boolean"
+              },
               "status": {
                 "type": "string",
                 "const": "logged_out"
@@ -23610,6 +24557,15 @@
                 "additionalProperties": false,
                 "minProperties": 1
               },
+              "codexAutoUseWeeklyReset": {
+                "type": "boolean"
+              },
+              "codexAutoUseExpiringReset": {
+                "type": "boolean"
+              },
+              "codexUseCredits": {
+                "type": "boolean"
+              },
               "status": {
                 "type": "string",
                 "const": "logged_in"
@@ -23702,6 +24658,15 @@
                 },
                 "additionalProperties": false,
                 "minProperties": 1
+              },
+              "codexAutoUseWeeklyReset": {
+                "type": "boolean"
+              },
+              "codexAutoUseExpiringReset": {
+                "type": "boolean"
+              },
+              "codexUseCredits": {
+                "type": "boolean"
               },
               "status": {
                 "type": "string",
@@ -23830,6 +24795,15 @@
                 "additionalProperties": false,
                 "minProperties": 1
               },
+              "codexAutoUseWeeklyReset": {
+                "type": "boolean"
+              },
+              "codexAutoUseExpiringReset": {
+                "type": "boolean"
+              },
+              "codexUseCredits": {
+                "type": "boolean"
+              },
               "status": {
                 "type": "string",
                 "const": "unavailable"
@@ -23927,6 +24901,15 @@
                 },
                 "additionalProperties": false,
                 "minProperties": 1
+              },
+              "codexAutoUseWeeklyReset": {
+                "type": "boolean"
+              },
+              "codexAutoUseExpiringReset": {
+                "type": "boolean"
+              },
+              "codexUseCredits": {
+                "type": "boolean"
               },
               "status": {
                 "type": "string",
@@ -24053,6 +25036,15 @@
                 "additionalProperties": false,
                 "minProperties": 1
               },
+              "codexAutoUseWeeklyReset": {
+                "type": "boolean"
+              },
+              "codexAutoUseExpiringReset": {
+                "type": "boolean"
+              },
+              "codexUseCredits": {
+                "type": "boolean"
+              },
               "status": {
                 "type": "string",
                 "const": "logged_out"
@@ -24146,6 +25138,15 @@
                 "additionalProperties": false,
                 "minProperties": 1
               },
+              "codexAutoUseWeeklyReset": {
+                "type": "boolean"
+              },
+              "codexAutoUseExpiringReset": {
+                "type": "boolean"
+              },
+              "codexUseCredits": {
+                "type": "boolean"
+              },
               "status": {
                 "type": "string",
                 "const": "logged_in"
@@ -24238,6 +25239,15 @@
                 },
                 "additionalProperties": false,
                 "minProperties": 1
+              },
+              "codexAutoUseWeeklyReset": {
+                "type": "boolean"
+              },
+              "codexAutoUseExpiringReset": {
+                "type": "boolean"
+              },
+              "codexUseCredits": {
+                "type": "boolean"
               },
               "status": {
                 "type": "string",
@@ -24366,6 +25376,15 @@
                 "additionalProperties": false,
                 "minProperties": 1
               },
+              "codexAutoUseWeeklyReset": {
+                "type": "boolean"
+              },
+              "codexAutoUseExpiringReset": {
+                "type": "boolean"
+              },
+              "codexUseCredits": {
+                "type": "boolean"
+              },
               "status": {
                 "type": "string",
                 "const": "unavailable"
@@ -24463,6 +25482,15 @@
                 },
                 "additionalProperties": false,
                 "minProperties": 1
+              },
+              "codexAutoUseWeeklyReset": {
+                "type": "boolean"
+              },
+              "codexAutoUseExpiringReset": {
+                "type": "boolean"
+              },
+              "codexUseCredits": {
+                "type": "boolean"
               },
               "status": {
                 "type": "string",
@@ -24584,6 +25612,15 @@
                 "additionalProperties": false,
                 "minProperties": 1
               },
+              "codexAutoUseWeeklyReset": {
+                "type": "boolean"
+              },
+              "codexAutoUseExpiringReset": {
+                "type": "boolean"
+              },
+              "codexUseCredits": {
+                "type": "boolean"
+              },
               "status": {
                 "type": "string",
                 "const": "logged_out"
@@ -24677,6 +25714,15 @@
                 "additionalProperties": false,
                 "minProperties": 1
               },
+              "codexAutoUseWeeklyReset": {
+                "type": "boolean"
+              },
+              "codexAutoUseExpiringReset": {
+                "type": "boolean"
+              },
+              "codexUseCredits": {
+                "type": "boolean"
+              },
               "status": {
                 "type": "string",
                 "const": "logged_in"
@@ -24769,6 +25815,15 @@
                 },
                 "additionalProperties": false,
                 "minProperties": 1
+              },
+              "codexAutoUseWeeklyReset": {
+                "type": "boolean"
+              },
+              "codexAutoUseExpiringReset": {
+                "type": "boolean"
+              },
+              "codexUseCredits": {
+                "type": "boolean"
               },
               "status": {
                 "type": "string",
@@ -24897,6 +25952,15 @@
                 "additionalProperties": false,
                 "minProperties": 1
               },
+              "codexAutoUseWeeklyReset": {
+                "type": "boolean"
+              },
+              "codexAutoUseExpiringReset": {
+                "type": "boolean"
+              },
+              "codexUseCredits": {
+                "type": "boolean"
+              },
               "status": {
                 "type": "string",
                 "const": "unavailable"
@@ -24995,6 +26059,15 @@
                 "additionalProperties": false,
                 "minProperties": 1
               },
+              "codexAutoUseWeeklyReset": {
+                "type": "boolean"
+              },
+              "codexAutoUseExpiringReset": {
+                "type": "boolean"
+              },
+              "codexUseCredits": {
+                "type": "boolean"
+              },
               "status": {
                 "type": "string",
                 "const": "error"
@@ -25081,6 +26154,10 @@
                       "type": "string",
                       "minLength": 1
                     },
+                    "label": {
+                      "type": "string",
+                      "minLength": 1
+                    },
                     "limitWindowSeconds": {
                       "type": "integer",
                       "exclusiveMinimum": 0,
@@ -25119,6 +26196,94 @@
                   ],
                   "additionalProperties": false
                 }
+              },
+              "credits": {
+                "type": "object",
+                "properties": {
+                  "hasCredits": {
+                    "type": "boolean"
+                  },
+                  "unlimited": {
+                    "type": "boolean"
+                  },
+                  "balance": {
+                    "type": "string",
+                    "pattern": "^-?\\d+(?:\\.\\d+)?$"
+                  }
+                },
+                "required": [
+                  "hasCredits",
+                  "unlimited"
+                ],
+                "additionalProperties": false
+              },
+              "resetCredits": {
+                "type": "object",
+                "properties": {
+                  "availableCount": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "available": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "resetType": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "expiresAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "resetType",
+                        "expiresAt"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "soonestExpiresAt": {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                  }
+                },
+                "required": [
+                  "availableCount",
+                  "available"
+                ],
+                "additionalProperties": false
+              },
+              "heldReason": {
+                "type": "string",
+                "enum": [
+                  "spend_control_reached",
+                  "overage_limit_reached",
+                  "rate_limit_reached",
+                  "not_allowed"
+                ]
+              },
+              "activeUntil": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
               },
               "billing": {
                 "type": "object",
@@ -149063,5 +150228,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:243fc677dc423f711f0f5515ce32109f2ad7b913e762f5341b47bd6c8c150c28"
+  "x-openkit-source-digest": "sha256:a813b1cbe1858e66ead7411535b92ded97aecbd983df30825ccd1eea659e510c"
 }

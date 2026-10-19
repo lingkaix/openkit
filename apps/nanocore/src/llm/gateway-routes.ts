@@ -2657,8 +2657,60 @@ export async function dispatchLogicalModel<T>(input: {
         unavailableReason: selection.reason,
       });
   }
+  const subscriptionVersions = new Map<string, string | undefined>();
   return executeGatewayPlan({
     selections,
+    quotaRecoveryEligible: async (selection, execution) => {
+      const provider = providers.get(selection.route.id);
+      const manager = input.providerSubscriptionAccountManager;
+      if (
+        !manager ||
+        provider?.subscriptionProviderId !== 'openai-codex' ||
+        !provider.accountSlotId
+      )
+        return false;
+      const pair = {
+        subscriptionProviderId: 'openai-codex' as const,
+        accountSlotId: provider.accountSlotId,
+      };
+      const handle = await manager.getPairHandle(pair);
+      const version = subscriptionVersions.get(selection.route.id);
+      if (!version || (await handle.getCredentialVersion()) !== version) return false;
+      const account = await manager.getStatus(pair);
+      if (account.codexAutoUseWeeklyReset === false) return false;
+      const remaining = execution.deadline - (input.clock?.now() ?? Date.now());
+      if (remaining <= 0 || execution.signal.aborted) return false;
+      const signal = AbortSignal.any([execution.signal, AbortSignal.timeout(Math.ceil(remaining))]);
+      const { quota } = await manager.getCodexQuota(pair, signal, true);
+      return (
+        quota?.availability === 'available' &&
+        (quota.resetCredits?.available.length ?? 0) > 0 &&
+        quota.windows.some(
+          (window) => window.limitWindowSeconds === 604_800 && window.usedPercent >= 100
+        )
+      );
+    },
+    recoverSettledQuota: async (selection, execution) => {
+      const provider = providers.get(selection.route.id);
+      const manager = input.providerSubscriptionAccountManager;
+      if (
+        !manager ||
+        provider?.subscriptionProviderId !== 'openai-codex' ||
+        !provider.accountSlotId
+      )
+        return false;
+      const pair = {
+        subscriptionProviderId: 'openai-codex' as const,
+        accountSlotId: provider.accountSlotId,
+      };
+      const handle = await manager.getPairHandle(pair);
+      const version = subscriptionVersions.get(selection.route.id);
+      if (!version || (await handle.getCredentialVersion()) !== version) return false;
+      const remaining = execution.deadline - (input.clock?.now() ?? Date.now());
+      if (remaining <= 0 || execution.signal.aborted) return false;
+      const signal = AbortSignal.any([execution.signal, AbortSignal.timeout(Math.ceil(remaining))]);
+      return manager.tryWeeklyCodexReset(pair, signal, version);
+    },
     autoFailover: input.logicalModel.autoFailover,
     signal: input.signal,
     ...(input.clock ? { clock: input.clock } : {}),
@@ -2686,7 +2738,49 @@ export async function dispatchLogicalModel<T>(input: {
           provider,
           input.providerSubscriptionAccountManager
         );
+        if (
+          provider.subscriptionProviderId === 'openai-codex' &&
+          provider.accountSlotId &&
+          input.providerSubscriptionAccountManager
+        ) {
+          const pair = {
+            subscriptionProviderId: 'openai-codex' as const,
+            accountSlotId: provider.accountSlotId,
+          };
+          const manager = input.providerSubscriptionAccountManager;
+          const handle = await manager.getPairHandle(pair);
+          subscriptionVersions.set(route.id, await handle.getCredentialVersion());
+          const remaining = execution.deadline - (input.clock?.now() ?? Date.now());
+          if (remaining <= 0)
+            throw new GatewayAttemptFailure(
+              { kind: 'provider_unavailable', settled: true },
+              undefined,
+              true
+            );
+          const admissionSignal = AbortSignal.any([
+            execution.signal,
+            AbortSignal.timeout(Math.ceil(remaining)),
+          ]);
+          const allowed = await manager.codexInferenceAllowed(pair, admissionSignal);
+          execution.signal.throwIfAborted();
+          if ((input.clock?.now() ?? Date.now()) >= execution.deadline)
+            throw new GatewayAttemptFailure(
+              { kind: 'provider_unavailable', settled: true },
+              undefined,
+              true
+            );
+          if (!allowed)
+            throw new GatewayAttemptFailure(
+              { kind: 'quota_exhausted', settled: true },
+              undefined,
+              true
+            );
+        }
       } catch (error) {
+        const preflightFailure =
+          error instanceof GatewayAttemptFailure && error.beforeDispatch
+            ? error.failure
+            : undefined;
         const code = error instanceof OpenAICompatibleProviderError ? error.code : 'unknown';
         const unavailable = [
           'gateway_provider_unavailable',
@@ -2708,15 +2802,20 @@ export async function dispatchLogicalModel<T>(input: {
             ? { providerProfileId: providers.get(route.id)!.id, providerModel: route.providerModel }
             : {}),
           selectionReason: selection.reason,
-          failureKind: authentication
-            ? 'auth_rejected'
-            : unavailable
-              ? 'provider_unavailable'
-              : code === 'model_not_configured'
-                ? 'invalid_request'
-                : 'unknown',
-          unavailableReason:
-            unavailable || authentication || code === 'model_not_configured'
+          failureKind:
+            preflightFailure?.kind ??
+            (authentication
+              ? 'auth_rejected'
+              : unavailable
+                ? 'provider_unavailable'
+                : code === 'model_not_configured'
+                  ? 'invalid_request'
+                  : 'unknown'),
+          unavailableReason: preflightFailure
+            ? preflightFailure.kind === 'quota_exhausted'
+              ? 'subscription_credits_disabled'
+              : 'subscription_admission_deadline'
+            : unavailable || authentication || code === 'model_not_configured'
               ? code
               : 'provider_unavailable',
         });
