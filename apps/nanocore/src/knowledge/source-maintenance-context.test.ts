@@ -117,7 +117,7 @@ function fixture(kind: 'user' | 'server') {
     });
     expect(input.validateResult('{"summary":"Recorded the release label."}')).toBeUndefined();
     const patch = { status: 'completed' as const, completedAt: new Date().toISOString() };
-    if ('owner' in input.turn) store.updateServerTurn(input.turn.id, patch);
+    if (input.turn.owner.kind === 'server') store.updateServerTurn(input.turn.id, patch);
     else store.updateTurn(input.turn.id, patch);
     return { turnId: input.turn.id, text: '{"summary":"Recorded the release label."}' };
   });
@@ -133,7 +133,7 @@ function fixture(kind: 'user' | 'server') {
         knowledge: input.inputs!,
       },
     };
-    if ('owner' in input.turn) store.updateServerTurn(input.turn.id, patch);
+    if (input.turn.owner.kind === 'server') store.updateServerTurn(input.turn.id, patch);
     else store.updateTurn(input.turn.id, patch);
   };
   const runtimeConfigManager = {
