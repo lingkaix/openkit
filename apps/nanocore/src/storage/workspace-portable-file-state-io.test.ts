@@ -60,107 +60,9 @@ function seedNotebook(root: string, files: Readonly<Record<string, string>>): vo
   });
 }
 
-/** Writes one exact JSONL fixture and creates its real parent directories. */
-function writeJsonl(path: string, rows: readonly unknown[]): void {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(
-    path,
-    rows.length > 0 ? `${rows.map((row) => JSON.stringify(row)).join('\n')}\n` : ''
-  );
-}
-
 /** Writes one complete portable source fixture. */
 function writePortableFixture(root: string): void {
   const workspaceId = 'ws_00000000-0000-7e30-a961-1cf5d6540406';
-  const observations = [
-    {
-      id: 'ko_00000000-0000-7ee4-b78c-17c74a854150',
-      workspaceId,
-      kind: 'maintenance',
-      summary: 'June observation.',
-      sourceReferences: [],
-      scope: 'workspace',
-      producer: 'test',
-      confidence: 1,
-      freshness: 'current',
-      status: 'retained',
-      observedAt: JUNE,
-      createdAt: JUNE,
-    },
-    {
-      id: 'ko_00000000-0000-74fd-834d-bd7444262a89',
-      workspaceId,
-      kind: 'maintenance',
-      summary: 'July observation.',
-      sourceReferences: [],
-      scope: 'workspace',
-      producer: 'test',
-      confidence: 1,
-      freshness: 'current',
-      status: 'promoted',
-      observedAt: JULY,
-      createdAt: JULY,
-    },
-  ];
-  const claims = [
-    {
-      id: 'kc_00000000-0000-7dea-b04c-c8d9dfd362fc',
-      workspaceId,
-      statement: 'First claim.',
-      sourceReferences: [],
-      scope: 'workspace',
-      producer: 'test',
-      confidence: 1,
-      freshness: 'current',
-      reviewState: 'accepted',
-      conflictStatus: 'none',
-      createdAt: JULY,
-      updatedAt: JULY,
-    },
-    {
-      id: 'kc_00000000-0000-7b97-a8ba-ef418610f14a',
-      workspaceId,
-      statement: 'Second claim.',
-      sourceReferences: [],
-      scope: 'workspace',
-      producer: 'test',
-      confidence: 1,
-      freshness: 'current',
-      reviewState: 'accepted',
-      conflictStatus: 'none',
-      createdAt: JULY,
-      updatedAt: JULY,
-    },
-  ];
-  const conflicts = [
-    {
-      id: 'kf_00000000-0000-7aff-b31a-d6d16ddb088d',
-      workspaceId,
-      subjectReferences: ['claim:kc_00000000-0000-7dea-b04c-c8d9dfd362fc'],
-      sourceReferences: [],
-      status: 'needs_review',
-      summary: 'Conflict history.',
-      suggestedActions: ['Review it.'],
-      producer: 'test',
-      createdAt: JUNE,
-      updatedAt: JUNE,
-    },
-    {
-      id: 'kf_00000000-0000-7aff-b31a-d6d16ddb088d',
-      workspaceId,
-      subjectReferences: ['claim:kc_00000000-0000-7dea-b04c-c8d9dfd362fc'],
-      sourceReferences: [],
-      status: 'resolved',
-      summary: 'Conflict history.',
-      suggestedActions: ['Review it.'],
-      producer: 'test',
-      resolution: 'Resolved.',
-      resolvedAt: JULY,
-      resolvedBy: 'test',
-      createdAt: JUNE,
-      updatedAt: JULY,
-    },
-  ];
   const retrieval = {
     traceId: 'krt_00000000-0000-780e-b78f-51422afca1e9',
     queryContext: {
@@ -185,11 +87,6 @@ function writePortableFixture(root: string): void {
     excluded: [],
   };
 
-  writeJsonl(join(root, 'knowledge', 'observations', '202606.jsonl'), [observations[0]]);
-  writeJsonl(join(root, 'knowledge', 'observations', '202607.jsonl'), [observations[1]]);
-  writeJsonl(join(root, 'knowledge', 'claims', '202607.jsonl'), claims);
-  writeJsonl(join(root, 'knowledge', 'conflicts', '202606.jsonl'), [conflicts[0]]);
-  writeJsonl(join(root, 'knowledge', 'conflicts', '202607.jsonl'), [conflicts[1]]);
   const retrievalPath = join(
     root,
     'threads',
@@ -227,7 +124,8 @@ function writePortableFixture(root: string): void {
   mkdirSync(join(root, 'knowledge', 'schema'), { recursive: true });
   writeFileSync(join(root, 'knowledge', 'schema', 'scope-schema.yaml'), 'custom: true\n');
   seedNotebook(root, {
-    'native.md': '---\ntype: "RepoConvention"\ntitle: "Native"\n---\nNative page.\n',
+    'native.md':
+      '---\ntype: "RepoConvention"\ntitle: "Native"\nfuture_note: "retained"\n---\nNative page.\n',
     'nested/native.md':
       '---\ntype: "RepoConvention"\ntitle: "Nested native"\n---\nNested native page.\n',
     'nested/index.md': '# Nested authored index\n\nKeep this navigation byte-for-byte.\n',
@@ -353,19 +251,10 @@ describe('workspace portable file-state IO', () => {
       expect(readFileSync(join(sourceRoot, path), 'utf8')).toBe(content);
   });
 
-  it('retains ledger annotations while excluding ignored trace fields from portable writes', () => {
+  it('retains canonical page annotations while excluding ignored trace fields from portable writes', () => {
     const source = workspaceRoot('openkit-knowledge-extended-');
     const target = workspaceRoot('openkit-knowledge-rewritten-');
     writePortableFixture(source);
-    for (const family of ['observations', 'claims', 'conflicts']) {
-      const path = join(source, 'knowledge', family, '202607.jsonl');
-      const rows = readFileSync(path, 'utf8')
-        .trim()
-        .split('\n')
-        .map((line) => JSON.parse(line));
-      for (const row of rows) row.futureNote = 'retained';
-      writeJsonl(path, rows);
-    }
     const retrievalPath = join(
       source,
       'threads',
@@ -395,10 +284,10 @@ describe('workspace portable file-state IO', () => {
     writeWorkspacePortableFileState(target, state);
     const reopened = readWorkspacePortableFileState(target, PORTABLE_OWNERS);
     expect(reopened.retrievalTraceFiles).toEqual(state.retrievalTraceFiles);
-    for (const family of ['observations', 'claims', 'conflicts'])
-      expect(readFileSync(join(target, 'knowledge', family, '202607.jsonl'), 'utf8')).toContain(
-        'futureNote'
-      );
+    expect(reopened.nativeKnowledgePages).toEqual(state.nativeKnowledgePages);
+    expect(reopened.nativeKnowledgePages.get('knowledge/pages/native.md')).toContain(
+      'future_note: "retained"'
+    );
     expect(
       readFileSync(
         join(
@@ -414,7 +303,7 @@ describe('workspace portable file-state IO', () => {
       )
     ).not.toContain('futureNote');
   });
-  it('round-trips strict monthly ledgers and exact workspace-owned text', () => {
+  it('round-trips canonical Notebook pages and exact workspace-owned text', () => {
     const sourceRoot = workspaceRoot('openkit-portable-state-source-');
     const targetRoot = workspaceRoot('openkit-portable-state-target-');
 
@@ -429,15 +318,6 @@ describe('workspace portable file-state IO', () => {
 
     const state = readWorkspacePortableFileState(sourceRoot, PORTABLE_OWNERS);
 
-    expect([...state.observations.keys()]).toEqual(['202606', '202607']);
-    expect(state.claims.get('202607')?.map((row) => row.id)).toEqual([
-      'kc_00000000-0000-7dea-b04c-c8d9dfd362fc',
-      'kc_00000000-0000-7b97-a8ba-ef418610f14a',
-    ]);
-    expect([...state.conflicts.values()].flat().map((row) => row.status)).toEqual([
-      'needs_review',
-      'resolved',
-    ]);
     expect([...state.nativeKnowledgePages.keys()]).toEqual([
       'knowledge/pages/index.md',
       'knowledge/pages/kn_owned.md',
@@ -485,9 +365,6 @@ describe('workspace portable file-state IO', () => {
     expect(readFileSync(join(targetRoot, 'knowledge', 'schema', 'scope-schema.yaml'), 'utf8')).toBe(
       'custom: true\n'
     );
-    expect(readFileSync(join(targetRoot, 'knowledge', 'claims', '202607.jsonl'), 'utf8')).toBe(
-      `${(state.claims.get('202607') ?? []).map((row) => JSON.stringify(row)).join('\n')}\n`
-    );
     expect(readFileSync(join(targetRoot, 'knowledge', 'pages', 'kn_target.md'), 'utf8')).toContain(
       'openkit_entry_id: "kn_target"'
     );
@@ -499,30 +376,31 @@ describe('workspace portable file-state IO', () => {
     const outsideRoot = workspaceRoot('openkit-portable-state-outside-');
 
     writePortableFixture(malformedRoot);
-    writeJsonl(join(malformedRoot, 'knowledge', 'claims', '202607.jsonl'), [
-      {
-        id: 'kc_00000000-0000-70e0-81b3-473a81814be9',
-        workspaceId: 'ws_00000000-0000-7e30-a961-1cf5d6540406',
-        statement: 'Unknown core values must fail closed.',
-        sourceReferences: [],
-        scope: 'workspace',
-        producer: 'test',
-        confidence: 1,
-        freshness: 'current',
-        reviewState: 'unsupported',
-        conflictStatus: 'none',
-        createdAt: JULY,
-        updatedAt: JULY,
-        unexpected: true,
-      },
-    ]);
+    const malformedTracePath = join(
+      malformedRoot,
+      'threads',
+      PORTABLE_TURN.threadId,
+      'turns',
+      PORTABLE_TURN.turnId,
+      'retrieval-traces',
+      'krt_00000000-0000-780e-b78f-51422afca1e9.json'
+    );
+    const malformedTrace = JSON.parse(readFileSync(malformedTracePath, 'utf8'));
+    malformedTrace.caller = 'unsupported';
+    writeFileSync(malformedTracePath, `${JSON.stringify(malformedTrace)}\n`);
     expect(() => readWorkspacePortableFileState(malformedRoot, PORTABLE_OWNERS)).toThrow();
 
     writePortableFixture(linkedRoot);
     writeFileSync(join(outsideRoot, 'sentinel.txt'), 'untouched\n');
     symlinkSync(
       join(outsideRoot, 'sentinel.txt'),
-      join(linkedRoot, 'knowledge', 'claims', '202608.jsonl')
+      join(
+        linkedRoot,
+        'threads',
+        PORTABLE_TURN.threadId,
+        'retrieval-traces',
+        'krt_00000000-0000-780e-b78f-51422afca1ea.json'
+      )
     );
     expect(() => readWorkspacePortableFileState(linkedRoot, PORTABLE_OWNERS)).toThrow(
       /symbolic link/i
