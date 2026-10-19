@@ -324,11 +324,12 @@ describe('C01/C02 public canonical Knowledge consolidation', () => {
       }),
     });
     const baseRevision = await revision(f);
+    const proposalReferences = [reference, evidencePin].sort();
     const bytes = page('KnowledgePage', 'A proposed interpretation of release evidence.', {
       openkit_entry_id: targetId,
       openkit_entry_kind: 'project-context',
       review_state: 'accepted',
-      source_refs: [reference, evidencePin],
+      source_refs: proposalReferences,
     });
     const draft = await ok(f, 'knowledge.proposal.draft', {
       requestId: randomUUID(),
@@ -336,7 +337,7 @@ describe('C01/C02 public canonical Knowledge consolidation', () => {
       knowledgePageId: targetId,
       canonicalPageBytes: bytes,
       contentDigest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
-      sourceReferences: [reference, evidencePin],
+      sourceReferences: proposalReferences,
       rationale: 'Retain the reviewed interpretation only after its conflict is resolved.',
       confidence: 0.75,
     });
