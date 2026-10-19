@@ -47,6 +47,7 @@ export function exportWorkspaceSources(input: {
   readonly revision: string;
   readonly exportRoot: string;
   readonly sources: readonly (z.infer<typeof SourceMetadataSchema> & { workspaceId: string })[];
+  /** Exact scope facts captured by the export owner, never inferred from root ancestry. */
   readonly knowledgeBaseId: string | undefined;
   readonly scopeSchemaText: string | null;
   readonly mounts: unknown;

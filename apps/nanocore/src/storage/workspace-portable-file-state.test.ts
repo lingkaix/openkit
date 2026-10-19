@@ -371,6 +371,7 @@ describe('workspace portable file state', () => {
       '  "workspace": {',
       '    "name": "Demo Workspace",',
       `    "defaultKnowledgeBaseId": "${sourceKnowledgeBaseId}",`,
+      `    "knowledgeMounts": [{"name":"raw","knowledgeBaseId":"${sourceKnowledgeBaseId}","default":true,"backend":"local","root":"raw"}],`,
       '    "roots": [],',
       '    "assistant": { "repositoryInspection": { "enabled": false } }',
       '  }',
@@ -380,10 +381,10 @@ describe('workspace portable file state', () => {
     const workspaceSchema = [
       'schema_version: "openkit-scope-knowledge-schema-v4"',
       'status: "active"',
-      'allowed_types: ["KnowledgePage", "RepoConvention"]',
+      'allowed_types: ["KnowledgePage", "RepoConvention", "SourceSummary"]',
       'allowed_statuses: ["active"]',
       'allowed_review_states: ["accepted", "user-authored"]',
-      'allowed_sensitivities: ["normal", "confidential"]',
+      'allowed_sensitivities: ["normal", "internal", "confidential"]',
       'allowed_freshness: ["current"]',
       '',
     ].join('\n');
@@ -656,7 +657,7 @@ describe('workspace portable file state', () => {
     const importedConfigPath = join(importedRoot, 'config', 'workspace.jsonc');
     expect
       .soft(existsSync(importedConfigPath) ? readFileSync(importedConfigPath, 'utf8') : null)
-      .toBe(workspaceConfig.replace(sourceKnowledgeBaseId, importedKnowledgeBaseId));
+      .toBe(workspaceConfig.replaceAll(sourceKnowledgeBaseId, importedKnowledgeBaseId));
     const importedSchemaPath = join(importedRoot, 'knowledge', 'schema', 'scope-schema.yaml');
     expect
       .soft(existsSync(importedSchemaPath) ? readFileSync(importedSchemaPath, 'utf8') : null)
