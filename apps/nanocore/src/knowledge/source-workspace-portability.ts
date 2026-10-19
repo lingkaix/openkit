@@ -4,6 +4,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { KnowledgeMountsSchema } from '@openkit/config-schema';
 import { allocateEntityId, formatReferenceUri } from '@openkit/protocol';
 import type { z } from 'zod';
+import { assertKnowledgeMountNamespaces } from '../config/knowledge-base.js';
 import { reserveCanonicalFileWrite } from '../storage/canonical-write-capacity.js';
 import {
   assertCanonicalDirectory,
@@ -56,6 +57,7 @@ export function exportWorkspaceSources(input: {
   const notebookRoot = join(input.workspaceRoot, 'knowledge');
   assertCanonicalDirectory(notebookRoot);
   const notebook = new KnowledgeNotebook({ repositoryPath: join(notebookRoot, 'notebook.git') });
+  notebook.history({ revision: input.revision, limit: 1 });
   const blobs = Object.entries(notebook.readSourcePointers(input.revision));
   if (blobs.length && (!input.knowledgeBaseId || !input.scopeSchemaText))
     throw new Error('Source export scope facts are unavailable.');
@@ -83,6 +85,7 @@ export function exportWorkspaceSources(input: {
   const mounts = KnowledgeMountsSchema.parse(input.mounts);
   if (mounts.some((mount) => mount.knowledgeBaseId !== input.knowledgeBaseId))
     throw new Error('Source mounts belong to a different Knowledge Base.');
+  assertKnowledgeMountNamespaces(notebookRoot, mounts);
   for (const [id, pointer] of pointers) {
     const target = join(input.exportRoot, `${pointerPrefix}${id}.md`);
     mkdirSync(dirname(target), { recursive: true });

@@ -96,19 +96,26 @@ export function readKnowledgeMounts(input: KnowledgeBaseOwner): readonly Knowled
     const mounts = KnowledgeMountsSchema.parse(readBinding(owner, source, owner.mountsMember));
     if (mounts.some((mount) => mount.knowledgeBaseId !== id))
       throw new NotebookError('recovery_required');
-    // Additional mount names reserve logical raw subdirectories; managed originals cannot occupy them.
-    if (
-      mounts.some(
-        (mount) =>
-          !mount.default &&
-          lstatSync(join(owner.notebookRoot, 'raw', mount.name), { throwIfNoEntry: false })
-      )
-    )
-      throw new NotebookError('recovery_required');
+    assertKnowledgeMountNamespaces(owner.notebookRoot, mounts);
     return mounts;
   } catch {
     throw new NotebookError('recovery_required');
   }
+}
+
+/** Applies the same reserved mount namespace rule to canonical scopes and captured export roots. */
+export function assertKnowledgeMountNamespaces(
+  notebookRoot: string,
+  mounts: readonly KnowledgeMount[]
+): void {
+  if (
+    mounts.some(
+      (mount) =>
+        !mount.default &&
+        lstatSync(join(notebookRoot, 'raw', mount.name), { throwIfNoEntry: false })
+    )
+  )
+    throw new NotebookError('recovery_required');
 }
 
 /**
