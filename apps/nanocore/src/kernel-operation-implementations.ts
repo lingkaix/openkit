@@ -1,10 +1,12 @@
 import type { KERNEL_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
+import { responsibleUserIdForActor } from '@openkit/protocol';
 import { createRecord, getLightApp } from './generative-kernel/commands.js';
 import { KernelCommandError } from './generative-kernel/errors.js';
 import { resolveLightAppMeaning } from './generative-kernel/meaning.js';
 import { kernelExecutionLineage, kernelOperationFailure } from './generative-operations.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
 import type { FamilyImplementations } from './operation-contract.js';
+import type { KnowledgeRetrievalAccess } from './retrieval-knowledge-adapter.js';
 /** Joins only executable behavior to the definition's exact operation keys. */
 export function createKernelOperationImplementations(
   dependencies: Pick<OperationInvocationDependencies, 'store' | 'inflightCommands' | 'coreDb'>
@@ -20,7 +22,7 @@ export function createKernelOperationImplementations(
             : context.kind === 'coordinator'
               ? context
               : context.queryContext;
-        const access = {
+        const access: KnowledgeRetrievalAccess = {
           store: dependencies.store!,
           coreDb: dependencies.coreDb,
           actor: context.actorRef,
@@ -28,12 +30,32 @@ export function createKernelOperationImplementations(
           outputThreadId: output?.threadId,
           outputTurnId: output?.turnId,
         };
-        return {
+        if (context.kind === 'worker') {
+          const userId = responsibleUserIdForActor(context.actorRef);
+          const turn = dependencies.store!.getTurnById(context.lineage.turnId);
+          if (!userId || !turn.agentId || turn.agentSessionId !== context.lineage.agentSessionId)
+            throw new KernelCommandError('access_denied', 'Workspace access denied.');
+          // The responsible human's Thread grants never substitute for the executing Agent.
+          access.resourcePolicyActor = {
+            kind: 'agent',
+            userId,
+            agentId: turn.agentId,
+            processId: context.lineage.agentSessionId,
+          };
+        }
+        const response = {
           ...app,
           meaning: app.schema.references.map((reference) =>
             resolveLightAppMeaning({ workspaceId: input.workspaceId, reference, access })
           ),
         };
+        const maximum = 2 * 1024 * 1024;
+        if (Buffer.byteLength(JSON.stringify(response), 'utf8') > maximum)
+          throw new KernelCommandError('limit_exceeded', 'Read response exceeds 2 MiB.', {
+            limit: 'readResponseBytes',
+            maximum,
+          });
+        return response;
       } catch (error) {
         kernelOperationFailure(error);
       }
