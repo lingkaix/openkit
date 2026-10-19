@@ -51,6 +51,7 @@ import {
 } from '../test-support/native-environment.js';
 import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { managedThreadPolicy } from '../test-support/resource-policy.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
@@ -15002,22 +15003,13 @@ describe('createConfiguredTurnExecutor', () => {
       workspace: {
         name: 'Managed retained storage',
         policy: {
-          resourceAccess: [
-            {
-              resource: { family: 'thread', id: fixture.environmentPackage.scope.threadId },
-              grants: [
-                {
-                  subject: {
-                    kind: 'agent',
-                    userId: fixture.adminUserId,
-                    agentId: fixture.environmentPackage.agent.agentId,
-                  },
-                  operations: ['thread.read'],
-                },
-              ],
-              prohibitions: [],
-            },
-          ],
+          mediation: managedThreadPolicy({
+            workspaceId: fixture.workspaceId,
+            threadId: fixture.environmentPackage.scope.threadId,
+            userId: fixture.adminUserId,
+            agentId: fixture.environmentPackage.agent.agentId,
+            operations: ['thread.read'],
+          }),
         },
       },
     });
@@ -15032,7 +15024,10 @@ describe('createConfiguredTurnExecutor', () => {
       config: boundary,
     });
     fixture.hooks.onInspect = () => {
-      boundary.workspace.policy!.resourceAccess[0]!.grants = [];
+      const policy = boundary.workspace.policy!.mediation;
+      policy.statements = policy.statements.filter(
+        (statement) => statement.kind === 'managed-boundary'
+      );
     };
     try {
       await expect(
