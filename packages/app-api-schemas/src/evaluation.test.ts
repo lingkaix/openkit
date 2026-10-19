@@ -1,3 +1,4 @@
+import { readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import { CandidateSetRecordSchema, JudgementRecordSchema } from './evaluation.js';
 import {
@@ -18,7 +19,7 @@ const secondCandidate = {
   contentDigest: `sha256:${'b'.repeat(64)}`,
 };
 const judgement = {
-  formatVersion: 1,
+  schemaVersion: 1,
   workspaceId,
   requestId: 'selection-one',
   actor,
@@ -31,9 +32,34 @@ const judgement = {
 };
 
 describe('evaluation retained shapes', () => {
+  it('admits the shared retained v1 marker for sets and judgements without a legacy reader', () => {
+    const set = {
+      schemaVersion: 1,
+      workspaceId,
+      candidateSetId: 'comparison-one',
+      createdBy: actor,
+      createdAt: judgement.recordedAt,
+      candidates: [candidate, secondCandidate],
+      judgements: [judgement],
+      extensions: {},
+    };
+    expect(JudgementRecordSchema.parse(writeRetainedV1(judgement))).toEqual(judgement);
+    expect(CandidateSetRecordSchema.parse(writeRetainedV1(set))).toEqual(set);
+    expect(readRetainedV1(set, (raw) => CandidateSetRecordReaderSchema.parse(raw))).toEqual(set);
+    for (const [record, schema] of [
+      [judgement, JudgementRecordReaderSchema],
+      [set, CandidateSetRecordReaderSchema],
+    ] as const) {
+      const { schemaVersion: _, ...unmarked } = record;
+      expect(schema.safeParse(unmarked).success).toBe(false);
+      expect(schema.safeParse({ ...unmarked, formatVersion: 1 }).success).toBe(false);
+      expect(schema.safeParse({ ...record, schemaVersion: 2 }).success).toBe(false);
+    }
+  });
+
   it('reads descriptive nested additions without weakening new command or core-kind admission', () => {
     const retained = {
-      formatVersion: 1,
+      schemaVersion: 1,
       workspaceId,
       candidateSetId: 'comparison-one',
       createdBy: { ...actor, displayName: 'Historical name' },
@@ -84,7 +110,7 @@ describe('evaluation retained shapes', () => {
     ).toBe(false);
     expect(JudgementRecordSchema.parse(judgement)).toEqual(judgement);
     const set = {
-      formatVersion: 1,
+      schemaVersion: 1,
       workspaceId,
       candidateSetId: 'comparison-one',
       createdBy: actor,
