@@ -865,7 +865,7 @@ async function requestWithOutageBudget(
       clearTimeout(timer);
       const bodyRemaining = deadline.remainingMs();
       if (bodyRemaining <= 0) {
-        timeout.abort(new Error('Harness request outage budget expired.'));
+        timeout.abort(failure);
         return;
       }
       timer = setTimeout(
