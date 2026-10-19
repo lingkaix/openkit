@@ -88,9 +88,9 @@ describe('Codex subscription management contracts', () => {
     const codex = {
       ...account,
       ...pair,
-      codexAutoUseWeeklyReset: false,
-      codexAutoUseExpiringReset: false,
-      codexUseCredits: true,
+      codexAutoUseWeeklyReset: true,
+      codexAutoUseExpiringReset: true,
+      codexUseCredits: false,
     };
     expect(ProviderSubscriptionAccountSchema.parse(codex)).toEqual(codex);
     expect(
