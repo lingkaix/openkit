@@ -11,6 +11,7 @@ const resource = { family: 'thread', id: source };
 const entry = { resource, grants: [], prohibitions: [] };
 const config = (boundary: unknown) =>
   JSON.stringify({
+    schemaVersion: 1,
     requiredFeatures: [WORKSPACE_RESOURCE_POLICY_FEATURE],
     workspace: { name: 'Portable privacy', policy: { resourceAccess: [boundary] } },
   });

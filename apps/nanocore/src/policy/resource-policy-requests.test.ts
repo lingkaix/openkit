@@ -52,7 +52,7 @@ function fixture() {
   mkdirSync(join(dataRoot, 'workspaces', workspace.id, 'config'), { recursive: true });
   writeFileSync(
     configPath,
-    '{\n // Preserve this authored sibling.\n "workspace": { "name": "Resource policy" }, "futureOptional": true\n}\n'
+    '{\n // Preserve this authored sibling.\n "schemaVersion": 1, "workspace": { "name": "Resource policy" }, "futureOptional": true\n}\n'
   );
   const files = new RuntimeConfigFileService({
     dataRoot,
@@ -292,6 +292,7 @@ describe('resource Policy Pending Request commands', () => {
       writeFileSync(
         f.configPath,
         JSON.stringify({
+          schemaVersion: 1,
           requiredFeatures: ['openkit.workspace-resource-policy.v1'],
           workspace: { name: f.workspace.name, policy: { resourceAccess: [restrictive] } },
         })
@@ -332,7 +333,7 @@ describe('resource Policy Pending Request commands', () => {
     const f = fixture();
     try {
       const record = f.raise();
-      writeFileSync(f.configPath, '{"workspace":{"name":"Changed elsewhere"}}');
+      writeFileSync(f.configPath, '{"schemaVersion":1,"workspace":{"name":"Changed elsewhere"}}');
       expect(() => checkResourcePolicyCommandIntent(f, record, f.actor)).toThrow(
         'configuration changed'
       );
