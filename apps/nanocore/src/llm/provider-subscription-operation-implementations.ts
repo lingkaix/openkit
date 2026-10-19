@@ -15,7 +15,6 @@ import {
   publicOperationActor,
 } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
-import { readCodexQuota } from './codex-quota.js';
 import {
   ProviderSubscriptionAccountError,
   type ProviderSubscriptionAccountLifecycleSnapshot,
@@ -60,6 +59,11 @@ const ERROR_RESPONSES = {
   provider_subscription_provider_unavailable: [503, 'Subscription provider is unavailable.'],
   provider_subscription_persistence_failed: [500, 'Provider subscription persistence failed.'],
   provider_subscription_projection_failed: [500, 'Provider subscription projection failed.'],
+  provider_subscription_codex_request_invalid: [400, 'Invalid Codex subscription request.'],
+  provider_subscription_reset_conflict: [
+    409,
+    'A Codex reset result is unknown; retry its original request.',
+  ],
 } as const;
 
 /** Native account and quota dependencies; provider identity remains data in the exact pair. */
@@ -118,6 +122,16 @@ export function createProviderSubscriptionOperationImplementations(
           )
         )
       ),
+    'provider-subscription.codex-settings': (input, context) =>
+      runAccountOperation(manager(), context, async () =>
+        project(await manager().updateCodexSettings(requirePair(input), input.settings))
+      ),
+    'provider-subscription.account-use-reset': (input, context) =>
+      runAccountOperation(manager(), context, () =>
+        manager().useCodexReset(requirePair(input), input.redeemRequestId, {
+          signal: context.signal,
+        })
+      ),
     'provider-subscription.account-delete': (input, context) =>
       runAccountOperation(manager(), context, async () => {
         await manager().deleteAccount(requirePair(input), {
@@ -146,31 +160,28 @@ export function createProviderSubscriptionOperationImplementations(
       runAccountOperation(manager(), context, async () => {
         const pair = requirePair(input);
         await manager().reconcileAccount(pair);
+        if (pair.subscriptionProviderId === 'openai-codex') {
+          const { quota, observedAt } = await manager().getCodexQuota(pair, context.signal, true);
+          return {
+            accountSlotId: pair.accountSlotId,
+            observedAt,
+            ...(quota ?? { availability: 'temporarily_unavailable' as const }),
+            subscriptionProviderId: pair.subscriptionProviderId,
+          };
+        }
         const handle = await manager().getPairHandle(pair);
         const version = await handle.getCredentialVersion();
         const verifyVersion = async () =>
           version !== undefined && (await handle.getCredentialVersion()) === version;
-        if (pair.subscriptionProviderId === 'xai') {
-          const quota = await readXaiQuota(handle.models, now, verifyVersion);
-          if (version !== undefined && quota && quota.availability !== 'authentication_required') {
-            await handle.observeQuota(version, quota.availability, true, context.signal);
-          }
-          return {
-            accountSlotId: pair.accountSlotId,
-            observedAt: now(),
-            subscriptionProviderId: pair.subscriptionProviderId,
-            ...(quota ?? { availability: 'temporarily_unavailable' as const }),
-          };
-        }
-        const quota = await readCodexQuota(handle.credentials, verifyVersion);
-        if (version !== undefined && quota?.availability === 'available') {
+        const quota = await readXaiQuota(handle.models, now, verifyVersion);
+        if (version !== undefined && quota && quota.availability !== 'authentication_required') {
           await handle.observeQuota(version, quota.availability, true, context.signal);
         }
         return {
           accountSlotId: pair.accountSlotId,
           observedAt: now(),
-          ...(quota ?? { availability: 'temporarily_unavailable' as const }),
           subscriptionProviderId: pair.subscriptionProviderId,
+          ...(quota ?? { availability: 'temporarily_unavailable' as const }),
         };
       }),
     'provider-subscription.account-auto-topup': (input, context) =>

@@ -37,7 +37,12 @@ import {
 } from '../vault/vault-references.js';
 import { createVaultUseAuditedBackend } from '../vault/vault-use-audited-backend.js';
 
-import { type CodexPresentedCredential, proveCodexCredentialCurrent } from './codex-quota.js';
+import {
+  type CodexPresentedCredential,
+  consumeCodexReset,
+  proveCodexCredentialCurrent,
+  readCodexQuota,
+} from './codex-quota.js';
 import type { PiAiFailure } from './pi-ai-failure.js';
 import { proveXaiBearerCurrent } from './xai-quota.js';
 
@@ -132,7 +137,9 @@ type ProviderSubscriptionAccountErrorCode =
   | 'provider_subscription_vault_locked'
   | 'provider_subscription_vault_unavailable'
   | 'provider_subscription_persistence_failed'
-  | 'provider_subscription_projection_failed';
+  | 'provider_subscription_projection_failed'
+  | 'provider_subscription_codex_request_invalid'
+  | 'provider_subscription_reset_conflict';
 
 /** Stable provider and account-slot identity. */
 export interface ProviderSubscriptionAccountPair {
@@ -142,8 +149,34 @@ export interface ProviderSubscriptionAccountPair {
   readonly accountSlotId: string;
 }
 
+/** Optional Codex account controls; absence means on, on and off respectively. */
+export interface CodexSubscriptionSettings {
+  readonly codexAutoUseWeeklyReset?: boolean | undefined;
+  readonly codexAutoUseExpiringReset?: boolean | undefined;
+  readonly codexUseCredits?: boolean | undefined;
+}
+
+/** One current-material observation, reused for at most one minute. */
+interface CodexAccountQuota {
+  readonly version: string;
+  readonly observedAt: string;
+  readonly quota: Awaited<ReturnType<typeof readCodexQuota>>;
+}
+
+/** One reset result, including its exact vendor retry identity but no credential material. */
+export interface CodexAccountResetResult {
+  readonly subscriptionProviderId: 'openai-codex';
+  readonly accountSlotId: string;
+  readonly redeemRequestId: string;
+  readonly creditId?: string;
+  readonly outcome: 'reset' | 'nothing_to_reset' | 'no_credit' | 'already_redeemed' | 'unknown';
+  readonly windowsReset?: boolean;
+}
+
 /** Sanitized provider-subscription account projection. */
-export interface ProviderSubscriptionAccountSnapshot extends ProviderSubscriptionAccountPair {
+export interface ProviderSubscriptionAccountSnapshot
+  extends ProviderSubscriptionAccountPair,
+    CodexSubscriptionSettings {
   /** Immutable account creation timestamp. */
   readonly createdAt: string;
   /** Monotonic latest account projection timestamp. */
@@ -237,7 +270,9 @@ interface UpdateProviderSubscriptionAccountInput {
 }
 
 /** Exact strict version-1 durable account authority. */
-interface ProviderSubscriptionAccountRecord extends ProviderSubscriptionAccountPair {
+interface ProviderSubscriptionAccountRecord
+  extends ProviderSubscriptionAccountPair,
+    CodexSubscriptionSettings {
   /** Durable format discriminator. */
   readonly schemaVersion: 1;
   /** Immutable account creation timestamp. */
@@ -297,6 +332,8 @@ interface PairHandleState {
   active: boolean;
   /** Number of admitted credential removals that have not settled. */
   removalPending: number;
+  /** Resets keep the credential version; this local generation rejects predecessor quota reads. */
+  quotaResetGeneration: number;
   /** Public pair-scoped handle. */
   handle: ProviderSubscriptionPairHandle;
   /** Exact active or settling process-local login. */
@@ -426,6 +463,11 @@ export class ProviderSubscriptionAccountManager {
 
   private readonly handles = new Map<string, PairHandleState>();
 
+  /** A read projection only: replacing material invalidates the cached observation. */
+  private readonly codexQuotas = new Map<string, CodexAccountQuota>();
+
+  private codexExpiryCheck: Promise<void> | undefined;
+
   /**
    * Creates one manager over a Core database and dynamic Vault projection.
    *
@@ -515,6 +557,318 @@ export class ProviderSubscriptionAccountManager {
         }),
       audit
     );
+  }
+
+  /** Updates only the three Codex controls under the existing account mutation fence. */
+  public async updateCodexSettings(
+    pair: ProviderSubscriptionAccountPair,
+    settings: CodexSubscriptionSettings,
+    audit?: ProviderSubscriptionAuditContext
+  ): Promise<ProviderSubscriptionAccountSnapshot> {
+    const exactPair = requireCodexPair(this.requirePair(pair));
+    if (
+      !isRecord(settings) ||
+      !hasOnlyKeys(settings, CODEX_SETTING_KEYS) ||
+      Object.values(settings).some((value) => typeof value !== 'boolean')
+    )
+      throw codexRequestError();
+    return this.withLifecycleAudit(
+      'provider_subscription.account.update',
+      exactPair,
+      () =>
+        this.withPairFence(exactPair, async () => {
+          const inspection = this.requireExistingOrdinaryInspection(this.inspectPair(exactPair));
+          const updated = {
+            ...inspection.record,
+            ...settings,
+            updatedAt: this.monotonicTimestamp(inspection.record.updatedAt),
+          };
+          this.writeAccount(updated);
+          return this.accountSnapshot(inspection, updated);
+        }),
+      audit
+    );
+  }
+
+  /** Reads current-material quota; only successful observations may be reused for one minute. */
+  public async getCodexQuota(
+    pair: ProviderSubscriptionAccountPair,
+    signal?: AbortSignal,
+    fresh = false
+  ): Promise<Pick<CodexAccountQuota, 'observedAt' | 'quota'>> {
+    const exactPair = requireCodexPair(this.requirePair(pair));
+    signal?.throwIfAborted();
+    const handle = await this.getPairHandle(exactPair);
+    const version = await handle.getCredentialVersion();
+    const pairState = this.handles.get(pairKey(exactPair));
+    const quotaGeneration = pairState?.quotaResetGeneration;
+    const observedAt = this.canonicalNow();
+    /** Rechecks the existing projection at consumption time, including overlapping successful reads. */
+    const cachedObservation = (): CodexAccountQuota | undefined => {
+      if (fresh || version === undefined) return undefined;
+      const cached = this.codexQuotas.get(pairKey(exactPair));
+      if (!cached || cached.version !== version) return undefined;
+      const age = Date.parse(this.canonicalNow()) - Date.parse(cached.observedAt);
+      return age >= 0 && age <= 60_000 ? cached : undefined;
+    };
+    const cached = cachedObservation();
+    if (cached) return cached;
+    const quota = await readCodexQuota(
+      handle.credentials,
+      async () => version !== undefined && (await handle.getCredentialVersion()) === version,
+      signal
+    );
+    if (version === undefined || (await handle.getCredentialVersion()) !== version)
+      return { observedAt, quota: null };
+    if (quota?.availability === 'available') {
+      if (pairState?.quotaResetGeneration !== quotaGeneration)
+        return cachedObservation() ?? { observedAt, quota: null };
+      const observation = { version, observedAt, quota };
+      this.codexQuotas.set(pairKey(exactPair), observation);
+      await handle.observeQuota(version, quota.availability, true, signal);
+      if (pairState?.quotaResetGeneration !== quotaGeneration)
+        return cachedObservation() ?? { observedAt, quota: null };
+    }
+    // A failed overlapping read cannot erase another call's fresh full-window proof.
+    return quota === null ? (cachedObservation() ?? { observedAt, quota }) : { observedAt, quota };
+  }
+
+  /** A failed or stale quota read never establishes a credits-off refusal. */
+  public async codexInferenceAllowed(
+    pair: ProviderSubscriptionAccountPair,
+    signal?: AbortSignal
+  ): Promise<boolean> {
+    if (pair.subscriptionProviderId !== 'openai-codex') return true;
+    const account = await this.getStatus(pair);
+    if (account.codexUseCredits === true) return true;
+    const { quota } = await this.getCodexQuota(pair, signal);
+    return (
+      quota?.availability !== 'available' ||
+      !quota.windows.some((window) => window.usedPercent >= 100)
+    );
+  }
+
+  /** Consumes one exact reset identity; Audit survives unknown transport results and restart. */
+  public async useCodexReset(
+    pair: ProviderSubscriptionAccountPair,
+    redeemRequestId: string,
+    options: {
+      readonly signal?: AbortSignal | undefined;
+      readonly trigger?: 'manual' | 'weekly' | 'expiring';
+      /** Failed inference material, checked while holding this same effect fence. */
+      readonly expectedVersion?: string;
+    } = {}
+  ): Promise<CodexAccountResetResult> {
+    const exactPair = requireCodexPair(this.requirePair(pair));
+    if (!UUID_V4_PATTERN.test(redeemRequestId)) throw codexRequestError();
+    return this.withPairFence(exactPair, async () => {
+      options.signal?.throwIfAborted();
+      const inspection = this.requireExistingOrdinaryInspection(this.inspectPair(exactPair));
+      if (inspection.kind !== 'live') throw providerUnavailableError();
+      if (
+        options.expectedVersion !== undefined &&
+        options.expectedVersion !==
+          `${inspection.entry.referenceId}:${inspection.entry.currentVersion}`
+      )
+        throw providerUnavailableError();
+      const record = inspection.record;
+      // Valid slot IDs contain underscores; use literal SQL prefix/suffix comparisons, not LIKE.
+      const prefix = codexResetResourcePrefix(exactPair);
+      const prior = this.coreDb.sqlite
+        .prepare(`SELECT rowid AS sequence, request_id AS requestId, resource, action, outcome, error_code AS errorCode FROM audit_events
+        WHERE request_id = ? AND action IN (${CODEX_RESET_ACTIONS.map(() => '?').join(',')}) ORDER BY rowid DESC LIMIT 1`)
+        .get(redeemRequestId, ...CODEX_RESET_ACTIONS) as CodexResetAuditRow | undefined;
+      if (prior && !prior.resource.startsWith(prefix)) throw codexRequestError();
+      if (prior && prior.outcome !== 'unknown') return resetAuditResult(exactPair, prior);
+      if (prior) {
+        // A later account/credential lifecycle cannot borrow the previous effect's retry identity.
+        const replaced = this.coreDb.sqlite
+          .prepare(`SELECT 1 FROM audit_events WHERE rowid > ? AND resource = ?
+          AND action IN ('provider_subscription.credential.store', 'provider_subscription.credential.rotate',
+            'provider_subscription.credential.revoke', 'provider_subscription.account.delete', 'provider_subscription.account.create') LIMIT 1`)
+          .get(
+            prior.sequence,
+            `provider-subscription:${exactPair.subscriptionProviderId}:${exactPair.accountSlotId}`
+          );
+        if (replaced) throw resetConflictError();
+      }
+      const pending = this.coreDb.sqlite
+        .prepare(`SELECT a.request_id AS requestId FROM audit_events a
+        WHERE a.action IN (${CODEX_RESET_ACTIONS.map(() => '?').join(',')}) AND substr(a.resource, 1, ?) = ? AND a.outcome = 'unknown'
+          AND NOT EXISTS (SELECT 1 FROM audit_events b WHERE b.request_id = a.request_id AND b.action = a.action AND b.rowid > a.rowid)
+        LIMIT 1`)
+        .get(...CODEX_RESET_ACTIONS, prefix.length, prefix) as { requestId: string } | undefined;
+      if (pending && pending.requestId !== redeemRequestId) throw resetConflictError();
+      const credential = this.resolveCredential(inspection.entry.referenceId);
+      if (typeof credential.accountId !== 'string' || !credential.accountId)
+        throw providerUnavailableError();
+      const presented: CodexPresentedCredential = {
+        type: 'oauth',
+        access: credential.access,
+        accountId: credential.accountId,
+      };
+      const trigger = options.trigger ?? 'manual';
+      let resource = prior?.resource;
+      if (!resource) {
+        // This bounded read uses the credential already protected by the pair fence, not a reentrant handle.
+        const quota = await readCodexQuota(
+          { read: async () => credential },
+          undefined,
+          options.signal
+        );
+        if (quota?.availability !== 'available') throw providerUnavailableError();
+        const weekly = quota.windows.find(
+          (window) => window.limitWindowSeconds === 604_800 && window.usedPercent >= 100
+        );
+        if (trigger === 'weekly') {
+          if (record.codexAutoUseWeeklyReset === false || !weekly)
+            return { ...exactPair, redeemRequestId, outcome: 'no_credit' };
+          const suffix = `:${encodeURIComponent(weekly.resetsAt)}`;
+          const previousWindow = this.coreDb.sqlite
+            .prepare(
+              `SELECT 1 FROM audit_events WHERE action = ? AND substr(resource, 1, ?) = ? AND substr(resource, -?) = ? LIMIT 1`
+            )
+            .get(
+              'provider_subscription.reset.weekly',
+              prefix.length,
+              prefix,
+              suffix.length,
+              suffix
+            );
+          if (previousWindow) return { ...exactPair, redeemRequestId, outcome: 'no_credit' };
+        }
+        const credits = [...(quota.resetCredits?.available ?? [])].sort(
+          (a, b) =>
+            (a.expiresAt === null ? Infinity : Date.parse(a.expiresAt)) -
+            (b.expiresAt === null ? Infinity : Date.parse(b.expiresAt))
+        );
+        const credit = credits[0];
+        if (
+          trigger === 'expiring' &&
+          (record.codexAutoUseExpiringReset === false ||
+            !credit?.expiresAt ||
+            Date.parse(credit.expiresAt) < Date.parse(this.canonicalNow()) ||
+            Date.parse(credit.expiresAt) - Date.parse(this.canonicalNow()) > 30 * 60_000 ||
+            !quota.windows.some((window) => window.usedPercent > 0))
+        )
+          return { ...exactPair, redeemRequestId, outcome: 'no_credit' };
+        if (!credit) {
+          const absent = { ...exactPair, redeemRequestId, outcome: 'no_credit' as const };
+          this.recordCodexReset(`${prefix}:`, redeemRequestId, trigger, absent);
+          return absent;
+        }
+        resource = `${prefix}${encodeURIComponent(credit.id)}:${trigger === 'weekly' ? encodeURIComponent(weekly!.resetsAt) : ''}`;
+        this.recordCodexReset(resource, redeemRequestId, trigger);
+      }
+      options.signal?.throwIfAborted();
+      const creditId = decodeURIComponent(resource.slice(prefix.length).split(':')[0]!);
+      const result = await consumeCodexReset(
+        presented,
+        { creditId, redeemRequestId },
+        options.signal
+      );
+      if (result.outcome === 'reset') {
+        // Invalidate at confirmation while the effect fence is held, including in-flight reads.
+        const pairState = this.handles.get(pairKey(exactPair));
+        if (pairState) pairState.quotaResetGeneration += 1;
+        this.codexQuotas.delete(pairKey(exactPair));
+      }
+      const outcome: CodexAccountResetResult = {
+        ...exactPair,
+        redeemRequestId,
+        creditId,
+        ...result,
+      };
+      // Preserve the original trigger even if a human repeats an automatic request's exact identity.
+      const originalTrigger = prior
+        ? (prior.action.slice('provider_subscription.reset.'.length) as typeof trigger)
+        : trigger;
+      this.recordCodexReset(resource, redeemRequestId, originalTrigger, outcome);
+      return outcome;
+    });
+  }
+
+  /** Runs only after the Gateway has exhausted its eligible failover targets. */
+  public async tryWeeklyCodexReset(
+    pair: ProviderSubscriptionAccountPair,
+    signal: AbortSignal | undefined,
+    expectedVersion: string
+  ): Promise<boolean> {
+    if (pair.subscriptionProviderId !== 'openai-codex') return false;
+    const account = await this.getStatus(pair);
+    if (account.codexAutoUseWeeklyReset === false) return false;
+    try {
+      const result = await this.useCodexReset(pair, randomUUID(), {
+        signal,
+        trigger: 'weekly',
+        expectedVersion,
+      });
+      return result.outcome === 'reset';
+    } catch (error) {
+      if (
+        error instanceof ProviderSubscriptionAccountError &&
+        [
+          'provider_subscription_provider_unavailable',
+          'provider_subscription_reset_conflict',
+        ].includes(error.code)
+      )
+        return false;
+      throw error;
+    }
+  }
+
+  /** One enabled-account expiry pass; concurrent passes do not queue duplicate background spends. */
+  public async checkExpiringCodexResets(signal?: AbortSignal): Promise<void> {
+    if (this.codexExpiryCheck) return this.codexExpiryCheck;
+    const pass = (async () => {
+      for (const accountSlotId of this.listAccountSlots('openai-codex')) {
+        if (signal?.aborted) return;
+        try {
+          const account = await this.getStatus({
+            subscriptionProviderId: 'openai-codex',
+            accountSlotId,
+          });
+          if (account.codexAutoUseExpiringReset === false || account.status !== 'logged_in')
+            continue;
+          await this.useCodexReset(account, randomUUID(), { signal, trigger: 'expiring' });
+        } catch {
+          /* A failed or unknown account check cannot spend again or affect another account. */
+        }
+      }
+    })();
+    this.codexExpiryCheck = pass;
+    try {
+      await pass;
+    } finally {
+      this.codexExpiryCheck = undefined;
+    }
+  }
+
+  /** Records only non-secret exact reset identity in the existing Server Audit fields. */
+  private recordCodexReset(
+    resource: string,
+    redeemRequestId: string,
+    trigger: 'manual' | 'weekly' | 'expiring',
+    result?: CodexAccountResetResult
+  ): void {
+    const timestamp = new Date(this.canonicalNow());
+    recordServerAuditEvent({
+      ...this.credentialAudit.getStore(),
+      coreDb: this.coreDb,
+      requestId: redeemRequestId,
+      resource,
+      action: `provider_subscription.reset.${trigger}`,
+      category: 'system',
+      outcome: result && result.outcome !== 'unknown' ? 'succeeded' : 'unknown',
+      errorCode: result
+        ? `codex_reset_${result.outcome}${result.windowsReset === true ? '_windows_reset' : result.windowsReset === false ? '_windows_not_reset' : ''}`
+        : null,
+      summary: result
+        ? 'Codex banked reset outcome observed.'
+        : 'Codex banked reset requested; outcome unknown.',
+      occurredAt: timestamp,
+      now: timestamp,
+    });
   }
 
   /**
@@ -1001,6 +1355,7 @@ export class ProviderSubscriptionAccountManager {
       login: null,
       loginError: null,
       removalPending: 0,
+      quotaResetGeneration: 0,
     } as PairHandleState;
     const credentials: CredentialStore = {
       delete: (providerId) => {
@@ -1729,15 +2084,8 @@ export class ProviderSubscriptionAccountManager {
     return backend;
   }
 
-  /**
-   * Reads every strict account record for one provider in slot order.
-   *
-   * @param providerId Supported subscription provider.
-   * @returns Strict durable account records.
-   */
-  private readProviderRecords(
-    providerId: SubscriptionProviderId
-  ): ProviderSubscriptionAccountRecord[] {
+  /** Lists existing slot names only; each caller must still use the ordinary strict pair reader. */
+  private listAccountSlots(providerId: SubscriptionProviderId): string[] {
     const accountsDirectory = this.accountsDirectory(providerId);
     this.assertSafeAncestors(accountsDirectory);
     const stat = lstatOrNull(accountsDirectory);
@@ -1748,21 +2096,26 @@ export class ProviderSubscriptionAccountManager {
       throw persistenceError();
     }
 
-    return readdirSync(accountsDirectory)
-      .sort()
-      .map((accountSlotId) => {
-        if (!ProviderSubscriptionAccountSlotIdSchema.safeParse(accountSlotId).success) {
-          throw persistenceError();
-        }
-        const record = this.readAccount({
-          accountSlotId,
-          subscriptionProviderId: providerId,
-        });
-        if (!record) {
-          throw persistenceError();
-        }
-        return record;
+    return readdirSync(accountsDirectory).sort();
+  }
+
+  /** Reads all strict records; public inventory retains its all-or-nothing validity boundary. */
+  private readProviderRecords(
+    providerId: SubscriptionProviderId
+  ): ProviderSubscriptionAccountRecord[] {
+    return this.listAccountSlots(providerId).map((accountSlotId) => {
+      if (!ProviderSubscriptionAccountSlotIdSchema.safeParse(accountSlotId).success) {
+        throw persistenceError();
+      }
+      const record = this.readAccount({
+        accountSlotId,
+        subscriptionProviderId: providerId,
       });
+      if (!record) {
+        throw persistenceError();
+      }
+      return record;
+    });
   }
 
   /**
@@ -2196,6 +2549,9 @@ function parseAccountRecord(
   const allowed = [
     'accountLabel',
     'accountSlotId',
+    'codexAutoUseWeeklyReset',
+    'codexAutoUseExpiringReset',
+    'codexUseCredits',
     'createdAt',
     'displayName',
     'planLabel',
@@ -2231,6 +2587,17 @@ function parseAccountRecord(
     throw persistenceError();
   }
 
+  for (const key of [
+    'codexAutoUseWeeklyReset',
+    'codexAutoUseExpiringReset',
+    'codexUseCredits',
+  ] as const) {
+    if (
+      value[key] !== undefined &&
+      (pair.subscriptionProviderId !== 'openai-codex' || typeof value[key] !== 'boolean')
+    )
+      throw persistenceError();
+  }
   validateOptionalLabel(value.displayName);
   validateOptionalLabel(value.accountLabel);
   validateOptionalLabel(value.planLabel);
@@ -2252,6 +2619,80 @@ function parseAccountRecord(
   return value as unknown as ProviderSubscriptionAccountRecord;
 }
 
+/** The closed settings keys are shared by native admission and sanitized projection. */
+const CODEX_SETTING_KEYS = [
+  'codexAutoUseWeeklyReset',
+  'codexAutoUseExpiringReset',
+  'codexUseCredits',
+] as const;
+const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const CODEX_RESET_ACTIONS = [
+  'provider_subscription.reset.manual',
+  'provider_subscription.reset.weekly',
+  'provider_subscription.reset.expiring',
+] as const;
+
+/** Only existing Audit columns carry reset identity; no parallel reset store exists. */
+interface CodexResetAuditRow {
+  readonly sequence: number;
+  readonly requestId: string;
+  readonly resource: string;
+  readonly action: string;
+  readonly outcome: string;
+  readonly errorCode: string | null;
+}
+
+/** Rejects provider-specific controls before any credential or external effect. */
+function requireCodexPair(
+  pair: ProviderSubscriptionAccountPair
+): ProviderSubscriptionAccountPair & { readonly subscriptionProviderId: 'openai-codex' } {
+  if (pair.subscriptionProviderId !== 'openai-codex') throw codexRequestError();
+  return { ...pair, subscriptionProviderId: 'openai-codex' };
+}
+
+/** A bounded local slot, not the upstream account identity, names this Audit resource. */
+function codexResetResourcePrefix(pair: ProviderSubscriptionAccountPair): string {
+  return `provider-subscription:openai-codex:${pair.accountSlotId}:reset-credit:`;
+}
+
+/** Returns a recorded terminal outcome without issuing another external effect. */
+function resetAuditResult(
+  pair: ProviderSubscriptionAccountPair & { readonly subscriptionProviderId: 'openai-codex' },
+  row: CodexResetAuditRow
+): CodexAccountResetResult {
+  const match =
+    /^codex_reset_(reset|nothing_to_reset|no_credit|already_redeemed)(?:_windows_(reset|not_reset))?$/.exec(
+      row.errorCode ?? ''
+    );
+  if (!match) throw persistenceError();
+  const creditId = decodeURIComponent(
+    row.resource.slice(codexResetResourcePrefix(pair).length).split(':')[0]!
+  );
+  return {
+    ...pair,
+    redeemRequestId: row.requestId,
+    ...(creditId ? { creditId } : {}),
+    outcome: match[1] as CodexAccountResetResult['outcome'],
+    ...(match[2] ? { windowsReset: match[2] === 'reset' } : {}),
+  };
+}
+
+/** Invalid native arguments remain a fixed redacted refusal. */
+function codexRequestError(): ProviderSubscriptionAccountError {
+  return new ProviderSubscriptionAccountError(
+    'provider_subscription_codex_request_invalid',
+    'Invalid Codex subscription request.'
+  );
+}
+
+/** A different id cannot bypass an existing uncertain banked-reset effect. */
+function resetConflictError(): ProviderSubscriptionAccountError {
+  return new ProviderSubscriptionAccountError(
+    'provider_subscription_reset_conflict',
+    'A Codex reset result is unknown; retry its original request.'
+  );
+}
+
 /**
  * Builds a sanitized snapshot without the internal Vault binding.
  *
@@ -2269,6 +2710,13 @@ function snapshot(
     createdAt: record.createdAt,
     ...(record.displayName === undefined ? {} : { displayName: record.displayName }),
     ...(record.planLabel === undefined ? {} : { planLabel: record.planLabel }),
+    ...(record.subscriptionProviderId === 'openai-codex'
+      ? {
+          codexAutoUseWeeklyReset: record.codexAutoUseWeeklyReset ?? true,
+          codexAutoUseExpiringReset: record.codexAutoUseExpiringReset ?? true,
+          codexUseCredits: record.codexUseCredits ?? false,
+        }
+      : {}),
     status,
     subscriptionProviderId: record.subscriptionProviderId,
     updatedAt: record.updatedAt,

@@ -11,6 +11,7 @@ import {
 } from '@openkit/app-api-schemas';
 import { PROTOCOL_VERSION } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { BetterAuthServer } from './auth/middleware.js';
 import {
   ProviderSubscriptionAccountError,
   ProviderSubscriptionAccountManager,
@@ -137,6 +138,7 @@ const CODEX_USAGE = {
 } as const;
 const PRIMARY_QUOTA_WINDOW = {
   id: 'primary',
+  label: '5 hours',
   limitWindowSeconds: 18_000,
   remainingPercent: 69,
   resetsAt: '2026-08-01T00:00:00.000Z',
@@ -144,6 +146,7 @@ const PRIMARY_QUOTA_WINDOW = {
 } as const;
 const SECONDARY_QUOTA_WINDOW = {
   id: 'secondary',
+  label: '7 days',
   limitWindowSeconds: 604_800,
   remainingPercent: 0,
   resetsAt: '2026-08-08T00:00:00.000Z',
@@ -560,6 +563,118 @@ function expectNoProviderStateIo(fixture: ReturnType<typeof createFixture>): voi
   }
   expect(fixture.vaultBackendAccess).not.toHaveBeenCalled();
 }
+
+describe('Codex management HTTP authority and projection', () => {
+  it('denies both reset and settings operations to a signed-in non-admin before provider I/O', async () => {
+    const fixture = createFixture();
+    const userId = 'usr_00000000-0000-7691-add4-fc1fc8769319';
+    fixture.coreDb.sqlite
+      .prepare(
+        'INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind) VALUES (?, ?, ?, false, ?, ?, ?)'
+      )
+      .run(userId, 'Session User', 'session@example.invalid', Date.now(), Date.now(), 'human');
+    const auth: BetterAuthServer = {
+      api: {
+        getSession: async () => ({ session: { id: 'synthetic-session' }, user: { id: userId } }),
+      },
+      handler: async () => Response.json({ status: 'auth-ok' }),
+    };
+    const app = createApp({
+      mode: 'server',
+      auth,
+      coreDb: fixture.coreDb,
+      dataRoot: fixture.dataRoot,
+      providerSubscriptionAccountManager: fixture.manager,
+    });
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockRejectedValue(new Error('No provider I/O is authorized.'));
+    try {
+      for (const [operation, input] of [
+        ['account-use-reset', { redeemRequestId: 'd98c622b-90e0-4f0e-b526-c03fdc8e5312' }],
+        ['codex-settings', { settings: { codexUseCredits: false } }],
+      ] as const) {
+        const response = await app.request(
+          `/api/app/operations/provider-subscription.${operation}`,
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              subscriptionProviderId: 'openai-codex',
+              accountSlotId: 'default',
+              ...input,
+            }),
+          }
+        );
+        expect(response.status).toBe(403);
+        expect(await response.json()).toMatchObject({ code: 'deployment_admin_required' });
+      }
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expectNoProviderStateIo(fixture);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('rejects Codex settings on xAI before account or credential access', async () => {
+    const fixture = createFixture();
+    const response = await fixture.app.request(
+      '/api/app/operations/provider-subscription.codex-settings',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          subscriptionProviderId: 'xai',
+          accountSlotId: 'default',
+          settings: { codexUseCredits: false },
+        }),
+      }
+    );
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ code: 'invalid_request' });
+    expectNoProviderStateIo(fixture);
+  });
+
+  it('projects rich quota through the real reader and public operation without credential detail', async () => {
+    const fixture = createFixture();
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      Response.json({
+        ...CODEX_USAGE,
+        credits: {
+          has_credits: true,
+          unlimited: false,
+          balance: '9007199254740993.000000000000000001',
+        },
+        rate_limit_reset_credits: { available_count: 0 },
+      })
+    );
+    try {
+      const response = await fixture.app.request(
+        ...operationRequest('provider-subscription.account-quota', {
+          subscriptionProviderId: 'openai-codex',
+          accountSlotId: 'default',
+        })
+      );
+      expect(response.status).toBe(200);
+      const body = ProviderSubscriptionQuotaSchema.parse(await response.json());
+      expect(body).toMatchObject({
+        credits: {
+          hasCredits: true,
+          unlimited: false,
+          balance: '9007199254740993.000000000000000001',
+        },
+        resetCredits: { availableCount: 0, available: [] },
+        observedAt: OBSERVED_AT,
+      });
+      for (const secret of [CODEX_ACCESS_CANARY, CODEX_ACCOUNT_CANARY, 'raw-quota-canary']) {
+        expect(JSON.stringify(body)).not.toContain(secret);
+      }
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+});
 
 describe('provider-subscription app API', () => {
   it('registers the eleven provider-neutral operations and returns fixed inventory without state I/O', async () => {
@@ -1267,6 +1382,7 @@ describe('provider-subscription app API', () => {
       expect(ProviderSubscriptionQuotaSchema.parse(await firstResponse.json())).toEqual({
         ...backupPair,
         availability: 'available',
+        credits: { hasCredits: true, unlimited: false, balance: '17.25' },
         observedAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/),
         planType: 'pro',
         windows: [PRIMARY_QUOTA_WINDOW, SECONDARY_QUOTA_WINDOW],
@@ -1296,6 +1412,7 @@ describe('provider-subscription app API', () => {
       expect(ProviderSubscriptionQuotaSchema.parse(await secondResponse.json())).toEqual({
         ...backupPair,
         availability: 'available',
+        credits: { hasCredits: true, unlimited: false, balance: '17.25' },
         observedAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/),
         planType: 'pro',
         windows: [PRIMARY_QUOTA_WINDOW, SECONDARY_QUOTA_WINDOW],
@@ -1344,6 +1461,7 @@ describe('provider-subscription app API', () => {
       expect(ProviderSubscriptionQuotaSchema.parse(await thirdResponse.json())).toEqual({
         ...backupPair,
         availability: 'available',
+        credits: { hasCredits: true, unlimited: false, balance: '17.25' },
         observedAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/),
         planType: 'pro',
         windows: [PRIMARY_QUOTA_WINDOW, SECONDARY_QUOTA_WINDOW],
@@ -1458,6 +1576,9 @@ describe('provider-subscription app API', () => {
         availability: 'available',
         observedAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/),
         planType: body.plan_type,
+        ...('rate_limit' in body && body.rate_limit?.allowed === false
+          ? { heldReason: 'rate_limit_reached' }
+          : {}),
         subscriptionProviderId: 'openai-codex',
         windows,
       });
@@ -1469,8 +1590,12 @@ describe('provider-subscription app API', () => {
   });
 
   it.each([
-    900, 18_000, 604_800, 0, -1,
-  ])('projects only a positive reported Codex window duration (%s)', async (seconds) => {
+    [900, undefined],
+    [18_000, '5 hours'],
+    [604_800, '7 days'],
+    [0, undefined],
+    [-1, undefined],
+  ] as const)('projects only a positive reported Codex window duration (%s)', async (seconds, label) => {
     const fixture = createFixture();
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(
@@ -1497,9 +1622,17 @@ describe('provider-subscription app API', () => {
       expect(response.status).toBe(200);
       expect(quota).toMatchObject({ availability: 'available' });
       if (quota.availability !== 'available') throw new Error('Expected available quota.');
-      const { limitWindowSeconds: _defaultDuration, ...primary } = PRIMARY_QUOTA_WINDOW;
+      const {
+        limitWindowSeconds: _defaultDuration,
+        label: _defaultLabel,
+        ...primary
+      } = PRIMARY_QUOTA_WINDOW;
       expect(quota.windows).toEqual([
-        { ...primary, ...(seconds > 0 ? { limitWindowSeconds: seconds } : {}) },
+        {
+          ...primary,
+          ...(seconds > 0 ? { limitWindowSeconds: seconds } : {}),
+          ...(label ? { label } : {}),
+        },
         SECONDARY_QUOTA_WINDOW,
       ]);
       expect(fetchSpy).toHaveBeenCalledTimes(1);

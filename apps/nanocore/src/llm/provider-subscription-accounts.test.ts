@@ -1272,6 +1272,9 @@ describe('ProviderSubscriptionAccountManager', () => {
     expect(accountPath(fixture.dataRoot, pair)).toBe(exactPath);
     expect(created).toEqual({
       accountSlotId: 'team_a',
+      codexAutoUseWeeklyReset: true,
+      codexAutoUseExpiringReset: true,
+      codexUseCredits: false,
       createdAt: '2026-07-23T01:00:00.000Z',
       displayName: 'Team A',
       status: 'logged_out',
@@ -2161,6 +2164,9 @@ describe('ProviderSubscriptionAccountManager', () => {
 
     expect(repaired).toEqual({
       accountSlotId: 'repair_one',
+      codexAutoUseWeeklyReset: true,
+      codexAutoUseExpiringReset: true,
+      codexUseCredits: false,
       createdAt: DEFAULT_TIME,
       status: 'logged_in',
       subscriptionProviderId: 'openai-codex',
@@ -4858,6 +4864,13 @@ async function createObservedInferenceRouteFixture(
     pair,
     'vault_00000000-0000-799d-848e-914aef612c73'
   );
+  if (subscriptionProviderId === 'openai-codex') {
+    // This fixture tests inference authentication, not quota admission or weekly recovery.
+    await fixture.manager.updateCodexSettings(pair, {
+      codexUseCredits: true,
+      codexAutoUseWeeklyReset: false,
+    });
+  }
   const providerModel =
     subscriptionProviderId === 'openai-codex' ? 'openai-codex/gpt-5.6-sol' : 'grok-4.3';
   const models = handle.models as MutableModels;
@@ -5576,6 +5589,645 @@ describe('uncommitted ancestor account recovery', () => {
     } finally {
       durability.fail = undefined;
     }
+  });
+});
+
+/** Builds the real account, Vault, Audit and HTTP operation crossing for Codex management. */
+async function codexManagementFixture() {
+  const fixture = createFixture();
+  const pair = accountPair('codex_management');
+  const userId = ensureLocalUser(fixture.coreDb);
+  await createStoredPair(
+    fixture,
+    pair,
+    'vault_00000000-0000-76b6-bb44-69ed58d73f3b',
+    oauthCredential('management-canary')
+  );
+  const appFor = (manager = fixture.manager, coreDb = fixture.coreDb) =>
+    createApp({ coreDb, dataRoot: fixture.dataRoot, providerSubscriptionAccountManager: manager });
+  const app = appFor();
+  return {
+    ...fixture,
+    pair,
+    userId,
+    appFor,
+    invoke: (operation: string, input: Record<string, unknown> = {}, target = app) =>
+      target.request(`/api/app/operations/provider-subscription.${operation}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ...pair, ...input }),
+      }),
+  };
+}
+
+/** Serves synthetic usage, credit listing and consume responses; every other URL fails locally. */
+function codexManagementTransport(
+  consume: (body: { credit_id: string; redeem_request_id: string }) => Response | Promise<Response>
+) {
+  const available = [
+    { id: 'never-credit', reset_type: 'weekly', status: 'available', expires_at: null },
+    {
+      id: 'later-credit',
+      reset_type: 'weekly',
+      status: 'available',
+      expires_at: '2026-07-24T00:00:00.000Z',
+    },
+    {
+      id: 'soon-credit',
+      reset_type: 'weekly',
+      status: 'available',
+      expires_at: '2026-07-23T00:20:00.000Z',
+    },
+  ];
+  const quota = {
+    plan_type: 'pro',
+    rate_limit: {
+      allowed: false,
+      limit_reached: true,
+      primary_window: {
+        used_percent: 100,
+        limit_window_seconds: 604800,
+        reset_at: Date.parse('2026-07-30T00:00:00.000Z') / 1000,
+        reset_after_seconds: 604800,
+      },
+      secondary_window: null,
+    },
+    rate_limit_reset_credits: { available_count: available.length },
+  };
+  const bodies: Array<{ credit_id: string; redeem_request_id: string }> = [];
+  const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const url = input instanceof Request ? input.url : String(input);
+    if (url === 'https://chatgpt.com/backend-api/wham/usage') {
+      return Response.json(quota);
+    }
+    if (url === 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits') {
+      return Response.json({ available_count: available.length, credits: available });
+    }
+    expect(url).toBe('https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume');
+    expect(init?.method).toBe('POST');
+    const body = JSON.parse(String(init?.body)) as (typeof bodies)[number];
+    bodies.push(body);
+    return consume(body);
+  });
+  return { available, bodies, fetchSpy, quota };
+}
+
+describe('Codex settings and manual reset public behavior', () => {
+  it('projects defaults and persists partial settings separately from the display label', async () => {
+    const fixture = await codexManagementFixture();
+    const status = await fixture.invoke('account-status');
+    expect(status.status).toBe(200);
+    expect(await status.json()).toMatchObject({
+      codexAutoUseWeeklyReset: true,
+      codexAutoUseExpiringReset: true,
+      codexUseCredits: false,
+    });
+    const updated = await fixture.invoke('codex-settings', {
+      settings: { codexAutoUseWeeklyReset: false, codexUseCredits: true },
+    });
+    expect(updated.status).toBe(200);
+    expect(await updated.json()).toMatchObject({
+      codexAutoUseWeeklyReset: false,
+      codexAutoUseExpiringReset: true,
+      codexUseCredits: true,
+    });
+    const label = await fixture.invoke('account-update', { displayName: 'Renamed Codex' });
+    expect(label.status).toBe(200);
+    const restarted = fixture.appFor(fixture.createManager());
+    const read = await fixture.invoke('account-status', {}, restarted);
+    expect(await read.json()).toMatchObject({
+      displayName: 'Renamed Codex',
+      codexAutoUseWeeklyReset: false,
+      codexAutoUseExpiringReset: true,
+      codexUseCredits: true,
+    });
+  });
+
+  it('retains the exact earliest credit and request in Server Audit before POST and redacts output', async () => {
+    const fixture = await codexManagementFixture();
+    const redeemRequestId = 'c5500c65-256c-4ad5-ab3a-abf457f2cb03';
+    const transport = codexManagementTransport((body) => {
+      expect(body).toEqual({ credit_id: 'soon-credit', redeem_request_id: redeemRequestId });
+      const intent = fixture.coreDb.sqlite
+        .prepare(
+          'SELECT request_id, resource, outcome, actor_json FROM audit_events WHERE request_id = ?'
+        )
+        .all(redeemRequestId) as Array<{
+        request_id: string;
+        resource: string;
+        outcome: string;
+        actor_json: string;
+      }>;
+      expect(intent.length).toBeGreaterThan(0);
+      expect(intent.some((row) => row.outcome === 'unknown')).toBe(true);
+      expect(intent.some((row) => row.resource.includes('soon-credit'))).toBe(true);
+      expect(intent.some((row) => row.resource.includes(fixture.pair.accountSlotId))).toBe(true);
+      expect(intent.map((row) => JSON.parse(row.actor_json))).toContainEqual({
+        kind: 'user',
+        id: fixture.userId,
+      });
+      return Response.json({ code: 'reset', provider_private: 'raw-reset-canary' });
+    });
+    const response = await fixture.invoke('account-use-reset', { redeemRequestId });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toMatchObject({
+      ...fixture.pair,
+      redeemRequestId,
+      creditId: 'soon-credit',
+      outcome: 'reset',
+    });
+    expect(transport.bodies).toHaveLength(1);
+    const audit = fixture.coreDb.sqlite
+      .prepare('SELECT * FROM audit_events WHERE request_id = ?')
+      .all(redeemRequestId);
+    expect(audit).toEqual(
+      expect.arrayContaining([expect.objectContaining({ outcome: 'succeeded' })])
+    );
+    const outward = JSON.stringify({ body, audit });
+    for (const secret of ['management-canary', 'raw-reset-canary'])
+      expect(outward).not.toContain(secret);
+  });
+
+  it('reuses the saved credit and UUID after an unknown transport result and a storage reopen', async () => {
+    const fixture = await codexManagementFixture();
+    const redeemRequestId = 'd98c622b-90e0-4f0e-b526-c03fdc8e5312';
+    let calls = 0;
+    const transport = codexManagementTransport(() => {
+      if (++calls === 1) throw new TypeError('synthetic disconnect management-canary');
+      return Response.json({ code: 'already_redeemed' });
+    });
+    const first = await fixture.invoke('account-use-reset', { redeemRequestId });
+    expect(first.status).toBe(200);
+    expect(await first.json()).toMatchObject({
+      redeemRequestId,
+      creditId: 'soon-credit',
+      outcome: 'unknown',
+    });
+    transport.available.splice(0, transport.available.length, {
+      id: 'different-credit',
+      reset_type: 'weekly',
+      status: 'available',
+      expires_at: null,
+    });
+    const reopened = openCoreDb(fixture.dataRoot);
+    try {
+      const manager = new ProviderSubscriptionAccountManager({
+        coreDb: reopened,
+        now: fixture.clock.now,
+        vaultBackend: fixture.backend,
+      });
+      const second = await fixture.invoke(
+        'account-use-reset',
+        { redeemRequestId },
+        fixture.appFor(manager, reopened)
+      );
+      expect(second.status).toBe(200);
+      expect(await second.json()).toMatchObject({
+        redeemRequestId,
+        creditId: 'soon-credit',
+        outcome: 'already_redeemed',
+      });
+      expect(transport.bodies).toEqual([
+        { credit_id: 'soon-credit', redeem_request_id: redeemRequestId },
+        { credit_id: 'soon-credit', redeem_request_id: redeemRequestId },
+      ]);
+    } finally {
+      reopened.sqlite.close();
+    }
+  });
+
+  it('does not retry a saved unknown reset against a replacement account credential', async () => {
+    const fixture = await codexManagementFixture();
+    const redeemRequestId = '833278dc-6f5c-4b52-bfb8-6d5c4d2525a7';
+    const transport = codexManagementTransport(() => {
+      throw new TypeError('Synthetic disconnect.');
+    });
+    const first = await fixture.invoke('account-use-reset', { redeemRequestId });
+    expect(first.status).toBe(200);
+    expect(await first.json()).toMatchObject({ outcome: 'unknown' });
+    await fixture.manager.logout(fixture.pair);
+    fixture.queueReferenceIds(allocateEntityId('vault'));
+    const handle = await fixture.manager.getPairHandle(fixture.pair);
+    await handle.credentials.modify('openai-codex', async () =>
+      oauthCredential('replacement-account')
+    );
+    const second = await fixture.invoke('account-use-reset', { redeemRequestId });
+    expect(second.status).not.toBe(404);
+    expect(transport.bodies).toHaveLength(1);
+    expect(await second.text()).not.toContain('"outcome":"reset"');
+  });
+
+  it('serializes concurrent delivery of the same reset identity without selecting another credit', async () => {
+    const fixture = await codexManagementFixture();
+    const redeemRequestId = '56bcd2c3-2468-4d3c-ab98-f0cf32015a38';
+    let active = 0;
+    let maximumActive = 0;
+    const transport = codexManagementTransport(async () => {
+      maximumActive = Math.max(maximumActive, ++active);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      active--;
+      return Response.json({ code: 'reset' });
+    });
+    const responses = await Promise.all([
+      fixture.invoke('account-use-reset', { redeemRequestId }),
+      fixture.invoke('account-use-reset', { redeemRequestId }),
+    ]);
+    expect(responses.map((response) => response.status)).toEqual([200, 200]);
+    expect(maximumActive).toBe(1);
+    expect(transport.bodies.length).toBeGreaterThan(0);
+    for (const body of transport.bodies) {
+      expect(body).toEqual({ credit_id: 'soon-credit', redeem_request_id: redeemRequestId });
+    }
+  });
+
+  it('does not consume after logout makes the selected credential unavailable', async () => {
+    const fixture = await codexManagementFixture();
+    const transport = codexManagementTransport(() => Response.json({ code: 'reset' }));
+    await fixture.manager.logout(fixture.pair);
+    const response = await fixture.invoke('account-use-reset', {
+      redeemRequestId: '33d17ef4-b661-4b25-9552-5fa685fe5571',
+    });
+    expect(response.status).not.toBe(404);
+    expect(transport.bodies).toHaveLength(0);
+    expect(await response.text()).not.toContain('"outcome":"reset"');
+  });
+});
+
+/** Exercises real Gateway selection and account admission with inference beyond the seam stubbed. */
+function dispatchCodexManagement(
+  fixture: Awaited<ReturnType<typeof codexManagementFixture>>,
+  attempt: (providerId: string) => Promise<string>,
+  backup = true
+) {
+  return dispatchLogicalModel({
+    logicalModel: {
+      id: 'codex-management-tier',
+      displayName: 'Codex management tier',
+      modelFamilyId: null,
+      capabilities: [],
+      autoFailover: true,
+      contextManagement: { type: 'compaction', compactThreshold: 8000 },
+      routes: (backup ? ['codex', 'backup'] : ['codex']).map((id) => ({
+        id,
+        providerProfileId: id,
+        providerModel: 'gpt-5.1',
+        available: true,
+        unavailableReason: null,
+      })),
+    },
+    signal: new AbortController().signal,
+    providerSubscriptionAccountManager: fixture.manager,
+    resolveGatewayProvider: (id, model) =>
+      ({
+        id,
+        adapterId: 'openai-codex',
+        subscriptionProviderId: id === 'codex' ? 'openai-codex' : undefined,
+        accountSlotId: id === 'codex' ? fixture.pair.accountSlotId : undefined,
+        models: [model],
+        backend: 'pi-ai',
+        apiKey: null,
+        requiresApiKey: false,
+        gatewayCapabilities: { chatCompletions: 'native', responses: 'native' },
+      }) as ResolvedLLMProviderConfig,
+    attempt: ({ provider }) => attempt(provider.id),
+  });
+}
+
+/** Agreed manager pass; public settings admission runs before this new seam is invoked. */
+type CodexExpiryManager = ProviderSubscriptionAccountManager & {
+  checkExpiringCodexResets(signal: AbortSignal): Promise<void>;
+};
+
+describe('Codex account policy at Gateway and periodic boundaries', () => {
+  it('defaults credits off for a fresh full window, but stale unavailable quota is not exhaustion proof', async () => {
+    const fixture = await codexManagementFixture();
+    const transport = codexManagementTransport(() => Response.json({ code: 'reset' }));
+    const settings = await fixture.invoke('codex-settings', {
+      settings: { codexAutoUseWeeklyReset: false },
+    });
+    expect(settings.status).toBe(200);
+    expect((await fixture.invoke('account-quota')).status).toBe(200);
+    const attempt = vi.fn(async (id: string) => id);
+    expect(await dispatchCodexManagement(fixture, attempt)).toBe('backup');
+    expect(attempt).toHaveBeenCalledExactlyOnceWith('backup');
+    fixture.clock.use('2026-07-23T00:01:01.000Z');
+    transport.fetchSpy.mockRejectedValue(new Error('Synthetic quota unavailable.'));
+    attempt.mockClear();
+    expect(await dispatchCodexManagement(fixture, attempt)).toBe('codex');
+    expect(attempt).toHaveBeenCalledExactlyOnceWith('codex');
+    expect(transport.bodies).toHaveLength(0);
+  });
+
+  it('keeps a fresh full observation when an overlapping cold-cache admission read fails', async () => {
+    const fixture = await codexManagementFixture();
+    const transport = codexManagementTransport(() => Response.json({ code: 'reset' }));
+    transport.quota.rate_limit_reset_credits.available_count = 0;
+    const firstStarted = deferredGate();
+    const secondStarted = deferredGate();
+    const requests: Array<{
+      resolve: (response: Response) => void;
+      reject: (error: Error) => void;
+    }> = [];
+    transport.fetchSpy.mockImplementation((input) => {
+      expect(String(input)).toBe('https://chatgpt.com/backend-api/wham/usage');
+      return new Promise<Response>((resolve, reject) => {
+        requests.push({ resolve, reject });
+        if (requests.length === 1) firstStarted.resolve();
+        if (requests.length === 2) secondStarted.resolve();
+      });
+    });
+    const first = fixture.manager.codexInferenceAllowed(fixture.pair);
+    await firstStarted.promise;
+    const second = fixture.manager.codexInferenceAllowed(fixture.pair);
+    await secondStarted.promise;
+
+    // A publishes a successful current-material reading before B's older in-flight read fails.
+    requests[0]!.resolve(Response.json(transport.quota));
+    expect(await first).toBe(false);
+    expect(await fixture.manager.getCodexQuota(fixture.pair)).toMatchObject({
+      observedAt: DEFAULT_TIME,
+      quota: {
+        availability: 'available',
+        windows: [{ limitWindowSeconds: 604800, usedPercent: 100 }],
+      },
+    });
+    expect(transport.fetchSpy).toHaveBeenCalledTimes(2);
+    requests[1]!.reject(new TypeError('Synthetic overlapping usage read failure.'));
+    expect(await second).toBe(false);
+    expect(transport.fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('spends one weekly reset for settled quota and guards the same window on the next request', async () => {
+    const fixture = await codexManagementFixture();
+    const transport = codexManagementTransport(() => Response.json({ code: 'reset' }));
+    const settings = await fixture.invoke('codex-settings', {
+      settings: { codexUseCredits: true },
+    });
+    expect(settings.status).toBe(200);
+    let tries = 0;
+    const quotaFailure = () =>
+      Object.assign(new Error('Synthetic quota.'), {
+        failure: { kind: 'quota_exhausted', settled: true },
+      });
+    const attempt = vi.fn(async () => {
+      if (++tries === 1) throw quotaFailure();
+      return 'served-after-reset';
+    });
+    await expect(dispatchCodexManagement(fixture, attempt, false)).resolves.toBe(
+      'served-after-reset'
+    );
+    expect(attempt).toHaveBeenCalledTimes(2);
+    expect(transport.bodies).toHaveLength(1);
+    await expect(
+      dispatchCodexManagement(
+        { ...fixture, manager: fixture.createManager() },
+        async () => {
+          throw quotaFailure();
+        },
+        false
+      )
+    ).rejects.toMatchObject({ cause: 'quota_exhausted' });
+    expect(transport.bodies).toHaveLength(1);
+  });
+
+  it('does not spend a weekly reset for a full five-hour primary window', async () => {
+    const fixture = await codexManagementFixture();
+    const transport = codexManagementTransport(() => Response.json({ code: 'reset' }));
+    transport.quota.rate_limit.primary_window.limit_window_seconds = 18000;
+    const settings = await fixture.invoke('codex-settings', {
+      settings: { codexUseCredits: true },
+    });
+    expect(settings.status).toBe(200);
+    await expect(
+      dispatchCodexManagement(
+        fixture,
+        async () => {
+          throw Object.assign(new Error('Synthetic quota.'), {
+            failure: { kind: 'quota_exhausted', settled: true },
+          });
+        },
+        false
+      )
+    ).rejects.toMatchObject({ cause: 'quota_exhausted' });
+    expect(transport.bodies).toHaveLength(0);
+  });
+
+  it('joins overlapping expiry passes and stops a cancelled pass before provider contact', async () => {
+    const fixture = await codexManagementFixture();
+    const transport = codexManagementTransport(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      return Response.json({ code: 'reset' });
+    });
+    const settings = await fixture.invoke('codex-settings', {
+      settings: { codexAutoUseWeeklyReset: false },
+    });
+    expect(settings.status).toBe(200);
+    const manager = fixture.manager as CodexExpiryManager;
+    const signal = new AbortController().signal;
+    await Promise.all([
+      manager.checkExpiringCodexResets(signal),
+      manager.checkExpiringCodexResets(signal),
+    ]);
+    expect(transport.bodies).toHaveLength(1);
+    const calls = transport.fetchSpy.mock.calls.length;
+    const controller = new AbortController();
+    controller.abort();
+    await manager.checkExpiringCodexResets(controller.signal).catch(() => undefined);
+    expect(transport.fetchSpy).toHaveBeenCalledTimes(calls);
+  });
+
+  it('does not use expiring credits for disabled accounts, unused windows or distant expiry', async () => {
+    const fixture = await codexManagementFixture();
+    const transport = codexManagementTransport(() => Response.json({ code: 'reset' }));
+    const manager = fixture.manager as CodexExpiryManager;
+    const signal = new AbortController().signal;
+    const disabled = await fixture.invoke('codex-settings', {
+      settings: { codexAutoUseExpiringReset: false },
+    });
+    expect(disabled.status).toBe(200);
+    await manager.checkExpiringCodexResets(signal);
+    expect(transport.bodies).toHaveLength(0);
+    const enabled = await fixture.invoke('codex-settings', {
+      settings: { codexAutoUseExpiringReset: true },
+    });
+    expect(enabled.status).toBe(200);
+    transport.quota.rate_limit.primary_window.used_percent = 0;
+    await manager.checkExpiringCodexResets(signal);
+    expect(transport.bodies).toHaveLength(0);
+    transport.quota.rate_limit.primary_window.used_percent = 25;
+    transport.available.splice(0, transport.available.length, {
+      id: 'distant-credit',
+      reset_type: 'weekly',
+      status: 'available',
+      expires_at: '2026-07-23T00:31:00.000Z',
+    });
+    await manager.checkExpiringCodexResets(signal);
+    expect(transport.bodies).toHaveLength(0);
+  });
+});
+
+describe('Codex review regressions', () => {
+  it('R5 does not republish a predecessor full-window observation after a confirmed reset', async () => {
+    const fixture = await codexManagementFixture();
+    let currentZeroReads = 0;
+    const transport = codexManagementTransport(() => {
+      transport.quota.rate_limit.primary_window.used_percent = 0;
+      transport.quota.rate_limit.allowed = true;
+      transport.quota.rate_limit.limit_reached = false;
+      return Response.json({ code: 'reset', windows_reset: true });
+    });
+    const predecessor = structuredClone(transport.quota);
+    const readStarted = deferredGate();
+    let releasePredecessor!: (response: Response) => void;
+    let usageReads = 0;
+    const originalFetch = transport.fetchSpy.getMockImplementation()!;
+    transport.fetchSpy.mockImplementation((input, init) => {
+      if (String(input) === 'https://chatgpt.com/backend-api/wham/usage') {
+        if (++usageReads === 1) {
+          return new Promise<Response>((resolve) => {
+            releasePredecessor = resolve;
+            readStarted.resolve();
+          });
+        }
+        if (transport.quota.rate_limit.primary_window.used_percent === 0) currentZeroReads++;
+      }
+      return originalFetch(input, init);
+    });
+    const pending = fixture.manager.getCodexQuota(fixture.pair, undefined, true);
+    await readStarted.promise;
+    const reset = await fixture.manager.useCodexReset(
+      fixture.pair,
+      '3638acdd-3c8d-491c-a354-199f319e46c6'
+    );
+    expect(reset).toMatchObject({ outcome: 'reset', windowsReset: true });
+    expect(transport.bodies).toHaveLength(1);
+
+    // The older response can settle, but it cannot undo the completed reset's invalidation.
+    releasePredecessor(Response.json(predecessor));
+    await pending;
+    expect(await fixture.manager.codexInferenceAllowed(fixture.pair)).toBe(true);
+    expect(currentZeroReads).toBeGreaterThan(0);
+  });
+
+  it('R1 binds weekly recovery to the failed material inside reset admission', async () => {
+    const fixture = await codexManagementFixture();
+    const transport = codexManagementTransport(() => Response.json({ code: 'reset' }));
+    await fixture.manager.updateCodexSettings(fixture.pair, { codexUseCredits: true });
+    const handle = await fixture.manager.getPairHandle(fixture.pair);
+    const failedVersion = await handle.getCredentialVersion();
+    const original = fixture.manager.tryWeeklyCodexReset.bind(fixture.manager);
+    const recovery = vi
+      .spyOn(fixture.manager, 'tryWeeklyCodexReset')
+      .mockImplementation(async (...args) => {
+        // Rotate after the Gateway's currentness check but before the real reset fence.
+        await handle.credentials.modify('openai-codex', async () =>
+          oauthCredential('replacement-at-reset-admission')
+        );
+        expect(await handle.getCredentialVersion()).not.toBe(failedVersion);
+        return original(...args);
+      });
+    let attempts = 0;
+    await expect(
+      dispatchCodexManagement(
+        fixture,
+        async () => {
+          if (++attempts === 1) {
+            throw Object.assign(new Error('Synthetic settled quota.'), {
+              failure: { kind: 'quota_exhausted', settled: true },
+            });
+          }
+          return 'unexpected-retry';
+        },
+        false
+      )
+    ).rejects.toMatchObject({ cause: 'quota_exhausted' });
+    expect(recovery).toHaveBeenCalledTimes(1);
+    expect(attempts).toBe(1);
+    expect(transport.bodies).toHaveLength(0);
+  });
+
+  it('R2 keeps an unknown axb reset independent from the literal a_b slot', async () => {
+    const fixture = await codexManagementFixture();
+    const firstPair = accountPair('axb');
+    const secondPair = accountPair('a_b');
+    await createStoredPair(
+      fixture,
+      firstPair,
+      allocateEntityId('vault'),
+      oauthCredential('wildcard-first')
+    );
+    await createStoredPair(
+      fixture,
+      secondPair,
+      allocateEntityId('vault'),
+      oauthCredential('wildcard-second')
+    );
+    let posts = 0;
+    const transport = codexManagementTransport(() => {
+      if (++posts === 1) throw new TypeError('Synthetic unknown reset.');
+      return Response.json({ code: 'reset' });
+    });
+    const first = await fixture.invoke('account-use-reset', {
+      ...firstPair,
+      redeemRequestId: '15f801c1-e10e-49eb-a340-b98ec960c66a',
+    });
+    expect(first.status).toBe(200);
+    expect(await first.json()).toMatchObject({ ...firstPair, outcome: 'unknown' });
+    const second = await fixture.invoke('account-use-reset', {
+      ...secondPair,
+      redeemRequestId: '81ce64fd-50f3-4c42-93b1-2a9128da23bb',
+    });
+    expect(second.status).toBe(200);
+    expect(await second.json()).toMatchObject({ ...secondPair, outcome: 'reset' });
+    expect(transport.bodies).toHaveLength(2);
+    const accounts = transport.fetchSpy.mock.calls
+      .filter(([url]) => String(url).endsWith('/consume'))
+      .map(([, init]) => new Headers(init?.headers).get('chatgpt-account-id'));
+    expect(accounts).toEqual(['account-wildcard-first', 'account-wildcard-second']);
+  });
+
+  it('R3 retains Codex recovery when an ordinary backup also exhausts quota', async () => {
+    const fixture = await codexManagementFixture();
+    const transport = codexManagementTransport(() => Response.json({ code: 'reset' }));
+    await fixture.manager.updateCodexSettings(fixture.pair, { codexUseCredits: true });
+    const attempts: string[] = [];
+    await expect(
+      dispatchCodexManagement(fixture, async (id) => {
+        attempts.push(id);
+        if (id === 'codex' && transport.bodies.length > 0) return 'served-after-reset';
+        throw Object.assign(new Error('Synthetic settled quota.'), {
+          failure: { kind: 'quota_exhausted', settled: true },
+        });
+      })
+    ).resolves.toBe('served-after-reset');
+    expect(attempts).toEqual(['codex', 'backup', 'codex']);
+    expect(transport.bodies).toHaveLength(1);
+  });
+
+  it('R4 isolates an invalid account record from a healthy account expiry pass', async () => {
+    const fixture = await codexManagementFixture();
+    const corruptPair = accountPair('a_corrupt');
+    await createStoredPair(
+      fixture,
+      corruptPair,
+      allocateEntityId('vault'),
+      oauthCredential('expiry-corrupt')
+    );
+    writeFileSync(accountPath(fixture.dataRoot, corruptPair), '{}');
+    const transport = codexManagementTransport(() => Response.json({ code: 'reset' }));
+    // Public inventory must retain its existing all-or-nothing validity rule.
+    await expect(fixture.manager.listAccounts('openai-codex')).rejects.toMatchObject(
+      PERSISTENCE_ERROR
+    );
+    await expect(
+      fixture.manager.checkExpiringCodexResets(new AbortController().signal)
+    ).resolves.toBeUndefined();
+    expect(transport.bodies).toHaveLength(1);
+    const accounts = transport.fetchSpy.mock.calls
+      .filter(([url]) => String(url).endsWith('/consume'))
+      .map(([, init]) => new Headers(init?.headers).get('chatgpt-account-id'));
+    expect(accounts).toEqual(['account-management-canary']);
   });
 });
 
