@@ -14,7 +14,10 @@ import { KnowledgeScreen } from './KnowledgeScreen';
 const TIMESTAMP = '2026-10-16T00:00:00.000Z';
 const WORKSPACE_ID = allocateEntityId('ws');
 const OTHER_WORKSPACE_ID = allocateEntityId('ws');
+const KNOWLEDGE_BASE_ID = allocateEntityId('kb');
+const OTHER_KNOWLEDGE_BASE_ID = allocateEntityId('kb');
 const OWNER_USER_ID = allocateEntityId('usr');
+const WORKSPACE_PAGE_SCOPE = `page/workspace/${WORKSPACE_ID}/${KNOWLEDGE_BASE_ID}`;
 const QUESTION = 'When does the reading room open?';
 const PAGE = {
   id: 'reading-room',
@@ -33,7 +36,7 @@ const UNRELATED_PAGE = {
   content: 'Unrelated current page content must not become a citation.',
 };
 const CITATION = {
-  reference: { scopeId: `page/workspace/${WORKSPACE_ID}`, objectId: PAGE.id },
+  reference: { scopeId: WORKSPACE_PAGE_SCOPE, objectId: PAGE.id },
   kind: PAGE.kind,
   title: PAGE.title,
   excerpt: 'The reading room opens at 09:00 on weekdays.',
@@ -87,7 +90,11 @@ function renderKnowledge(answer: KnowledgeManagerAnswerResponse) {
           break;
         case operationHttpPath('knowledge.list'):
           if (pageRead) return pageRead();
-          body = { notebookRevision: 'notebook-fixture-revision', items: [UNRELATED_PAGE, PAGE] };
+          body = {
+            knowledgeBaseId: KNOWLEDGE_BASE_ID,
+            notebookRevision: 'notebook-fixture-revision',
+            items: [UNRELATED_PAGE, PAGE],
+          };
           break;
         case operationHttpPath('knowledge.indexes'):
           body = {
@@ -198,7 +205,7 @@ describe('Knowledge Manager answer citations', () => {
   it.each([
     {
       name: 'another Workspace with the same page id',
-      scopeId: `page/workspace/${OTHER_WORKSPACE_ID}`,
+      scopeId: `page/workspace/${OTHER_WORKSPACE_ID}/${OTHER_KNOWLEDGE_BASE_ID}`,
       objectId: PAGE.id,
     },
     {
