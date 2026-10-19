@@ -935,7 +935,7 @@ describe('app api schemas', () => {
 
     expect(
       RegisterKnowledgeSourceRequestSchema.parse({
-        requestId: 'req_source',
+        requestId: '00000000-0000-4000-8000-000000000603',
         kind: 'document',
         title: 'Release notes',
         uri: 'file://release.md',
@@ -943,7 +943,7 @@ describe('app api schemas', () => {
         originatingThreadId: 'th_00000000-0000-7000-8000-000000000001',
         originatingTurnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
       })
-    ).toMatchObject({ kind: 'document', requestId: 'req_source' });
+    ).toMatchObject({ kind: 'document', requestId: '00000000-0000-4000-8000-000000000603' });
     expect(KnowledgeSourceSchema.parse(source)).toEqual(source);
     const derivedRepresentation = {
       id: 'ks_00000000-0000-7ef0-a551-80b39073108f:text',
