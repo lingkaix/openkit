@@ -185,7 +185,11 @@ function expectRepeatedImportSnapshot(
       ...repeated.portableFileState,
       workspaceConfig: normalizedConfig,
     },
-  }).toEqual({ ...imported, finalizeNotebookKnowledge: expect.any(Function) });
+  }).toEqual({
+    ...imported,
+    finalizeNotebookKnowledge: expect.any(Function),
+    verifySourceOriginals: expect.any(Function),
+  });
   expect(readFileSync(sourceConfigPath)).toEqual(sourceConfig);
 }
 
@@ -564,6 +568,7 @@ describe('workspace export verifier', () => {
       'records/workspace-quarantine-records.jsonl',
       'records/workspace-record.json',
       'workspace-files/config/workspace.jsonc',
+      'workspace-files/knowledge/schema/scope-schema.yaml',
     ]);
     expect(
       JSON.parse(
@@ -1637,7 +1642,7 @@ describe('workspace export verifier', () => {
         suggestedWorkspaceId: 'ws_9e57e6ec-74d8-56ed-89aa-baf519ca4af6',
       },
       verification: {
-        fileCount: 22,
+        fileCount: 23,
         checkedFiles: [
           'records/agent-resource-catalog.json',
           'records/agent-sessions.jsonl',
@@ -1661,6 +1666,7 @@ describe('workspace export verifier', () => {
           'records/workspace-materials.jsonl',
           'records/workspace-record.json',
           'workspace-files/config/workspace.jsonc',
+          'workspace-files/knowledge/schema/scope-schema.yaml',
         ],
       },
     });
