@@ -71,7 +71,7 @@ Repository tests use the same system-under-test instrumentation and correlation 
 - Do not write a second OpenKit event schema over OpenTelemetry.
 - Do not record prompt text, response text, tool content, arbitrary attributes, request or response bodies, headers, credentials, private provider data, or unrestricted paths.
 - Do not instrument every internal function, Item, state transition, assertion, or worker-native event.
-- Do not inject an OpenTelemetry SDK into user workers, agent runtimes, or governed sandboxes; #221 governs this boundary.
+- Producer trust and Sandbox admission follow the Worker Sandbox Export Boundary below; no broader instrumentation is implied.
 - Do not build a bundled observability backend, multi-collector topology, high-availability pipeline, reliable delivery spool, sampling control plane, or telemetry administration API.
 - Local diagnostic files and the bounded deployment-admin Turn view are in scope. They are not a log database, durable evidence, or a public trace-query service.
 
@@ -94,11 +94,13 @@ NanoCore validates the allowlist and per-Turn count/byte budgets before recordin
 
 The shim uses a bounded queue below control-message priority. Drop markers on overflow; marker production and delivery must never delay control traffic. No new egress, OpenTelemetry SDK provider/exporter, OTLP endpoint/receiver, Collector, exporter credential, native agent-runtime telemetry relay, arbitrary metrics/logs, periodic sampling, or content is admitted in the Sandbox.
 
-The execution owner records accepted markers as bounded, unverified events on the owning journal step. This specification defines their projection as OpenTelemetry span events, not child spans: a point observation has no verified operation duration or independent lifecycle. Use the fixed event name `openkit.worker.phase`, the clamped timestamp, and only the selected marker variant's allowlisted fields. NanoCore adds `openkit.report.origin=worker` and `openkit.report.verified=false`. Keep marker outcome/error attributes separate from the owning stage's outcome/status attributes.
+The execution owner records accepted markers as bounded, unverified events on the owning journal step. At journal admission, store the fixed `openkit.worker.phase` event name, clamped timestamp, admitted variant fields, `openkit.report.origin=worker`, and boolean `openkit.report.verified=false`. Exporter/view preserve these exact keys/values without aliases or trust-field rewriting. Span events, not child spans, represent these point reports: they have no verified operation duration or independent lifecycle. Keep claimed outcome/error fields separate from stage status/outcome.
 
 Markers never change a step's status, outcome, retry, recovery, or fences, and never add histogram samples. Missing or forged markers affect diagnostics only. Journal persistence proves only that Core received an unverified report, not that the reported phase occurred.
 
-NanoCore emits native start, run, and end stage spans from facts it already accepts: worker-control observations, the accepted start result, and final status. Unverified markers can add detail but cannot establish receipt, native start, completion, collection, or release. Further Sandbox telemetry requires #221's concrete unmet need and separately accepted egress/untrusted-content controls. Missing spans authorize no bypass. Deadline propagation remains with the execution owner; this specification adds none.
+Core/NanoHost accepted observations own native start/run/end facts; markers only add unverified detail and cannot establish receipt, completion, collection or release. Broader inside telemetry needs #221's concrete unmet need and separately accepted trust/egress/content controls. Deadline propagation stays with execution.
+
+Host facts follow the [NanoHost resource-summary owner](20260802-nanohost_runtime_and_transport.md#host-observed-sandbox-resource-summary): existing terminal/inspect/teardown and lost-Worker inspect responses supply bounded container-lifetime counters and exit observations. Record them as trusted host/backend observations, not agent reports or outcome authority. Missing fields are unknown. Measurement stays off the teardown/fencing critical path; late data uses the journal owner's linked receiving-step rule. Native stderr/logs remain restricted-raw work content, never telemetry. This is the operative host/inside trust boundary.
 
 ## Terms
 
@@ -114,7 +116,7 @@ NanoCore emits native start, run, and end stage spans from facts it already acce
 
 ## Standards Contract
 
-The implementation uses official unmodified releases and does not fork, patch, monkey-patch, or reimplement OpenTelemetry protocols or semantic conventions.
+Use official unmodified releases and standard OpenTelemetry/OTLP contracts. Do not fork, patch or monkey-patch libraries, invent an alternate telemetry protocol, or replace standard semantic conventions. The typed journal adapter below implements the standard mapping, not an OpenKit format.
 
 The standards surface is:
 
@@ -154,31 +156,23 @@ Local capture is on by default without an OTLP endpoint. `OTEL_SDK_DISABLED=true
 - The Collector is optional and is not part of NanoCore readiness, product admission, backup, restore, or availability authority.
 - OpenKit does not bundle an analysis backend in this specification. A later cookbook may project one operator-selected backend without changing the telemetry contract.
 - Local development and deterministic tests may use an in-memory or stdout exporter supplied by the stock SDK. Production code must not branch on backend vendor.
-- Core/NanoHost observations own worker stage spans; only bounded unverified shim markers may add span events under the Worker Sandbox Export Boundary above.
+- Producer trust and host/Sandbox observation follow the single boundary above.
 
 ### Built-in Local Sink
 
-NanoCore owns the sink under the server-scoped log directory in the Data Root. Each signal has separate files. Each line is one UTF-8 OTLP/JSON export request followed by a newline, without an OpenKit envelope. Use the Collector file exporter's uncompressed `format: json` shape, without custom encoding or length prefixes. The stock `otlpjsonfile` receiver must read the files unchanged.
+NanoCore owns a dedicated sink subtree under the Data Root's server log directory, with separate signal files. Each line is one UTF-8 OTLP/JSON export request plus one newline: the Collector file exporter's uncompressed `format: json`, without custom encoding, envelope or length prefix. SDK signals use stock JSON serializers; journal spans use Typed Journal OTLP Projection below.
 
-Use stock OTLP JSON serialization rather than handwritten encoding or an OpenKit logging library. Append and rotation are bounded file operations, not a new telemetry protocol. Source-side Data Safety rules apply before serialization, local capture, and export.
+Current defaults cap all active/rotated files together at 256 MiB and age at seven days. Rotate at 16 MiB or one hour; a smaller total cap limits segment size. Maximum serialized request size is 1 MiB before its newline. Drop oversized requests without truncating span fields or inventing another format.
 
-Current defaults limit all active and rotated signal files together to 256 MiB and set a maximum age of seven days. These limits protect deployment disk capacity, not canonical data retention.
+Operators may set `OPENKIT_TELEMETRY_LOCAL_MAX_BYTES` and `OPENKIT_TELEMETRY_LOCAL_MAX_AGE_SECONDS` at process start. Require positive integers and checked representable arithmetic. Invalid limits disable local capture with a safe diagnostic, not an unbounded fallback; external export stays independent. Prune expired files at startup, idle periods and before reads; no cleanup process runs while stopped.
 
-Rotate a segment at 16 MiB or one hour, whichever comes first; a smaller total cap also limits segment size. Remove expired or oldest segments before admitting a write that would exceed the total cap. Oversized batches are dropped, not partially written as a different format.
+One bounded asynchronous writer serializes all signals and enforces the combined cap, pruning expired/oldest disposable segments before growth. Pruning failure drops the batch. Writes are subordinate to the [Storage owner's reserves and in-flight accounting](20260703-storage_layout_record_ownership.md#artifact-file-payloads-and-derived-media), including free bytes and applicable inode reserves. If safe headroom is unavailable or unknown, prune disposable segments or drop the batch. Never reserve capacity ahead of product writes or add telemetry capacity state.
 
-Operators may change the total cap and maximum age at process start with `OPENKIT_TELEMETRY_LOCAL_MAX_BYTES` and `OPENKIT_TELEMETRY_LOCAL_MAX_AGE_SECONDS`. Each value must be a positive integer. An invalid value disables local capture with a safe diagnostic, not an unbounded fallback; external export remains independent.
+Only the service identity writes owner-only files. Authorize deployment-admin reads first, confine operations to the sink, reject symlink escapes, and accept no client path. Apply source-side Data Safety before local capture, not only Collector filtering.
 
-Prune expired segments at startup, during idle periods, and before reads. No cleanup process runs while NanoCore is stopped; expired files are never admitted to the view after restart. These are operational retention defaults, not product-data guarantees.
+Overflow, full disk, permission/rotation errors or deletion may lose batches; report bounded safe process diagnostics when possible without blocking product work. After partial/uncertain append, abandon that segment and use a new one. Restart always starts a new active segment. Readers ignore a truncated final fragment; no repair, replay, fsync acknowledgement or delivery ledger is added.
 
-Only the NanoCore service identity may write the directory. Files use owner-only access; read projections apply deployment-admin authorization before opening them. Restrict operations to this directory and reject symbolic-link escapes. No client may supply a filesystem path.
-
-Writes use a bounded asynchronous queue and never block product work on disk delivery. Queue overflow, full disk, permission errors, rotation failure, or deletion can lose telemetry.
-
-Drop affected batches, report bounded safe process diagnostics when possible, and continue product work. No fsync acknowledgement, repair queue, write-ahead delivery state, or replay is required.
-
-The sink is not a second ledger: it acknowledges no product fact, drives no state or recovery, and guarantees neither completeness nor retention. Operators may delete it at any time without product effect.
-
-A read racing deletion or rotation reports partial or unavailable diagnostics. A truncated final line is ignored; it never changes canonical state.
+The sink acknowledges no product fact, drives no state/recovery, and guarantees no completeness or retention. Deletion has no product effect; racing reads report partial/unavailable detail. Canonical journal retention/backup is separate.
 
 ## Resource And Correlation Contract
 
@@ -212,41 +206,24 @@ These attributes are a projection of existing ids, not a new identity vocabulary
 - Manual spans are added only for boundaries that automatic HTTP, process, and runtime instrumentation cannot express: provider resolution and dispatch, LLM inference, scheduler admission, worker lifecycle, transcript collection, Workspace publication, cleanup, and governed storage operations.
 - One owner emits one terminal span status. Nested helpers must not emit parallel success claims for the same operation.
 - Cancellation, timeout, typed degraded capability, upstream rejection, product failure, and cleanup failure remain distinct product-safe classifications.
-- Internal Items, token deltas, SSE chunks, heartbeat samples, retry iterations, and worker-native frames do not each create spans. Aggregated events may be attached to the owning span only when they materially identify a terminal or last-completed phase.
+- Diagnostic Items, token deltas, SSE chunks, heartbeat samples and transport retry/poll frames do not each create spans. Actual journal step invocations, including owned retry/inspection steps, follow its mapping; aggregate events identify a material phase without new control authority.
 - W3C trace propagation is accepted across OpenKit-owned HTTP clients and trusted internal NanoCore boundaries. Caller-supplied trace context is validated by the stock propagator and never supplies actor, authorization, request-id, Workspace, Turn, provider, or worker authority.
 
-### Turn Lifecycle Stages
+### Journal-Owned Lifecycle Mapping
 
-Each accepted Turn's execution has one trace, using the execution journal's trace id, with one Turn root and lifecycle step spans. Request traces remain separate; link an initiating request when its context is available. The execution owner supplies the root and step identities; telemetry does not mint a competing lifecycle. The root covers execution through cleanup/release closeout, not only HTTP handoff or command dispatch.
+The [journal-to-lifecycle mapping](20261019-durable_execution_and_control_store.md#journal-to-lifecycle-mapping) owns execution root/step identity and lifetime, stage classification, retry/sample units, immutability and late-observation placement. This projection consumes that mapping; it creates no synthetic durable root or stage. Open steps are read from the journal, not exported as ended spans or reconstructed from diagnostics.
 
-| Stage | Observation emitted by the existing owner |
-| --- | --- |
-| Admission/queue | Accepted Turn admission and its queue wait; no root for a refused, unaccepted Turn. |
-| Preparation | Resolve the current execution setup for the admitted attempt. |
-| Validation | Check environment, storage, Skills, context, continuity, and capacity. |
-| Materialization | Observe input publication and Sandbox/environment preparation. |
-| Session open/inspect | Observe the exact session binding and accepted baseline. |
-| turn.start delivery | Observe queued command delivery through accepted start result; dispatch alone does not prove receipt or start. |
-| Native run | Observe accepted native start through final status or the owning failure/unknown closeout. |
-| Pending request wait | Observe only the wait owned by this Turn; later resolution or a new Turn does not extend it. |
-| Collection | Observe terminal evidence collection and reconciliation separately from execution. |
-| Cleanup/release | Observe cleanup, fencing, and capacity release separately from product terminal status. |
+The execution owner records safe `openkit.lifecycle.stage`, `openkit.lifecycle.status`, `openkit.reporting.owner`, `openkit.stage.reached` and `openkit.outcome.class` attributes. A known failed check supplies `openkit.failed.check.id`; otherwise retain its known stable error code, never an invented check/cause. Project these facts unchanged. Applicable `invoke_agent`, `chat` and `execute_tool` conventions are explicitly version-pinned; content attributes remain prohibited.
 
-Spans carry `openkit.lifecycle.stage`, `openkit.lifecycle.status`, `openkit.reporting.owner`, `openkit.stage.reached`, and `openkit.outcome.class`. A failed check adds its existing stable `openkit.failed.check.id` when known. Otherwise use the owner's known stable error code; do not invent a check or infer a cause.
+### Typed Journal OTLP Projection
 
-Values come from release-defined allowlists, except existing opaque ids. This satisfies the obligation to name the failure and reporting owner without exception text or content. Set OpenTelemetry span status from the observed result; pending or unknown must not be marked successful.
+Each ended step's stored span-model fields map losslessly to one OTLP span after its owning commit. Use a stock typed-OTLP path if pinned public packages support the complete model. Otherwise use a small pure adapter implementing the [OTLP/JSON mapping](https://opentelemetry.io/docs/specs/otlp/#json-protobuf-encoding) exactly. Do not recreate SDK spans, resample rows, infer types from JavaScript values, or add another telemetry format/library.
 
-The durable-execution owner stores its step journal as SQLite rows using the OpenTelemetry span data model: trace id, span id, parent, name, kind, start/end, status, semantic attributes, events, and links. Open steps have no end or terminal result. The execution owner defines their durable lifecycle; this specification defines only their diagnostic projection.
+Preserve each AnyValue discriminator and exact value: `doubleValue` 1 remains a double, not an inferred int. Encode int64 and nanosecond integers as exact decimal strings where OTLP/JSON requires; never round through JavaScript Number. Trace/span IDs use hexadecimal, other bytes use base64, enum fields use integers, and special floating values follow Protobuf JSON rules. Preserve nested array/KV values and stored event/link order.
 
-Every ended step's span-shaped data projects losslessly to one OTLP span. Lossless mapping is not guaranteed delivery. Emit from the owning accepted journal boundary, without another timeline schema, telemetry journal, or inferred success. Keep content outside this span-shaped data under the work-data retention owner. A lost exported span loses no canonical stage fact.
+Retain dropped attribute/event/link counts, trace flags/state, timestamps, status, resource/scope descriptors and attributes, and schema URLs. Preserve optional journal semantics; never reset resource drops to zero or silently discard fields. Apply Data Safety at journal admission. Reject invalid/unsafe export input with safe diagnostics rather than mutate canonical rows or advertise a partial field projection as lossless.
 
-Collection failure, native failure, and release failure keep their separate observations. Telemetry never decides an outcome or triggers a retry.
-
-Do not hold a stage open beyond its owner's closeout or manufacture stages that were not reached.
-
-Restart preserves journal-owned execution and step correlation. The view reads those rows, including open steps; it does not reconstruct them from telemetry. Lost process-local context can leave gaps only in fine-grained diagnostic spans. Do not invent another execution root, backfill unobserved work, or create durable telemetry recovery state.
-
-Use the explicitly opted-in GenAI conventions for `invoke_agent`, `chat`, and `execute_tool` only where the owning boundary observes those operations. Do not label queueing or cleanup as inference. Provider, model, operation, streaming, terminal, and token-count fields remain content-free; no content opt-in is admitted. The current opt-in pin is recorded in Current Implementation Projection.
+SDK-originated spans/metrics/logs still use stock SDK serializers. Public inputs and the exact interop fixture are documented in Current Implementation Projection; typed journal round trips below are required before claiming interoperability.
 
 ### NanoHost Correlation
 
@@ -256,13 +233,7 @@ A Turn-caused NanoHost effect span may carry one span link to the completed Epoc
 
 Without a Collector, NanoHost's own fine-grained spans are absent from the local sink and Turn view in this release; the Core journal still records Core-observed timing for every NanoHost call, and a NanoHost local sink remains a later option, not admitted now.
 
-### Host-Observed Sandbox Resources
 
-NanoHost's [bounded resource summary](20260802-nanohost_runtime_and_transport.md#host-observed-sandbox-resource-summary) supplies container resource/exit facts from its private Docker/cgroups, not the shim. Existing terminal/inspect/teardown responses carry it; Core also uses the existing inspect call on lost-Worker detection. No new route, polling loop, periodic series, or metric is added.
-
-Core records available summary fields as host-observed, trusted attributes on the owning journal step and its span. This remains available when the shim is dead or hung, subject to backend observation availability. Missing fields mean unknown, not zero. Trusted source identifies the host/backend boundary, not outcome authority; summaries never decide step status, outcome, retry, recovery, or fences. The host owner defines the field list, bounds, and collection failure behavior. Operators may use separate host monitoring for time series.
-
-Native runtime stderr and logs are content, not telemetry. Their verbatim restricted-raw capture, per-Turn bounds, and explicit truncation records belong to the work-data retention owner, never marker payloads or span attributes.
 
 ## Metric Contract
 
@@ -274,17 +245,13 @@ Native runtime stderr and logs are content, not telemetry. Their verbatim restri
 
 ### Stage-Duration Histogram
 
-This specification owns the operational question: **What are per-stage latency P50/P95 and failure share?** Stock HTTP and runtime metrics do not separate the Turn lifecycle stages above.
+This owner asks: **What are per-stage latency P50/P95 and failure share?** Stock HTTP/runtime metrics cannot separate journal lifecycle stages. The one custom metric is `openkit.turn.stage.duration`, a histogram in seconds, sampled once per ended stage-step under the journal mapping with valid nonnegative duration. Reads/exports never add samples; open/invalid durations are not guessed.
 
-The one custom metric is `openkit.turn.stage.duration`, a histogram in seconds. Record one nonnegative duration at the owning journal boundary for each ended stage with valid start/end values. Do not record a guessed duration for missing timestamps or an open stage. A repeated journal read or export must not record another sample.
+Its only point attributes are `openkit.lifecycle.stage`, `openkit.outcome.class` and `openkit.worker.kind`. Stage follows the journal mapping. Outcome is `success`, `failure`, `cancelled`, `timeout`, `rejected`, `unknown` or `degraded`. Worker kind is release-defined, or `internal`/`unknown`, never an Agent/operator label. Export non-overlapping delta histogram points; exported samples remain lossy.
 
-Its only data-point attributes are `openkit.lifecycle.stage`, `openkit.outcome.class`, and `openkit.worker.kind`. Stage uses the table above. Outcome is `success`, `failure`, `cancelled`, `timeout`, `rejected`, `unknown`, or `degraded`. Worker kind is a release-defined Worker Harness kind, or `internal`/`unknown`; never an Agent name or operator-defined label.
+The view reads ended stage-step journal rows in its stated window, grouped by **(stage, worker kind)**; the execution root is not a duration sample. Failure share is (`failure` + `timeout` + `rejected`) / all ended rows across **all outcomes** in that pair. Nine successes and one failure produce 10%, not separate 0%/100% outcome groups. Zero ended rows means no data.
 
-Export delta histogram points for non-overlapping collection intervals. An external backend may estimate P50/P95 from compatible buckets. Exported metrics remain lossy; do not treat missing samples as complete journal coverage.
-
-The Turn view instead computes stage P50/P95 and failure share directly from ended journal rows, not local metric files. Select rows whose end falls in the stated window; group by the same bounded attributes. Use nearest-rank quantiles of valid durations. Failure share is the combined `failure`, `timeout`, and `rejected` count divided by all ended rows in each group. Report open steps and invalid/missing durations separately, without adding them to latency samples.
-
-Show cancellation, unknown, and degraded counts separately. An empty denominator means no data, not zero failure. State the journal window, duration sample count, ended-row count, and any pagination or retention limits. Sink loss changes neither the journal statistics nor lifecycle coverage. Exported metric counts never prove execution, usage, or success.
+P50/P95 use nearest-rank valid-duration quantiles overall in the same pair. An explicitly outcome-stratified view must label that difference. Outcome remains an exported histogram dimension, not a restriction on the overall denominator. Report sample/ended-row counts, open/invalid rows, cancelled/unknown/degraded counts, window, and partial/pagination/retention limits. Sink loss never changes journal statistics; metrics never prove usage or outcome.
 
 ## Log Contract
 
@@ -352,19 +319,15 @@ Stable route templates, provider family, model id, operation, streaming flag, HT
 
 ## Turn Timeline Read Projection
 
-A deployment administrator may request one known Turn's lifecycle stages, diagnostic spans, and stage statistics through deployment diagnostics. An agent operating the deployment uses the same authorization; Worker credentials and ordinary Workspace membership do not grant this access. The view is read-only. Its stage facts come from canonical journal rows; diagnostic details never override them.
+A deployment administrator may request one known Turn's journal stages, diagnostic detail and stage statistics; an operating agent uses the same authorization. Worker credentials and Workspace membership alone grant no access. Authorize before opening journal/files. Reading never initiates, settles or repairs work.
 
-After authorization, read lifecycle stages from the durable journal, including open steps. Join available fine-grained HTTP/provider and other diagnostic spans from the local sink by the journal's trace id. The journal gives the complete recorded lifecycle even if every local file is lost. An open step remains open, not a guessed success or failure. Missing or unavailable journal data follows its owner's explicit failure semantics, never a fallback to the sink as authority.
+Read stages/open steps from the journal; join local fine-grained spans by its trace id. Missing sink files lose detail, never a stage. Journal failure follows its owner's unavailable/quarantine semantics, not file authority. Display worker reports' exact unverified labels separately from established stage facts.
 
-Accept the Turn id and a bounded statistics/detail time window, not a query language, path, attribute expression, or export destination. Return allowlisted stage names, start/end values, status, reporting owner, failed-check id or stable error code, and trace/span correlation. Keep open steps visible without an invented end or completed duration. Show shim marker events separately as worker-reported and unverified; never present them as established lifecycle facts.
+Accept only Turn id and a bounded statistics/detail window, not paths, a query language, attribute expressions or export destinations. Return safe stage/time/status/owner/check-or-error and correlation fields, with no invented end/duration on open steps. Journal statistics use the pair grouping above and are deployment samples, not Turn metric dimensions.
 
-Stage aggregates come from journal queries defined above over the stated window; they are deployment stage statistics, not Turn-specific metric dimensions. The histogram remains an exported OpenTelemetry metric and is not the view's statistical source.
+Current limits: 24-hour statistics/detail window, 32 MiB local scan, 1,000 diagnostic spans. Bound journal pages/work separately; do not silently exclude lifecycle/open steps because they began outside the detail window. Report continuation/partial coverage when budgets prevent completion, including across Workspace stores.
 
-Current defaults limit statistics/detail windows to 24 hours, local file scans to 32 MiB, and returned diagnostic spans to 1,000 per request. Journal reads and aggregates also use bounded pages/work budgets. Page lifecycle rows through the existing read boundary without silently dropping stages or excluding open steps because they began outside the detail window. If a budget prevents completion, report explicit continuation or partial coverage, not a complete result.
-
-Reject invalid windows and stop at scan/result limits. Report the covered journal window, sample counts, diagnostic truncation, and missing/unavailable detail. Missing files, malformed OTLP records, or lost process-local context can remove diagnostic detail, never a journal stage. Reject malformed required OTLP fields and ignore unselected additive attributes. Never expose arbitrary unknown attributes.
-
-Use bounded parsing and an in-memory join over the existing journal read boundary. No second persistent index, query service, polling process, or analysis backend is required. Render safe fields as data, not executable markup. Reading does not initiate work, change product state, or repair execution. Journal stages and statistics remain available when capture/export is disabled.
+Report covered window, sample counts, truncation and missing/unavailable detail. Reject malformed required OTLP fields, ignore unselected additive fields, and expose no arbitrary attributes. Use bounded parsing and an in-memory join, no persistent index/query service/poller. Render fields as data. Journal stages/statistics remain available with capture/export disabled.
 
 ## Persistent-Deployment Instrumentation
 
@@ -390,7 +353,9 @@ NanoCore already provides much of the source information this projection will co
 
 NanoCore creates server and Workspace log directories, but ordinary process output currently goes mainly to stdout and stderr without complete application-owned retention. The current `apps/nanocore/src/telemetry.ts` still requires an admitted endpoint to enable its provider. Its current `enabled` flag also becomes false for unsupported exporter headers. Those are implementation gaps against the local-first target above, not the target defaults.
 
-The lock resolves `@opentelemetry/otlp-transformer` 0.221.0 through the trace exporter. Its [published public entry point](https://unpkg.com/@opentelemetry/otlp-transformer@0.221.0/build/src/index.d.ts) exposes `JsonTraceSerializer`, `JsonMetricsSerializer`, and `JsonLogsSerializer`. Their `serializeRequest` implementations produce OTLP JSON bytes; append one newline per request. Prefer these stock serializers, with an explicit exact dependency when implementation imports them directly. The [stock file exporter](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/exporter/fileexporter) and [OTLP JSON file receiver](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/receiver/otlpjsonfilereceiver) document this uncompressed newline-delimited shape. This verifies serializer availability and framing, not an implemented local exporter.
+The locked `@opentelemetry/otlp-transformer` 0.221.0 [public exports](https://unpkg.com/@opentelemetry/otlp-transformer@0.221.0/build/src/index.d.ts) provide JSON serializers for SDK `ReadableSpan[]`, `ResourceMetrics` and `ReadableLogRecord[]`. Public trace JSON/protobuf inputs are SDK spans, not typed OTLP requests. The inspected pinned transformer/exporter-base public surfaces expose no complete typed-journal JSON path. Conversion infers int/double from JavaScript Number and resets resource dropped-attribute count; it cannot prove journal fidelity. Keep stock serializers for SDK signals and use the standard typed adapter above for journal rows, with an explicit exact dependency for direct imports.
+
+The interop fixture is pinned to stock `otelcol-contrib` 0.163.1; its [distribution manifest](https://github.com/open-telemetry/opentelemetry-collector-releases/blob/v0.163.1/distributions/otelcol-contrib/manifest.yaml) pins `otlpjsonfilereceiver` 0.163.0. Explicitly configure `otlp_json_file.max_log_size` to the sink's 1 MiB maximum request size and verify delimiter/boundary behavior. The upstream default is also 1 MiB; larger requests cannot assume automatic growth. These are checked source/pin facts only; the adapter and live Collector round trip are not implemented/executed here.
 
 The current explicit GenAI opt-in baseline is `@opentelemetry/semantic-conventions` 1.41.1, already resolved in the lock. Its [incubating convention surface](https://unpkg.com/@opentelemetry/semantic-conventions@1.41.1/README.md) requires an exact pin and includes the selected operation names. Opting into this experimental version does not admit content or unrelated instrumentation. No dependency is changed by this design amendment.
 
@@ -398,87 +363,32 @@ The local sink, local-first configuration flags, journal-backed lifecycle spans/
 
 At the selected OpenShell 0.0.99 pin, an admitted TCP dial failure before CONNECT 200 can lose request correlation. The native failure event retains a shared static proxy endpoint, while a separate destination DEBUG message has no request join. NanoHost cannot reconstruct that missing association. [Issue #136](https://github.com/lingkaix/openkit/issues/136) remains open for an official upstream fix; the current slice does not add a proxy, patch OpenShell or relax identity enforcement. This limit does not establish the cause of a historical package-download failure.
 
-## Alternatives Considered
+## Rollout Boundary
 
-**Create an OpenKit-wide event table and project every subsystem into it.** Rejected because it would duplicate Audit, CapabilityCall, Usage, Evidence, Turn, runtime, and test authority while creating a second lifecycle and retention owner.
-
-**Use OpenTelemetry as durable audit or acceptance evidence.** Rejected because OTel delivery is intentionally lossy, backend retention is external, and exporter failure must not change product behavior.
-
-**Adopt one observability vendor SDK and backend.** Rejected because OTLP and the Collector provide the required vendor-neutral boundary without placing backend credentials or release cadence inside NanoCore.
-
-**Write a custom JSON event and logging specification.** Rejected because the OpenTelemetry data model, OTLP, W3C Trace Context, Semantic Conventions, and JUnit-compatible reporters already cover transport and general interpretation. OpenKit adds only projections of existing domain ids and stable error codes.
-
-**Instrument every worker and agent runtime with OTel.** Rejected under #221 as narrowly amended. Allowlisted shim phase markers are not native runtime telemetry or an OTLP relay. Core owns span construction; no Sandbox SDK provider/exporter or new egress is admitted.
-
-**Require an operator Collector for all internal diagnostics.** Rejected by the internal-logs decision because a single-server deployment needs usable bounded diagnostics without installing a backend.
-
-**Bundle a complete local observability stack.** Rejected because bounded stock OTLP files and a narrow read projection meet this need without another backend or supported cluster.
-
-## Rollout / Migration Plan
-
-1. Accept the evidence-completeness obligations in their existing owning specifications before relying on telemetry to project them.
-2. Pin official stock OpenTelemetry SDK, OTLP, and Semantic Convention releases through the normal dependency procedure.
-3. Preserve Resource identity, private providers, no-op disabled behavior, redaction guards, and optional external export; add default-on bounded local capture.
-4. Add journal-backed lifecycle spans/statistics, the histogram, and the bounded Turn view. Admit only the defined unverified shim markers, not a Sandbox SDK or native runtime telemetry producer.
-5. Correlate admitted logs with active spans and keep JUnit-compatible results and native test artifacts separate. Add other manual spans or pinned CI/CD telemetry only at accepted boundaries.
-6. Verify stock Collector file interoperability, rotation, bounded reads, and product independence before relying on the view for diagnosis. Do not bundle an analysis backend.
-
-Diagnostic files have no compatibility requirement. No telemetry backfill, old log import, dual telemetry format, or legacy reader is permitted. This does not authorize deletion or incompatible changes to the canonical execution journal; its owner decides data continuity and migrations.
+Implement the admitted private producers, typed journal projection and bounded view through their existing owners; tests below define acceptance. Diagnostic files require no data migration, backfill, old-log import, dual format or compatibility reader. Canonical journal/data continuity remains with its owner, never disposable telemetry policy.
 
 ## Testing Strategy / Acceptance Criteria
 
-The deciding oracles remain canonical records and existing assertions. Telemetry tests decide only whether the diagnostic projection obeys this specification. The following examples constrain that projection:
+These are required diagnostic oracles, not a claim of implemented target behavior:
 
-| Observed situation | Required diagnostic result |
-| --- | --- |
-| Validation fails before materialization | Name the validation owner and known failed check; do not claim a native run occurred. |
-| turn.start was dispatched but no accepted start result arrived | Show delivery timeout or unknown under its owner, not native-start success. |
-| Native work finishes but collection or release fails | Preserve the distinct native, collection, and release observations; do not rewrite the product result. |
-| A Pending Request ends its raising Turn | End only that Turn's observed wait; later authorized work has its own root. |
-| NanoCore restarts or diagnostic files disappear | Preserve journal stages, open steps, correlation, and statistics; show lost detail without replaying work or inferring success. |
-
-- A deterministic test exporter proves Resource identity, trace parentage, terminal status, stable error code, and existing OpenKit id projection without a network service.
-- HTTP tests prove stable route-template instrumentation, status and cancellation behavior, and absence of body, header, query, credential, and unrestricted path attributes.
-- Gateway and provider tests prove product-safe provider, model, operation, streaming, terminal, duration, and usage projection without prompt, response, quota payload, account, credential, cache-key, or provider-private data.
-- Internal Gateway regressions prove one logical-closeout diagnostic, the pre-transport classification of required constrained-sampling rejection of `task_start`'s `prefixItems` schema, observed-status-only projection, prohibited-content absence, and unchanged failure closeout when the log sink throws.
-- Worker tests prove Core-owned start/run/end spans use accepted observations and distinguish dispatch from accepted start. Only allowed shim markers become unverified journal/span events; no SDK provider/exporter, OTLP/native-runtime relay, endpoint, credential, or new egress enters the Sandbox.
-- Marker tests cover the closed lifecycle/preflight/native-exit/shim-error variants, one-time preflight, numeric/enum bounds, authentication/binding, count/byte limits, timestamp clamping, duplicate/late drops, lower-priority queues, and overflow. Raw version/environment/URL/stderr content and periodic samples are rejected. Missing/forged markers never change status, outcomes, histogram samples, retries, recovery, fences, or control-traffic progress.
-- Host-summary tests cover bounded optional backend fields, absent/invalid = unknown, dead/hung shim observations through existing inspect, and unchanged product outcomes, teardown, and fences. Journal/span attributes distinguish trusted host facts from unverified shim reports; no new metric, poller, or route exists.
-- Lifecycle tests prove every ended journal step maps losslessly to one OTLP span and retains journal-owned correlation. Cover every reached/open stage, failed-check attribution, distinct collection/release outcomes, and pending-request closeout without telemetry-driven recovery.
-- Metrics tests reject high-cardinality OpenKit ids and dynamic route, URL, error-message, user, account, Workspace, Thread, Turn, request, and test-case dimensions.
-- Failure tests prove disabled telemetry, Collector refusal, exporter timeout, queue overflow, and shutdown flush failure do not alter product status, canonical records, cleanup, or process deadline behavior.
-- Redaction tests inject canary credentials, authorization headers, prompts, outputs, provider errors, paths, environment values, account ids, and cache keys and prove absence from spans, metrics, logs, and exported OTLP payloads.
-- Test integration proves one existing deterministic test emits JUnit-compatible results and correlated system telemetry while retaining native artifacts separately.
-- One container integration proves NanoCore can export to a stock local Collector and that Collector absence or termination leaves product health and request behavior unchanged.
-- Stock serializers and a stock Collector `otlpjsonfile` receiver prove trace, metric, and log file interoperability without an OpenKit decoder or envelope.
-- Sink tests prove default-on capture without an endpoint, complete disabling, valid/invalid retention overrides, combined size/age bounds, idle pruning, rotation, truncated writes, deletion, full disk, permission errors, and independent external export.
-- Histogram tests prove one sample per ended stage, bounded attributes, delta intervals, no recount on journal reads, and independent best-effort export.
-- View tests prove exact journal-based quantiles/failure share, empty/partial data, complete/open lifecycle rows, and unchanged stage statistics when sink files are removed or capture is disabled.
-- View tests also prove deployment-admin authorization for humans and agents, refusal of Worker/member access, safe rendering, bounded queries/scans/results/windows, explicit continuation, and missing-detail handling without product-state changes.
-- Repository guards prove no telemetry storage table, reliable retry spool, general public telemetry-query route, vendor SDK, Sandbox SDK/OTLP/native-runtime relay, compatibility format, or independent event/timeline format was added.
-
-Acceptance requires all of the following:
-
-- Operational telemetry uses stock OpenTelemetry and OTLP contracts rather than an OpenKit event or transport schema.
-- Canonical OpenKit records remain the sole product, governance, usage, evidence, and test authorities.
-- A known process, request, Turn, CapabilityCall, or test execution can locate its available correlated traces and logs through existing ids.
-- Product and test outcomes are unchanged when telemetry is disabled, dropped, unavailable, delayed, or contradictory.
-- Sensitive and unrestricted content is absent before export.
-- Metrics remain bounded by low-cardinality dimensions.
-- The only Sandbox reports are the closed bounded shim marker variants, retained/projected as unverified events under #221's narrow amendments. Resource summaries originate at the host and never decide an outcome. The optional NanoHost trace-header/startup-link contract remains unchanged.
-- Local OTLP files remain disposable and excluded from backup/export; canonical journal continuity is unchanged. Stage facts/statistics come from the journal, with optional sink detail, without a Collector.
-- No bundled backend, reliable spool, new runner, event bus, general query API, or telemetry recovery workflow exists.
-
-## Risks & Mitigations
-
-- Risk: Automatic instrumentation captures URLs, headers, exceptions, or GenAI content that violates OpenKit boundaries. Mitigation: source-side allowlisting and sanitizer tests precede exporter activation; Collector filtering is defense in depth only.
-- Risk: A forged shim report looks like a verified phase. Mitigation: closed payloads, count/byte bounds, clamped timestamps, explicit unverified labels, and no effect on stage status, metrics, recovery, or fences.
-- Risk: High-cardinality ids make metrics expensive. Mitigation: keep execution ids in traces and logs and mechanically reject them from metric dimensions.
-- Risk: Operators mistake OTel data for durable proof. Mitigation: mark the entire projection non-authoritative and keep existing product and test queries as the only acceptance owners.
-- Risk: Local writes or exporter backpressure affect NanoCore latency or shutdown. Mitigation: bounded asynchronous queues, disposable files rather than delivery spooling, deadline-bounded flush, and product-independent failure tests.
-- Risk: Diagnostic samples suggest complete history or unbiased statistics. Mitigation: use the journal for lifecycle coverage and view statistics; expose diagnostic gaps, covered windows, sample counts, and truncation.
-- Risk: Experimental GenAI or CI/CD conventions drift. Mitigation: explicit opt-in, exact release pinning, same-release coordinated upgrades, and no durable dependency on their fields.
-- Risk: Internal diagnostics become a second product. Mitigation: stock OTLP files, one bounded read projection, no query language or persistent index, and no backend ownership.
+- A deterministic stock exporter proves Resource identity, known opaque ids, parentage, status and stable codes without network/backend requirements.
+- Lifecycle cases follow the journal mapping: validation refusal creates no native success; dispatch without accepted start does not prove receipt; native/collection/release observations remain distinct; a new Turn does not extend prior human wait. Late host data targets an eligible linked step, never an ended span.
+- **Cross-owner marker oracle:** admit/store every lifecycle, preflight, native-exit and shim-error variant through the journal owner, then compare stored/exported event fields/types and displayed trust class. Exact `openkit.report.origin`/`openkit.report.verified` survive without aliases; worker stays unverified, host observations keep their distinct source class.
+- Marker cases cover exact fields/enums/numbers, authentication/parent binding, atomic count/byte budget, clamping, duplicate/late/unbound drops, one-time preflight, lower-priority queues and overflow. Forged/missing input cannot change status/outcome, histogram samples, retry/recovery/fences or control progress; raw version/environment/URL/stderr and periodic samples are rejected.
+- Host cases cover bounded optional fields, absent/invalid = unknown, dead/hung shim inspect, container-lifetime rather than guessed Turn counters, and no measurement wait on a ready teardown/fence. No new poller/route/metric exists.
+- **Typed codec oracle:** round-trip journal spans through the pinned stock receiver/exporter and compare decoded AnyValue types/exact values, including double 1.0, int64 beyond 2^53, nested/byte values, exact timestamps, drops, flags/state, events/links, schema URLs and resource/scope metadata. SDK span recreation/Number coercion fails.
+- The same fixture proves standard trace/metric/log JSONL and newline boundaries. Match receiver line size to maximum request size, test that limit and oversized drops, and require no OpenKit decoder. Source inspection alone is not Collector interoperability.
+- **Capacity oracle:** with the sink below its cap, nearly exhausted free bytes/inodes or occupied in-flight capacity causes disposable pruning/drop, not consumption of canonical reserve. Unknown headroom, failed pruning and concurrent signals preserve the shared cap.
+- Sink cases cover default-on/no endpoint, complete disabling, positive/invalid/overflowing overrides, combined size/age/idle pruning, owner-only/symlink/path confinement, deletion, full disk and permission/rotation failures.
+- After partial/uncertain append, later batches use a new segment. Restart creates a new active segment; stock reading sees subsequent valid lines without joining them to the abandoned tail. No repair/replay/delivery state appears.
+- Histogram samples follow ended steps, never recount reads, and export bounded deltas. Nine success/one failure rows yield 10% per (stage, worker kind); overall and labelled outcome-stratified quantiles differ intentionally. Invalid/open durations, empty/partial windows and cancelled/unknown/degraded counts stay explicit.
+- View cases prove deployment-admin human/agent admission, Worker/member refusal, safe rendering, bounded pages/scans/results/windows, continuation and unchanged journal stages/statistics after file loss or SDK disablement.
+- HTTP cases prove route templates/fixed unknown routes, status/cancellation/handoff versus completion, and no unrelated library/global-provider enrollment.
+- Provider cases prove safe operation/model/streaming/terminal/duration/token fields without content/account/quota/credential/cache-key/private payloads. Internal Gateway cases retain one logical-closeout diagnostic, required `task_start`/`prefixItems` pre-transport classification, observed upstream status only, and unchanged closeout if logging throws.
+- Canary credentials, headers, prompts/outputs, environment, paths, private provider data and other prohibited fields are absent before local serialization and export in SDK and typed journal paths.
+- Disabled capture, Collector refusal/restart, timeout, overflow, contradictory/dropped telemetry and flush failure leave canonical facts, product/test status, cleanup and shutdown deadlines unchanged. A stock-Collector integration proves ordinary requests remain healthy while it is absent/stopped.
+- Existing assertions/JUnit results and native artifacts retain acceptance authority, including stricter real-provider/security/sandbox/data-loss evidence. No backend is required for L6.
+- Guards reject a second telemetry table/index/schema, reliable spool, general query API, vendor SDK, extra metric, event bus, workflow or compatibility format. Canonical journal rows and retained work owners are not telemetry storage.
 
 ## Open Questions
 
@@ -486,23 +396,15 @@ None for the accepted architecture boundary. The local limits are current defaul
 
 ## Deferred / Future Work
 
-- Broader diagnostic views or additional custom metrics require a separate demonstrated need and an owning operational question.
-- Sandbox telemetry beyond the admitted closed shim variants must satisfy #221's revisit condition; no native-runtime/OTLP relay, arbitrary inside metrics/logs, or periodic inside sampling is authorized.
-- A NanoHost local sink requires a later accepted need; this release admits no such sink.
-- Remote Collector authentication or direct OTLP export after a deployment model requires it; the initial same-deployment Collector keeps vendor credentials outside NanoCore.
-- Tail sampling, multi-collector routing, long-term local storage, telemetry legal hold, and multi-server correlation after the deployment baseline changes.
+Broader views/metrics require a demonstrated owned question. Remote Collector authentication/direct backend export, tail sampling, multiple Collectors, long-term local retention, legal hold and multi-server correlation need separate accepted deployment needs. A NanoHost local sink is not admitted in this release.
 
 ## Public Design Reference
 
-[Claude Code's public telemetry design](https://code.claude.com/docs/en/monitoring-usage) provides a useful reference, not OpenKit authority:
+[Claude Code public telemetry](https://code.claude.com/docs/en/monitoring-usage) is a reference, not OpenKit authority. The accepted differences are:
 
-- Telemetry is off by default and uses standard `OTEL_*` configuration, metrics, events-as-logs, and opt-in traces.
-- Its span hierarchy is interaction -> llm_request/tool -> blocked_on_user/execution. Trace context reaches subprocesses and direct model requests.
-- Content is redacted by default with explicit capture opt-ins. Metric switches control cardinality.
-
-OpenKit adopts standard signals/configuration, bounded operation/wait spans, safe correlation, and explicit cardinality control. Local capture differs: it is on by default, while external export remains optional. Shim markers are only bounded unverified control-channel reports, not runtime telemetry. Do not copy trace propagation into Sandbox subprocesses or broaden provider-request propagation beyond an accepted trust boundary. The NanoHost header contract remains unchanged.
-
-OpenKit rejects content opt-ins and high-cardinality metric switches, including session/user ids and arbitrary resource attributes. Content belongs to canonical records under [Work Data Retention Format](20260921-work_data_retention_format.md), never the telemetry sink. OpenKit also rejects a separate event/timeline schema or logging library.
+- Local capture defaults on; external export stays optional.
+- Content opt-ins stay disabled; native work data has its retention owner.
+- Trace context is not propagated into Sandbox subprocesses.
 
 ## External Standards
 
