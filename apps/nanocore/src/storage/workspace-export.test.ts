@@ -20,6 +20,7 @@ import { createArtifactReview } from '../artifact-reviews.js';
 import { parseJsoncObject } from '../config/jsonc.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook } from '../knowledge/notebook.js';
+import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT } from '../knowledge/okf.js';
 import { FsStore } from '../lib/store.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
@@ -102,9 +103,18 @@ function writeWorkspaceExportTree(input: WorkspaceExportTestInput) {
           name: input.workspace.name,
           defaultAgentId: null,
           defaultKnowledgeBaseId: workspaceKnowledgeBaseId,
+          knowledgeMounts: [
+            {
+              name: 'raw',
+              knowledgeBaseId: workspaceKnowledgeBaseId,
+              default: true,
+              backend: 'local',
+              root: 'raw',
+            },
+          ],
         },
       }),
-      workspaceSchema: null,
+      workspaceSchema: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
     },
     ...input,
   });
@@ -144,21 +154,36 @@ function expectRepeatedImportSnapshot(
   expect(
     WorkspaceConfigSchema.parse(parseJsoncObject(repeatedConfig)).workspace.defaultKnowledgeBaseId
   ).toBe(repeated.defaultKnowledgeBaseId);
-  // Only the request-local reminted base and its exact config member differ; all other bytes stay exact.
+  // The same fresh base binds its config and each mount; all other bytes stay exact.
+  let normalizedConfig = applyEdits(
+    repeatedConfig,
+    modify(
+      repeatedConfig,
+      ['workspace', 'defaultKnowledgeBaseId'],
+      imported.defaultKnowledgeBaseId,
+      {}
+    )
+  );
+  const mounts =
+    WorkspaceConfigSchema.parse(parseJsoncObject(repeatedConfig)).workspace.knowledgeMounts ?? [];
+  for (const [index, mount] of mounts.entries()) {
+    expect(mount.knowledgeBaseId).toBe(repeated.defaultKnowledgeBaseId);
+    normalizedConfig = applyEdits(
+      normalizedConfig,
+      modify(
+        normalizedConfig,
+        ['workspace', 'knowledgeMounts', index, 'knowledgeBaseId'],
+        imported.defaultKnowledgeBaseId,
+        {}
+      )
+    );
+  }
   expect({
     ...repeated,
     defaultKnowledgeBaseId: imported.defaultKnowledgeBaseId,
     portableFileState: {
       ...repeated.portableFileState,
-      workspaceConfig: applyEdits(
-        repeatedConfig,
-        modify(
-          repeatedConfig,
-          ['workspace', 'defaultKnowledgeBaseId'],
-          imported.defaultKnowledgeBaseId,
-          {}
-        )
-      ),
+      workspaceConfig: normalizedConfig,
     },
   }).toEqual({ ...imported, finalizeNotebookKnowledge: expect.any(Function) });
   expect(readFileSync(sourceConfigPath)).toEqual(sourceConfig);
@@ -1711,8 +1736,22 @@ describe('workspace export verifier', () => {
           name: 'Demo workspace',
           defaultAgentId: null,
           defaultKnowledgeBaseId: workspaceKnowledgeBaseId,
+          knowledgeMounts: [
+            {
+              name: 'raw',
+              knowledgeBaseId: workspaceKnowledgeBaseId,
+              default: true,
+              backend: 'local',
+              root: 'raw',
+            },
+          ],
         },
       })
+    );
+    mkdirSync(join(sourcePortableRoot, 'knowledge', 'schema'), { recursive: true });
+    writeFileSync(
+      join(sourcePortableRoot, 'knowledge', 'schema', 'scope-schema.yaml'),
+      DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT
     );
     mkdirSync(join(sourcePortableRoot, 'threads', thread.id, 'retrieval-traces'), {
       recursive: true,
