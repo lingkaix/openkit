@@ -22,6 +22,7 @@ import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { managedThreadPolicy } from '../test-support/resource-policy.js';
 import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
@@ -412,21 +413,28 @@ describe('native Light App meaning discovery', () => {
             policyConfig,
             ['workspace', 'policy'],
             {
-              resourceAccess: [
-                {
-                  resource: { family: 'thread', id: thread.id },
-                  grants: [
-                    { subject: { kind: 'user', userId: f.userId }, operations: ['thread.read'] },
-                    {
-                      subject: { kind: 'agent', userId: f.userId, agentId },
-                      operations: agentCanRead
-                        ? ['workspace.read', 'thread.read']
-                        : ['workspace.read'],
-                    },
-                  ],
-                  prohibitions: [],
-                },
-              ],
+              mediation: {
+                schemaVersion: 1,
+                statements: [
+                  ...managedThreadPolicy({
+                    workspaceId: f.workspace.id,
+                    threadId: thread.id,
+                    userId: f.userId,
+                    operations: ['thread.read'],
+                  }).statements,
+                  ...managedThreadPolicy({
+                    workspaceId: f.workspace.id,
+                    threadId: thread.id,
+                    userId: f.userId,
+                    agentId,
+                    operations: agentCanRead
+                      ? ['workspace.read', 'thread.read']
+                      : ['workspace.read'],
+                  })
+                    .statements.filter((statement) => statement.kind === 'permission')
+                    .map((statement) => ({ ...statement, id: 'source-agent-read' })),
+                ],
+              },
             },
             {}
           )

@@ -63,9 +63,10 @@ import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-ledger.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 
-import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
+import { loadRuntimeConfig } from '../config/runtime-config.js';
 
 import * as knowledgeOverviewReader from '../context/knowledge-overview.js';
+import { parseWorkerContextPackageTrace } from '../context/worker-context-package.js';
 import { readStrictWorkerContextPackageDigest } from '../context/worker-context-projection.js';
 import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
@@ -2023,8 +2024,23 @@ describe('WorkerGovernanceTurnExecutor', () => {
         expect(refusal).toMatchObject({ code: 'recovery_required', status: 409, cause });
         expect(Object.keys(refusal as Error)).not.toContain('cause');
         expect(JSON.stringify(refusal)).not.toContain('secret-error-name');
-        expect((refusal as Error).message).toBe(
+        expect((refusal as Error).message).toContain(
           'The worker backend materialization capacity cannot be safely inspected.'
+        );
+        expect((refusal as Error).message).toContain(
+          scenario === 'native-proof'
+            ? 'WorkerNativeProofValidationError'
+            : scenario === 'retained-aep'
+              ? 'AgentEnvironmentSnapshotReadError'
+              : 'Error'
+        );
+        expect((refusal as Error).message).toContain(
+          scenario === 'native-proof'
+            ? 'package-binding-lineage/attachment-target'
+            : 'materialization-capacity-inspection'
+        );
+        expect((refusal as Error).message).not.toMatch(
+          /credential-canary|package-path|received|secret-error-name/
         );
       }
       expect(backend.calls).toEqual([]);
@@ -8428,7 +8444,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
           content: index,
         }),
       ]);
-      const trace = JSON.parse(readFileSync(fixture.tracePath, 'utf8'));
+      const trace = parseWorkerContextPackageTrace(
+        JSON.parse(readFileSync(fixture.tracePath, 'utf8')),
+        readFileSync(join(fixture.packageRoot, 'package.json'))
+      );
       expect(trace.fileInventory).toContainEqual({
         path: 'knowledge-overview.md',
         byteLength: Buffer.byteLength(overview),
@@ -8905,7 +8924,12 @@ describe('WorkerGovernanceTurnExecutor', () => {
         workspaceRoots: [],
       });
       expect(launchSpy).toHaveBeenCalledTimes(1);
-      expect(JSON.parse(readFileSync(tracePath, 'utf8'))).toMatchObject({
+      expect(
+        parseWorkerContextPackageTrace(
+          JSON.parse(readFileSync(tracePath, 'utf8')),
+          readFileSync(join(fixture.packageRoot, 'package.json'))
+        )
+      ).toMatchObject({
         materialExclusions: [],
         materialSelections: [
           {
@@ -9170,7 +9194,12 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const backend = new FakeWorkerGovernanceBackend();
     const launch = backend.submit.bind(backend);
     const launchSpy = vi.spyOn(backend, 'submit').mockImplementation(async (...args) => {
-      expect(JSON.parse(readFileSync(fixture.tracePath, 'utf8'))).toMatchObject({
+      expect(
+        parseWorkerContextPackageTrace(
+          JSON.parse(readFileSync(fixture.tracePath, 'utf8')),
+          readFileSync(join(fixture.packageRoot, 'package.json'))
+        )
+      ).toMatchObject({
         goalId: null,
         knowledgeExclusions: [],
         knowledgeSelectionInput: { retrievalTraceRef },
@@ -11677,7 +11706,7 @@ async function assertNativePreSubmissionFault(fault: NativePreSubmissionFault): 
     fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
     coreDb,
     store,
-    readRuntimeConfig: () => createInMemoryRuntimeConfigSnapshot({ dataRoot: coreDb.dataRoot }),
+    readRuntimeConfig: () => loadRuntimeConfig(coreDb.dataRoot),
     env: {},
     workerControlGateway: new WorkerControlGateway(),
     nanoHostSessionDispatch: {

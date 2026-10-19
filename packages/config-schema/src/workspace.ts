@@ -17,7 +17,7 @@ import { KnowledgeMountsSchema, validateKnowledgeMountBinding } from './knowledg
 import { authoredConfigRequiredFeaturesSchema } from './schema-evolution.js';
 import {
   WORKSPACE_RESOURCE_POLICY_FEATURE,
-  WorkspaceResourceAccessSchema,
+  WorkspacePolicyDocumentSchema,
 } from './workspace-resource-policy.js';
 
 /** Workspace grant bound to one reusable Agent credential requirement. */
@@ -108,7 +108,7 @@ export const WorkspaceConfigWorkspaceSchema = z
     defaultKnowledgeBaseId: KnowledgeBaseIdSchema.optional(),
     knowledgeMounts: KnowledgeMountsSchema.optional(),
 
-    policy: z.object({ resourceAccess: WorkspaceResourceAccessSchema }).strict().optional(),
+    policy: z.object({ mediation: WorkspacePolicyDocumentSchema }).strict().optional(),
     knowledgeMaintenance: KnowledgeMaintenanceSchema.optional(),
     defaultAgentId: z.string().min(1).nullable().optional(),
     agents: z.array(WorkspaceAgentBindingSchema).default([]),
@@ -169,7 +169,7 @@ export const WorkspaceConfigSchema = z
   .superRefine((value, ctx) => {
     validateKnowledgeMountBinding(value.workspace, ctx, ['workspace']);
     if (
-      value.workspace.policy?.resourceAccess.length &&
+      value.workspace.policy?.mediation.statements.length &&
       !value.requiredFeatures?.includes(WORKSPACE_RESOURCE_POLICY_FEATURE)
     ) {
       ctx.addIssue({

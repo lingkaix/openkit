@@ -29,6 +29,13 @@ The engineer confirmed the accountability chain at 10:52Z. Creating an agent pri
 
 The reset RC freezes these shared formats with their writers, validators and the I16 pilot. Policy review and other behavior that writes no new shape may follow additively before v0.1.0. Other row routing, impact simulation, cached/adaptive review and external participant adapters follow later. React, which changes Policy after successful access under the defining authority, remains deferred in [issue #375](https://github.com/lingkaix/openkit/issues/375). This documentation does not implement or activate any of those mechanisms.
 
+### 2026-10-19 Scope-Owned Configuration Amendment
+
+The engineer approved audit F3 at about 01:40Z and the coordinator assigned its coherent pre-rc.10 cut at 01:50Z. Server and Workspace configuration use the same Policy statement grammar while retaining distinct authority scopes. Remove inert workspaceApprovalModes and the two separate live assignment grammars with no conversion or dual reader; the rc.10 reset owns retained-data replacement.
+
+Native constraints remain explicit permission grant data where a common action/resource selector cannot express them: the finite Git network-grant, endpoint, repository, binary and start-time bounds, and an exact Agent-process selector for existing responsible-human projections. A managed-Thread boundary is an explicit non-grant statement, because absence of its final positive allocation must not restore broad membership access. The existing scope, lifetime, attribution, Kernel, confirmed Pending apply, reload and portability owners remain authoritative. This amendment creates no agent principal, grant store, evaluator or implied Server authority from a Workspace file. [Policy Enforcement](../specs/20260703-policy_enforcement_mapping.md#scope-owned-statement-format-f3) specifies the format and its consumers.
+
+
 ## Reason
 
 A separate mediation registry and binding lifecycle would describe the same authority boundary twice. Operation-by-stage identity follows where Core can hold a proposal or content before release. Crossing attributes classify that operation without making a model's risk assessment an authorization grant.

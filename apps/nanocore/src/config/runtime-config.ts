@@ -292,7 +292,6 @@ const RESTART_REQUIRED_CONFIG_PATHS = [
   'nanohost.deploymentId',
   'nanohost.identityId',
   'nanohost.rendezvousUrl',
-  'policy.workspaceApprovalModes',
 ] as const;
 
 /**
@@ -886,21 +885,6 @@ export function diffRuntimeConfig(
         'hot-swappable',
         'applied',
         'Work-data capture switch changed for later Turns.'
-      )
-    );
-  }
-  if (
-    !equalSemantic(
-      previous.openKitConfig.policy?.workerGitReadMaintenance ?? [],
-      next.openKitConfig.policy?.workerGitReadMaintenance ?? []
-    )
-  ) {
-    applied.push(
-      change(
-        'policy.workerGitReadMaintenance',
-        'hot-swappable',
-        'applied',
-        'Finite Worker Git-read maintenance assignments changed for later effects.'
       )
     );
   }

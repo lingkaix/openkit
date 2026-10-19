@@ -27,12 +27,14 @@ import { canDiscloseThreadToAudience, isThreadVisible } from '../auth/thread-vis
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { ArtifactAuthorityError, FsStore, StoreRecordNotFoundError } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
+import { EMPTY_POLICY_DOCUMENT } from '../policy/statements.js';
+import { readCurrentWorkspacePolicy } from '../policy/workspace-resource-access.js';
 import {
   requireSchedulerExecutionAttemptAdmissionContext,
   type SchedulerWorkerStorageChoice,
 } from '../scheduler-records.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
-import { type CoreDb, openWorkspaceDb } from '../storage/db.js';
+import { type CoreDb, openBootVerifiedWorkspaceDb, openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { loadWorkspaceFileRecords } from '../storage/workspace-file-records.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
@@ -4877,16 +4879,29 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   } {
     const latest = this.coreDb.sqlite
       .prepare(
-        'SELECT attempt_id AS attemptId, workspace_id AS workspaceId, package_snapshot_id AS packageSnapshotId FROM worker_backend_sessions WHERE agent_session_id = ? ORDER BY created_at DESC, attempt_id DESC LIMIT 1'
+        `SELECT attempt_id AS attemptId, workspace_id AS workspaceId,
+                package_snapshot_id AS packageSnapshotId,
+                (SELECT status FROM workspace_registry r
+                 WHERE r.workspace_id = worker_backend_sessions.workspace_id) AS workspaceStatus
+         FROM worker_backend_sessions WHERE agent_session_id = ?
+         ORDER BY created_at DESC, attempt_id DESC LIMIT 1`
       )
       .get(inspection.agentSessionId) as
-      | { attemptId: string; workspaceId: string; packageSnapshotId: string }
+      | {
+          attemptId: string;
+          workspaceId: string;
+          packageSnapshotId: string;
+          workspaceStatus: string | null;
+        }
       | undefined;
     if (!latest) throw new Error('Workspace release collection lineage is unavailable.');
-    const workspaceDb = openWorkspaceDb(this.coreDb.dataRoot, latest.workspaceId);
+    if (latest.workspaceStatus === 'deleted') {
+      throw new WorkerNativeProofValidationError('package-binding-lineage/workspace-deleted');
+    }
+    // Inspection must preserve a missing Workspace rather than recreate canonical storage.
+    const workspaceDb = openBootVerifiedWorkspaceDb(this.coreDb.dataRoot, latest.workspaceId);
     let environmentPackage: AgentEnvironmentPackage;
     try {
-      applyScopedMigrations(workspaceDb);
       environmentPackage = requireAgentEnvironmentPackageSnapshot(
         workspaceDb,
         latest.workspaceId,
@@ -5403,10 +5418,15 @@ function currentWorkerStorageAudienceAuthorizer(
       getWorkspace: () => records.workspace,
       getWorkspaceResourceAccess: (workspaceId: string) => {
         if (!readRuntimeConfig) throw new Error('Current Workspace Policy is unavailable.');
-        return (
-          readRuntimeConfig().workspaceConfigs.find((entry) => entry.workspaceId === workspaceId)
-            ?.config.workspace.policy?.resourceAccess ?? []
+        const loaded = readRuntimeConfig().workspaceConfigs.find(
+          (entry) => entry.workspaceId === workspaceId
         );
+        if (!loaded) throw new Error('Current Workspace Policy is unavailable.');
+        return readCurrentWorkspacePolicy({
+          coreDb,
+          workspaceId,
+          policy: loaded.config.workspace.policy?.mediation ?? EMPTY_POLICY_DOCUMENT,
+        });
       },
     };
     return (

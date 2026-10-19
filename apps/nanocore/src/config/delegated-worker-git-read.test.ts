@@ -9,8 +9,10 @@ import { createAdministrationConfigurationTools } from '../administration/config
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
+  setDefaultServerAdminTokenId,
 } from '../auth/access-token-store.js';
 import type { Actor } from '../auth/identity.js';
+import { isCurrentDeploymentAdministrator } from '../auth/operation-authorizer.js';
 import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { listServerPermissionDecisions } from '../policy/permission-decisions.js';
 import { recordAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
@@ -47,22 +49,38 @@ const correctedRules = [
   { method: 'POST' as const, path: '/team/project.git/git-upload-pack' },
   unrelatedRule,
 ];
+const responsibleUserId = 'usr_00000000-0000-7000-8000-000000000001';
+const agentId = 'agent_repair';
+const container = { owner: { kind: 'server' }, kind: 'agent', id: agentId };
 const assignment = {
-  responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
-  agentId: 'agent_repair',
-  networkGrantId: 'git-read',
-  host: 'git.example.test',
-  port: 443,
-  protocol: 'rest',
-  repositoryPaths: [repositoryPath],
-  binaries: ['/usr/bin/git'],
-  validFrom: '2020-01-01T00:00:00.000Z',
-  expiresAt: '2999-01-01T00:00:00.000Z',
-  enabled: true,
+  kind: 'permission',
+  id: 'finite-git-read',
+  author: { kind: 'human', id: responsibleUserId },
+  authority: { kind: 'human', userId: responsibleUserId },
+  authoredAt: '2026-10-19T00:00:00.000Z',
+  state: 'active',
+  scope: {
+    subjects: [{ kind: 'human', id: responsibleUserId }],
+    actions: ['administration.configuration.apply'],
+    resources: [{ kind: 'container', container }],
+  },
+  lifetime: { anchor: container, notAfter: '2999-01-01T00:00:00.000Z' },
+  effect: 'allow',
+  grant: {
+    kind: 'worker-git-read-maintenance',
+    networkGrantId: 'git-read',
+    host: 'git.example.test',
+    port: 443,
+    protocol: 'rest',
+    repositoryPaths: [repositoryPath],
+    binaries: ['/usr/bin/git'],
+    validFrom: '2020-01-01T00:00:00.000Z',
+  },
 };
+const policy = (statements: unknown) => ({ schemaVersion: 1, statements });
 
 /** Composes real configuration, terminal failure, AEP ledger, Artifact and receipt owners. */
-function fixture(repositoryCount = 1) {
+function fixture(repositoryCount = 1, distinctIssuer = false) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-delegated-git-read-'));
   cleanup.push(() => rmSync(dataRoot, { recursive: true, force: true }));
   const coreDb = openCoreDb(dataRoot);
@@ -82,6 +100,29 @@ function fixture(repositoryCount = 1) {
     tokenScope: 'server-admin',
     tokenWorkspaceIds: [],
   };
+  const issuerId = distinctIssuer ? allocateEntityId('usr') : responsibleUserId;
+  let issuerTokenId: string | null = null;
+  if (distinctIssuer) {
+    const now = Date.now();
+    coreDb.sqlite
+      .prepare(
+        `INSERT INTO users (id, kind, display_name, email, email_verified, created_at, updated_at, status) VALUES (?, 'human', 'Policy issuer', 'policy-issuer@example.invalid', 0, ?, ?, 'active')`
+      )
+      .run(issuerId, now, now);
+    const issued = createOpenKitAccessTokenRecord(coreDb, {
+      ownerUserId: issuerId,
+      scope: 'server-admin',
+      workspaceIds: [],
+      expiresAt: '2999-01-01T00:00:00.000Z',
+    });
+    issuerTokenId = issued.tokenId;
+    expect(setDefaultServerAdminTokenId(coreDb, issuerId, issued.tokenId)).toBe(true);
+  }
+  const issuedAssignment = {
+    ...assignment,
+    author: { kind: 'human', id: issuerId },
+    authority: { kind: 'human', userId: issuerId },
+  };
   const store = createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({
     coreDb,
@@ -92,7 +133,7 @@ function fixture(repositoryCount = 1) {
   cleanup.push(() => workspaceDb.sqlite.close());
   applyScopedMigrations(workspaceDb);
   const setup = createTestAgentSetup({
-    agentId: assignment.agentId,
+    agentId: agentId,
     logicalModelId: 'reasoning',
     network: [
       {
@@ -119,10 +160,10 @@ function fixture(repositoryCount = 1) {
       serverPath,
       JSON.stringify({
         schemaVersion: 1,
-        policy: { workerGitReadMaintenance: entries },
+        policy: { mediation: policy(entries) },
       })
     );
-  saveAssignments([assignment]);
+  saveAssignments([issuedAssignment]);
   writeFileSync(
     join(dataRoot, 'config/providers/local.provider.jsonc'),
     JSON.stringify({
@@ -152,7 +193,7 @@ function fixture(repositoryCount = 1) {
     { kind: 'user', id: actor.userId },
     null,
     {
-      agentId: assignment.agentId,
+      agentId: agentId,
       agentSessionId: sessionId,
     }
   );
@@ -202,7 +243,7 @@ function fixture(repositoryCount = 1) {
   });
   store.createAgentSession({
     id: sessionId,
-    agentId: assignment.agentId,
+    agentId: agentId,
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     threadId: failedThread.id,
     status: 'failed',
@@ -270,7 +311,7 @@ function fixture(repositoryCount = 1) {
   const service = createAdministrationConfiguration(options);
   const request = {
     targetFamily: 'agent' as const,
-    targetId: assignment.agentId,
+    targetId: agentId,
     expectedRevision: files.readFile('agents/registered.agent.jsonc').file.revision!,
     failure: {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -290,6 +331,9 @@ function fixture(repositoryCount = 1) {
     home,
     request,
     saveAssignments,
+    issuedAssignment,
+    issuerId,
+    issuerTokenId,
     token,
     retained,
     failedTurn,
@@ -306,7 +350,7 @@ describe('finite delegated Worker Git-read application', () => {
     expect(readFileSync(f.agentPath, 'utf8')).toBe(original);
     expect(proposal.preview).toMatchObject({
       targetFamily: 'agent',
-      targetId: assignment.agentId,
+      targetId: agentId,
       expectedRevision: f.request.expectedRevision,
       failure: f.request.failure,
       before: { networkGrantId: 'git-read', rules: originalRules },
@@ -328,9 +372,7 @@ describe('finite delegated Worker Git-read application', () => {
     const loadedBefore = f.manager.current();
     // Saved revocation is pending; only a successful reload changes effective Policy authority.
     f.saveAssignments([]);
-    expect(f.manager.current().openKitConfig.policy?.workerGitReadMaintenance).toEqual([
-      assignment,
-    ]);
+    expect(f.manager.current().openKitConfig.policy?.mediation).toEqual(policy([assignment]));
     f.store.updateTurn(f.home.turnId, {
       status: 'completed',
       completedAt: new Date().toISOString(),
@@ -345,7 +387,7 @@ describe('finite delegated Worker Git-read application', () => {
     const apply = { requestId: randomUUID(), candidate: proposal.candidate };
     const result = await f.service.applyDelegated(apply, invocation);
     expect(result).toMatchObject({ persisted: true, reload: 'applied', restartRequired: false });
-    expect(f.manager.current().openKitConfig.policy?.workerGitReadMaintenance).toEqual([]);
+    expect(f.manager.current().openKitConfig.policy?.mediation).toEqual(policy([]));
     expect(JSON.parse(readFileSync(f.agentPath, 'utf8'))).toEqual({
       ...f.authored,
       sandbox: {
@@ -354,12 +396,11 @@ describe('finite delegated Worker Git-read application', () => {
       },
     });
     expect(
-      f.manager.current().agentManifests.find((agent) => agent.id === assignment.agentId)?.sandbox
-        ?.network[0]?.rules
+      f.manager.current().agentManifests.find((agent) => agent.id === agentId)?.sandbox?.network[0]
+        ?.rules
     ).toEqual(correctedRules);
     expect(
-      loadedBefore.agentManifests.find((agent) => agent.id === assignment.agentId)?.sandbox
-        ?.network[0]?.rules
+      loadedBefore.agentManifests.find((agent) => agent.id === agentId)?.sandbox?.network[0]?.rules
     ).toEqual(originalRules);
     expect(listServerPermissionDecisions(f.coreDb)).toContainEqual(
       expect.objectContaining({
@@ -528,11 +569,21 @@ describe('finite delegated Worker Git-read application', () => {
 
   it.each([
     { reason: 'absent', entries: [] },
-    { reason: 'disabled', entries: [{ ...assignment, enabled: false }] },
-    { reason: 'expired', entries: [{ ...assignment, expiresAt: '2021-01-01T00:00:00.000Z' }] },
+    { reason: 'disabled', entries: [{ ...assignment, state: 'inactive' }] },
+    {
+      reason: 'expired',
+      entries: [
+        {
+          ...assignment,
+          lifetime: { ...assignment.lifetime, notAfter: '2021-01-01T00:00:00.000Z' },
+        },
+      ],
+    },
     {
       reason: 'outside repository bounds',
-      entries: [{ ...assignment, repositoryPaths: ['/other/project.git'] }],
+      entries: [
+        { ...assignment, grant: { ...assignment.grant, repositoryPaths: ['/other/project.git'] } },
+      ],
     },
   ])('refuses current $reason authority after Tool assembly and before a write', async ({
     entries,
@@ -600,6 +651,37 @@ describe('finite delegated Worker Git-read application', () => {
     expect(readFileSync(f.agentPath, 'utf8')).toBe(original);
     expect(f.write).not.toHaveBeenCalled();
     expect(f.reload).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    false,
+    true,
+  ])('rechecks a distinct Policy issuer before mutation: revoked=%s', async (revoked) => {
+    const f = fixture(1, true);
+    expect(f.issuerId).not.toBe(f.actor.userId);
+    const issuer = { kind: 'session' as const, userId: f.issuerId };
+    expect(isCurrentDeploymentAdministrator(f.coreDb, issuer)).toBe(true);
+    expect(f.manager.current().openKitConfig.policy?.mediation).toEqual(
+      policy([f.issuedAssignment])
+    );
+    const candidate = f.propose().candidate;
+    const original = readFileSync(f.agentPath, 'utf8');
+    if (revoked) revokeOpenKitAccessTokenRecord(f.coreDb, f.issuerTokenId!);
+    expect(isCurrentDeploymentAdministrator(f.coreDb, issuer)).toBe(!revoked);
+    expect(isCurrentDeploymentAdministrator(f.coreDb, f.actor)).toBe(true);
+    if (revoked) {
+      await expect(
+        f.service.applyDelegated({ requestId: randomUUID(), candidate }, f.home)
+      ).rejects.toMatchObject({ code: 'configuration_delegation_required' });
+      expect(readFileSync(f.agentPath, 'utf8')).toBe(original);
+      expect(f.write).not.toHaveBeenCalled();
+      expect(f.reload).not.toHaveBeenCalled();
+    } else {
+      expect(
+        await f.service.applyDelegated({ requestId: randomUUID(), candidate }, f.home)
+      ).toMatchObject({ persisted: true, reload: 'applied' });
+      expect(f.write).toHaveBeenCalledTimes(1);
+    }
   });
 
   it('rechecks current administrator eligibility before mutation', async () => {
