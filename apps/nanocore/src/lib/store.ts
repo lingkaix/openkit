@@ -1577,22 +1577,41 @@ export class FsStore {
       return;
     }
 
-    this.assertWorkspacePublicationAcknowledged(workspaceId);
-    const workspaceRoot = ensureWorkspaceLayout(this.dataRoot, workspaceId).root;
+    const startedAt = performance.now();
     try {
-      this.writeWorkspaceFileRecordsToRoot(
-        workspaceId,
-        workspaceRoot,
-        updateWorkspaceConfigName,
-        turnFilePayloads,
-        initialArtifact,
-        candidate
-      );
-    } catch (error) {
-      if (error instanceof CanonicalPublicationError) {
-        this.unacknowledgedWorkspaces.add(workspaceId);
+      this.assertWorkspacePublicationAcknowledged(workspaceId);
+      const workspaceRoot = ensureWorkspaceLayout(this.dataRoot, workspaceId).root;
+      try {
+        this.writeWorkspaceFileRecordsToRoot(
+          workspaceId,
+          workspaceRoot,
+          updateWorkspaceConfigName,
+          turnFilePayloads,
+          initialArtifact,
+          candidate
+        );
+      } catch (error) {
+        if (error instanceof CanonicalPublicationError) {
+          this.unacknowledgedWorkspaces.add(workspaceId);
+        }
+        throw error;
       }
-      throw error;
+    } finally {
+      try {
+        const durationMs = performance.now() - startedAt;
+        if (durationMs >= 100) {
+          console.error(
+            JSON.stringify({
+              stage: 'workspace-persist',
+              durationMs: Math.round(durationMs),
+              timestamp: new Date().toISOString(),
+              workspaceId,
+            })
+          );
+        }
+      } catch {
+        // Diagnostics must not change the owning operation.
+      }
     }
   }
 

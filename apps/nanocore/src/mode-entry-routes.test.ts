@@ -1609,7 +1609,12 @@ describe('conversation.submit worker acceptance wait', () => {
         turnId,
       });
       await setImmediate();
-      expect(diagnostics.mock.calls).toEqual(
+      const closeoutDiagnostics = diagnostics.mock.calls.filter(
+        ([message]) =>
+          message === 'scheduler_dispatch_failed_after_admission' ||
+          message === 'selected_worker_closeout_failed_after_acceptance'
+      );
+      expect(closeoutDiagnostics).toEqual(
         projectionFailure
           ? [['scheduler_dispatch_failed_after_admission', 'private executor detail']]
           : [

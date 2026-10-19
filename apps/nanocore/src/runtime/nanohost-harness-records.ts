@@ -879,41 +879,60 @@ export function queueNanoHostHarnessOperation(
   coreDb: CoreDb,
   input: QueueNanoHostHarnessOperationInput
 ): number {
-  input = { ...input, body: requireHarnessOperationBody(input.operation, input.body) };
-  coreDb.sqlite.exec('BEGIN IMMEDIATE');
+  const startedAt = performance.now();
   try {
-    const harness = requireHarness(coreDb, input.harnessInstanceId);
-    if (!['idle', 'settled'].includes(harness.operation_state)) {
-      throw new Error('NanoHost Harness already has an unsettled operation.');
-    }
-    if (
-      (input.operation === 'session.open' || input.operation === 'turn.start') &&
-      (harness.lifecycle_state !== 'open' || harness.drain_state !== 'accepting')
-    ) {
-      throw new Error('NanoHost Harness is not accepting new work.');
-    }
-    requireOperationLineage(coreDb, harness, input.operation, input.body);
-    const commandBodyJson = canonicalJson(input.body);
-    coreDb.sqlite
-      .prepare(
-        `UPDATE harness_instance_records
+    input = { ...input, body: requireHarnessOperationBody(input.operation, input.body) };
+    coreDb.sqlite.exec('BEGIN IMMEDIATE');
+    try {
+      const harness = requireHarness(coreDb, input.harnessInstanceId);
+      if (!['idle', 'settled'].includes(harness.operation_state)) {
+        throw new Error('NanoHost Harness already has an unsettled operation.');
+      }
+      if (
+        (input.operation === 'session.open' || input.operation === 'turn.start') &&
+        (harness.lifecycle_state !== 'open' || harness.drain_state !== 'accepting')
+      ) {
+        throw new Error('NanoHost Harness is not accepting new work.');
+      }
+      requireOperationLineage(coreDb, harness, input.operation, input.body);
+      const commandBodyJson = canonicalJson(input.body);
+      coreDb.sqlite
+        .prepare(
+          `UPDATE harness_instance_records
          SET operation_state = 'queued', operation_id = NULL,
              operation_sequence = next_sequence, operation = ?, command_body_json = ?,
              command_fingerprint = ?, updated_at = ?
          WHERE harness_instance_id = ? AND operation_state IN ('idle', 'settled')`
-      )
-      .run(
-        input.operation,
-        commandBodyJson,
-        sha256(commandBodyJson),
-        input.timestamp,
-        input.harnessInstanceId
-      );
-    coreDb.sqlite.exec('COMMIT');
-    return harness.next_sequence;
-  } catch (error) {
-    coreDb.sqlite.exec('ROLLBACK');
-    throw error;
+        )
+        .run(
+          input.operation,
+          commandBodyJson,
+          sha256(commandBodyJson),
+          input.timestamp,
+          input.harnessInstanceId
+        );
+      coreDb.sqlite.exec('COMMIT');
+      return harness.next_sequence;
+    } catch (error) {
+      coreDb.sqlite.exec('ROLLBACK');
+      throw error;
+    }
+  } finally {
+    try {
+      const durationMs = performance.now() - startedAt;
+      if (durationMs >= 100) {
+        console.error(
+          JSON.stringify({
+            stage: 'harness-enqueue',
+            durationMs: Math.round(durationMs),
+            timestamp: new Date().toISOString(),
+            harnessInstanceId: input.harnessInstanceId,
+          })
+        );
+      }
+    } catch {
+      // Diagnostics must not change the owning operation.
+    }
   }
 }
 

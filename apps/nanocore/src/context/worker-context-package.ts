@@ -1012,68 +1012,89 @@ export async function writeWorkerContextPackageFiles(
     for (const file of [...packageFiles.files].sort(
       (a, b) => Number(a.path === 'package.json') - Number(b.path === 'package.json')
     )) {
-      options.signal?.throwIfAborted();
-      const path = pathFor(file.path);
-      if (existsSync(path)) {
-        assertFileProof(path, inventoryEntry(file));
-        syncCanonicalTree(path);
-        syncCanonicalDirectory(dirname(path));
-        continue;
-      }
-      const reservation = options.admission.reserve({
-        stagingBytes: 0n,
-        extractionBytes: 0n,
-        derivativeBytes: 0n,
-        publicationBytes: BigInt(file.bytes.byteLength) + 65_536n,
-      });
-      let descriptor: number | undefined;
-      let created = false;
-      let safeToRelease = true;
-      // The last file is the commit marker. Its own partial write must never look committed.
-      const writePath =
-        file.path === 'package.json' ? join(dirname(path), '.package.json.tmp') : path;
+      const startedAt = performance.now();
       try {
-        reservation.assertAvailable();
-        descriptor = openSync(
-          writePath,
-          constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
-          0o600
-        );
-        created = true;
-        safeToRelease = false;
-        let written = 0;
-        while (written < file.bytes.byteLength) {
-          const count = writeSync(
-            descriptor,
-            file.bytes,
-            written,
-            Math.min(65_536, file.bytes.byteLength - written)
-          );
-          if (!count) throw new Error('Worker Context Package file write made no progress.');
-          written += count;
-          reservation.recordWritten(count);
+        options.signal?.throwIfAborted();
+        const path = pathFor(file.path);
+        if (existsSync(path)) {
+          assertFileProof(path, inventoryEntry(file));
+          syncCanonicalTree(path);
+          syncCanonicalDirectory(dirname(path));
+          continue;
         }
-        fsyncSync(descriptor);
-        closeSync(descriptor);
-        descriptor = undefined;
-        assertFileProof(writePath, inventoryEntry(file));
-        if (writePath !== path) renameSync(writePath, path);
-        syncCanonicalDirectory(dirname(path));
-        safeToRelease = true;
-      } catch (error) {
-        if (descriptor !== undefined) {
+        const reservation = options.admission.reserve({
+          stagingBytes: 0n,
+          extractionBytes: 0n,
+          derivativeBytes: 0n,
+          publicationBytes: BigInt(file.bytes.byteLength) + 65_536n,
+        });
+        let descriptor: number | undefined;
+        let created = false;
+        let safeToRelease = true;
+        // The last file is the commit marker. Its own partial write must never look committed.
+        const writePath =
+          file.path === 'package.json' ? join(dirname(path), '.package.json.tmp') : path;
+        try {
+          reservation.assertAvailable();
+          descriptor = openSync(
+            writePath,
+            constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+            0o600
+          );
+          created = true;
+          safeToRelease = false;
+          let written = 0;
+          while (written < file.bytes.byteLength) {
+            const count = writeSync(
+              descriptor,
+              file.bytes,
+              written,
+              Math.min(65_536, file.bytes.byteLength - written)
+            );
+            if (!count) throw new Error('Worker Context Package file write made no progress.');
+            written += count;
+            reservation.recordWritten(count);
+          }
+          fsyncSync(descriptor);
           closeSync(descriptor);
           descriptor = undefined;
-        }
-        if (created) {
-          rmSync(writePath, { force: true });
+          assertFileProof(writePath, inventoryEntry(file));
+          if (writePath !== path) renameSync(writePath, path);
           syncCanonicalDirectory(dirname(path));
           safeToRelease = true;
+        } catch (error) {
+          if (descriptor !== undefined) {
+            closeSync(descriptor);
+            descriptor = undefined;
+          }
+          if (created) {
+            rmSync(writePath, { force: true });
+            syncCanonicalDirectory(dirname(path));
+            safeToRelease = true;
+          }
+          throw error;
+        } finally {
+          if (descriptor !== undefined) closeSync(descriptor);
+          if (safeToRelease) reservation.release();
         }
-        throw error;
       } finally {
-        if (descriptor !== undefined) closeSync(descriptor);
-        if (safeToRelease) reservation.release();
+        try {
+          const durationMs = performance.now() - startedAt;
+          if (durationMs >= 100) {
+            console.error(
+              JSON.stringify({
+                stage: 'context-member-publish',
+                durationMs: Math.round(durationMs),
+                timestamp: new Date().toISOString(),
+                workspaceId: packageFiles.workspaceId,
+                threadId: packageFiles.threadId,
+                turnId: packageFiles.turnId,
+              })
+            );
+          }
+        } catch {
+          // Diagnostics must not change the owning operation.
+        }
       }
       await yieldToIo(undefined, { signal: options.signal });
     }
@@ -1943,71 +1964,94 @@ function verifyWorkerContextPackagePortableOwners(
 
 /** Verifies all package bytes and returns the derived package-root digest. */
 function verifyPackageFiles(workspaceRoot: string, trace: WorkerContextPackageTrace): string {
-  const packageRoot = workerContextPackageRoot(workspaceRoot, trace.threadId, trace.turnId);
-  const actualPaths = listPackageFilePaths(
-    packageRoot,
-    trace.fileInventory.map((entry) => entry.path)
-  );
-  if (
-    !isDeepStrictEqual(
-      actualPaths,
+  const startedAt = performance.now();
+  try {
+    const packageRoot = workerContextPackageRoot(workspaceRoot, trace.threadId, trace.turnId);
+    const actualPaths = listPackageFilePaths(
+      packageRoot,
       trace.fileInventory.map((entry) => entry.path)
-    )
-  ) {
-    throw new Error('Worker Context Package file inventory mismatch.');
+    );
+    if (
+      !isDeepStrictEqual(
+        actualPaths,
+        trace.fileInventory.map((entry) => entry.path)
+      )
+    ) {
+      throw new Error('Worker Context Package file inventory mismatch.');
+    }
+    for (const entry of trace.fileInventory) {
+      assertFileProof(join(packageRoot, ...safeRelativePathSegments(entry.path)), entry);
+    }
+    for (const entry of [
+      ...trace.materialSelections,
+      ...trace.knowledgeSelections,
+      ...(trace.sourceFiles ?? []),
+    ]) {
+      if (entry.projection)
+        assertProjection(
+          entry.projection,
+          readCanonicalPackageFile(packageRoot, entry.packagePath, entry.projection.byteLength)
+        );
+    }
+    const manifestBytes = readCanonicalPackageFile(packageRoot, 'package.json', 16_777_216);
+    const originalManifest = JSON.parse(manifestBytes.toString('utf8'));
+    const parsedManifest = WorkerContextPackageManifestSchema.safeParse(originalManifest);
+    if (
+      !parsedManifest.success ||
+      manifestBytes.toString('utf8') !== canonicalJson(originalManifest)
+    ) {
+      throw new Error('Worker Context Package manifest is malformed.');
+    }
+    const manifest = parsedManifest.data;
+    if (
+      manifest.contextPackageId !== trace.contextPackageId ||
+      manifest.workspaceId !== trace.workspaceId ||
+      manifest.threadId !== trace.threadId ||
+      manifest.turnId !== trace.turnId ||
+      manifest.workerRequestItemId !== trace.workerRequestItemId ||
+      manifest.workerRequestDigest !== trace.workerRequestDigest ||
+      !isDeepStrictEqual(manifest.includedItemIds, trace.includedItemIds) ||
+      !isDeepStrictEqual(manifest.knowledgeSelections, trace.knowledgeSelections) ||
+      !isDeepStrictEqual(manifest.materialSelections, trace.materialSelections) ||
+      !isDeepStrictEqual(manifest.sourceFiles, trace.sourceFiles) ||
+      !isDeepStrictEqual(
+        manifest.fileInventory,
+        trace.fileInventory.filter((entry) => entry.path !== 'package.json')
+      )
+    ) {
+      throw new Error('Worker Context Package manifest mismatch.');
+    }
+    const instructions = readCanonicalPackageFile(packageRoot, 'instructions.md');
+    if (sha256(instructions) !== trace.workerRequestDigest) {
+      throw new Error('Worker Context Package instructions digest mismatch.');
+    }
+    return sha256(
+      Buffer.from(
+        canonicalJson(
+          workerContextPackageDeliveryInventory(trace.fileInventory, trace.sourceFiles)
+        ),
+        'utf8'
+      )
+    );
+  } finally {
+    try {
+      const durationMs = performance.now() - startedAt;
+      if (durationMs >= 100) {
+        console.error(
+          JSON.stringify({
+            stage: 'context-verify',
+            durationMs: Math.round(durationMs),
+            timestamp: new Date().toISOString(),
+            workspaceId: trace.workspaceId,
+            threadId: trace.threadId,
+            turnId: trace.turnId,
+          })
+        );
+      }
+    } catch {
+      // Diagnostics must not change the owning operation.
+    }
   }
-  for (const entry of trace.fileInventory) {
-    assertFileProof(join(packageRoot, ...safeRelativePathSegments(entry.path)), entry);
-  }
-  for (const entry of [
-    ...trace.materialSelections,
-    ...trace.knowledgeSelections,
-    ...(trace.sourceFiles ?? []),
-  ]) {
-    if (entry.projection)
-      assertProjection(
-        entry.projection,
-        readCanonicalPackageFile(packageRoot, entry.packagePath, entry.projection.byteLength)
-      );
-  }
-  const manifestBytes = readCanonicalPackageFile(packageRoot, 'package.json', 16_777_216);
-  const originalManifest = JSON.parse(manifestBytes.toString('utf8'));
-  const parsedManifest = WorkerContextPackageManifestSchema.safeParse(originalManifest);
-  if (
-    !parsedManifest.success ||
-    manifestBytes.toString('utf8') !== canonicalJson(originalManifest)
-  ) {
-    throw new Error('Worker Context Package manifest is malformed.');
-  }
-  const manifest = parsedManifest.data;
-  if (
-    manifest.contextPackageId !== trace.contextPackageId ||
-    manifest.workspaceId !== trace.workspaceId ||
-    manifest.threadId !== trace.threadId ||
-    manifest.turnId !== trace.turnId ||
-    manifest.workerRequestItemId !== trace.workerRequestItemId ||
-    manifest.workerRequestDigest !== trace.workerRequestDigest ||
-    !isDeepStrictEqual(manifest.includedItemIds, trace.includedItemIds) ||
-    !isDeepStrictEqual(manifest.knowledgeSelections, trace.knowledgeSelections) ||
-    !isDeepStrictEqual(manifest.materialSelections, trace.materialSelections) ||
-    !isDeepStrictEqual(manifest.sourceFiles, trace.sourceFiles) ||
-    !isDeepStrictEqual(
-      manifest.fileInventory,
-      trace.fileInventory.filter((entry) => entry.path !== 'package.json')
-    )
-  ) {
-    throw new Error('Worker Context Package manifest mismatch.');
-  }
-  const instructions = readCanonicalPackageFile(packageRoot, 'instructions.md');
-  if (sha256(instructions) !== trace.workerRequestDigest) {
-    throw new Error('Worker Context Package instructions digest mismatch.');
-  }
-  return sha256(
-    Buffer.from(
-      canonicalJson(workerContextPackageDeliveryInventory(trace.fileInventory, trace.sourceFiles)),
-      'utf8'
-    )
-  );
 }
 
 /**
