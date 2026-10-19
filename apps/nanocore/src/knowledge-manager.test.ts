@@ -29,6 +29,7 @@ import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { createInMemoryRuntimeConfigSnapshot } from './config/runtime-config.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { readWorkspaceNotebookAdmission } from './knowledge/notebook-workspace-admission.js';
+import { parseOkfDocument, updateOkfFrontmatter } from './knowledge/okf.js';
 import { parseSourcePointer } from './knowledge/source-pointers.js';
 import { publishCapturedSource } from './knowledge/source-publication.js';
 import { readManagedSourceText } from './knowledge/source-reading.js';
@@ -44,6 +45,10 @@ import {
 } from './test-support/demo-store.js';
 import { createKnowledgeAnswerApp } from './test-support/knowledge-agent.js';
 import { knowledgeOperationRequest } from './test-support/knowledge-operation.js';
+import {
+  knowledgePageFixture,
+  serializeKnowledgePageFixture,
+} from './test-support/knowledge-page.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { notebookImportFixture } from './test-support/notebook-import.js';
 import { operationRequest } from './test-support/operation-request.js';
@@ -187,7 +192,6 @@ function proposalPageBytes(
     `scope: {kind: workspace, workspaceId: ${DEMO_WORKSPACE_ID}}`,
     'requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
     `openkit_entry_id: ${JSON.stringify(knowledgePageId)}`,
-    'openkit_entry_kind: "project-context"',
     `source_refs: ${JSON.stringify([sourceReference])}`,
     'review_state: "accepted"',
     'sensitivity: "normal"',
@@ -198,6 +202,24 @@ function proposalPageBytes(
     content,
     '',
   ].join('\n');
+}
+
+/** Authors complete human page bytes for public Notebook create and update requests. */
+function authoredPage(
+  title: string,
+  content: string,
+  sourceReferences: readonly string[] = []
+): string {
+  return serializeKnowledgePageFixture(
+    {
+      title,
+      content,
+      sourceReferences,
+      createdAt: '2026-07-19T00:00:00.000Z',
+      updatedAt: '2026-07-19T00:00:00.000Z',
+    },
+    { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID }
+  );
 }
 
 describe('Knowledge proposal decision lineage', () => {
@@ -351,7 +373,7 @@ describe('Knowledge Store save-time validation', () => {
     try {
       const response = await app.request(
         ...knowledgeOperationRequest(
-          'knowledge.create',
+          'knowledge.notebook.create',
           { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           {
             method: 'POST',
@@ -359,11 +381,11 @@ describe('Knowledge Store save-time validation', () => {
             body: JSON.stringify({
               requestId: '00000000-0000-4000-8000-000000000112',
               baseRevision: notebook(dataRoot).publishedRevision(),
-              knowledgePageId: 'unresolved-source',
-              kind: 'project-context',
-              title: 'Unresolved source page',
-              content: 'This page must not become active.',
-              sourceReferences: ['source:ks_00000000-0000-7e28-9211-1f67fd14ca84'],
+              path: 'unresolved-source.md',
+              content: authoredPage('Unresolved source page', 'This page must not become active.', [
+                'source:ks_00000000-0000-7e28-9211-1f67fd14ca84',
+              ]),
+              summary: 'Create authored page',
             }),
           }
         )
@@ -374,7 +396,11 @@ describe('Knowledge Store save-time validation', () => {
       expect(
         store
           .listKnowledge('ws_00000000-0000-7000-8000-000000000001')
-          .some((entry) => entry.title === 'Unresolved source page')
+          .some(
+            (entry) =>
+              parseOkfDocument({ path: entry.path, content: entry.content }).document?.frontmatter
+                .title === 'Unresolved source page'
+          )
       ).toBe(false);
     } finally {
       coreDb.sqlite.close();
@@ -392,7 +418,7 @@ describe('Knowledge Store save-time validation', () => {
     try {
       const createResponse = await app.request(
         ...knowledgeOperationRequest(
-          'knowledge.create',
+          'knowledge.notebook.create',
           { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           {
             method: 'POST',
@@ -400,26 +426,29 @@ describe('Knowledge Store save-time validation', () => {
             body: JSON.stringify({
               requestId: '00000000-0000-4000-8000-000000000113',
               baseRevision: notebook(dataRoot).publishedRevision(),
-              knowledgePageId: 'valid-active-page',
-              kind: 'project-context',
-              title: 'Valid active page',
-              content: 'These bytes must survive a rejected update.',
+              path: 'valid-active-page.md',
+              content: authoredPage(
+                'Valid active page',
+                'These bytes must survive a rejected update.'
+              ),
+              summary: 'Create authored page',
             }),
           }
         )
       );
       expect(createResponse.status, await createResponse.clone().text()).toBe(200);
-      const knowledge = (await createResponse.json()) as { id: string };
+      const publication = (await createResponse.json()) as { notebookRevision: string };
+      expect(publication.notebookRevision).toBe(notebook(dataRoot).publishedRevision());
+      const pageId = 'valid-active-page';
       const owner = notebook(dataRoot);
       const baseRevision = owner.publishedRevision();
-      const activePageBytes = owner.readRevision(baseRevision).files[`${knowledge.id}.md`];
+      const activePageBytes = owner.readRevision(baseRevision).files[`${pageId}.md`];
 
       const updateResponse = await app.request(
         ...knowledgeOperationRequest(
-          'knowledge.update',
+          'knowledge.notebook.update',
           {
             workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            knowledgeEntryId: knowledge.id,
           },
           {
             method: 'PATCH',
@@ -427,7 +456,17 @@ describe('Knowledge Store save-time validation', () => {
             body: JSON.stringify({
               requestId: '00000000-0000-4000-8000-000000000114',
               baseRevision: notebook(dataRoot).publishedRevision(),
-              title: 'API token rotation',
+              changes: [
+                {
+                  path: `${pageId}.md`,
+                  content: updateOkfFrontmatter({
+                    path: `${pageId}.md`,
+                    content: activePageBytes!,
+                    updates: { title: 'API token rotation' },
+                  }),
+                },
+              ],
+              summary: 'Reject secret-shaped page title',
             }),
           }
         )
@@ -436,7 +475,7 @@ describe('Knowledge Store save-time validation', () => {
       expect(updateResponse.status, await updateResponse.clone().text()).toBe(400);
       await expect(updateResponse.json()).resolves.toMatchObject({ code: 'invalid_request' });
       expect(owner.publishedRevision()).toBe(baseRevision);
-      expect(owner.readRevision(baseRevision).files[`${knowledge.id}.md`]).toBe(activePageBytes);
+      expect(owner.readRevision(baseRevision).files[`${pageId}.md`]).toBe(activePageBytes);
     } finally {
       coreDb.sqlite.close();
     }
@@ -965,14 +1004,16 @@ describe('Knowledge Manager answer operation', () => {
     applyMigrations(coreDb);
     authorizeDemoWorkspace(coreDb);
     const timestamp = '2026-07-07T00:00:00.000Z';
-    const knowledge = {
-      id: 'beta',
-      kind: 'project-context' as const,
-      title: 'Beta',
-      content: 'Beta body.',
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    };
+    const knowledge = knowledgePageFixture(
+      {
+        id: 'beta',
+        title: 'Beta',
+        content: 'Beta body.',
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+      { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID }
+    );
     const sourceId = 'ks_00000000-0000-7e28-9211-1f67fd14ca84';
     const missingId = 'ks_00000000-0000-7e65-a399-d53a84c98ecb';
     const sourceContent = 'Canonical registered index evidence.';
@@ -994,20 +1035,28 @@ describe('Knowledge Manager answer operation', () => {
       dataRoot,
       [
         knowledge,
-        {
-          ...knowledge,
-          id: 'alpha',
-          title: 'Alpha',
-          content: `See [Beta](/${knowledge.id}.md).`,
-          sourceReferences: [`source:${sourceId}`],
-        },
-        {
-          ...knowledge,
-          id: 'missing-source',
-          title: 'Missing source',
-          content: 'Missing source body.',
-          sourceReferences: [`source:${missingId}`],
-        },
+        knowledgePageFixture(
+          {
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            id: 'alpha',
+            title: 'Alpha',
+            content: `See [Beta](/${knowledge.id}.md).`,
+            sourceReferences: [`source:${sourceId}`],
+          },
+          { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID }
+        ),
+        knowledgePageFixture(
+          {
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            id: 'missing-source',
+            title: 'Missing source',
+            content: 'Missing source body.',
+            sourceReferences: [`source:${missingId}`],
+          },
+          { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID }
+        ),
       ],
       [{ source, content: sourceContent }],
       coreDb
@@ -1126,15 +1175,17 @@ describe('Knowledge Manager answer operation', () => {
     const sourceId = 'ks_00000000-0000-7e28-9211-1f67fd14ca84';
     const sourceMaterial = 'Canonical release planning source material.';
     const sourceDigest = `sha256:${createHash('sha256').update(sourceMaterial).digest('hex')}`;
-    const entry = {
-      id: 'release-plan',
-      kind: 'project-context' as const,
-      title: 'Release plan',
-      content: 'Release cadence is weekly.',
-      sourceReferences: [`source:${sourceId}`],
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    };
+    const entry = knowledgePageFixture(
+      {
+        id: 'release-plan',
+        title: 'Release plan',
+        content: 'Release cadence is weekly.',
+        sourceReferences: [`source:${sourceId}`],
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+      { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID }
+    );
     const source = {
       id: sourceId,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -1151,7 +1202,20 @@ describe('Knowledge Manager answer operation', () => {
     };
     const store = await importedStore(
       dataRoot,
-      [entry, { ...entry, id: 'old-plan', title: 'Old plan', content: 'Legacy deployment notes.' }],
+      [
+        entry,
+        knowledgePageFixture(
+          {
+            id: 'old-plan',
+            title: 'Old plan',
+            content: 'Legacy deployment notes.',
+            createdAt: timestamp,
+            updatedAt: timestamp,
+            sourceReferences: [`source:${sourceId}`],
+          },
+          { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID }
+        ),
+      ],
       [{ source, content: sourceMaterial }],
       coreDb
     );
@@ -1272,7 +1336,7 @@ describe('Knowledge Manager answer operation', () => {
     ]);
     const createRes = await app.request(
       ...knowledgeOperationRequest(
-        'knowledge.create',
+        'knowledge.notebook.create',
         { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
@@ -1280,27 +1344,40 @@ describe('Knowledge Manager answer operation', () => {
           body: JSON.stringify({
             requestId,
             baseRevision: notebook(dataRoot).publishedRevision(),
-            knowledgePageId: 'release-plan',
-            kind: 'project-context',
-            title: 'Release plan',
-            content: 'Release cadence is weekly with a Friday review.',
+            path: 'release-plan.md',
+            content: authoredPage(
+              'Release plan',
+              'Release cadence is weekly with a Friday review.'
+            ),
+            summary: 'Create authored page',
           }),
         }
       )
     );
     expect(createRes.status).toBe(200);
-    const knowledge = (await createRes.json()) as { id: string };
+    const publication = (await createRes.json()) as { notebookRevision: string };
+    expect(publication.notebookRevision).toBe(notebook(dataRoot).publishedRevision());
+    const pageId = 'release-plan';
     const updateRes = await app.request(
       ...knowledgeOperationRequest(
-        'knowledge.update',
-        { workspaceId: DEMO_WORKSPACE_ID, knowledgeEntryId: knowledge.id },
+        'knowledge.notebook.update',
+        { workspaceId: DEMO_WORKSPACE_ID },
         {
           method: 'PATCH',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
             requestId: '00000000-0000-4000-8000-000000000121',
             baseRevision: notebook(dataRoot).publishedRevision(),
-            content: 'Release cadence is fortnightly with a Tuesday review.',
+            changes: [
+              {
+                path: `${pageId}.md`,
+                content: authoredPage(
+                  'Release plan',
+                  'Release cadence is fortnightly with a Tuesday review.'
+                ),
+              },
+            ],
+            summary: 'Update release cadence',
           }),
         }
       )
@@ -1338,9 +1415,9 @@ describe('Knowledge Manager answer operation', () => {
       expect.objectContaining({
         reference: {
           scopeId: workspacePageScope(dataRoot),
-          objectId: knowledge.id,
+          objectId: pageId,
         },
-        kind: 'project-context',
+        excerpt: expect.stringContaining('Release cadence is fortnightly'),
         title: 'Release plan',
       }),
     ]);
@@ -1456,7 +1533,7 @@ describe('Knowledge Manager answer operation', () => {
     try {
       const createRes = await app.request(
         ...knowledgeOperationRequest(
-          'knowledge.create',
+          'knowledge.notebook.create',
           { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           {
             method: 'POST',
@@ -1464,10 +1541,12 @@ describe('Knowledge Manager answer operation', () => {
             body: JSON.stringify({
               requestId,
               baseRevision: notebook(dataRoot).publishedRevision(),
-              knowledgePageId: 'maintenance-notes',
-              kind: 'project-context',
-              title: 'Workspace maintenance notes',
-              content: 'This page is not about the selected Assistant model.',
+              path: 'maintenance-notes.md',
+              content: authoredPage(
+                'Workspace maintenance notes',
+                'This page is not about the selected Assistant model.'
+              ),
+              summary: 'Create authored page',
             }),
           }
         )
@@ -1522,7 +1601,7 @@ describe('Knowledge Manager answer operation', () => {
     try {
       const createRes = await app.request(
         ...knowledgeOperationRequest(
-          'knowledge.create',
+          'knowledge.notebook.create',
           { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           {
             method: 'POST',
@@ -1530,10 +1609,9 @@ describe('Knowledge Manager answer operation', () => {
             body: JSON.stringify({
               requestId,
               baseRevision: notebook(dataRoot).publishedRevision(),
-              knowledgePageId: 'cadence',
-              kind: 'project-context',
-              title: 'Cadence',
-              content: 'Weekly ship after smoke.',
+              path: 'cadence.md',
+              content: authoredPage('Cadence', 'Weekly ship after smoke.'),
+              summary: 'Create authored page',
             }),
           }
         )
@@ -1611,7 +1689,7 @@ describe('Knowledge Manager answer operation', () => {
 
     const createRes = await app.request(
       ...knowledgeOperationRequest(
-        'knowledge.create',
+        'knowledge.notebook.create',
         { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
@@ -1619,17 +1697,21 @@ describe('Knowledge Manager answer operation', () => {
           body: JSON.stringify({
             requestId,
             baseRevision: notebook(dataRoot).publishedRevision(),
-            knowledgePageId: 'release-plan',
-            kind: 'project-context',
-            title: 'Release plan',
-            content: 'Release cadence is weekly with a Friday review.',
-            sourceReferences: [`source:${source.id}`],
+            path: 'release-plan.md',
+            content: authoredPage(
+              'Release plan',
+              'Release cadence is weekly with a Friday review.',
+              [`source:${source.id}`]
+            ),
+            summary: 'Create authored page',
           }),
         }
       )
     );
     expect(createRes.status).toBe(200);
-    const knowledge = (await createRes.json()) as { id: string };
+    const publication = (await createRes.json()) as { notebookRevision: string };
+    expect(publication.notebookRevision).toBe(notebook(dataRoot).publishedRevision());
+    const pageId = 'release-plan';
 
     const prepare = () =>
       app.request(
@@ -1666,7 +1748,7 @@ describe('Knowledge Manager answer operation', () => {
       {
         reference: {
           scopeId: workspacePageScope(dataRoot),
-          objectId: knowledge.id,
+          objectId: pageId,
         },
         revision: notebook(dataRoot).publishedRevision(),
         contentDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
@@ -1922,7 +2004,7 @@ describe('Knowledge Manager answer operation', () => {
     const app = createApp({ coreDb, dataRoot, store });
     const first = await app.request(
       ...knowledgeOperationRequest(
-        'knowledge.create',
+        'knowledge.notebook.create',
         { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
@@ -1930,10 +2012,9 @@ describe('Knowledge Manager answer operation', () => {
           body: JSON.stringify({
             requestId: '00000000-0000-4000-8000-000000000331',
             baseRevision: notebook(dataRoot).publishedRevision(),
-            knowledgePageId: 'release-plan',
-            kind: 'project-context',
-            title: 'Release plan',
-            content: 'Release cadence is weekly.',
+            path: 'release-plan.md',
+            content: authoredPage('Release plan', 'Release cadence is weekly.'),
+            summary: 'Create authored page',
           }),
         }
       )
@@ -1941,7 +2022,7 @@ describe('Knowledge Manager answer operation', () => {
     expect(first.status).toBe(200);
     const second = await app.request(
       ...knowledgeOperationRequest(
-        'knowledge.create',
+        'knowledge.notebook.create',
         { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
@@ -1949,10 +2030,9 @@ describe('Knowledge Manager answer operation', () => {
           body: JSON.stringify({
             requestId: '00000000-0000-4000-8000-000000000332',
             baseRevision: notebook(dataRoot).publishedRevision(),
-            knowledgePageId: 'second-release-plan',
-            kind: 'project-context',
-            title: ' release   plan ',
-            content: 'Friday review is required.',
+            path: 'second-release-plan.md',
+            content: authoredPage(' release   plan ', 'Friday review is required.'),
+            summary: 'Create authored page',
           }),
         }
       )
@@ -2045,7 +2125,7 @@ describe('Knowledge Manager answer operation', () => {
     const app = createApp({ coreDb, dataRoot, store });
     const first = await app.request(
       ...knowledgeOperationRequest(
-        'knowledge.create',
+        'knowledge.notebook.create',
         { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
@@ -2053,10 +2133,9 @@ describe('Knowledge Manager answer operation', () => {
           body: JSON.stringify({
             requestId: '00000000-0000-4000-8000-000000000341',
             baseRevision: notebook(dataRoot).publishedRevision(),
-            knowledgePageId: 'release-plan',
-            kind: 'project-context',
-            title: 'Release plan',
-            content: 'Release cadence is weekly.',
+            path: 'release-plan.md',
+            content: authoredPage('Release plan', 'Release cadence is weekly.'),
+            summary: 'Create authored page',
           }),
         }
       )
@@ -2064,7 +2143,7 @@ describe('Knowledge Manager answer operation', () => {
     expect(first.status).toBe(200);
     const second = await app.request(
       ...knowledgeOperationRequest(
-        'knowledge.create',
+        'knowledge.notebook.create',
         { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         {
           method: 'POST',
@@ -2072,10 +2151,9 @@ describe('Knowledge Manager answer operation', () => {
           body: JSON.stringify({
             requestId: '00000000-0000-4000-8000-000000000342',
             baseRevision: notebook(dataRoot).publishedRevision(),
-            knowledgePageId: 'second-release-plan',
-            kind: 'project-context',
-            title: ' release plan ',
-            content: 'Friday review is required.',
+            path: 'second-release-plan.md',
+            content: authoredPage(' release plan ', 'Friday review is required.'),
+            summary: 'Create authored page',
           }),
         }
       )

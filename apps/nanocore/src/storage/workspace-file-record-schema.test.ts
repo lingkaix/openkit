@@ -36,7 +36,6 @@ function createStrictKnowledgeProposal(store: FsStore, workspaceId: string) {
     `scope: {kind: workspace, workspaceId: ${workspaceId}}`,
     'requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
     'openkit_entry_id: "canonical-proposal"',
-    'openkit_entry_kind: "project-context"',
     `source_refs: ${JSON.stringify([VERIFIED_EXTERNAL_REFERENCE])}`,
     'review_state: "accepted"',
     'sensitivity: "normal"',

@@ -21,13 +21,14 @@ import { closeRetrievalServices } from '../retrieval-service.js';
 import { IdempotencyKeyConflictError } from '../runtime/idempotent-command.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import type { KnowledgeMaintenanceDependencies } from './knowledge-agent-maintenance.js';
 import { runKnowledgeMaintenanceCommand } from './knowledge-maintenance-command.js';
 import { KnowledgeNotebook } from './notebook.js';
-import { publishWorkspaceNotebookEntry } from './notebook-entry-publication.js';
+import { publishWorkspaceNotebook } from './notebook-publication.js';
 import { readWorkspaceNotebookAdmission } from './notebook-workspace-admission.js';
 
 type Request = Parameters<LLMGatewayProviderDispatcher['createResponses']>[1];
@@ -64,36 +65,48 @@ async function fixture(reviewRequired = false, failAfterPublication = false) {
     dataRoot,
     initialSnapshot: createInMemoryRuntimeConfigSnapshot({ dataRoot }),
   });
-  await publishWorkspaceNotebookEntry(
+  const timestamp = new Date().toISOString();
+  const publicationRequest = {
+    workspaceId: workspace.id,
+    requestId: randomUUID(),
+    baseRevision: notebook.publishedRevision(),
+    summary: 'Record human label note',
+    changes: [
+      {
+        path: 'labels.md',
+        content: serializeKnowledgePageFixture(
+          {
+            title: 'Labels',
+            content: 'Human note: keep this sentence.',
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          },
+          { kind: 'workspace', workspaceId: workspace.id }
+        ),
+      },
+    ],
+  };
+  await publishWorkspaceNotebook(
     {
       store,
       workspaceDb,
       notebook,
       producer: actor,
       inflightCommands: new WeakMap(),
-      revalidate: (request) =>
+      revalidate: () =>
         readWorkspaceNotebookAdmission({
           store,
           coreDb,
           workspaceDb,
           notebook,
-          request,
+          request: publicationRequest,
           requestActor: { kind: 'local', userId },
           actor,
           runtimeConfigManager: bootstrap,
           workspaceMutationAdmission,
         }),
     },
-    {
-      operation: 'knowledge.create',
-      workspaceId: workspace.id,
-      requestId: randomUUID(),
-      knowledgePageId: 'labels',
-      baseRevision: notebook.publishedRevision(),
-      kind: 'project-context',
-      title: 'Labels',
-      content: 'Human note: keep this sentence.',
-    }
+    publicationRequest
   );
   const baseRevision = notebook.publishedRevision();
   const ordinary = store.createThread(workspace.id, 'Shared source conversation');

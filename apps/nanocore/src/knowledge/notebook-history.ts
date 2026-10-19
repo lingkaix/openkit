@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import {
-  type KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS,
   KNOWLEDGE_NOTEBOOK_DIFF_TEXT_LIMIT_BYTES,
+  type KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS,
   RestoreKnowledgeNotebookResponseSchema,
 } from '@openkit/app-api-schemas';
 import type { OperationInvocationDependencies } from '../operation-composition.js';
@@ -31,7 +31,7 @@ type Dependencies = Pick<
   | 'workspaceMutationAdmission'
 >;
 type Handlers = Pick<
-  FamilyImplementations<typeof KNOWLEDGE_ENTRY_OPERATION_DEFINITIONS>,
+  FamilyImplementations<typeof KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS>,
   'knowledge.notebook.history' | 'knowledge.notebook.diff' | 'knowledge.notebook.restore'
 >;
 type Selection = {

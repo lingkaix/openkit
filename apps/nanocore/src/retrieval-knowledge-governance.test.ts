@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { formatReferenceUri, KnowledgeEntrySchema } from '@openkit/protocol';
+import { formatReferenceUri, KnowledgeNotebookPageSchema } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ensureLocalUser } from './auth/identity.js';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
@@ -19,6 +19,10 @@ import {
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { testEntityId } from './test-support/entity-ids.js';
+import {
+  knowledgePageFixture,
+  serializeKnowledgePageFixture,
+} from './test-support/knowledge-page.js';
 import { notebookImportFixture } from './test-support/notebook-import.js';
 import { captureWorkspaceSourceFixture } from './test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -283,14 +287,18 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
 
   // Fresh attributed import of 1001 Git pages measured 81s; this is fixture setup, not a retrieval deadline.
   it('returns a typed failure and writes no trace when lexical enumeration exceeds 1000 matches', async () => {
-    const initialKnowledge = Array.from({ length: 1001 }, (_, index) => ({
-      id: `bulk-${String(index).padStart(4, '0')}`,
-      kind: 'project-context' as const,
-      title: `Bulk ${index}`,
-      content: 'enumeration-overflow',
-      createdAt: NOW,
-      updatedAt: NOW,
-    }));
+    const initialKnowledge = Array.from({ length: 1001 }, (_, index) =>
+      knowledgePageFixture(
+        {
+          id: `bulk-${String(index).padStart(4, '0')}`,
+          title: `Bulk ${index}`,
+          content: 'enumeration-overflow',
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+        { kind: 'workspace', workspaceId: testEntityId('ws', 'enumeration-incomplete') }
+      )
+    );
     const fixture = createFixture('enumeration-incomplete', initialKnowledge);
     const traceThread = fixture.store.createThread(fixture.workspaceId, 'Enumeration trace owner');
     fixture.access.outputThreadId = traceThread.id;
@@ -322,10 +330,18 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
     // Keep the real kernel publication; change current content at its exact completion boundary.
     vi.spyOn(service, 'publish').mockImplementationOnce(async (...args) => {
       const generation = await publish(...args);
-      await operation(fixture, 'knowledge.update', {
+      await operation(fixture, 'knowledge.notebook.update', {
         baseRevision: fixture.notebook.publishedRevision(),
-        knowledgeEntryId: page.id,
-        content: 'after-change-marker',
+        changes: [
+          {
+            path: page.path,
+            content: readPage(fixture, page.id).replace(
+              'before-change-marker',
+              'after-change-marker'
+            ),
+          },
+        ],
+        summary: 'Change evidence at publication boundary',
       });
       return generation;
     });
@@ -463,15 +479,25 @@ async function createEntry(
   sourceReferences: string[] = []
 ) {
   const files = fixture.notebook.inspectRevision(fixture.notebook.publishedRevision()).entries;
-  return KnowledgeEntrySchema.parse(
-    await operation(fixture, 'knowledge.create', {
-      baseRevision: fixture.notebook.publishedRevision(),
-      knowledgePageId: `page-${String(Object.keys(files).length).padStart(4, '0')}`,
-      kind: 'project-context',
-      title,
-      content,
-      sourceReferences,
-    })
+  const id = `page-${String(Object.keys(files).length).padStart(4, '0')}`;
+  await operation(fixture, 'knowledge.notebook.create', {
+    baseRevision: fixture.notebook.publishedRevision(),
+    path: `${id}.md`,
+    content: serializeKnowledgePageFixture(
+      {
+        title,
+        content,
+        sourceReferences,
+        createdAt: '2026-10-19T00:00:00.000Z',
+        updatedAt: '2026-10-19T00:00:00.000Z',
+      },
+      { kind: 'workspace', workspaceId: fixture.workspaceId }
+    ),
+    summary: 'Publish retrieval governance evidence',
+  });
+  const listed = await operation(fixture, 'knowledge.notebook.list', {});
+  return KnowledgeNotebookPageSchema.parse(
+    listed.pages.find((page: { id: string }) => page.id === id)
   );
 }
 

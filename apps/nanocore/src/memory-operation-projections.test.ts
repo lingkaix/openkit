@@ -14,8 +14,8 @@ import { closeRetrievalServices } from './retrieval-service.js';
 import { openCoreDb, openUserDb } from './storage/db.js';
 import { userDbPath, userMemoryRoot } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
-import { serializeUserAuthoredKnowledgePage } from './storage/workspace-file-records.js';
 import { createApp } from './test-support/app.js';
+import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -49,11 +49,9 @@ function fixture() {
         : { text: await response.text() },
     };
   };
-  const content = (body: string, id = 'preferences') =>
-    serializeUserAuthoredKnowledgePage(
+  const content = (body: string) =>
+    serializeKnowledgePageFixture(
       {
-        id,
-        kind: 'preference',
         title: 'My preference',
         content: body,
         sourceReferences: [],
@@ -169,7 +167,7 @@ describe('public explicit self Memory', () => {
       requestId: randomUUID(),
       baseRevision: null,
       pageId: 'starter',
-      content: f.content('Retain this page.', 'starter'),
+      content: f.content('Retain this page.'),
       summary: 'First explicit save',
     });
     expect(initialized.status).toBe(200);
@@ -214,7 +212,7 @@ describe('public explicit self Memory', () => {
       requestId: randomUUID(),
       baseRevision: null,
       pageId: 'replacement',
-      content: f.content('Do not create a replacement.', 'replacement'),
+      content: f.content('Do not create a replacement.'),
       summary: 'Another first-save attempt',
     });
     expect({ response, databaseExists: existsSync(database) }).toMatchObject({

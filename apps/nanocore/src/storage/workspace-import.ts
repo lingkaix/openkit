@@ -57,7 +57,7 @@ import {
   type EntityKind,
   ItemSchema,
   KnowledgeBaseIdSchema,
-  KnowledgeEntrySchema,
+  KnowledgeNotebookPageSchema,
   MaterialIdSchema,
   PermissionDecisionIdSchema,
   parseReferenceScope,
@@ -182,11 +182,10 @@ import {
   artifactContentFileName,
   artifactReferenceItemId,
   type CaptureCoverageBinding,
-  knowledgeEntriesEqual,
   listUnresolvedUserInputRequestItemIds,
   measureCanonicalFile,
   parseCanonicalWorkspaceHistory,
-  parseOwnedKnowledgeEntry,
+  parseOwnedKnowledgePage,
   readCanonicalFile,
   WorkspaceSystemRecordSchema,
 } from './workspace-file-records.js';
@@ -205,7 +204,7 @@ import {
 type WorkspaceRecord = import('zod').infer<typeof WorkspaceRecordSchema>;
 type Thread = import('zod').infer<typeof ThreadSchema>;
 type Turn = import('zod').infer<typeof TurnSchema>;
-type KnowledgeEntry = import('zod').infer<typeof KnowledgeEntrySchema>;
+type KnowledgeNotebookPage = import('zod').infer<typeof KnowledgeNotebookPageSchema>;
 type Item = import('zod').infer<typeof ItemSchema>;
 type Artifact = import('zod').infer<typeof ArtifactSchema>;
 type SseEventEnvelope = import('zod').infer<typeof SseEventEnvelopeSchema>;
@@ -584,7 +583,7 @@ export interface WorkspaceImportSnapshot {
   /** Imported turns with target workspace, thread, and current item lineage. */
   turns: Turn[];
   /** Imported knowledge records. */
-  knowledge: KnowledgeEntry[];
+  knowledge: KnowledgeNotebookPage[];
   /** Imported full item revision history. */
   itemRevisions: Item[];
   /** Imported artifacts with reconstructed bodies. */
@@ -1095,20 +1094,11 @@ export function readWorkspaceImportSnapshot(
         );
     }
   }
-  const knowledgeReferenceReplacements = portableReferenceReplacements(context);
-  const knowledge = canonical.knowledge.map((entry) =>
-    KnowledgeEntrySchema.parse({
-      ...entry,
-      ...(entry.sourceReferences
-        ? {
-            sourceReferences: rewritePortableReferences(
-              entry.sourceReferences,
-              knowledgeReferenceReplacements
-            ),
-          }
-        : {}),
-    })
-  );
+  const knowledge = canonical.knowledge.map((page) => {
+    const content = notebookPages.get(`knowledge/pages/${page.path}`);
+    if (content === undefined) throw new Error('Portable Notebook page bytes are missing.');
+    return parseOwnedKnowledgePage(page.path, page.id, content);
+  });
   const portableFileState = {
     ...readPortableImportState(
       context,
@@ -1369,7 +1359,7 @@ function readCanonicalImportState(context: ImportRemintContext) {
   );
   remintAssistantThreadParents(threads, threadIds);
   const exportedKnowledge = readImportJsonl(context.files, 'records/knowledge.jsonl').map(
-    (record) => KnowledgeEntrySchema.parse(record)
+    (record) => KnowledgeNotebookPageSchema.parse(record)
   );
   const exportedTurns = readImportJsonl(context.files, 'records/turns.jsonl').map((record) =>
     readRetainedV1(record, StoredTurnSnapshotV1Schema.parse)
@@ -4647,7 +4637,7 @@ function readRetrievalTraceImportState(
 function readPortableImportState(
   context: ImportRemintContext,
   workerContextPackageFiles: ReadonlyMap<string, string>,
-  knowledge: readonly KnowledgeEntry[],
+  knowledge: readonly KnowledgeNotebookPage[],
   retrievalTraceFiles: ReadonlyMap<string, ProductRetrievalTrace>,
   notebookPages: ReadonlyMap<string, string>
 ): WorkspacePortableFileState {
@@ -4688,12 +4678,12 @@ function remintImportedNotebookPages(
  * Verifies a one-to-one projection between canonical Knowledge records and exact portable pages.
  *
  * @param pages Reminted portable page bytes keyed by workspace-relative path.
- * @param knowledge Canonical imported KnowledgeEntry projections.
+ * @param knowledge Canonical imported Notebook page projections.
  * @throws Error when an owned page is missing, duplicated, malformed, or contradictory.
  */
 function assertPortableKnowledgePagesMatch(
   pages: ReadonlyMap<string, string>,
-  knowledge: readonly KnowledgeEntry[]
+  knowledge: readonly KnowledgeNotebookPage[]
 ): void {
   const expectedById = new Map(knowledge.map((entry) => [entry.id, entry]));
   if (expectedById.size !== knowledge.length) {
@@ -4717,14 +4707,20 @@ function assertPortableKnowledgePagesMatch(
       throw new Error(`Portable Knowledge Page identity is ambiguous: ${entryId}`);
     }
 
-    let projected: KnowledgeEntry;
+    let projected: KnowledgeNotebookPage;
     try {
-      projected = parseOwnedKnowledgeEntry(path, entryId, content);
+      projected = parseOwnedKnowledgePage(path.slice('knowledge/pages/'.length), entryId, content);
     } catch {
       throw new Error(`Portable Knowledge Page is invalid: ${entryId}`);
     }
     const expected = expectedById.get(entryId);
-    if (!expected || !knowledgeEntriesEqual(projected, expected)) {
+    if (
+      !expected ||
+      projected.id !== expected.id ||
+      projected.path !== expected.path ||
+      projected.content !== expected.content ||
+      projected.contentDigest !== expected.contentDigest
+    ) {
       throw new Error(`Portable Knowledge Page contradicts its canonical record: ${entryId}`);
     }
     matchedIds.add(entryId);

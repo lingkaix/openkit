@@ -8,6 +8,7 @@ import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { FsStore } from '../lib/store.js';
 import { createAppWithWorkspaceAuthority as createApp } from '../test-support/app.js';
 import { knowledgeOperationRequest } from '../test-support/knowledge-operation.js';
+import { knowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
@@ -155,27 +156,36 @@ it('does not rewrite canonical Notebook pages during record persistence under ca
       repositoryPath: join(f.workspaceRoot, 'knowledge', 'notebook.git'),
     });
     const app = createApp({ coreDb, dataRoot: f.dataRoot, store: f.store });
+    const timestamp = new Date().toISOString();
+    const page = knowledgePageFixture(
+      {
+        id: 'retained-knowledge',
+        title: 'Retained Knowledge',
+        content: 'k'.repeat(1024 * 1024),
+        sourceReferences: [],
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+      { kind: 'workspace', workspaceId: f.workspace.id }
+    );
     const response = await app.request(
       ...knowledgeOperationRequest(
-        'knowledge.create',
+        'knowledge.notebook.create',
         { workspaceId: f.workspace.id },
         {
           body: JSON.stringify({
             requestId: randomUUID(),
             baseRevision: notebook.publishedRevision(),
-            knowledgePageId: 'retained-knowledge',
-            kind: 'project-context',
-            title: 'Retained Knowledge',
-            content: 'k'.repeat(1024 * 1024),
-            sourceReferences: [],
+            path: page.path,
+            content: page.content,
+            summary: 'Create the canonical page before record persistence.',
           }),
         }
       )
     );
     expect(response.status, await response.clone().text()).toBe(200);
-    const page = (await response.json()) as { id: string };
     const revision = notebook.publishedRevision();
-    const path = `${page.id}.md`;
+    const path = page.path;
     const before = Buffer.from(notebook.readRevision(revision, [path]).files[path]!);
     const digest = createHash('sha256').update(before).digest('hex');
     const records = loadWorkspaceFileRecords(f.dataRoot).find(

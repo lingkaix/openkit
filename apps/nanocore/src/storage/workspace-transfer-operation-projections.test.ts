@@ -22,6 +22,7 @@ import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoWorkspaceForUser, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -369,17 +370,24 @@ describe('Workspace JSON transfer cutover', () => {
     const targetWeb = sessionApp(target);
     const content = 'Web session archive: café and exact retained content.';
     const notebookResponse = await sourceWeb.request(
-      ...request('/api/app/operations/knowledge.list', { workspaceId: DEMO_WORKSPACE_ID })
+      ...request('/api/app/operations/knowledge.notebook.list', { workspaceId: DEMO_WORKSPACE_ID })
     );
     expect(notebookResponse.status, await notebookResponse.clone().text()).toBe(200);
     const { notebookRevision } = await notebookResponse.json();
-    const [createPath, createInit] = request('/api/app/operations/knowledge.create', {
+    const [createPath, createInit] = request('/api/app/operations/knowledge.notebook.create', {
       workspaceId: DEMO_WORKSPACE_ID,
       baseRevision: notebookRevision,
-      knowledgePageId: 'web-archive-proof',
-      title: 'Web archive proof',
-      kind: 'project-context',
-      content,
+      path: 'web-archive-proof.md',
+      content: serializeKnowledgePageFixture(
+        {
+          title: 'Web archive proof',
+          content,
+          createdAt: '2026-10-19T00:00:00.000Z',
+          updatedAt: '2026-10-19T00:00:00.000Z',
+        },
+        { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID }
+      ),
+      summary: 'Publish archive proof',
     });
     const created = await sourceWeb.request(createPath, {
       ...createInit,
@@ -417,11 +425,16 @@ describe('Workspace JSON transfer cutover', () => {
     const result = await imported.json();
     expect(result.mode).toBe('imported');
     const readback = await targetWeb.request(
-      ...request('/api/app/operations/knowledge.list', { workspaceId: result.importedWorkspaceId })
+      ...request('/api/app/operations/knowledge.notebook.list', {
+        workspaceId: result.importedWorkspaceId,
+      })
     );
     expect(readback.status).toBe(200);
-    expect((await readback.json()).items).toContainEqual(
-      expect.objectContaining({ title: 'Web archive proof', content })
+    expect((await readback.json()).pages).toContainEqual(
+      expect.objectContaining({
+        id: 'web-archive-proof',
+        content: expect.stringContaining(content),
+      })
     );
   });
 

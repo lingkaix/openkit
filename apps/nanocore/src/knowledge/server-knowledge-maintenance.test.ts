@@ -16,7 +16,7 @@ import {
   retrieveWorkspaceKnowledge,
 } from '../storage/index-rebuild.js';
 import { applyMigrations } from '../storage/migrate.js';
-import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
+import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { KnowledgeNotebook } from './notebook.js';
@@ -166,10 +166,8 @@ it.each([
     title: 'Server evidence',
     content: 'Server evidence remains available.',
   });
-  const target = serializeUserAuthoredKnowledgePage(
+  const target = serializeKnowledgePageFixture(
     {
-      id: 'target',
-      kind: 'project-context',
       title: 'Target',
       content: 'Server evidence.',
       sourceReferences: [`source:${source.id}@${source.contentDigest}`],
@@ -216,10 +214,8 @@ it.each([
         ? `sha256:${'0'.repeat(64)}`
         : undefined
   );
-  const citing = serializeUserAuthoredKnowledgePage(
+  const citing = serializeKnowledgePageFixture(
     {
-      id: 'citing',
-      kind: 'project-context',
       title: 'Citing',
       content: 'Compare the target.',
       sourceReferences: [reference],
@@ -302,10 +298,8 @@ it('keeps independent historical human page bodies when their original Source is
   );
   let baseRevision = f.notebook.publishedRevision();
   for (const historical of [true, false]) {
-    const content = serializeUserAuthoredKnowledgePage(
+    const content = serializeKnowledgePageFixture(
       {
-        id: 'history',
-        kind: 'project-context',
         title: 'History',
         content: historical ? 'Historical private evidence.' : 'Current independent human note.',
         sourceReferences: historical ? [`source:${source.id}@${source.contentDigest}`] : [],
@@ -424,10 +418,8 @@ it('recalls the exact Server candidate only after its human Review publishes the
     content: 'The Server release rule uses BLUE-HERON-7.',
   });
   const sourceReference = `source:${source.id}@${source.contentDigest}`;
-  const content = serializeUserAuthoredKnowledgePage(
+  const content = serializeKnowledgePageFixture(
     {
-      id: 'release-rule',
-      kind: 'project-context',
       title: 'Server release rule',
       content: 'The Server release rule uses BLUE-HERON-7.',
       sourceReferences: [sourceReference],

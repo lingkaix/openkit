@@ -3,7 +3,6 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
 import {
   ApiErrorSchema,
   deriveEntityId,
@@ -11,13 +10,17 @@ import {
   parseReferenceUri,
 } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
-
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
-import { KnowledgePageValidationError, parseOkfDocument } from '../knowledge/okf.js';
+import {
+  KnowledgePageValidationError,
+  parseOkfDocument,
+  updateOkfFrontmatter,
+} from '../knowledge/okf.js';
 import { FsStore } from '../lib/store.js';
 import { createApp } from '../test-support/app.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { openCoreDb } from './db.js';
@@ -60,7 +63,6 @@ function candidatePage(
     '---',
     'type: "KnowledgePage"',
     'title: "Review authority lesson"',
-    'openkit_entry_kind: "project-context"',
     `openkit_entry_id: ${JSON.stringify(knowledgePageId)}`,
     'schema_version: "openkit-scope-knowledge-schema-v4"',
     'requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
@@ -159,15 +161,24 @@ function draft(
 /** Publishes genuine human evidence, then retains a fixed-base Agent candidate for human Review. */
 async function createFixture(label = 'proposal-authority-draft', includeStatus = true) {
   const f = createOwners();
-  const source = await call(f, 'knowledge.create', {
+  const publication = await call(f, 'knowledge.notebook.create', {
     requestId: authorityRequestId('human-source'),
     baseRevision: f.notebook.publishedRevision(),
-    knowledgePageId: 'evidence/human-review',
-    kind: 'project-context',
-    title: 'Existing review evidence',
-    content: 'A human Review is the only activation authority.',
-    sourceReferences: [],
+    path: 'evidence/human-review' + '.md',
+    content: serializeKnowledgePageFixture(
+      {
+        title: 'Existing review evidence',
+        content: 'A human Review is the only activation authority.',
+        sourceReferences: [],
+        createdAt: '2026-10-19T00:00:00.000Z',
+        updatedAt: '2026-10-19T00:00:00.000Z',
+      },
+      { kind: 'workspace', workspaceId: f.workspaceId }
+    ),
+    summary: 'Publish explicit full-page fixture',
   });
+  expect(publication.changedPageIds).toEqual(['evidence/human-review']);
+  const source = { id: 'evidence/human-review' };
   const sourceReference = formatReferenceUri(
     { scopeId: workspacePageScope(f), objectId: source.id },
     digest(currentPage(f, source.id)!)
@@ -862,11 +873,21 @@ describe('knowledge proposal authority', () => {
   it('allows a directly edited user-authored page as later proposal evidence', async () => {
     const f = await createFixture('proposal-edited-source');
     await decide(f, 'accepted', 'review-edited-source');
-    await call(f, 'knowledge.update', {
+    await call(f, 'knowledge.notebook.update', {
       requestId: authorityRequestId('human-revalidation'),
       baseRevision: f.notebook.publishedRevision(),
-      knowledgeEntryId: f.knowledgePageId,
-      content: 'A human now owns these edited and revalidated Page bytes.',
+      changes: [
+        {
+          path: `${f.knowledgePageId}.md`,
+          content: updateOkfFrontmatter({
+            path: `${f.knowledgePageId}.md`,
+            content: currentPage(f, f.knowledgePageId)!,
+            updates: {},
+            body: 'A human now owns these edited and revalidated Page bytes.\n',
+          }),
+        },
+      ],
+      summary: 'Human revalidates generated evidence',
     });
     const bytes = currentPage(f, f.knowledgePageId)!;
     expect(bytes).toContain('review_state: "user-authored"');

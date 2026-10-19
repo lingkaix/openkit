@@ -27,8 +27,8 @@ import {
   retrieveWorkspaceKnowledge,
 } from './storage/index-rebuild.js';
 import { applyMigrations } from './storage/migrate.js';
-import { serializeUserAuthoredKnowledgePage } from './storage/workspace-file-records.js';
 import { createApp } from './test-support/app.js';
+import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
@@ -105,10 +105,8 @@ function page(title: string, refs: readonly string[] = [], body = 'Exact retaine
 describe('published Workspace notebook reads', () => {
   it('rebuilds indexes from one Git revision and resolves an admitted selection after later publication', async () => {
     const f = fixture();
-    const content = serializeUserAuthoredKnowledgePage(
+    const content = serializeKnowledgePageFixture(
       {
-        id: 'stable/pinned',
-        kind: 'project-context',
         title: 'Pinned source knowledge',
         content: 'Original notebook retrieval bytes.',
         createdAt: '2026-10-16T00:00:00Z',
@@ -355,12 +353,10 @@ describe('published Workspace notebook reads', () => {
     );
     const source = await registerSource(f, sourceThread.id);
     const destination = f.store.createThread(f.workspaceId, 'Shared destination');
-    // The public aggregate projects admitted Knowledge entries, including their required timestamps.
-    const entryBytes = (id: string, title: string, sourceReferences: string[], content: string) =>
-      serializeUserAuthoredKnowledgePage(
+    // The public aggregate projects exact admitted Notebook pages; authored timestamps remain in OKF bytes.
+    const entryBytes = (title: string, sourceReferences: string[], content: string) =>
+      serializeKnowledgePageFixture(
         {
-          id,
-          kind: 'project-context',
           title,
           content,
           sourceReferences,
@@ -370,14 +366,13 @@ describe('published Workspace notebook reads', () => {
         { kind: 'workspace', workspaceId: f.workspaceId }
       );
     const secret = entryBytes(
-      'denied-path-marker',
       'DENIED-TITLE-MARKER',
       [`source:${source.id}@${source.contentDigest}`],
       'DENIED-BODY-MARKER\n'
     );
     const revision = publish(f, {
       'denied-path-marker.md': secret,
-      'public.md': entryBytes('public', 'Public page', [], 'Public control page.\n'),
+      'public.md': entryBytes('Public page', [], 'Public control page.\n'),
     });
     // A later ordinary Store mutation refreshes the cached aggregate from both published pages.
     f.store.createThread(f.workspaceId, 'Count refresh');

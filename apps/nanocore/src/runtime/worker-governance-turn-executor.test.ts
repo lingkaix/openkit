@@ -62,9 +62,7 @@ import * as operationAuthorizer from '../auth/operation-authorizer.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-ledger.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
-
 import { loadRuntimeConfig } from '../config/runtime-config.js';
-
 import * as knowledgeOverviewReader from '../context/knowledge-overview.js';
 import { parseWorkerContextPackageTrace } from '../context/worker-context-package.js';
 import { readStrictWorkerContextPackageDigest } from '../context/worker-context-projection.js';
@@ -88,7 +86,6 @@ import {
   applyMigrations as applyCoreMigrations,
   applyScopedMigrations,
 } from '../storage/migrate.js';
-import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -102,6 +99,7 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { seedWritableGitRepository } from '../test-support/git-repository.js';
 import { knowledgeOperationRequest } from '../test-support/knowledge-operation.js';
+import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
@@ -9095,10 +9093,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
             baseRevision: notebook.publishedRevision(),
             changes: [knowledge, oversizedKnowledge].map((entry) => ({
               path: `${entry.id}.md`,
-              content: serializeUserAuthoredKnowledgePage(
+              content: serializeKnowledgePageFixture(
                 {
                   ...entry,
-                  kind: 'project-context',
                   createdAt: authoredAt,
                   updatedAt: authoredAt,
                 },
@@ -9317,7 +9314,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
         `scope: ${JSON.stringify({ kind: 'workspace', workspaceId: fixture.turn.workspaceId })}`,
         'requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
         'openkit_entry_id: "direct-task-lesson"',
-        'openkit_entry_kind: "project-context"',
         `source_refs: ${JSON.stringify(sourceReferences)}`,
         'review_state: "accepted"',
         'sensitivity: "normal"',

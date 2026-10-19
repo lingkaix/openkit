@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { serializeKnowledgePageFixture } from '../dist/test-support/knowledge-page.js';
 import { type NanoCoreHarness, removeDataRoot, startNanoCoreHarness } from './_lib/harness.js';
 import { postJson } from './_lib/http.js';
 
@@ -42,21 +43,31 @@ describe('nanocore e2e secret redaction', () => {
     harness = await startNanoCoreHarness({ dataRoot: harness.dataRoot });
 
     const notebookResponse = await postJson(
-      `${harness.baseUrl}/api/app/operations/knowledge.list`,
+      `${harness.baseUrl}/api/app/operations/knowledge.notebook.list`,
       { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }
     );
     expect(notebookResponse.status).toBe(200);
     const notebook = (await notebookResponse.json()) as { notebookRevision: string };
 
-    const created = await postJson(`${harness.baseUrl}/api/app/operations/knowledge.create`, {
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      baseRevision: notebook.notebookRevision,
-      knowledgePageId: 'safe-knowledge',
-      kind: 'project-context',
-      title: 'Safe knowledge',
-      content: 'No provider secrets should appear here.',
-      requestId: randomUUID(),
-    });
+    const created = await postJson(
+      `${harness.baseUrl}/api/app/operations/knowledge.notebook.create`,
+      {
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        baseRevision: notebook.notebookRevision,
+        path: 'safe-knowledge.md',
+        content: serializeKnowledgePageFixture(
+          {
+            title: 'Safe knowledge',
+            content: 'No provider secrets should appear here.',
+            createdAt: '2026-10-19T00:00:00.000Z',
+            updatedAt: '2026-10-19T00:00:00.000Z',
+          },
+          { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }
+        ),
+        summary: 'Create safe page',
+        requestId: randomUUID(),
+      }
+    );
     expect(created.status).toBe(200);
 
     const diagnostics = await fetchJson(`${harness.baseUrl}/api/diagnostics`);
@@ -67,7 +78,7 @@ describe('nanocore e2e secret redaction', () => {
     expect(workspaceResponse.status).toBe(200);
     const workspace = await workspaceResponse.json();
     const knowledgeResponse = await postJson(
-      `${harness.baseUrl}/api/app/operations/knowledge.list`,
+      `${harness.baseUrl}/api/app/operations/knowledge.notebook.list`,
       { workspaceId: 'ws_00000000-0000-7000-8000-000000000001' }
     );
     expect(knowledgeResponse.status).toBe(200);

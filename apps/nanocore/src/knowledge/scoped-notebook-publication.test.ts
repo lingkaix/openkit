@@ -15,7 +15,7 @@ import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { FsStore } from '../lib/store.js';
 import { openCoreDb, openUserDb, type UserDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
-import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
+import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { readMemoryPage, recordMemorySuppression } from './memory-lifecycle.js';
 import { KnowledgeNotebook } from './notebook.js';
 import type { NotebookEdit } from './notebook-publication.js';
@@ -90,10 +90,8 @@ function page(
   body = 'Exact authored bytes.\r\n',
   sourceReferences: string[] = []
 ): string {
-  return serializeUserAuthoredKnowledgePage(
+  return serializeKnowledgePageFixture(
     {
-      id: 'note',
-      kind: 'preference',
       title: 'Direct note',
       content: body,
       sourceReferences,
@@ -140,10 +138,8 @@ describe('internal direct User and Server Notebook publication', () => {
     const f = fixture();
     const ownerScope = resolveScopedNotebookOwner(f.user).ownerScope;
     const saved = await publishScopedNotebook(f.user, edit(f.initialUser, ownerScope));
-    const referrer = serializeUserAuthoredKnowledgePage(
+    const referrer = serializeKnowledgePageFixture(
       {
-        id: 'other',
-        kind: 'preference',
         title: 'Other note',
         content: 'Keep the [unavailable reference](note.md).',
         sourceReferences: [],
@@ -204,10 +200,8 @@ describe('internal direct User and Server Notebook publication', () => {
       notebookRevision: saved.notebookRevision,
       digest: target.digest,
     });
-    const content = serializeUserAuthoredKnowledgePage(
+    const content = serializeKnowledgePageFixture(
       {
-        id: 'unrelated',
-        kind: 'preference',
         title: 'Another explicit preference',
         content: 'This independent preference remains usable.',
         sourceReferences: [],

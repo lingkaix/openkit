@@ -8,6 +8,7 @@ import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { updateOkfFrontmatter } from '../knowledge/okf.js';
 import { FsStore } from '../lib/store.js';
+import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -17,7 +18,6 @@ import {
   appendWorkspaceTurnEvent,
   loadWorkspaceFileRecords,
   serializeKnowledgeProposalRecord,
-  serializeUserAuthoredKnowledgePage,
   writeWorkspaceFileRecords,
 } from './workspace-file-records.js';
 
@@ -56,10 +56,8 @@ describe('descriptive canonical history extensions', () => {
       repositoryPath: join(root, 'knowledge', 'notebook.git'),
     });
     const producer = { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' };
-    const sourceBytes = serializeUserAuthoredKnowledgePage(
+    const sourceBytes = serializeKnowledgePageFixture(
       {
-        id: 'source',
-        kind: 'project-context',
         title: 'Retained evidence',
         content: 'Published source bytes for the retained Proposal.',
         sourceReferences: [],

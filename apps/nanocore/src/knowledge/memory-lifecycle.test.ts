@@ -21,7 +21,7 @@ import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { FsStore } from '../lib/store.js';
 import { openCoreDb, openUserDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
-import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
+import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import {
   editMemoryPage,
   listMemoryPages,
@@ -82,10 +82,8 @@ function fixture() {
     requestId: randomUUID(),
     baseRevision: base,
     pageId,
-    content: serializeUserAuthoredKnowledgePage(
+    content: serializeKnowledgePageFixture(
       {
-        id: pageId,
-        kind: 'preference',
         title: 'Private title',
         content: body,
         sourceReferences,

@@ -15,7 +15,7 @@ import {
   type ArtifactVersionRecord,
   deriveEntityId,
   type ItemSchema,
-  KnowledgeEntrySchema,
+  KnowledgeNotebookPageSchema,
   readRetainedV1,
   ThreadSchema,
   type TurnSchema,
@@ -393,7 +393,7 @@ export function writeWorkspaceExportTree(
       turns: new Map(history.turns.map((turn) => [turn.id, turn.threadId])),
     }
   );
-  const knowledge = input.knowledge.map((record) => KnowledgeEntrySchema.parse(record));
+  const knowledge = input.knowledge.map((record) => KnowledgeNotebookPageSchema.parse(record));
   const portableFileState = input.portableFileState;
   if (!portableFileState?.workspaceConfig) {
     throw new Error('Workspace export requires config/workspace.jsonc.');

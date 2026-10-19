@@ -42,8 +42,8 @@ import {
 } from './storage/index-rebuild.js';
 import { applyMigrations } from './storage/migrate.js';
 import { StoredProductRetrievalTraceV1Schema } from './storage/retrieval-trace-retained-v1.js';
-import { serializeUserAuthoredKnowledgePage } from './storage/workspace-file-records.js';
 import { testEntityId } from './test-support/entity-ids.js';
+import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { notebookImportFixture } from './test-support/notebook-import.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -1135,7 +1135,7 @@ function createEntry(
     createdAt: NOW,
     updatedAt: NOW,
   };
-  const bytes = serializeUserAuthoredKnowledgePage(entry, {
+  const bytes = serializeKnowledgePageFixture(entry, {
     kind: 'workspace',
     workspaceId: fixture.workspaceId,
   });
