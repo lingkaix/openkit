@@ -1,4 +1,4 @@
-/** Initial independent retained-record format; content and wire versions remain separate. */
+/** Fixed retained v1 marker; future family formats select their own decoder instead of changing this constant. */
 export const RETAINED_FORMAT_VERSION = 1 as const;
 
 /** Adds the owned marker when a native writer publishes a new current-format record. */

@@ -32,6 +32,8 @@ This Draft records future decision gates and safety boundaries only. It is not a
 
 Current V1 evaluation uses existing completed-work, S39, evidence, and human-review owners. A Harness remains deferred until repeated real use proves a concrete capability gap and a new accepted specification defines the smallest necessary mechanism. This Draft cannot itself satisfy that design gate.
 
+[Evaluation Foundation](20261017-evaluation_foundation.md) owns the v0.1.0 judgement and candidate-set primitives on which a later Harness can build. Those primitives do not activate this Harness or its deferred runtime mechanisms.
+
 ## Roadmap Scheduling
 
 The 2026-09-12 cadence recorded in [Large Batches And One Acceptance Campaign Before The First Release](../decisions/20260912-large_batches_before_first_release.md) places integrated evaluation in the Roadmap's final separate stage, after OpenKit operates in real development and professional work. Joint design will cover internal Agent performance, task completion and performance, Worker evaluation, and Skill evaluation including A/B tests. The first release proceeds through large development batches and one consolidated acceptance campaign without this framework. This schedule does not select its architecture, promote this Draft, or waive the activation gates below. Existing regressions, independent Goal verification, L6, Agent task sets, benchmark runs and source-linked evidence capture continue through their existing owners before that final stage.

@@ -1254,3 +1254,65 @@ it('rechecks current User authority after Memory page reads before answer delive
   await expect(f.askMemory()).rejects.toMatchObject({ code: 'memory_access_denied' });
   expect(readPage).toContain('USER_PRIVATE_PAGE');
 });
+
+it('exposes and forwards exact narrowing type/applicability arguments through the real KM search Tool', async () => {
+  const f = await fixture();
+  const notebook = new KnowledgeNotebook({
+    repositoryPath: join(f.dataRoot, 'workspaces', f.workspace.id, 'knowledge', 'notebook.git'),
+  });
+  const { updateOkfFrontmatter } = await import('./okf.js');
+  const { commandInputHash } = await import('../runtime/idempotent-command.js');
+  const baseRevision = notebook.publishedRevision();
+  const content = updateOkfFrontmatter({
+    path: 'launch-evidence.md',
+    content: f.page,
+    updates: { type: 'Rule', applies_to: ['tool:launch.check'] },
+  });
+  const candidateRevision = notebook.prepare({
+    baseRevision,
+    changes: { 'launch-evidence.md': content },
+    metadata: {
+      summary: 'Declare applicability',
+      producer: f.actor,
+      authority: { kind: 'direct', instructionReference: 'test:search-filters' },
+      sourceReferences: [f.sourceReference],
+      changeRequest: { requestId: randomUUID(), inputDigest: commandInputHash(content) },
+    },
+  });
+  notebook.publish({ baseRevision, candidateRevision });
+  let step = 0;
+  f.createResponses.mockImplementation(async () => {
+    if (++step === 1)
+      return call('knowledge.retrieval', {
+        query: 'heliotrope cobalt',
+        types: ['Rule'],
+        appliesTo: ['tool:launch.check'],
+      });
+    if (step === 2)
+      return call(
+        'knowledge.retrieval',
+        { query: 'heliotrope cobalt', types: ['Rule'], appliesTo: ['tool:launch'] },
+        'mismatch'
+      );
+    return message('No matching second selection.', [], 'Applicability differs.');
+  });
+  const outcome = await f.ask().catch((error: unknown) => error);
+  const tools = f.createResponses.mock.calls[0]![1].tools as Array<{
+    name: string;
+    parameters?: { properties?: Record<string, unknown> };
+  }>;
+  expect(
+    tools.find((tool) => tool.name === 'knowledge_retrieval')?.parameters?.properties
+  ).toMatchObject({ types: expect.anything(), appliesTo: expect.anything() });
+  expect(outcome).not.toBeInstanceOf(Error);
+  const first = JSON.parse(toolOutput(f.createResponses.mock.calls[1]![1], 'knowledge.retrieval'));
+  expect(first.sources[0].selected).toHaveLength(1);
+  expect(first.sources[0].retrievalParameters).toMatchObject({
+    types: ['Rule'],
+    appliesTo: ['tool:launch.check'],
+  });
+  const second = JSON.parse(
+    toolOutput(f.createResponses.mock.calls[2]![1], 'knowledge.retrieval', 'mismatch')
+  );
+  expect(second.sources[0].selected).toEqual([]);
+});

@@ -1,5 +1,6 @@
 import type { ProviderRegistryEntry } from '@openkit/app-api-schemas';
 import { resolveProviderSubscriptionFamily } from '@openkit/config-schema';
+import type { ActorRef } from '@openkit/protocol';
 import type { ProviderProfile } from '../config/providers-loader.js';
 import { resolveProviderModelDiagnostic } from '../llm/logical-models.js';
 
@@ -39,13 +40,29 @@ export interface ProviderRegistrySummary {
   readiness?: ProviderProfile['readiness'];
 }
 
+/** Existing consuming operation facts for the linked Vault Audit, never credential authority. */
+export interface ProviderCredentialUseContext {
+  /** Actual actor admitted by the consuming operation. */
+  readonly actor: ActorRef;
+  /** Existing consuming Workspace audience when available. */
+  readonly consumerWorkspaceId?: string;
+  /** Existing consuming AgentSession when available. */
+  readonly agentSessionId?: string;
+  /** Existing capability call correlation when available. */
+  readonly capabilityCallId?: string;
+}
+
 /**
  * Resolves a provider credential reference to a usable credential value.
  *
  * @param secretRef Provider credential reference.
+ * @param context Actual consuming operation facts when admitted.
  * @returns Secret value when resolvable, otherwise null.
  */
-export type ProviderCredentialResolver = (secretRef: string) => string | null;
+export type ProviderCredentialResolver = (
+  secretRef: string,
+  context?: ProviderCredentialUseContext
+) => string | null;
 
 /** Tests configured credential presence without resolving Vault material. */
 export type ProviderCredentialConfigured = (secretRef: string | undefined) => boolean;

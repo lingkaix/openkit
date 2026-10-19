@@ -15,6 +15,7 @@ import {
   createNanoHostTransportSessionAuthority,
   readNanoHostPhysicalConnectionContext,
 } from '../auth/nanohost-transport-session.js';
+import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
@@ -189,6 +190,7 @@ async function faultFixture() {
   const transcript = { events: '' };
   const runtime = createConfiguredWorkerLifecycleRuntime({
     coreDb,
+    readRuntimeConfig: () => createInMemoryRuntimeConfigSnapshot({ dataRoot }),
     env: {},
     store,
     workerControlGateway: gateway,

@@ -2,15 +2,17 @@ import { isDeepStrictEqual } from 'node:util';
 import {
   type WorkerOutputManifest,
   type WorkspaceReconciliationRecord,
-  WorkspaceReconciliationRecordReaderSchema,
   WorkspaceReconciliationRecordSchema,
   type WorkspaceRecoveryDecision,
 } from '@openkit/app-api-schemas';
+import { readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 import { StoreRecordNotFoundError } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
 import type { WorkspaceDb } from '../storage/db.js';
+import { StoredWorkspaceReconciliationRecordV1Schema } from './workspace-sync-outcomes-v1.js';
 
 interface WorkspaceReconciliationRecordRow {
+  readonly schemaVersion: unknown;
   readonly payload_json: string;
 }
 
@@ -30,14 +32,29 @@ export function recordWorkspaceReconciliationRecord(
   workspaceDb: WorkspaceDb,
   record: WorkspaceReconciliationRecord
 ): WorkspaceReconciliationRecord {
-  const parsed = WorkspaceReconciliationRecordSchema.parse(record);
+  return persistWorkspaceReconciliationRecordV1(
+    workspaceDb,
+    WorkspaceReconciliationRecordSchema.parse(record)
+  );
+}
+
+/** Persists validated current or imported v1 facts with the existing annotation-preserving update. */
+function persistWorkspaceReconciliationRecordV1(
+  workspaceDb: WorkspaceDb,
+  record: WorkspaceReconciliationRecord
+): WorkspaceReconciliationRecord {
+  const parsed = StoredWorkspaceReconciliationRecordV1Schema.parse(record);
   const existing = workspaceDb.sqlite
     .prepare(
-      'SELECT payload_json FROM workspace_reconciliation_records WHERE workspace_id = ? AND reconciliation_record_id = ?'
+      'SELECT schema_version AS schemaVersion,payload_json FROM workspace_reconciliation_records WHERE workspace_id = ? AND reconciliation_record_id = ?'
     )
     .get(parsed.workspaceId, parsed.id) as WorkspaceReconciliationRecordRow | undefined;
-  const retained = existing ? JSON.parse(existing.payload_json) : null;
-  const retainedCore = existing ? WorkspaceReconciliationRecordReaderSchema.parse(retained) : null;
+  const retained = existing
+    ? readRetainedV1(existing, () => JSON.parse(existing.payload_json))
+    : null;
+  const retainedCore = existing
+    ? StoredWorkspaceReconciliationRecordV1Schema.parse(retained)
+    : null;
   // Only fixed known facts change; retained root and reachability additions stay with this owner.
   const payload = existing
     ? {
@@ -60,14 +77,16 @@ export function recordWorkspaceReconciliationRecord(
         payload_json,
         started_at,
         finished_at,
-        updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        updated_at,
+        schema_version
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(workspace_id, reconciliation_record_id) DO UPDATE SET
         trigger_reason = excluded.trigger_reason,
         state_after = excluded.state_after,
         payload_json = excluded.payload_json,
         finished_at = excluded.finished_at,
-        updated_at = excluded.updated_at`
+        updated_at = excluded.updated_at,
+        schema_version = excluded.schema_version`
     )
     .run(
       parsed.id,
@@ -77,7 +96,8 @@ export function recordWorkspaceReconciliationRecord(
       payloadJson,
       parsed.startedAt,
       parsed.finishedAt,
-      parsed.finishedAt ?? parsed.startedAt
+      parsed.finishedAt ?? parsed.startedAt,
+      writeRetainedV1({}).schemaVersion
     );
 
   return parsed;
@@ -97,7 +117,7 @@ export function listWorkspaceReconciliationRecords(
   return (
     workspaceDb.sqlite
       .prepare(
-        `SELECT payload_json
+        `SELECT schema_version AS schemaVersion,payload_json
          FROM workspace_reconciliation_records
          WHERE workspace_id = ?
          ORDER BY started_at ASC, reconciliation_record_id ASC`
@@ -105,7 +125,9 @@ export function listWorkspaceReconciliationRecords(
       .all(workspaceId) as WorkspaceReconciliationRecordRow[]
   )
     .map((row) =>
-      WorkspaceReconciliationRecordReaderSchema.parse(JSON.parse(row.payload_json) as unknown)
+      readRetainedV1(row, () =>
+        StoredWorkspaceReconciliationRecordV1Schema.parse(JSON.parse(row.payload_json))
+      )
     )
     .reverse();
 }
@@ -157,7 +179,7 @@ export function resolveWorkspaceReconciliationRecord(
           workerOutputManifests: input.workerOutputManifests ?? [],
         })
       : null;
-  const updated = WorkspaceReconciliationRecordSchema.parse({
+  const updated = StoredWorkspaceReconciliationRecordV1Schema.parse({
     ...record,
     ...(resumeCollection ?? {}),
     stateBefore: 'requires-human',
@@ -167,7 +189,7 @@ export function resolveWorkspaceReconciliationRecord(
     finishedAt: input.decidedAt,
   });
 
-  return recordWorkspaceReconciliationRecord(input.workspaceDb, updated);
+  return persistWorkspaceReconciliationRecordV1(input.workspaceDb, updated);
 }
 
 /**
@@ -278,9 +300,9 @@ export function importWorkspaceReconciliationRecords(
   records: readonly WorkspaceReconciliationRecord[]
 ): void {
   for (const record of records) {
-    recordWorkspaceReconciliationRecord(
+    persistWorkspaceReconciliationRecordV1(
       workspaceDb,
-      WorkspaceReconciliationRecordSchema.parse(record)
+      StoredWorkspaceReconciliationRecordV1Schema.parse(record)
     );
   }
 }

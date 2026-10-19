@@ -143,7 +143,12 @@ export function createServerThreadOperations(
         const actor = publicOperationActor(context);
         requireCurrentDeploymentAdmin(native.coreDb, actor);
         return readServerNotebookProposalPreview(
-          { ...native, actor, revalidate: () => serverNotebookAdmission(native, actor) },
+          {
+            ...native,
+            actor,
+            revalidate: (files?: Readonly<Record<string, string>>) =>
+              serverNotebookAdmission(native, actor, files),
+          },
           input
         );
       }),
@@ -159,7 +164,12 @@ export function createServerThreadOperations(
             403
           );
         return decideServerNotebookProposal(
-          { ...native, actor, revalidate: () => serverNotebookAdmission(native, actor) },
+          {
+            ...native,
+            actor,
+            revalidate: (files?: Readonly<Record<string, string>>) =>
+              serverNotebookAdmission(native, actor, files),
+          },
           input
         );
       }),

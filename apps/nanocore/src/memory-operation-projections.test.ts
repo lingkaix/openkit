@@ -4,15 +4,20 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
+
+import { openAssistantTimeline } from './internal-agents/assistant-timeline.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
+import { updateOkfFrontmatter } from './knowledge/okf.js';
+import { initializeScopedNotebook } from './knowledge/scoped-notebook-owner.js';
 import { FsStore } from './lib/store.js';
 import { closeRetrievalServices } from './retrieval-service.js';
-import { openCoreDb } from './storage/db.js';
+import { openCoreDb, openUserDb } from './storage/db.js';
 import { userDbPath, userMemoryRoot } from './storage/fs-layout.js';
-import { applyMigrations } from './storage/migrate.js';
+import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { serializeUserAuthoredKnowledgePage } from './storage/workspace-file-records.js';
 import { createApp } from './test-support/app.js';
 import { ensureLocalUser } from './test-support/local-user.js';
+import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /** Real self authority and isolated canonical storage exercise the public Memory boundary. */
 function fixture() {
@@ -57,10 +62,31 @@ function fixture() {
       },
       { kind: 'user', userId }
     );
-  return { call, content, userId, coreDb, dataRoot };
+  return { call, content, userId, coreDb, dataRoot, store };
 }
 
 describe('public explicit self Memory', () => {
+  it('retains the first-save User base before public reads of its exact published bytes', async () => {
+    const f = fixture();
+    const owner = { dataRoot: f.dataRoot, scope: { kind: 'user' as const, userId: f.userId } };
+    expect(() => readDefaultKnowledgeBaseId(owner)).toThrow();
+    const content = f.content('Keep this first preference exactly.\r\n');
+    const saved = await f.call('memory.create', {
+      requestId: randomUUID(),
+      baseRevision: null,
+      pageId: 'preferences',
+      content,
+      summary: 'First public save',
+    });
+    expect(saved.status).toBe(200);
+    const knowledgeBaseId = readDefaultKnowledgeBaseId(owner);
+    expect(await f.call('memory.read', { pageId: 'preferences' })).toMatchObject({
+      status: 200,
+      body: { page: { content, notebookRevision: saved.body.notebookRevision } },
+    });
+    expect(readDefaultKnowledgeBaseId(owner)).toBe(knowledgeBaseId);
+  });
+
   it('publishes exact personally authored bytes through self-only operations and refuses a stale edit', async () => {
     const f = fixture();
     const content = f.content('Keep this exact personal preference.\r\n');
@@ -198,5 +224,56 @@ describe('public explicit self Memory', () => {
     expect(readFileSync(published)).toEqual(publishedBytes);
     expect(notebook.readRevision(first.body.notebookRevision)).toEqual(before);
     expect(before.files['preferences.md']).toBe(content);
+  });
+});
+
+it('forwards inherited optional metadata selectors through private native Memory search', async () => {
+  const f = fixture();
+  const userDb = openUserDb(f.dataRoot, f.userId);
+  applyScopedMigrations(userDb);
+  const baseRevision = initializeScopedNotebook({
+    coreDb: f.coreDb,
+    userDb,
+    actor: { kind: 'local', userId: f.userId },
+    target: { kind: 'user' },
+    initialization: { requestId: randomUUID(), instructionReference: 'test:domain-memory' },
+  });
+  userDb.sqlite.close();
+  const workspace = f.store.createWorkspace('Private typed selection');
+  recordWorkspaceOwnerMembership({
+    coreDb: f.coreDb,
+    workspaceId: workspace.id,
+    ownerUserId: f.userId,
+  });
+  openAssistantTimeline(f.store, workspace.id, f.userId, 'Private Assistant');
+  const content = updateOkfFrontmatter({
+    path: 'preferences.md',
+    content: f.content('personal-selector evidence.'),
+    updates: { type: 'Rule', applies_to: ['tool:personal.check'] },
+  });
+  expect(
+    await f.call('memory.create', {
+      requestId: randomUUID(),
+      baseRevision,
+      pageId: 'preferences',
+      content,
+      summary: 'Save typed personal context',
+    })
+  ).toMatchObject({ status: 200 });
+  const ordinary = await f.call('memory.search', {
+    workspaceId: workspace.id,
+    query: 'personal-selector',
+  });
+  expect(ordinary.status).toBe(200);
+  expect(ordinary.body.selected).toHaveLength(1);
+  const filters = { types: ['Effect'], appliesTo: ['tool:missing'] };
+  const filtered = await f.call('memory.search', {
+    workspaceId: workspace.id,
+    query: 'personal-selector',
+    ...filters,
+  });
+  expect(filtered).toMatchObject({
+    status: 200,
+    body: { selected: [], retrievalParameters: filters },
   });
 });

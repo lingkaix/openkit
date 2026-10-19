@@ -3,6 +3,7 @@
 // Astra: https://developers.openai.com/api/docs/models/gpt-6-astra
 // See README.md for supported reasoning efforts, pricing scope, and Gateway routes.
 {
+  "schemaVersion": 1,
   "id": "openai",
   "displayName": "OpenAI",
   "kind": "direct",

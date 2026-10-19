@@ -1,3 +1,4 @@
+import { writeRetainedV1 } from '@openkit/protocol';
 import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 /**
@@ -6,6 +7,8 @@ import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 export const bootAuditEvents = sqliteTable(
   'boot_audit_events',
   {
+    /** Retained JSON payload format; native DDL versions scalar columns separately. */
+    schemaVersion: integer('schema_version').notNull().default(writeRetainedV1({}).schemaVersion),
     /** Stable event id for this boot lifecycle row. */
     bootEventId: text('boot_event_id').primaryKey().notNull(),
     /** Process boot id. */

@@ -3,9 +3,10 @@ import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { KnowledgeEntrySchema } from '@openkit/protocol';
+import { formatReferenceUri, KnowledgeEntrySchema } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ensureLocalUser } from './auth/identity.js';
+import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { FsStore } from './lib/store.js';
 import { admitKnowledgeRetrieval } from './retrieval-knowledge-adapter.js';
@@ -91,7 +92,10 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
     fixture.store.recordKnowledgeConflict({
       id: 'kf_00000000-0000-7c2b-96dc-273a402e04ac',
       workspaceId: fixture.workspaceId,
-      subjectReferences: [`knowledge:${conflicted.id}`, `knowledge:${sensitive.id}`],
+      subjectReferences: [
+        formatReferenceUri(pageReference(fixture, conflicted.id)),
+        formatReferenceUri(pageReference(fixture, sensitive.id)),
+      ],
       sourceReferences: [],
       status: 'conflicting',
       summary: 'The test owns an unresolved conflict.',
@@ -108,7 +112,10 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
 
     expect(trace.selected).toEqual([
       expect.objectContaining({
-        reference: { scopeId: `page/workspace/${fixture.workspaceId}`, objectId: selected.id },
+        reference: {
+          scopeId: `page/workspace/${fixture.workspaceId}/${readDefaultKnowledgeBaseId({ dataRoot: fixture.dataRoot, scope: { kind: 'workspace', workspaceId: fixture.workspaceId } })}`,
+          objectId: selected.id,
+        },
       }),
     ]);
     expect(exclusionReasons(trace)).toEqual(
@@ -509,7 +516,10 @@ function retrievalInput(fixture: Fixture, query: string) {
 }
 
 function pageReference(fixture: Fixture, objectId: string) {
-  return { scopeId: `page/workspace/${fixture.workspaceId}`, objectId };
+  return {
+    scopeId: `page/workspace/${fixture.workspaceId}/${readDefaultKnowledgeBaseId({ dataRoot: fixture.dataRoot, scope: { kind: 'workspace', workspaceId: fixture.workspaceId } })}`,
+    objectId,
+  };
 }
 
 function exclusionReasons(trace: {

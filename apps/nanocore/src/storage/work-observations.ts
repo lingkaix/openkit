@@ -22,9 +22,11 @@ import {
 } from '@openkit/config-schema';
 import {
   ReasoningEffortSchema,
+  readRetainedV1,
   SystemPromptDigestSchema,
   TurnIdSchema,
   WorkspaceIdSchema,
+  writeRetainedV1,
 } from '@openkit/protocol';
 import { WorkerObservationDataSchema } from '@openkit/worker-protocol';
 import { z } from 'zod';
@@ -35,6 +37,7 @@ import {
 } from '../evidence-bundles.js';
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
 import type { CoreDb, WorkspaceDb } from './db.js';
+import { StoredTurnV1Schema } from './retained-work-metadata-v1.js';
 import { readServerTurnRecord } from './server-thread-records.js';
 import {
   appendCanonicalTextFile,
@@ -402,10 +405,10 @@ export function readWorkObservationTurnBinding(
       assertCanonicalDirectory(root);
     }
     const turn = readServerTurnRecord(workspaceDb.dataRoot, input.threadId, input.turnId);
-    const raw = JSON.parse(readCanonicalTextFile(join(root, 'turn.json'))) as Record<
-      string,
-      unknown
-    >;
+    const raw = readRetainedV1(
+      JSON.parse(readCanonicalTextFile(join(root, 'turn.json'))),
+      (record) => record as Record<string, unknown>
+    );
     return { root, turn, raw, coverage: turn.captureCoverage ?? null };
   }
   let root = workspaceDb.dataRoot;
@@ -423,8 +426,12 @@ export function readWorkObservationTurnBinding(
     root = join(root, part);
     assertCanonicalDirectory(root);
   }
-  const raw = JSON.parse(readCanonicalTextFile(join(root, 'turn.json'))) as Record<string, unknown>;
-  const turn = TurnReaderSchema.parse({ ...raw, items: [] });
+  const raw = readRetainedV1(
+    JSON.parse(readCanonicalTextFile(join(root, 'turn.json'))),
+    (record) => record as Record<string, unknown>
+  );
+  const metadata = StoredTurnV1Schema.parse(raw);
+  const turn = TurnReaderSchema.parse({ ...metadata, items: [] });
   if (
     turn.id !== input.turnId ||
     turn.threadId !== input.threadId ||
@@ -575,7 +582,7 @@ export function appendWorkObservation(
   if (!requiredFeatures.includes('openkit.work-observations.v1')) {
     writeFileAtomic(
       join(binding.root, 'turn.json'),
-      `${JSON.stringify({ ...binding.raw, requiredFeatures: [...requiredFeatures, 'openkit.work-observations.v1'] }, null, 2)}\n`
+      `${JSON.stringify(writeRetainedV1({ ...binding.raw, requiredFeatures: [...requiredFeatures, 'openkit.work-observations.v1'] }), null, 2)}\n`
     );
   }
   // Replays synchronize even a previously failed commit. A fresh line's fsync also commits truncation.

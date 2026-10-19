@@ -1,14 +1,19 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { type OpenKitConfig, OpenKitConfigSchema } from '@openkit/config-schema';
+import {
+  type OpenKitConfig as AuthoredOpenKitConfig,
+  OpenKitConfigSchema,
+} from '@openkit/config-schema';
+import { readRetainedV1 } from '@openkit/protocol';
 import { z } from 'zod';
 
 import { parseJsoncObject } from './jsonc.js';
 import { BootConfigError } from './mode.js';
 import { unknownConfigKeyMessage, unknownConfigKeys } from './unknown-config-keys.js';
 
-export type { OpenKitConfig };
+/** Resolved settings also represent the absent-file default; retained files require the authored marker. */
+export type OpenKitConfig = Omit<AuthoredOpenKitConfig, 'schemaVersion'> & { schemaVersion?: 1 };
 export { OpenKitConfigSchema };
 
 /**
@@ -85,7 +90,15 @@ function loadConfigFile(
   configPath: string
 ): Pick<OpenKitConfigLoadResult, 'config' | 'diagnostics'> {
   const parsedJsonc = parseJsoncObject(readFileSync(configPath, 'utf8'), configPath);
-  const parsedConfig = OpenKitConfigSchema.safeParse(parsedJsonc);
+  let parsedConfig: ReturnType<typeof OpenKitConfigSchema.safeParse>;
+  try {
+    parsedConfig = readRetainedV1(parsedJsonc, (record) => OpenKitConfigSchema.safeParse(record));
+  } catch {
+    throw new BootConfigError(
+      'invalid_openkit_config',
+      `Invalid OpenKit config ${configPath}: Unsupported retained record format.`
+    );
+  }
 
   if (!parsedConfig.success) {
     throw new BootConfigError(

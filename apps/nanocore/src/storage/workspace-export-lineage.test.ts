@@ -2,9 +2,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   constants,
   copyFileSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -13,7 +15,12 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { RuntimeEvidenceRecordSchema } from '@openkit/app-api-schemas';
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
-import { PROTOCOL_VERSION } from '@openkit/protocol';
+import {
+  ArtifactSchema,
+  ArtifactVersionRecordSchema,
+  PROTOCOL_VERSION,
+  writeRetainedV1,
+} from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import {
   ArtifactReviewFollowUpRequestSchema,
@@ -40,7 +47,10 @@ import {
   serializeStructuredWorkerDelegationRequest,
 } from '../internal-agents/delegation.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
-import { bindImportedWorkspaceNotebookTraces } from '../knowledge/notebook-workspace-portability.js';
+import {
+  bindImportedWorkspaceNotebookTraces,
+  readPortableWorkspaceNotebookPages,
+} from '../knowledge/notebook-workspace-portability.js';
 import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT, parseOkfDocument } from '../knowledge/okf.js';
 import {
   importAgentEnvironmentPackageSnapshots,
@@ -64,6 +74,7 @@ import {
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { publishArtifactVersionRecord } from './artifacts/artifact-version-records.js';
 import { openWorkspaceDb } from './db.js';
 import { applyScopedMigrations } from './migrate.js';
 import {
@@ -119,6 +130,26 @@ function annotateSyncSource(value: unknown): unknown {
   return value;
 }
 
+/** Publishes an explicitly created fixture v1 through the immutable version owner before any export. */
+function retainInitialArtifact(workspaceRoot: string, value: unknown, actor: unknown): void {
+  const artifact = ArtifactSchema.parse(value);
+  if (artifact.version !== 1) throw new Error('The fixture producer requires an initial Artifact.');
+  publishArtifactVersionRecord({
+    workspaceRoot,
+    record: ArtifactVersionRecordSchema.parse({
+      artifact,
+      version: {
+        parentVersion: null,
+        actor: artifact.origin.kind === 'imported' ? artifact.origin.actor : actor,
+        threadId: artifact.threadId,
+        turnId: artifact.turnId,
+        requestId: artifact.lastMutationRequestId,
+        recordedAt: artifact.updatedAt,
+      },
+    }),
+  });
+}
+
 /** Builds one export containing every auxiliary record family that refers to canonical history. */
 function createLineageExportInput(
   missing?:
@@ -137,7 +168,11 @@ function createLineageExportInput(
     | 'usage-session'
     | 'vault-approval'
     | 'vault-session',
-  captureValue: 'off' | 'on' = 'off'
+  captureValue: 'off' | 'on' = 'off',
+  artifactContent: { format: 'markdown' | 'text'; body: string } = {
+    format: 'markdown',
+    body: '# Portable',
+  }
 ): WriteWorkspaceExportTreeInput {
   const agentSetup = createTestAgentSetup();
   const item = {
@@ -188,8 +223,8 @@ function createLineageExportInput(
     status: 'ready',
     summary: 'Portable artifact.',
     version: 1,
-    content: { format: 'markdown', body: '# Portable' },
-    contentDigest: `sha256:${createHash('sha256').update('# Portable', 'utf8').digest('hex')}`,
+    content: artifactContent,
+    contentDigest: `sha256:${createHash('sha256').update(artifactContent.body, 'utf8').digest('hex')}`,
     lastMutationRequestId: 'request_source',
     origin: {
       kind: 'turn-output',
@@ -316,8 +351,13 @@ function createLineageExportInput(
     createdAt: timestamp,
     updatedAt: timestamp,
   };
+  const fixtureRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-lineage-'));
+  const sourceWorkspaceRoot = join(fixtureRoot, 'source');
+  retainInitialArtifact(sourceWorkspaceRoot, artifact, turn.triggerActor);
+  onTestFinished(() => rmSync(fixtureRoot, { recursive: true, force: true }));
   return {
-    exportRoot: join(mkdtempSync(join(tmpdir(), 'openkit-workspace-lineage-')), 'export'),
+    exportRoot: join(fixtureRoot, 'export'),
+    sourceWorkspaceRoot,
     exportId: 'wsexp_00000000-0000-79ba-8f8a-90eaf5674095',
     sourceDeploymentId: 'dep_00000000-0000-7737-8fe7-61ca07c79d45',
     createdAt: timestamp,
@@ -758,6 +798,7 @@ function importLineage(input: WriteWorkspaceExportTreeInput) {
  * @param retainRepresentation Whether the binary source retains a separate UTF-8 representation.
  * @param knowledgeExcerpt Whether to retain an excerpt of the selected Knowledge page.
  * @param includeKnowledgeOverview Whether to retain the Workspace-only index overview delivery.
+ * @param artifactFormat Actual initial media used by the proposal compatibility fixture.
  * @returns Complete export fixture covering the accepted work-resource lineage.
  * @throws Error when the structured worker request or package fixture cannot be built.
  */
@@ -769,14 +810,18 @@ function createWorkResourceLineageExportInput(
   sourceSnapshotRoot?: string,
   retainRepresentation = false,
   knowledgeExcerpt = false,
-  includeKnowledgeOverview = false
+  includeKnowledgeOverview = false,
+  artifactFormat: 'markdown' | 'text' = 'markdown'
 ): WriteWorkspaceExportTreeInput {
-  const input = createLineageExportInput();
+  const appliedContent = '# Portable\n';
+  const input = createLineageExportInput(undefined, 'off', {
+    format: artifactFormat,
+    body: appliedContent,
+  });
   const materialId = 'mat_00000000-0000-7807-b767-6378f3fcdcf3';
   const baseRevisionId = 'mrev_00000000-0000-72e5-99f1-5042ef903012';
   const appliedRevisionId = 'mrev_00000000-0000-713f-80f9-10c92c9be966';
   const baseContent = '# Portable base\n';
-  const appliedContent = '# Portable\n';
   const baseContentDigest = `sha256:${createHash('sha256').update(baseContent).digest('hex')}`;
   const appliedContentDigest = `sha256:${createHash('sha256').update(appliedContent).digest('hex')}`;
   const knowledgePageId = 'knowledge_portable_source';
@@ -931,7 +976,6 @@ function createWorkResourceLineageExportInput(
   const binaryOriginal = Buffer.from([0, 255, 10, 128, 65]);
   const binaryDigest = `sha256:${createHash('sha256').update(binaryOriginal).digest('hex')}`;
   const materialPreview = '# Portable';
-  const materialOriginalPath = `originals/materials/${materialId}/${baseRevisionId}/payload`;
   const materialProjection = {
     kind: 'excerpt' as const,
     sourceRevision: baseRevisionId,
@@ -943,11 +987,8 @@ function createWorkResourceLineageExportInput(
     byteLength: Buffer.byteLength(materialPreview),
     truncated: true,
     availability: 'incomplete' as const,
-    originalSnapshotPath: materialOriginalPath,
   };
-  const inputOriginalPath = 'originals/turn-inputs/0/payload';
   const representation = `Retained representation preview\n${'Later extracted text\n'.repeat(8)}`;
-  const representationPath = 'representations/turn-inputs/0/text.txt';
   const inputDescriptor = retainRepresentation
     ? 'Retained representation preview'
     : JSON.stringify({
@@ -962,6 +1003,9 @@ function createWorkResourceLineageExportInput(
         mediaType: 'application/octet-stream',
       });
   if (sourceSnapshotRoot) {
+    cpSync(join(input.sourceWorkspaceRoot!, 'artifacts'), join(sourceSnapshotRoot, 'artifacts'), {
+      recursive: true,
+    });
     input.sourceWorkspaceRoot = sourceSnapshotRoot;
     input.turns = input.turns.map((turn) => ({
       ...(turn as Record<string, unknown>),
@@ -974,13 +1018,7 @@ function createWorkResourceLineageExportInput(
         },
       ],
     }));
-    const packageRoot = `threads/${source.threadId}/turns/${source.turnId}/context-package`;
     for (const [path, bytes] of [
-      [`${packageRoot}/${materialOriginalPath}`, Buffer.from(baseContent)],
-      [`${packageRoot}/${inputOriginalPath}`, binaryOriginal],
-      ...(retainRepresentation
-        ? [[`${packageRoot}/${representationPath}`, Buffer.from(representation)] as const]
-        : []),
       [`threads/${source.threadId}/turns/${source.turnId}/inputs/0/payload`, binaryOriginal],
     ] as const) {
       mkdirSync(dirname(join(sourceSnapshotRoot, path)), { recursive: true });
@@ -1066,7 +1104,7 @@ function createWorkResourceLineageExportInput(
               originalDigest: baseContentDigest,
               byteLength: Buffer.byteLength(baseContent),
               mediaType: 'text/markdown',
-              originalSnapshotPath: materialOriginalPath,
+
               packagePath: `workspace/materials/${materialId}/${baseRevisionId}.md`,
               projection: materialProjection,
               deliveredBytes: Buffer.from(materialPreview),
@@ -1086,7 +1124,7 @@ function createWorkResourceLineageExportInput(
               originalDigest: binaryDigest,
               byteLength: binaryOriginal.byteLength,
               mediaType: 'application/octet-stream',
-              originalSnapshotPath: inputOriginalPath,
+
               packagePath: 'sources/turn-inputs/0.txt',
               projection: {
                 kind: retainRepresentation ? ('excerpt' as const) : ('descriptor' as const),
@@ -1109,8 +1147,6 @@ function createWorkResourceLineageExportInput(
                 availability: retainRepresentation
                   ? ('incomplete' as const)
                   : ('unavailable' as const),
-                ...(retainRepresentation ? { representationSnapshotPath: representationPath } : {}),
-                originalSnapshotPath: inputOriginalPath,
               },
               deliveredBytes: Buffer.from(inputDescriptor),
               ...(retainRepresentation
@@ -2425,7 +2461,7 @@ describe('workspace auxiliary lineage reminting', () => {
   it.each([
     false,
     true,
-  ])('round trips binary originals and bounded previews with retained representation=%s', (retainRepresentation) => {
+  ])('round trips source references and exact delivered previews with representation metadata=%s', (retainRepresentation) => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-source-snapshot-portability-'));
     let fixtureParent: string | undefined;
     try {
@@ -2454,7 +2490,7 @@ describe('workspace auxiliary lineage reminting', () => {
         [...verified.artifactPayloadFiles.keys()].filter((path) =>
           path.includes('/context-package/originals/')
         )
-      ).toHaveLength(2);
+      ).toHaveLength(0);
       const imported = readWorkspaceImportSnapshot({
         verified,
         targetWorkspaceId,
@@ -2485,14 +2521,13 @@ describe('workspace auxiliary lineage reminting', () => {
       );
       expect(readFileSync(join(packageRoot, material.packagePath), 'utf8')).toBe('# Portable');
       expect(material.originalDigest).not.toBe(material.projection.deliveredDigest);
-      expect(readFileSync(join(packageRoot, material.originalSnapshotPath), 'utf8')).toBe(
-        '# Portable base\n'
+      expect(readdirSync(packageRoot)).not.toContain('originals');
+      expect(readdirSync(packageRoot)).not.toContain('representations');
+      expect(binary.originalDigest).toBe(
+        `sha256:${createHash('sha256')
+          .update(Buffer.from([0, 255, 10, 128, 65]))
+          .digest('hex')}`
       );
-      expect(
-        readFileSync(join(packageRoot, binary.originalSnapshotPath)).equals(
-          Buffer.from([0, 255, 10, 128, 65])
-        )
-      ).toBe(true);
       expect(material.source).toMatchObject({
         reference: {
           scopeId: `material/workspace/${targetWorkspaceId}`,
@@ -2506,25 +2541,18 @@ describe('workspace auxiliary lineage reminting', () => {
           objectId: '0',
         },
       });
-      expect(material.originalSnapshotPath).not.toContain(
-        'mat_00000000-0000-7807-b767-6378f3fcdcf3'
-      );
       expect(material.packagePath).not.toContain('mat_00000000-0000-7807-b767-6378f3fcdcf3');
       const descriptorText = readFileSync(join(packageRoot, binary.packagePath), 'utf8');
       if (retainRepresentation) {
-        const retainedPath = binary.projection.representationSnapshotPath!;
-        const retained = readFileSync(join(packageRoot, retainedPath));
-        expect(retained.toString('utf8')).toContain('Later extracted text');
-        expect(retained.byteLength).toBeGreaterThan(Buffer.byteLength(descriptorText));
+        const representation = `Retained representation preview\n${'Later extracted text\n'.repeat(8)}`;
+        expect(Buffer.byteLength(representation)).toBeGreaterThan(
+          Buffer.byteLength(descriptorText)
+        );
         expect(descriptorText).toBe('Retained representation preview');
         expect(binary.projection.representationDigest).toBe(
-          `sha256:${createHash('sha256').update(retained).digest('hex')}`
+          `sha256:${createHash('sha256').update(representation).digest('hex')}`
         );
         expect(binary.projection.representationDigest).not.toBe(binary.originalDigest);
-        // A retained representation is delivery evidence; a current source cannot repair it.
-        writeFileSync(join(packageRoot, retainedPath), 'changed representation');
-        expect(() => verifyImportedWorkerContextPackageSnapshot(imported, stagedRoot)).toThrow();
-        writeFileSync(join(packageRoot, retainedPath), retained);
       } else {
         expect(JSON.parse(descriptorText).source).toEqual(binary.source.reference);
         expect(binary.projection.representationDigest).toBe(binary.originalDigest);
@@ -2533,7 +2561,7 @@ describe('workspace auxiliary lineage reminting', () => {
         `sha256:${createHash('sha256').update(descriptorText).digest('hex')}`
       );
       expect(material.projection.ranges).toEqual([{ start: 0, end: 10 }]);
-      rmSync(join(packageRoot, binary.originalSnapshotPath));
+      rmSync(join(packageRoot, binary.packagePath));
       expect(() => verifyImportedWorkerContextPackageSnapshot(imported, stagedRoot)).toThrow();
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -2542,7 +2570,8 @@ describe('workspace auxiliary lineage reminting', () => {
   });
 
   it('imports an S39 selection pinned to the current Notebook commit and remaps its Workspace overview', () => {
-    const input = createWorkResourceLineageExportInput(undefined, undefined, false, false, true);
+    // Current Knowledge selections carry the projection that binds their reminted Notebook commit.
+    const input = createWorkResourceLineageExportInput(undefined, undefined, false, true, true);
     const notebook = new KnowledgeNotebook({
       repositoryPath: join(dirname(input.exportRoot), 'source', 'knowledge', 'notebook.git'),
     });
@@ -2591,6 +2620,33 @@ describe('workspace auxiliary lineage reminting', () => {
     });
     const targetRoot = mkdtempSync(join(tmpdir(), 'openkit-current-notebook-s39-target-'));
     onTestFinished(() => rmSync(targetRoot, { recursive: true, force: true }));
+    // Import finalizes S39 only after its real target Notebook commit exists.
+    const targetNotebook = new KnowledgeNotebook({
+      repositoryPath: join(targetRoot, 'knowledge', 'notebook.git'),
+    });
+    const targetNotebookFiles = Object.fromEntries(
+      [...imported.portableFileState.nativeKnowledgePages].map(([path, content]) => [
+        path.slice('knowledge/pages/'.length),
+        content,
+      ])
+    );
+    const targetRevision = targetNotebook.initialize({
+      files: targetNotebookFiles,
+      metadata: {
+        summary: 'Pinned import Notebook fixture',
+        producer: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
+        authority: { kind: 'direct', instructionReference: 'test:import-notebook-s39' },
+        changeRequest: {
+          requestId: randomUUID(),
+          inputDigest: `sha256:${createHash('sha256').update(JSON.stringify(targetNotebookFiles)).digest('hex')}`,
+        },
+        sourceReferences: [],
+      },
+    });
+    expect(imported.finalizeNotebookKnowledge).toBeTypeOf('function');
+    const targetNotebookBinding = readPortableWorkspaceNotebookPages(targetRoot);
+    expect(targetNotebookBinding.notebookRevision).toBe(targetRevision);
+    imported.finalizeNotebookKnowledge!(targetNotebookBinding);
     writeWorkspacePortableFileState(targetRoot, imported.portableFileState);
     expect(() => verifyImportedWorkerContextPackageSnapshot(imported, targetRoot)).not.toThrow();
     const traceText = [...imported.portableFileState.workerContextPackageFiles.entries()].find(
@@ -2609,6 +2665,7 @@ describe('workspace auxiliary lineage reminting', () => {
         scope: `workspace:${targetWorkspaceId}`,
         knowledgeBaseId: imported.defaultKnowledgeBaseId,
         path: 'index.md',
+        notebookRevision: targetRevision,
       }),
     ]);
     expect(targetOverviewText).not.toContain(source.knowledgeBaseId);
@@ -2620,11 +2677,15 @@ describe('workspace auxiliary lineage reminting', () => {
     const targetPage = imported.portableFileState.nativeKnowledgePages.get(
       'knowledge/pages/knowledge_portable_source.md'
     )!;
+    expect(
+      targetNotebookBinding.nativeKnowledgePages.get('knowledge/pages/knowledge_portable_source.md')
+    ).toBe(targetPage);
     expect(trace.workspaceId).toBe(targetWorkspaceId);
     expect(trace.requestId).toMatch(/^import-lineage:sha256:[a-f0-9]{64}$/);
     expect(trace.knowledgeSelections).toEqual([
       expect.objectContaining({
         knowledgeBaseId: imported.defaultKnowledgeBaseId,
+        notebookRevision: targetRevision,
         knowledgePageId: 'knowledge_portable_source',
         contentDigest: `sha256:${createHash('sha256').update(targetPage).digest('hex')}`,
       }),
@@ -2908,7 +2969,16 @@ describe('workspace auxiliary lineage reminting', () => {
         traces: imported.portableFileState.retrievalTraceFiles,
       }),
     };
+    for (const [path, text] of imported.artifactVersionRecords) {
+      mkdirSync(dirname(join(stagedRoot, path)), { recursive: true });
+      writeFileSync(join(stagedRoot, path), text);
+    }
+    for (const [path, original] of imported.artifactPayloadFiles) {
+      mkdirSync(dirname(join(stagedRoot, path)), { recursive: true });
+      copyFileSync(original, join(stagedRoot, path), constants.COPYFILE_EXCL);
+    }
     const reExported = writeWorkspaceExportTree({
+      sourceWorkspaceRoot: stagedRoot,
       agentEnvironmentPackageSnapshots: imported.agentEnvironmentPackageSnapshots,
       agentSessions: imported.agentSessions,
       artifactReviews: imported.artifactReviews,
@@ -3058,7 +3128,7 @@ describe('workspace auxiliary lineage reminting', () => {
         workspaceId: source.workspaceId,
         threadId: null,
         turnId: null,
-        kind: 'summary',
+        kind: 'file',
         title: 'Other Artifact',
         status: 'ready',
         summary: null,
@@ -3079,6 +3149,7 @@ describe('workspace auxiliary lineage reminting', () => {
         updatedAt: timestamp,
       },
     ];
+    retainInitialArtifact(input.sourceWorkspaceRoot!, input.artifacts.at(-1), null);
     input.turnEvents = input.turnEvents.map(([turnId, events]) => [
       turnId,
       events.map((event) =>
@@ -3207,6 +3278,9 @@ describe('workspace auxiliary lineage reminting', () => {
     },
     {
       name: 'media-incompatible unresolved proposal',
+      error: 'Artifact Review proposal media type is contradictory.',
+      createInput: () =>
+        createWorkResourceLineageExportInput(undefined, undefined, false, false, false, 'text'),
       alter: (input: WriteWorkspaceExportTreeInput) => {
         const baseRevision = input.workspaceMaterialRevisions?.[0] as Record<string, unknown>;
         input.workspaceMaterialRevisions = [baseRevision];
@@ -3219,10 +3293,6 @@ describe('workspace auxiliary lineage reminting', () => {
           ...(binding as Record<string, unknown>),
           latestQueuedRevisionId: 'mrev_00000000-0000-72e5-99f1-5042ef903012',
         }));
-        input.artifacts = input.artifacts.map((artifact) => ({
-          ...(artifact as Record<string, unknown>),
-          content: { format: 'text', body: '# Portable' },
-        }));
         input.artifactReviews = (input.artifactReviews ?? []).map((review) => ({
           ...(review as Record<string, unknown>),
           decision: null,
@@ -3230,6 +3300,7 @@ describe('workspace auxiliary lineage reminting', () => {
           decisionRequestId: null,
           decidedAt: null,
           appliedMaterialRevisionId: null,
+          rangeFeedback: null,
         }));
       },
     },
@@ -3284,28 +3355,30 @@ describe('workspace auxiliary lineage reminting', () => {
     const rawPath = `workspace-files/evidence/backend/${rawBundleId}/raw/native-canary.bin`;
     const sourceOriginRef = `rto_${'a'.repeat(24)}`;
     const sourceTurnRef = `rtt_${'b'.repeat(24)}`;
-    const indexText = `${JSON.stringify({
-      lineage: {
-        workspaceId: source.workspaceId,
-        threadId: source.threadId,
-        turnId: source.turnId,
-        agentSessionId: source.sessionId,
-        packageSnapshotId,
-        requestId: 'request_source',
-      },
-      streamRef: 'stream-0000.jsonl',
-      frameSequence: 0,
-      byteOffset: 0,
-      byteLength: 24,
-      frameSha256: `sha256:${'1'.repeat(64)}`,
-      eventKind: 'thread.started',
-      parseStatus: 'parsed',
-      runtimeOriginRef: sourceOriginRef,
-      parentRuntimeOriginRef: null,
-      runtimeTurnRef: sourceTurnRef,
-      runtimeRole: 'worker',
-      runtimeDepth: 0,
-    })}\n`;
+    const indexText = `${JSON.stringify(
+      writeRetainedV1({
+        lineage: {
+          workspaceId: source.workspaceId,
+          threadId: source.threadId,
+          turnId: source.turnId,
+          agentSessionId: source.sessionId,
+          packageSnapshotId,
+          requestId: 'request_source',
+        },
+        streamRef: 'stream-0000.jsonl',
+        frameSequence: 0,
+        byteOffset: 0,
+        byteLength: 24,
+        frameSha256: `sha256:${'1'.repeat(64)}`,
+        eventKind: 'thread.started',
+        parseStatus: 'parsed',
+        runtimeOriginRef: sourceOriginRef,
+        parentRuntimeOriginRef: null,
+        runtimeTurnRef: sourceTurnRef,
+        runtimeRole: 'worker',
+        runtimeDepth: 0,
+      })
+    )}\n`;
     const indexDigest = `sha256:${createHash('sha256').update(indexText).digest('hex')}`;
     input.evidenceBundles = [
       {

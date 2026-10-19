@@ -1,9 +1,12 @@
-import { index, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { writeRetainedV1 } from '@openkit/protocol';
+import { index, integer, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 /** Durable workspace quarantine records scoped by workspace. */
 export const workspaceQuarantineRecords = sqliteTable(
   'workspace_quarantine_records',
   {
+    /** Retained JSON payload format; native DDL versions scalar columns separately. */
+    schemaVersion: integer('schema_version').notNull().default(writeRetainedV1({}).schemaVersion),
     /** Stable workspace quarantine record id. */
     quarantineRecordId: text('quarantine_record_id').notNull(),
     /** Workspace that owns the quarantine record. */

@@ -188,6 +188,7 @@ describe('remote MCP App endpoint', () => {
       for (const operation of [
         'artifact.import',
         'artifact.download',
+        'artifact.version-file-commit',
         'workspace.archive-download',
         'workspace.archive-import-dry-run',
         'workspace.archive-import',
@@ -1023,6 +1024,7 @@ describe('remote MCP App endpoint', () => {
       expect(excluded).toEqual([
         'artifact.download',
         'artifact.import',
+        'artifact.version-file-commit',
         'bootstrap.consume',
         'channel.discord.pair',
         'token.create',

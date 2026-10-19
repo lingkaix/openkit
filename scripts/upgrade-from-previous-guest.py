@@ -650,6 +650,7 @@ def run_upgrade(input, boundary=None):
         job.phase("activate", "candidate")
         job.phase("worker", "candidate")
         job.stop()
+        job.phase("retirement", "candidate")
         job.result.update(passed=True, effect="owned_fixture_stopped")
     except Exception:
         # Never retry a failed stop proof or a Worker mutation. Cleanup applies only when a later stage failed with known running state.

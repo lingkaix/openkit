@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { RequestIdSchema } from '../common/ids.js';
+import { KnowledgeBaseIdSchema, RequestIdSchema } from '../common/ids.js';
 import { KnowledgeEntrySchema } from '../models/knowledge.js';
 import { WorkspaceKindSchema } from '../models/workspace.js';
 
@@ -63,6 +63,8 @@ export const DeleteKnowledgeEntryRequestSchema = z.object({
  * Workspace knowledge list response.
  */
 export const ListKnowledgeEntriesResponseSchema = z.object({
+  /** Exact selected base; the collection can be empty without losing its identity. */
+  knowledgeBaseId: KnowledgeBaseIdSchema,
   notebookRevision: z.string().min(1),
   items: z.array(
     KnowledgeEntrySchema.extend({

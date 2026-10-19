@@ -36,6 +36,7 @@ import {
   resolveSessionDeploymentAdminTokenId,
   verifyOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
+import { auditAuthenticationFromActor } from './auth/audit-attribution.js';
 import { type Actor, ensureLocalUser, isDeploymentAdminActor } from './auth/identity.js';
 // Actor type used by mode worker turn request credential threading
 import {
@@ -127,6 +128,11 @@ import { createOperationInvocation } from './operation-composition.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import { createGoalDomainPolicyService } from './policy/goal-domains.js';
 import { type DeterministicPolicyParticipant, PolicyInterception } from './policy/interception.js';
+import {
+  checkResourcePolicyCommandIntent,
+  isResourcePolicyRequest,
+  isResourcePolicyRequesterCurrent,
+} from './policy/resource-policy-requests.js';
 import { EMPTY_POLICY_DOCUMENT, policyDigest } from './policy/statements.js';
 import type { ProviderDiagnosticsSnapshot } from './providers/diagnostics.js';
 import {
@@ -135,6 +141,7 @@ import {
 } from './providers/llm-config.js';
 import {
   type ProviderCredentialResolver,
+  type ProviderCredentialUseContext,
   type ProviderRegistry,
   resolveEnvSecretRef,
 } from './providers/registry.js';
@@ -739,8 +746,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           mode,
         })
       : null);
-  const providerCredentialResolverFallback: ProviderCredentialResolver = (secretRef) =>
-    options.providerCredentialResolver?.(secretRef) ?? resolveEnvSecretRef(secretRef);
+  const providerCredentialResolverFallback: ProviderCredentialResolver = (secretRef, context) =>
+    options.providerCredentialResolver?.(secretRef, context) ?? resolveEnvSecretRef(secretRef);
   const providerCredentialConfigured = createProviderCredentialConfigured({
     ...(options.coreDb ? { coreDb: options.coreDb } : {}),
     // Managed Vault presence comes only from metadata; an injected resolver may release material.
@@ -884,6 +891,12 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           }
         : {}),
     });
+  sharedStore.setWorkspaceResourcePolicyProjection((workspaceId) => {
+    const loaded = runtimeConfigManager
+      .current()
+      .workspaceConfigs.find((entry) => entry.workspaceId === workspaceId);
+    return loaded ? (loaded.config.workspace.policy?.resourceAccess ?? []) : null;
+  });
   const automationStore =
     options.automationStore ??
     (options.coreDb ? new AutomationStore(options.coreDb, workspaceMutationAdmission) : undefined);
@@ -1407,6 +1420,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
                   workspaceId: change.workspaceId,
                   category: 'system',
                   action: 'data_source_catalog.authority.update',
+                  actor: { kind: 'user', id: actor.userId },
+                  authentication: auditAuthenticationFromActor(actor),
                   resource: `data-source-catalog:${change.sourceId}`,
                   outcome: 'succeeded',
                   severity: 'info',
@@ -1451,7 +1466,11 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
    * @returns Secret-bearing provider config.
    * @throws OpenAICompatibleProviderError when the provider or model cannot be dispatched.
    */
-  function resolveGatewayProvider(providerId: string, model: string) {
+  function resolveGatewayProvider(
+    providerId: string,
+    model: string,
+    context?: ProviderCredentialUseContext
+  ) {
     const profile = runtimeConfig().providerRegistry.get(providerId);
 
     if (!profile) {
@@ -1479,7 +1498,9 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       });
     }
 
-    return resolveProviderProfileToLLMConfig(profile, providerCredentialResolver);
+    return resolveProviderProfileToLLMConfig(profile, (secretRef) =>
+      providerCredentialResolver(secretRef, context)
+    );
   }
 
   const knowledgeDependencies = {
@@ -1960,6 +1981,9 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   };
 
   registerWorkspaceTransferRoutes({
+    reloadConfiguration: () => {
+      runtimeConfigManager.reload({ dryRun: false, mode: 'safe' });
+    },
     app,
     fileAdmission,
     coreDb: options.coreDb,
@@ -2129,9 +2153,21 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         coordinatorTurnId,
       }),
   });
-  const goalRequesterAuthority = (
+  const currentRequesterAuthority = (
     record: import('./runtime/pending-requests.js').PendingRequestRecord
   ): boolean | undefined => {
+    if (isResourcePolicyRequest(record))
+      return Boolean(
+        options.coreDb &&
+          isResourcePolicyRequesterCurrent(
+            {
+              coreDb: options.coreDb,
+              store: sharedStore,
+              manager: runtimeConfigManager,
+            },
+            record
+          )
+      );
     if (record.requesterKind !== 'coordinator') return undefined;
     const db = repositoryWorkspaceDb(record.workspaceId);
     try {
@@ -2158,7 +2194,19 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     record,
     actor
   ) => {
-    if (record.governedIntent?.operation === 'memory.forget')
+    if (isResourcePolicyRequest(record))
+      checkResourcePolicyCommandIntent(
+        {
+          coreDb: options.coreDb!,
+          store: sharedStore,
+          workspaceDb: { sqlite },
+          manager: runtimeConfigManager,
+          files: runtimeConfigFileService({ get: () => actor }),
+        },
+        record,
+        actor
+      );
+    else if (record.governedIntent?.operation === 'memory.forget')
       checkMemoryForgetIntent(sqlite, record, actor, options.coreDb!, sharedStore);
     else checkGoalCommandIntent(sqlite, record);
   };
@@ -2253,7 +2301,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       assistantDelivery: pendingAssistantDelivery,
       coordinatorDelivery: goalCoordinator,
       ...(options.coreDb ? { goalTerminal: goalCoordinator.terminal } : {}),
-      requesterAuthority: goalRequesterAuthority,
+      requesterAuthority: currentRequesterAuthority,
       checkCommandIntent,
       requestCommitted: goalRequestCommitted,
       ...(options.coreDb ? { coreDb: options.coreDb } : {}),
@@ -2286,7 +2334,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     assistantDelivery: pendingAssistantDelivery,
     coordinatorDelivery: goalCoordinator,
     ...(options.coreDb ? { goalTerminal: goalCoordinator.terminal } : {}),
-    requesterAuthority: goalRequesterAuthority,
+    requesterAuthority: currentRequesterAuthority,
     checkCommandIntent,
     requestCommitted: goalRequestCommitted,
     agentAuthority: (record) =>

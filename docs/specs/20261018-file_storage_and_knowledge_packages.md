@@ -1,6 +1,6 @@
 ---
 status: Accepted
-implementation: Not Started
+implementation: Partial
 kind: mechanism
 date: "2026-10-18"
 ---
@@ -41,7 +41,7 @@ Ablation: content identity, location and interpretation must remain distinct whe
 
 Existing owner records carry content descriptors: `contentDigest` is raw-byte SHA-256, `byteLength` is a nonnegative integer, and `mediaType` is the sniffed result. Declared media is separate. Unknown media uses `application/octet-stream`; classification never replaces parser validation. An object-store ETag or Git object ID is not a raw-byte SHA-256.
 
-The shared citable `contentRef` carries `knowledgeBaseId`, `contentDigest`, `locator`, nullable `range` and `availability`. Existing owner records remain canonical; this shared projection does not create another independently mutable digest authority. SHA-256 uses the existing `sha256:` plus 64 lowercase hexadecimal form.
+The shared citable `contentRef` carries `knowledgeBaseId`, `contentDigest`, `locator`, nullable `range` and `availability`. Existing owner records remain canonical; this shared projection does not create another independently mutable digest authority. SHA-256 uses the existing `sha256:` plus 64 lowercase hexadecimal form. Its scope-qualified identity and textual URI follow [Core Protocol](../core/protocol.md#scope-qualified-object-references); do not introduce a second URI codec or interpret a pointer-page digest as its original's digest.
 
 | Reference member | Serialized shape |
 | --- | --- |
@@ -50,11 +50,9 @@ The shared citable `contentRef` carries `knowledgeBaseId`, `contentDigest`, `loc
 | `range: null` | Whole source. |
 | Byte range | `{kind: bytes, start, end}`; nonnegative integer half-open raw-byte offsets, end not before start. |
 | Page | `{kind: page, page}`; positive integer page number. |
-| Time range | `{kind: time, startSeconds, endSeconds}`; finite nonnegative seconds, end not before start. |
-| Frame | `{kind: frame, frame, numbering, coordinateSpace}`; integer frame, explicit zero/one-based numbering and source space. |
 | `availability` | `available` or `unavailable`; observed, not permission or a future guarantee. Preserve descriptive metadata, digest and captured locator. |
 
-Tagged values and coordinate-space names are strings; frame values respect their declared numbering. Ranges cannot silently change coordinate systems. Storage range reads accept byte coordinates, not an implicit media conversion.
+Time and frame coordinates are deferred until an active producer requires them. Tagged values and coordinate-space names are strings. Ranges cannot silently change coordinate systems. Storage range reads accept byte coordinates, not an implicit media conversion.
 
 Reuse existing qualified Source ID/digest and versioned Artifact references as attachment identities; allocate no parallel attachment ID. Source pointers bind logical mount paths only; backend locations belong to mount declarations. Other owners may retain verified `locations`. Reuse capture/publication timestamps. Digests and locators are citable facts, not authority.
 
@@ -104,7 +102,7 @@ The default local mount is the Knowledge Base's physical `raw/` itself: `raw/ima
 | `derived/`, `indexes/` | Optional rebuildable outputs and search generations, distinct from authored navigation. |
 | `notebook.git/` | Existing sole Notebook publication/history authority, outside the OKF bundle. |
 
-Each User/Workspace/Server scope retains its default Knowledge Base ID. References preserve that exact ID across reads; they do not mint or infer another identity on lookup. The Knowledge Manager reads originals but never modifies them. It maintains pages, navigation and log through the Notebook owner. The physical `pages/` materialization remains optional and rebuildable; product reads pin the published Git revision. Published Git tree paths map one-to-one to package paths. Raw bytes never enter Git; schema remains outside the page tree.
+Each User/Workspace/Server scope allocates its default Knowledge Base once with the shared independent `kb_<UUIDv7>` generator and retains `defaultKnowledgeBaseId` in its existing scope configuration. Before that scope has a Knowledge Base the member may be absent; configuration parsing and reference lookup never allocate it. Once created, the binding is immutable. Retry, restart and backup preserve the same ID; missing or contradictory established authority returns `recovery_required`, not a replacement ID or empty base. Import into a new or empty Workspace binds to its target-owned base and remaps source Knowledge Base references through the existing import map; source provenance grants no target access. Additional bases later add identities and selection without changing default references. The Knowledge Manager reads originals but never modifies them. It maintains pages, navigation and log through the Notebook owner. The physical `pages/` materialization remains optional and rebuildable; product reads pin the published Git revision. Published Git tree paths map one-to-one to package paths. Raw bytes never enter Git; schema remains outside the page tree.
 
 Several additional mounts can contribute sources without copying them to the default mount. Moving captured Source text into managed raw storage changes its location binding, not its Source ID or original digest. Knowledge, Context, evidence and Artifacts resolve the same Notebook-owned Source pointers; `sources/registry/<id>.json` is retired, not retained as another authority.
 
@@ -199,7 +197,7 @@ Ablation: indexable media outputs need source coordinates and production identit
 
 Extend existing representation metadata. `sourceContentDigest` identifies exact original bytes; `sourceReference` is its existing qualified owner/version reference. `recipe` carries string `id`, string `version` and JSON-object `parameters` for output-changing settings. `provider` and `model` identify model use, or are null for deterministic local tools. Vectors also record exact `embeddingSpace` identity.
 
-`sourceLocator` declares page, time, frame, byte or whole-source coordinates using the shared coordinate rules. Output `contentRef`, size and media facts identify derived bytes separately from the original. Explicit output unavailability preserves lineage without claiming byte retention. `coverage: complete | incomplete` preserves truncation and existing processing-failure evidence. Output offsets never claim original coordinates.
+`sourceLocator` declares page, byte or whole-source coordinates using the shared coordinate rules. Media coordinates can be added when an active producer requires them. Output `contentRef`, size and media facts identify derived bytes separately from the original. Explicit output unavailability preserves lineage without claiming byte retention. `coverage: complete | incomplete` preserves truncation and existing processing-failure evidence. Output offsets never claim original coordinates.
 
 Text layers, transcripts, keyframes, thumbnails, vectors and short summaries are derived data. Recipe selection comes from a media-handling Skill used by the Knowledge Manager, not a hard-coded file-extension pipeline. A derived summary is not accepted Knowledge. Equal vector dimensions do not establish model/space compatibility.
 
@@ -209,7 +207,7 @@ Ablation: digest references remove required historical copies while preserving t
 
 Context packages adopt exact owner/digest/location references rather than retaining another original solely for history. Keep original, representation and delivered digests distinct, with ranges, lineage and availability. Missing bytes remain unavailable; current sources cannot reconstruct historical delivery. Do not retain extra derivative fragments solely to guarantee replay. Existing Items and independently governed evidence keep their owners.
 
-A disposable read-only input snapshot may serve a running Turn under its current delivery contract. That execution requirement creates no post-settlement source-retention promise. Artifacts, Turn inputs and Context adopt Storage later; their owners coordinate retained format/readers and source admission before activation. Current copied-original inventories remain the implementation baseline until that transition.
+A disposable read-only input snapshot may serve a running Turn under its current delivery contract. That execution requirement creates no post-settlement source-retention promise. The Context digest-reference cutover removes mandatory extra original and complete representation copies from its retained inventory; its existing owner/version references and digest metadata identify content. Artifact and Turn input canonical storage remain with their owners until their separate Storage adoption.
 
 ## Backup And Workspace Export
 
@@ -237,7 +235,7 @@ Acceptance observes one-to-one published-tree/package paths and justified differ
 
 Ablation: accepted contracts must remain distinct from implementation status.
 
-Storage package/local integration and these format extensions are not implemented by this documentation landing. Sources currently use an external registry and captured sibling text materials; the pointer cutover is not implemented. Context packages copy originals and require retained paths. Existing Source/Artifact records, Notebook commits, Policy decisions, media evidence and retrieval representations remain the starting owners. No backend, host mount or media/model capability is activated here. Initial Storage implementation covers its contract, local backend and Knowledge Sources/raw namespace first; Artifact, Turn and Context adoption follows later.
+The Storage package implements asynchronous JSON control requests, bounded base64 byte chunks, local mount access under current admitted Policy facts, digest/size-verified original reads, metadata scan continuation and temporary staged owner handoff. Its references use the shared Protocol schema. NanoCore consumer adoption, Source pointers/raw cutover and retained-format extensions remain separate work: Sources still use their external registry/captured text, and Context still requires copied original paths. Existing Source/Artifact records, Notebook commits, Policy decisions, media evidence and retrieval representations remain canonical. No host mount, remote backend, media/model capability or publication authority is activated by the package. Knowledge Source/raw integration precedes later Artifact, Turn and Context adoption.
 
 ## Derivation And Retrieval Interface
 

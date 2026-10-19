@@ -11,16 +11,24 @@ import {
 } from '@openkit/app-api-schemas';
 import {
   type ActorRef,
+  formatReferenceUri,
   PageReferenceSchema,
   RetrievalTraceReferenceSchema,
+  readRetainedV1,
   ScopeQualifiedReferenceSchema,
   WorkspaceRecordSchema,
+  writeRetainedV1,
 } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
+import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { validateNotebookCandidate } from './knowledge/notebook-validation.js';
 import { parseOkfDocument, stringListFrontmatterField } from './knowledge/okf.js';
 import { FsStore } from './lib/store.js';
+import {
+  collectKnowledgeInventory,
+  knowledgeSourceReferencesReadable,
+} from './retrieval-knowledge-adapter.js';
 import { closeRetrievalServices } from './retrieval-service.js';
 import { readDataRootLayoutMarker } from './storage/fs-layout.js';
 import {
@@ -30,6 +38,7 @@ import {
   resolveWorkspaceKnowledgeRetrievalPages,
   retrieveWorkspaceKnowledge,
 } from './storage/index-rebuild.js';
+import { StoredProductRetrievalTraceV1Schema } from './storage/retrieval-trace-retained-v1.js';
 import { serializeUserAuthoredKnowledgePage } from './storage/workspace-file-records.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { notebookImportFixture } from './test-support/notebook-import.js';
@@ -69,11 +78,16 @@ describe('retrieval query context, references, and query-owned traces', () => {
     expect(ScopeQualifiedReferenceSchema.safeParse(turnTrace).success).toBe(true);
     expect(PageReferenceSchema.safeParse(page).success).toBe(true);
     expect(
-      PageReferenceSchema.safeParse({ scopeId: 'page/server', objectId: 'release/plan' }).success
+      PageReferenceSchema.safeParse({
+        scopeId: 'page/server/kb_00000000-0000-7000-8000-000000000001',
+        objectId: 'release/plan',
+      }).success
     ).toBe(true);
     expect(
-      PageReferenceSchema.safeParse({ scopeId: `page/user/${ACTOR.id}`, objectId: 'release/plan' })
-        .success
+      PageReferenceSchema.safeParse({
+        scopeId: `page/user/${ACTOR.id}/kb_00000000-0000-7000-8000-000000000001`,
+        objectId: 'release/plan',
+      }).success
     ).toBe(true);
     expect(
       PageReferenceSchema.safeParse({
@@ -85,6 +99,9 @@ describe('retrieval query context, references, and query-owned traces', () => {
     expect(RetrievalTraceReferenceSchema.safeParse(threadTrace).success).toBe(true);
 
     for (const invalid of [
+      { scopeId: `page/workspace/${fixture.workspaceId}`, objectId: 'release/plan' },
+      { scopeId: `page/user/${ACTOR.id}`, objectId: 'release/plan' },
+      { scopeId: 'page/server', objectId: 'release/plan' },
       { scopeId: `page/workspace/${thread.id}`, objectId: 'release/plan' },
       { scopeId: `page/workspace/${fixture.workspaceId}/extra`, objectId: 'release/plan' },
       { scopeId: 'page/workspace//', objectId: 'release/plan' },
@@ -153,7 +170,9 @@ describe('retrieval query context, references, and query-owned traces', () => {
     expect(
       RetrieveKnowledgeRequestSchema.safeParse({
         query: 'release',
-        pinnedReferences: [{ scopeId: 'page/server', objectId: '../plan' }],
+        pinnedReferences: [
+          { scopeId: 'page/server/kb_00000000-0000-7000-8000-000000000001', objectId: '../plan' },
+        ],
       }).success
     ).toBe(false);
   });
@@ -190,6 +209,79 @@ describe('retrieval query context, references, and query-owned traces', () => {
     ).rejects.toMatchObject({ code: 'invalid_request', status: 400 });
     expect(findTraceFiles(fixture.workspaceRoot)).toEqual([]);
     expect(existsSync(join(fixture.workspaceRoot, 'knowledge', 'traces'))).toBe(false);
+  });
+
+  it('refuses another Knowledge Base for the same owner and page before disclosure', async () => {
+    const fixture = createFixture('wrong-knowledge-base');
+    const page = createEntry(fixture, 'Exact base', 'exact-base-private-marker');
+    const selected = await retrieveWorkspaceKnowledge(fixture.input('exact-base-private-marker'));
+    expect(selected.selected[0]).not.toHaveProperty('contentRef');
+    const knowledgeBaseId = readDefaultKnowledgeBaseId({
+      dataRoot: fixture.dataRoot,
+      scope: { kind: 'workspace', workspaceId: fixture.workspaceId },
+    });
+    const wrongBase = 'kb_00000000-0000-7000-8000-000000000009';
+    expect(knowledgeBaseId).not.toBe(wrongBase);
+    const reference = {
+      scopeId: `page/workspace/${fixture.workspaceId}/${wrongBase}`,
+      objectId: page.id,
+    };
+    await expect(
+      retrieveWorkspaceKnowledge({
+        ...fixture.input('exact-base-private-marker'),
+        pinnedReferences: [reference],
+      })
+    ).rejects.toMatchObject({ code: 'invalid_request', status: 400 });
+    expect(() =>
+      resolveWorkspaceKnowledgeRetrievalPages({
+        dataRoot: fixture.dataRoot,
+        workspaceId: fixture.workspaceId,
+        caller: 'app-api',
+        access: fixture.access,
+        selection: {
+          ...selected,
+          sourceScope: reference.scopeId,
+          selected: selected.selected.map((entry) => ({ ...entry, reference })),
+        },
+      })
+    ).toThrowError(expect.objectContaining({ code: 'workspace_access_denied', status: 403 }));
+    expect(
+      JSON.parse(collectKnowledgeInventory(fixture.input('exact-base-private-marker')).view.scope)
+    ).toContain(knowledgeBaseId);
+    expect(
+      resolveWorkspaceKnowledgeRetrievalPages({
+        dataRoot: fixture.dataRoot,
+        workspaceId: fixture.workspaceId,
+        caller: 'app-api',
+        access: fixture.access,
+        selection: selected,
+      })?.[0]
+    ).toMatchObject({
+      knowledgeBaseId,
+      reference: { scopeId: pageScope(fixture), objectId: page.id },
+    });
+    const sourceReference = { scopeId: pageScope(fixture), objectId: page.id };
+    const sourceDigest = sha256(readPage(fixture, page.id));
+    const sourceInput = { ...fixture.input('exact-base-private-marker') };
+    expect(
+      knowledgeSourceReferencesReadable(sourceInput, 'consumer', [
+        formatReferenceUri(sourceReference, sourceDigest),
+      ])
+    ).toBe(true);
+    for (const invalid of [
+      formatReferenceUri(reference, sourceDigest),
+      formatReferenceUri(sourceReference, `sha256:${'0'.repeat(64)}`),
+      formatReferenceUri({
+        ...sourceReference,
+        scopeId: sourceReference.scopeId.replace('page/', 'raw/'),
+      }),
+      `knowledge:${page.id}`,
+    ]) {
+      expect(knowledgeSourceReferencesReadable(sourceInput, 'consumer', [invalid]), invalid).toBe(
+        false
+      );
+    }
+    expect(findTraceFiles(fixture.workspaceRoot)).toEqual([]);
   });
 
   it('normalizes qualified pins and refuses source widening before a trace effect', async () => {
@@ -231,14 +323,16 @@ describe('retrieval query context, references, and query-owned traces', () => {
     await expect(
       retrieveWorkspaceKnowledge({
         ...fixture.input('release cadence'),
-        pinnedReferences: [{ scopeId: 'page/server', objectId: pinned.id }],
+        pinnedReferences: [
+          { scopeId: 'page/server/kb_00000000-0000-7000-8000-000000000001', objectId: pinned.id },
+        ],
       })
     ).rejects.toMatchObject({ code: 'invalid_request', status: 400 });
     await expect(
       retrieveWorkspaceKnowledge({
         ...fixture.input('release cadence'),
         pinnedReferences: [
-          { scopeId: 'page/server', objectId: pinned.id },
+          { scopeId: 'page/server/kb_00000000-0000-7000-8000-000000000001', objectId: pinned.id },
           { scopeId: pageScope(fixture), objectId: pinned.id },
         ],
       })
@@ -310,8 +404,16 @@ describe('retrieval query context, references, and query-owned traces', () => {
     );
     const threadBytes = readFileSync(threadPath, 'utf8');
     const turnBytes = readFileSync(turnPath, 'utf8');
-    const parsedThread = KnowledgeRetrievalTraceSchema.parse(JSON.parse(threadBytes));
-    const parsedTurn = KnowledgeRetrievalTraceSchema.parse(JSON.parse(turnBytes));
+    const parsedThread = KnowledgeRetrievalTraceSchema.parse(
+      readRetainedV1(JSON.parse(threadBytes), (value) =>
+        StoredProductRetrievalTraceV1Schema.parse(value)
+      )
+    );
+    const parsedTurn = KnowledgeRetrievalTraceSchema.parse(
+      readRetainedV1(JSON.parse(turnBytes), (value) =>
+        StoredProductRetrievalTraceV1Schema.parse(value)
+      )
+    );
     const serverId = readDataRootLayoutMarker(fixture.dataRoot).deploymentId;
 
     expect(parsedThread).toMatchObject({
@@ -475,7 +577,9 @@ describe('retrieval query context, references, and query-owned traces', () => {
     const restrictedRevision = fixtureNotebook(fixture).publishedRevision();
     const restrictedDigest = sha256(restrictedPageBytes);
     const originalTrace = KnowledgeRetrievalTraceSchema.parse(
-      JSON.parse(readFileSync(path, 'utf8'))
+      readRetainedV1(JSON.parse(readFileSync(path, 'utf8')), (value) =>
+        StoredProductRetrievalTraceV1Schema.parse(value)
+      )
     );
     const restrictedTrace = KnowledgeRetrievalTraceSchema.parse({
       ...originalTrace,
@@ -486,7 +590,7 @@ describe('retrieval query context, references, and query-owned traces', () => {
           : candidate
       ),
     });
-    const restrictedTraceBytes = JSON.stringify(restrictedTrace);
+    const restrictedTraceBytes = JSON.stringify(writeRetainedV1(restrictedTrace));
     writeFileSync(path, restrictedTraceBytes);
 
     let caught: unknown;
@@ -532,10 +636,15 @@ describe('retrieval query context, references, and query-owned traces', () => {
       'retrieval-traces',
       `${id}.json`
     );
-    const original = KnowledgeRetrievalTraceSchema.parse(JSON.parse(readFileSync(path, 'utf8')));
+    const original = KnowledgeRetrievalTraceSchema.parse(
+      readRetainedV1(JSON.parse(readFileSync(path, 'utf8')), (value) =>
+        StoredProductRetrievalTraceV1Schema.parse(value)
+      )
+    );
     const selected = original.selected[0]!;
     const foreignReference = {
-      scopeId: 'page/workspace/ws_00000000-0000-7f9c-aa14-53566c621405',
+      scopeId:
+        'page/workspace/ws_00000000-0000-7f9c-aa14-53566c621405/kb_00000000-0000-7000-8000-000000000001',
       objectId: page.id,
     };
     const variants = [
@@ -543,7 +652,7 @@ describe('retrieval query context, references, and query-owned traces', () => {
         name: 'source metadata',
         trace: {
           ...original,
-          sourceScope: 'page/server',
+          sourceScope: 'page/server/kb_00000000-0000-7000-8000-000000000001',
           selected: [],
           excluded: [],
           retrievalParameters: { ...original.retrievalParameters, pinnedReferences: [] },
@@ -590,7 +699,9 @@ describe('retrieval query context, references, and query-owned traces', () => {
     ];
 
     for (const variant of variants) {
-      const bytes = JSON.stringify(KnowledgeRetrievalTraceSchema.parse(variant.trace));
+      const bytes = JSON.stringify(
+        writeRetainedV1(KnowledgeRetrievalTraceSchema.parse(variant.trace))
+      );
       writeFileSync(path, bytes);
       let caught: unknown;
       try {
@@ -718,7 +829,10 @@ describe('retrieval query context, references, and query-owned traces', () => {
       'Origin evidence page',
       'origin-evidence-private-content'
     );
-    const sourceReference = `knowledge:${provenance.id}`;
+    const sourceReference = formatReferenceUri({
+      scopeId: pageScope(fixture),
+      objectId: provenance.id,
+    });
     const selected = createEntry(
       fixture,
       'Selected recursive source page',
@@ -820,7 +934,11 @@ describe('retrieval query context, references, and query-owned traces', () => {
       'retrieval-traces',
       `${id}.json`
     );
-    const original = KnowledgeRetrievalTraceSchema.parse(JSON.parse(readFileSync(path, 'utf8')));
+    const original = KnowledgeRetrievalTraceSchema.parse(
+      readRetainedV1(JSON.parse(readFileSync(path, 'utf8')), (value) =>
+        StoredProductRetrievalTraceV1Schema.parse(value)
+      )
+    );
     const targetServerId = readDataRootLayoutMarker(fixture.dataRoot).deploymentId;
     expect(fixture.store.getWorkspace(fixture.workspaceId).importedFrom).toMatchObject({
       sourceDeploymentId: 'dep_00000000-0000-7737-8fe7-61ca07c79d45',
@@ -845,7 +963,7 @@ describe('retrieval query context, references, and query-owned traces', () => {
         content: expect.stringContaining('target-private-content'),
       }),
     ]);
-    const sourceScope = 'page/server';
+    const sourceScope = 'page/server/kb_00000000-0000-7000-8000-000000000001';
     // Import remints the containing records while retaining the Server whose Knowledge was selected.
     const importedQueryContext = {
       ...original.queryContext,
@@ -880,7 +998,7 @@ describe('retrieval query context, references, and query-owned traces', () => {
       })),
     });
     expect(imported).not.toHaveProperty('importedFrom');
-    const importedBytes = JSON.stringify(imported);
+    const importedBytes = JSON.stringify(writeRetainedV1(imported));
     writeFileSync(path, importedBytes);
 
     let caught: unknown;
@@ -1003,6 +1121,7 @@ function createEntry(
   });
   const checked = validateNotebookCandidate({
     ownerScope: { kind: 'workspace', workspaceId: fixture.workspaceId },
+    pageScopeId: pageScope(fixture),
     base,
     candidate: { files: { ...base.files, [`${entry.id}.md`]: bytes } },
     scopeSchemaText: readFileSync(
@@ -1022,7 +1141,7 @@ function createEntry(
 }
 
 function pageScope(fixture: Fixture): string {
-  return `page/workspace/${fixture.workspaceId}`;
+  return `page/workspace/${fixture.workspaceId}/${readDefaultKnowledgeBaseId({ dataRoot: fixture.dataRoot, scope: { kind: 'workspace', workspaceId: fixture.workspaceId } })}`;
 }
 
 /** The same immutable Git owner used by retrieval; no materialized pages tree is authoritative. */

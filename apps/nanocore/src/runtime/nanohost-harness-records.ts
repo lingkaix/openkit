@@ -1,5 +1,6 @@
 import { Buffer } from 'node:buffer';
 import { createHash, randomBytes } from 'node:crypto';
+import { readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 import {
   canonicalNativeEnvironment,
   HARNESS_DEFAULT_MAX_ACTIVE_TURNS,
@@ -191,6 +192,7 @@ export function deriveNanoHostAgentSessionCompatibilityKey(input: {
 
 /** Raw durable Harness row used by checked transitions. */
 interface HarnessRow {
+  readonly schemaVersion: unknown;
   readonly sandbox_runtime_id: string;
   readonly adapter_id: string;
   readonly adapter_version: string;
@@ -331,8 +333,8 @@ export function createNanoHostHarnessRuntime(
            runtime_family, adapter_id, adapter_version, protocol_version,
            capabilities_json, max_open_sessions, max_active_turns,
            open_session_count, active_turn_count, lifecycle_state, drain_state,
-           next_sequence, operation_state, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, '[]', ?, ?, 0, 0, 'open', 'accepting', 0, 'idle', ?, ?)`
+           next_sequence, operation_state, created_at, updated_at, schema_version
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, '[]', ?, ?, 0, 0, 'open', 'accepting', 0, 'idle', ?, ?, ?)`
       )
       .run(
         input.harnessInstanceId,
@@ -345,7 +347,8 @@ export function createNanoHostHarnessRuntime(
         Math.max(8, capacity),
         capacity,
         input.timestamp,
-        input.timestamp
+        input.timestamp,
+        writeRetainedV1({}).schemaVersion
       );
     coreDb.sqlite.exec('COMMIT');
   } catch (error) {
@@ -362,12 +365,15 @@ export function removeNanoHostSandboxRuntimeForHarness(
   requireIdentity(harnessInstanceId, 'Harness');
   const row = coreDb.sqlite
     .prepare(
-      'SELECT sandbox_runtime_id AS sandboxRuntimeId FROM harness_instance_records WHERE harness_instance_id = ?'
+      'SELECT schema_version AS schemaVersion, sandbox_runtime_id AS sandboxRuntimeId FROM harness_instance_records WHERE harness_instance_id = ?'
     )
-    .get(harnessInstanceId) as { readonly sandboxRuntimeId: string } | undefined;
+    .get(harnessInstanceId) as
+    | { readonly schemaVersion: unknown; readonly sandboxRuntimeId: string }
+    | undefined;
   if (!row) {
     return;
   }
+  readRetainedV1(row, () => row);
   const removed = coreDb.sqlite
     .prepare('DELETE FROM sandbox_runtime_records WHERE sandbox_runtime_id = ?')
     .run(row.sandboxRuntimeId);
@@ -519,7 +525,8 @@ export function inspectNanoHostAgentSessionContinuity(
   );
   const row = coreDb.sqlite
     .prepare(
-      `SELECT b.agent_session_runtime_binding_id AS agentSessionRuntimeBindingId,
+      `SELECT b.schema_version AS schemaVersion, h.schema_version AS harnessSchemaVersion,
+              b.agent_session_runtime_binding_id AS agentSessionRuntimeBindingId,
               b.workspace_id AS workspaceId, b.thread_id AS threadId,
               b.agent_session_compatibility_key AS agentSessionCompatibilityKey,
               b.native_handle_state AS nativeHandleState,
@@ -547,6 +554,8 @@ export function inspectNanoHostAgentSessionContinuity(
     )
     .get(input.agentSessionId) as
     | {
+        readonly schemaVersion: unknown;
+        readonly harnessSchemaVersion: unknown;
         readonly activeTurnCount: number;
         readonly adapterId: string;
         readonly adapterVersion: string;
@@ -578,6 +587,8 @@ export function inspectNanoHostAgentSessionContinuity(
     }
     return null;
   }
+  readRetainedV1(row, () => row);
+  readRetainedV1({ schemaVersion: row.harnessSchemaVersion }, () => row);
   const expectedRuntimeCompatibilityKey =
     input.agentSessionCompatibilityKey === undefined
       ? null
@@ -640,15 +651,19 @@ export function readNanoHostThreadAgentSessionBinding(
   requireIdentity(input.threadId, 'Thread');
   const rows = coreDb.sqlite
     .prepare(
-      `SELECT agent_session_id AS agentSessionId
+      `SELECT schema_version AS schemaVersion, agent_session_id AS agentSessionId
        FROM agent_session_runtime_bindings
        WHERE workspace_id = ? AND thread_id = ?`
     )
-    .all(input.workspaceId, input.threadId) as Array<{ readonly agentSessionId: string }>;
+    .all(input.workspaceId, input.threadId) as Array<{
+    readonly schemaVersion: unknown;
+    readonly agentSessionId: string;
+  }>;
   if (rows.length > 1) {
     throw new Error('NanoHost Harness already has a current AgentSession for this Thread.');
   }
-  return rows[0] ?? null;
+  const row = rows[0];
+  return row ? readRetainedV1(row, () => ({ agentSessionId: row.agentSessionId })) : null;
 }
 
 /** Opens one pending native-conversation binding, copies measured image digest, and consumes only open-session capacity. */
@@ -703,8 +718,8 @@ export function openNanoHostAgentSessionBinding(
            workspace_id, thread_id, agent_session_compatibility_key,
            effective_setup_generation, native_handle_state, native_handle_digest,
            lifecycle_state, current_turn_id, current_attempt_id, next_turn_sequence, cleanup_state,
-           created_at, updated_at, image_digest, native_environment_json
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NULL, 'opening', NULL, NULL, 0, 'clean', ?, ?, ?, ?)`
+           created_at, updated_at, image_digest, native_environment_json, schema_version
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NULL, 'opening', NULL, NULL, 0, 'clean', ?, ?, ?, ?, ?)`
       )
       .run(
         input.agentSessionRuntimeBindingId,
@@ -717,7 +732,8 @@ export function openNanoHostAgentSessionBinding(
         input.timestamp,
         input.timestamp,
         measuredImageDigest,
-        input.nativeEnvironment ? JSON.stringify(input.nativeEnvironment) : null
+        input.nativeEnvironment ? JSON.stringify(input.nativeEnvironment) : null,
+        writeRetainedV1({}).schemaVersion
       );
     persistCopiedMeasuredHarnessIdentity(
       coreDb,
@@ -762,14 +778,17 @@ export function copyNanoHostMeasuredHarnessIdentity(
   }
   const row = coreDb.sqlite
     .prepare(
-      `SELECT image_digest AS imageDigest
+      `SELECT schema_version AS schemaVersion, image_digest AS imageDigest
        FROM agent_session_runtime_bindings
        WHERE agent_session_runtime_binding_id = ?`
     )
-    .get(input.agentSessionRuntimeBindingId) as { readonly imageDigest: string | null } | undefined;
+    .get(input.agentSessionRuntimeBindingId) as
+    | { readonly schemaVersion: unknown; readonly imageDigest: string | null }
+    | undefined;
   if (!row) {
     throw new Error('NanoHost AgentSession binding is missing.');
   }
+  readRetainedV1(row, () => row);
   if (!row.imageDigest) {
     const updated = coreDb.sqlite
       .prepare(
@@ -805,11 +824,14 @@ export function readNanoHostMeasuredHarnessIdentity(
   requireIdentity(agentSessionRuntimeBindingId, 'AgentSession runtime binding');
   const row = coreDb.sqlite
     .prepare(
-      `SELECT image_digest AS imageDigest
+      `SELECT schema_version AS schemaVersion, image_digest AS imageDigest
        FROM agent_session_runtime_bindings
        WHERE agent_session_runtime_binding_id = ?`
     )
-    .get(agentSessionRuntimeBindingId) as { readonly imageDigest: string | null } | undefined;
+    .get(agentSessionRuntimeBindingId) as
+    | { readonly schemaVersion: unknown; readonly imageDigest: string | null }
+    | undefined;
+  if (row) readRetainedV1(row, () => row);
   if (typeof row?.imageDigest === 'string' && /^sha256:[0-9a-f]{64}$/.test(row.imageDigest)) {
     return row.imageDigest;
   }
@@ -918,7 +940,7 @@ export function dispatchNanoHostHarnessOperation(
     }
     const harness = coreDb.sqlite
       .prepare(
-        `SELECT * FROM harness_instance_records
+        `SELECT *, schema_version AS schemaVersion FROM harness_instance_records
          WHERE sandbox_runtime_id = ? AND operation_state = 'queued'
          ORDER BY updated_at, harness_instance_id LIMIT 1`
       )
@@ -927,6 +949,7 @@ export function dispatchNanoHostHarnessOperation(
       coreDb.sqlite.exec('COMMIT');
       return null;
     }
+    readRetainedV1(harness, () => harness);
     const now = input.now?.() ?? new Date().toISOString();
     if (Date.parse(now) >= Date.parse(harness.updated_at) + NANO_HOST_HARNESS_RESULT_BUDGET_MS) {
       setHarnessUnknown(coreDb, harness.harness_instance_id, now, 'queued');
@@ -944,6 +967,13 @@ export function dispatchNanoHostHarnessOperation(
       harness.operation,
       readJsonObject(harness.command_body_json)
     );
+    if (typeof body.agentSessionRuntimeBindingId === 'string') {
+      const binding = coreDb.sqlite
+        .prepare(`SELECT schema_version AS schemaVersion FROM agent_session_runtime_bindings
+        WHERE agent_session_runtime_binding_id = ? AND harness_instance_id = ?`)
+        .get(body.agentSessionRuntimeBindingId, harness.harness_instance_id);
+      if (binding) readRetainedV1(binding, () => binding);
+    }
     let wireBody = body;
     let durableBody = body;
     if (harness.operation === 'turn.start') {
@@ -1259,6 +1289,11 @@ function projectSuccessfulResult(
     }
     throw new Error('NanoHost Harness operation has no AgentSession binding.');
   }
+  const retainedBinding = coreDb.sqlite
+    .prepare(`SELECT schema_version AS schemaVersion FROM agent_session_runtime_bindings
+    WHERE agent_session_runtime_binding_id = ? AND harness_instance_id = ?`)
+    .get(bindingId, harness.harness_instance_id);
+  if (retainedBinding) readRetainedV1(retainedBinding, () => retainedBinding);
   if (harness.operation === 'session.close') {
     const removed = coreDb.sqlite
       .prepare(
@@ -1393,7 +1428,7 @@ function requireOperationLineage(
   }
   const binding = coreDb.sqlite
     .prepare(
-      `SELECT agent_session_id AS agentSessionId, workspace_id AS workspaceId,
+      `SELECT schema_version AS schemaVersion, agent_session_id AS agentSessionId, workspace_id AS workspaceId,
               thread_id AS threadId, lifecycle_state AS lifecycleState,
               current_turn_id AS currentTurnId, current_attempt_id AS currentAttemptId,
               next_turn_sequence AS nextTurnSequence, native_environment_json AS nativeEnvironment
@@ -1402,6 +1437,7 @@ function requireOperationLineage(
     )
     .get(body.agentSessionRuntimeBindingId, harness.harness_instance_id) as
     | {
+        readonly schemaVersion: unknown;
         readonly agentSessionId: string;
         readonly currentAttemptId: string | null;
         readonly currentTurnId: string | null;
@@ -1412,6 +1448,7 @@ function requireOperationLineage(
         readonly nativeEnvironment: string | null;
       }
     | undefined;
+  if (binding) readRetainedV1(binding, () => binding);
   if (!binding || binding.agentSessionId !== body.agentSessionId) {
     throw new Error('NanoHost Harness AgentSession binding lineage conflicts.');
   }
@@ -1598,6 +1635,7 @@ function setHarnessUnknown(
   timestamp: string,
   fromState: 'queued' | 'dispatched' = 'dispatched'
 ): void {
+  const harness = requireHarness(coreDb, harnessInstanceId);
   const update = coreDb.sqlite
     .prepare(
       `UPDATE harness_instance_records
@@ -1609,7 +1647,6 @@ function setHarnessUnknown(
   if (update.changes !== 1) {
     throw new Error('NanoHost Harness unknown cleanup transition changed concurrently.');
   }
-  const harness = requireHarness(coreDb, harnessInstanceId);
   fenceNanoHostSandboxRuntimeInTransaction(coreDb, {
     harnessBindingRef: harness.harness_binding_ref,
     timestamp,
@@ -1638,6 +1675,12 @@ function fenceNanoHostSandboxRuntimeInTransaction(
   if (!sandbox) {
     return;
   }
+  const harnesses = coreDb.sqlite
+    .prepare(
+      'SELECT schema_version AS schemaVersion FROM harness_instance_records WHERE sandbox_runtime_id = ?'
+    )
+    .all(sandbox.sandboxRuntimeId);
+  for (const harness of harnesses) readRetainedV1(harness, () => harness);
   const sandboxUpdate = coreDb.sqlite
     .prepare(
       `UPDATE sandbox_runtime_records
@@ -1661,24 +1704,28 @@ function fenceNanoHostSandboxRuntimeInTransaction(
 /** Reads one Harness by durable identity. */
 function requireHarness(coreDb: CoreDb, harnessInstanceId: string): HarnessRow {
   const row = coreDb.sqlite
-    .prepare('SELECT * FROM harness_instance_records WHERE harness_instance_id = ?')
+    .prepare(
+      'SELECT *, schema_version AS schemaVersion FROM harness_instance_records WHERE harness_instance_id = ?'
+    )
     .get(harnessInstanceId) as HarnessRow | undefined;
   if (!row) {
     throw new Error('NanoHost Harness is missing.');
   }
-  return row;
+  return readRetainedV1(row, () => row);
 }
 
 /** Reads one Harness by the current private bridge binding. */
 function requireHarnessByBinding(coreDb: CoreDb, harnessBindingRef: string): HarnessRow {
   requireIdentity(harnessBindingRef, 'Harness binding');
   const row = coreDb.sqlite
-    .prepare('SELECT * FROM harness_instance_records WHERE harness_binding_ref = ?')
+    .prepare(
+      'SELECT *, schema_version AS schemaVersion FROM harness_instance_records WHERE harness_binding_ref = ?'
+    )
     .get(harnessBindingRef) as HarnessRow | undefined;
   if (!row) {
     throw new Error('NanoHost Harness binding is missing or stale.');
   }
-  return row;
+  return readRetainedV1(row, () => row);
 }
 
 /** Reads one NanoCore-selected Harness through its owning Sandbox Integration. */
@@ -1691,7 +1738,7 @@ function requireHarnessForIntegration(
   requireIdentity(harnessInstanceId, 'Harness');
   const row = coreDb.sqlite
     .prepare(
-      `SELECT h.* FROM harness_instance_records h
+      `SELECT h.*, h.schema_version AS schemaVersion FROM harness_instance_records h
        JOIN sandbox_runtime_records s ON s.sandbox_runtime_id = h.sandbox_runtime_id
        WHERE s.sandbox_integration_binding_ref = ? AND h.harness_instance_id = ?`
     )
@@ -1699,7 +1746,7 @@ function requireHarnessForIntegration(
   if (!row) {
     throw new Error('NanoHost Harness is not owned by the current Sandbox Integration.');
   }
-  return row;
+  return readRetainedV1(row, () => row);
 }
 
 /** Reads a canonical stored JSON object. */

@@ -4,7 +4,7 @@ import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { BootReadinessSnapshot } from '@openkit/app-api-schemas';
-import { deriveEntityId, PROTOCOL_VERSION } from '@openkit/protocol';
+import { deriveEntityId, PROTOCOL_VERSION, writeRetainedV1 } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   createOpenKitAccessTokenRecord,
@@ -305,7 +305,7 @@ describe('Workspace JSON transfer cutover', () => {
         .trim()
         .split('\n')
         .map((line) => JSON.parse(line))
-    ).toEqual([{ ...published.turn, captureCoverage: published.captureCoverage }]);
+    ).toEqual([writeRetainedV1({ ...published.turn, captureCoverage: published.captureCoverage })]);
     expect(exportedTurns).not.toContain('failed-cache');
     // A discarded cache candidate cannot hide the same complete canonical Turn from later exports.
     (store as unknown as { turns: Map<string, unknown> }).turns.delete(turn.id);

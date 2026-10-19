@@ -159,6 +159,12 @@ Every Artifact MUST carry current-version `contentDigest`, current-state `lastMu
 
 Every work-produced Artifact creation or content, title, or summary update communicated in a Thread MUST increment `version` exactly once and commit the matching current `contentDigest`. A lifecycle-status-only change MUST NOT change `version`. Every mutation MUST carry the expected current version and set Artifact `lastMutationRequestId` to that request.
 
+Each content-bearing version retains one immutable format-version-1 record with one exact Artifact snapshot and original payload. Beside that snapshot, it retains only the actual parent, producing actor, publication Thread/Turn, mutation request and accepted time. Identity, Workspace, content version, title, summary and content digest are supplied only by the snapshot; public version list and detail summaries derive those fields from it. Version 1 has no parent; version n has parent n-1 for the same Artifact. Immutable origin and top-level original Thread/Turn remain unchanged. Direct import has null publication Thread/Turn for version 1. The current Artifact record owns the acknowledged version pointer and lifecycle status; its content fields project that selected immutable version. Version directories do not infer or advance the pointer. Unknown descriptive additions remain readable; missing history, malformed required fields and unknown core formats fail clearly without inferred lineage or a legacy reader. Initial creation stages the real version-1 record and payload inside the existing Artifact directory publication.
+
+`artifact.version-commit` and streamed `artifact.version-file-commit` publish one next version under current source access, exact expected current version and an idle authorized Thread. Work-produced updates use the original source Thread; Workspace-visible imported updates use a Workspace-visible Thread. One deterministic completed Core-local Turn and its exact Artifact-reference Item communicate the publication. The operation invokes no provider, Worker, AgentSession or scheduler. It reuses the Artifact-family authority/receipt failure boundary below.
+
+History lists keep every version and parent. Exact read, download and pinned Context input resolve the requested version and digest even after a newer head exists, under current source and receiving-audience admission. Missing or invalid originals return a truthful failure; binary bytes remain binary. Workspace export includes every admitted immutable version descriptor and original payload. Import remints existing Workspace/Artifact/Thread/Turn references while preserving original bytes, digest, parent numbers and attribution under the existing import actor policy. Historical runtime configuration grants no present authority.
+
 Derived Artifact, Turn, Item, Material, Material revision, and Artifact Review outputs use their kind prefixes plus canonical lowercase UUIDv5 text under [Core Protocol](../core/protocol.md#ids). Each name is exactly the UTF-8 RFC 8785 JSON Canonicalization Scheme output for its JSON value below. Arrays preserve the listed order. Each kind uses its fixed OpenKit namespace from Core Protocol. The output-encoding decision is recorded in [One Identifier Mechanism](../decisions/20261014-one_identifier_mechanism.md).
 
 | Derived output | Prefix | JSON name value, in fixed array order |
@@ -167,6 +173,7 @@ Derived Artifact, Turn, Item, Material, Material revision, and Artifact Review o
 | Worker-submitted Artifact | `ar` | `[packageSnapshotId, producingTurnId, submissionRequestId]` |
 | Workspace Changes backing Artifact | `ar` | `["workspace_changes", producingTurnId, workspaceReviewId]` |
 | Artifact introduction Turn | `tu` | `[actor, workspaceId, threadId, "artifact.introduce", requestId]` |
+| Artifact version publication Turn | `tu` | `[actor, workspaceId, threadId, command, requestId]`, where command is `artifact.version-commit` or `artifact.version-file-commit` |
 | Artifact communication or introduction Item | `it` | `[artifactId, communicatingTurnId]` |
 | Material creation | `mat` | `["material.create", actor, workspaceId, requestId]` |
 | Material revision, including accepted Review apply | `mrev` | `["material.save", actor, workspaceId, materialId, requestId]` |
@@ -707,6 +714,10 @@ The L4 browser acceptance MUST prove the following sequence.
 7. A worker proposal against revision 2 becomes one immutable turn-output Artifact and version-keyed Review, accepted apply creates one new Material revision from those exact bytes, and a concurrent newer user revision instead leaves the Review pending with `conflict` and no Material write.
 
 Additional acceptance MUST cover unrelated-material exclusion, explicit queued-revision exclusion, workspace isolation, and redo without deletion of prior attempts.
+
+### Artifact version acceptance
+
+Create v1, publish v2, reopen and inspect both exact originals, parents, actors and publication references. An imported Artifact keeps its immutable source digest and null top-level Thread/Turn. Reject stale expected heads and preserve acknowledged history on handled failures. Exact read, download and pinned input for v1 after v2 return v1. Workspace round trip preserves every historical original and resolvable publication Item. Exercise one binary stream and one exact text version.
 
 ### L5 integrity coverage
 

@@ -500,6 +500,35 @@ export function currentWorkerLineageWorkspaceAuthority(
   );
 }
 
+/** Establishes trusted Worker scope and current credential eligibility before its one concrete primary decision. */
+export function currentWorkerLineageWorkspaceEligibility(
+  coreDb: CoreDb,
+  lineage: SchedulerExecutionLineage & { readonly triggerActor: ActorRef }
+): WorkspaceAuthority | null {
+  const admission = findSchedulerAdmissionForWorkerLineage(coreDb, lineage);
+  if (!admission || !sameActorRef(admission.triggerActor, lineage.triggerActor)) return null;
+  if (admission.serverAdminTokenId !== null) {
+    if (!admission.serverAdminTokenId || admission.triggerActor.kind !== 'user') return null;
+    return authorizeWorkspaceEligibility(
+      coreDb,
+      {
+        kind: 'token',
+        tokenId: admission.serverAdminTokenId,
+        tokenScope: 'server-admin',
+        userId: admission.triggerActor.id,
+      },
+      admission.workspaceId,
+      { mutating: false }
+    )
+      ? 'administrator'
+      : null;
+  }
+  const userId = responsibleUserIdForActor(admission.triggerActor);
+  return userId && resolveWorkspaceMembershipRelation(coreDb, admission.workspaceId, userId)
+    ? 'member'
+    : null;
+}
+
 /**
  * Rechecks a product Turn's exact live admission before its Worker lease is created.
  *
@@ -676,7 +705,9 @@ async function authorizeWorkspaceOperation(
   if (!workspaceId) {
     return workspaceAccessDenied();
   }
-  const authorized = authorizeWorkspace(input.coreDb, actor, workspaceId, route.access);
+  const authorized = nonempty(context.req.param('threadId'))
+    ? authorizeWorkspaceEligibility(input.coreDb, actor, workspaceId, route.access)
+    : authorizeWorkspace(input.coreDb, actor, workspaceId, route.access);
   if (
     !authorized ||
     (route.access.resolver === 'actor-quick-chat-workspace' && !authorized.isOwner)
@@ -688,7 +719,13 @@ async function authorizeWorkspaceOperation(
     kind: 'workspace',
     policyOperation: route.access.policyOperation,
   });
-  return denyIfThreadInaccessible(context, actor, input, authorized.workspaceId);
+  return denyIfThreadInaccessible(
+    context,
+    actor,
+    input,
+    authorized.workspaceId,
+    route.access.policyOperation
+  );
 }
 
 /** Checks current initiating-user or administrator retry authority; the deletion owner validates the exact request before effects. */
@@ -792,44 +829,39 @@ export function authorizeWorkspace(
     readonly authentication?: PublicOperationAccess['authentication'];
   }
 ): AuthorizedWorkspace | null {
-  if (readonlyTokenCannotMutate(actor, access)) {
-    return null;
-  }
-  if (isCurrentDeploymentAdministrator(coreDb, actor)) {
-    if (!isActiveRegisteredWorkspace(coreDb, workspaceId)) {
-      return null;
-    }
-    try {
-      if (
-        evaluateAdministratorWorkspaceAccess({
+  const eligible = authorizeWorkspaceEligibility(coreDb, actor, workspaceId, access);
+  if (!eligible) return null;
+  try {
+    const decision = isCurrentDeploymentAdministrator(coreDb, actor)
+      ? evaluateAdministratorWorkspaceAccess({
           userId: actor.userId,
           workspaceId,
           operation: access.policyOperation,
-        }).effect !== 'allow'
-      )
-        return null;
-    } catch {
-      return null;
-    }
-    return {
-      isOwner: resolveWorkspaceMembershipRelation(coreDb, workspaceId, actor.userId) === 'owner',
-      workspaceId,
-    };
-  }
-  if (!isUsablePresentedAccessToken(coreDb, actor)) {
+        })
+      : evaluateWorkspaceMemberAccess({ operation: access.policyOperation });
+    return decision.effect === 'allow' ? eligible : null;
+  } catch {
     return null;
   }
-  if (!tokenIncludesWorkspace(actor, workspaceId, access.authentication)) {
-    return null;
+}
+
+/** Establishes current scope eligibility before the native resolver selects its one primary Kernel target. */
+export function authorizeWorkspaceEligibility(
+  coreDb: CoreDb,
+  actor: Actor,
+  workspaceId: string,
+  access: Pick<PublicOperationAccess, 'mutating'> & {
+    readonly authentication?: PublicOperationAccess['authentication'];
   }
-  const membershipRelation = currentWorkspaceAuthority(
-    coreDb,
-    workspaceId,
-    { kind: 'user', id: actor.userId },
-    access.policyOperation,
-    true
-  );
-  if (!membershipRelation) {
+): AuthorizedWorkspace | null {
+  if (readonlyTokenCannotMutate(actor, access)) return null;
+  if (isCurrentDeploymentAdministrator(coreDb, actor)) {
+    if (!isActiveRegisteredWorkspace(coreDb, workspaceId)) return null;
+  } else if (
+    !isUsablePresentedAccessToken(coreDb, actor) ||
+    !tokenIncludesWorkspace(actor, workspaceId, access.authentication) ||
+    !resolveWorkspaceMembershipRelation(coreDb, workspaceId, actor.userId)
+  ) {
     return null;
   }
   return {
@@ -853,13 +885,14 @@ function denyIfThreadInaccessible(
   context: Context<{ Variables: AuthVariables }>,
   actor: Actor,
   input: RegisterOperationAccessGuardsInput,
-  workspaceId: string
+  workspaceId: string,
+  operation: ProductOperation
 ): Response | null {
   const threadId = nonempty(context.req.param('threadId'));
   if (threadId === null) {
     return null;
   }
-  if (isThreadIdVisible(input.store, workspaceId, threadId, actor.userId)) {
+  if (isThreadIdVisible(input.store, workspaceId, threadId, actor.userId, false, operation)) {
     return null;
   }
   return threadNotFound();

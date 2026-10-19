@@ -8,8 +8,12 @@ import { createCanvas, loadImage } from '@napi-rs/canvas';
 import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { decideArtifactReview, getArtifactReview } from '../artifact-reviews.js';
+import * as threadVisibility from '../auth/thread-visibility.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { prepareArtifactSourceInputs } from '../context/artifact-source-files.js';
+import { prepareMaterialSourceInput } from '../context/material-source-files.js';
+import { prepareTurnFileSourceInputs } from '../context/turn-source-files.js';
 import * as visionProcessor from '../context/vision-view.js';
 import * as packageOwner from '../context/worker-context-package.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
@@ -20,13 +24,21 @@ import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { artifactFilePayloadPath } from '../storage/artifacts/file-records.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
-import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
+import {
+  serializeUserAuthoredKnowledgePage,
+  turnFilePayloadPath,
+} from '../storage/workspace-file-records.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import {
+  createWorkspaceMaterial,
+  getWorkspaceMaterialRevision,
+  saveWorkspaceMaterialRevision,
+} from '../workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   dispatchOpenkitWorkTool,
@@ -71,11 +83,17 @@ it('advertises the canonical Knowledge and Work Tool projections in their fixed 
 });
 
 /** Creates real canonical owners; the capture double stands outside the Core publication seam. */
-function submissionFixture() {
+function submissionFixture(turnInputs: Buffer[] = []) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-artifact-submit-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const store = createDemoStore({ dataRoot });
+  const fileAdmission = new FileStorageAdmission(dataRoot, () => 0n);
+  const filePayloadPaths = turnInputs.map((bytes, ordinal) => {
+    const path = join(dataRoot, `input-${ordinal}`);
+    writeFileSync(path, bytes);
+    return path;
+  });
   const turn = store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',
@@ -83,7 +101,20 @@ function submissionFixture() {
     {
       kind: 'user',
       id: 'usr_00000000-0000-7000-8000-000000000001',
-    }
+    },
+    null,
+    turnInputs.length
+      ? {
+          fileInputs: turnInputs.map((bytes, ordinal) => ({
+            name: `input-${ordinal}.txt`,
+            mediaType: 'text/plain',
+            sizeBytes: bytes.length,
+            contentDigest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+          })),
+          filePayloadPaths,
+          fileWriteAdmission: fileAdmission,
+        }
+      : undefined
   );
   const environmentPackage = resolveAgentEnvironmentPackage({
     agentSetup: createTestAgentSetup(),
@@ -131,7 +162,6 @@ function submissionFixture() {
       maxByteLength: number;
     }) => ({ bytes: Buffer.from('Finished report\n'), credentialCheckValues })
   );
-  const fileAdmission = new FileStorageAdmission(dataRoot, () => 0n);
   // Only the external capture is doubled. The actual Core stage, scan and publication owners
   // consume a new stream per capture, so concurrent calls never share a consumed reader.
   const input = {
@@ -865,8 +895,13 @@ it('dispatches bounded source reads and refuses a path outside the accepted Turn
 });
 
 /** Captures an actual Artifact, processes and publishes its real snapshot bytes, and supplies only S39's independently verified trace result. Current scheduler, actor, source and receiving-audience checks stay real. */
-async function sourceToolFixture(bytes: Buffer, mediaType: string, withKnowledge = false) {
-  const fixture = submissionFixture();
+async function sourceToolFixture(
+  bytes: Buffer,
+  mediaType: string,
+  withKnowledge = false,
+  turnInputs: Buffer[] = []
+) {
+  const fixture = submissionFixture(turnInputs);
   ensureLocalUser(fixture.coreDb);
   recordWorkspaceOwnerMembership({
     coreDb: fixture.coreDb,
@@ -946,6 +981,10 @@ async function sourceToolFixture(bytes: Buffer, mediaType: string, withKnowledge
     knowledgeSelections: notebookRevision
       ? [
           {
+            knowledgeBaseId: readDefaultKnowledgeBaseId({
+              dataRoot: fixture.dataRoot,
+              scope: { kind: 'workspace', workspaceId: fixture.turn.workspaceId },
+            }),
             knowledgePageId: 'selected',
             notebookRevision,
             content: knowledgeContent,
@@ -993,7 +1032,7 @@ async function sourceToolFixture(bytes: Buffer, mediaType: string, withKnowledge
     sessionCompatibilityKey: 'fixture-compatibility',
     now: () => new Date().toISOString(),
   });
-  const proof = vi.spyOn(packageOwner, 'readWorkerContextPackageTrace').mockReturnValue({
+  const trace = {
     workspaceId: scope.workspaceId,
     threadId: scope.threadId,
     turnId: scope.turnId,
@@ -1001,12 +1040,14 @@ async function sourceToolFixture(bytes: Buffer, mediaType: string, withKnowledge
     packageSnapshotId: fixture.environmentPackage.snapshotId,
     sourceFiles: [source],
     knowledgeSelections: files.knowledgeSelections,
-  } as packageOwner.WorkerContextPackageTrace);
+  } as packageOwner.WorkerContextPackageTrace;
+  const proof = vi.spyOn(packageOwner, 'readWorkerContextPackageTrace').mockReturnValue(trace);
   onTestFinished(() => proof.mockRestore());
   return {
     ...fixture,
     artifactId,
     source,
+    trace,
     packagePath: source.packagePath,
     proof,
     knowledge: files.knowledgeSelections[0],
@@ -1087,7 +1128,32 @@ it('returns an actual cropped selected image through standard MCP carriage and w
   expect(afterDenied.some((name) => name.startsWith('vision-view-'))).toBe(false);
 }, 45_000);
 
-it('reads retained bytes through the real dispatcher and withholds them after current user access is revoked', async () => {
+it.each([
+  'source visibility',
+  'destination audience',
+] as const)('refuses %s before reading the retained Artifact original', async (guard) => {
+  const f = await sourceToolFixture(Buffer.from('Private original bytes.\n'), 'text/plain');
+  const denied = vi
+    .spyOn(
+      threadVisibility,
+      guard === 'source visibility' ? 'isArtifactVisible' : 'canDiscloseThreadToAudience'
+    )
+    .mockReturnValue(false);
+  const readVersion = vi.spyOn(f.store, 'getArtifactVersion');
+  onTestFinished(() => {
+    denied.mockRestore();
+    readVersion.mockRestore();
+  });
+  const result = await dispatchOpenkitWorkTool(f.input, 'work_source_read', {
+    path: f.packagePath,
+    mode: 'read',
+  });
+  expect(result.structuredContent).toEqual({ status: 'unavailable', reason: 'unavailable' });
+  expect(denied).toHaveBeenCalled();
+  expect(readVersion).not.toHaveBeenCalled();
+});
+
+it('reads current exact original bytes through the real dispatcher and withholds them after current user access is revoked', async () => {
   const fixture = await sourceToolFixture(Buffer.from('Finished report\n'), 'text/plain');
   const { packagePath, proof, artifactId } = fixture;
   const result = await dispatchOpenkitWorkTool(fixture.input, 'work_source_read', {
@@ -1177,12 +1243,27 @@ it('continues selected Knowledge at its actual commit after later publication an
   expect(JSON.stringify(denied)).not.toContain('Exact selected');
 });
 
-it('searches only the selected retained PDF text through the real Worker Tool and kernel', async () => {
+it('searches only the selected current exact PDF text through the real Worker Tool and kernel', async () => {
   const f = await sourceToolFixture(
     createPdfFixture(['first page', 'second needle']),
     'application/pdf'
   );
   expect(f.source.projection.pdfTextLayer).toBeDefined();
+  Object.assign(f.source.projection.pdfTextLayer!.processor, {
+    annotation: 'Descriptive metadata',
+  });
+  const read = await dispatchOpenkitWorkTool(f.input, 'work_source_read', {
+    path: f.packagePath,
+    mode: 'read',
+  });
+  expect(read.structuredContent).toMatchObject({
+    status: 'ready',
+    eof: true,
+    coverage: { kind: 'pdf-text-layer', complete: true },
+  });
+  expect(JSON.stringify(read)).toContain('second needle');
+  const stagingRoot = join(f.dataRoot, 'workspaces', '.staging');
+  const before = readdirSync(stagingRoot).sort();
   const result = await dispatchOpenkitWorkTool(f.input, 'work_source_search', {
     path: f.packagePath,
     mode: 'exact',
@@ -1204,6 +1285,17 @@ it('searches only the selected retained PDF text through the real Worker Tool an
     },
   });
   expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(512 * 1024);
+  expect(readdirSync(stagingRoot).sort()).toEqual(before);
+  const repeated = await dispatchOpenkitWorkTool(f.input, 'work_source_search', {
+    path: f.packagePath,
+    mode: 'exact',
+    query: 'needle',
+  });
+  expect(repeated.structuredContent).toMatchObject({
+    status: 'ready',
+    result: { hits: [{ digest: f.source.originalDigest.slice(7) }] },
+  });
+  expect(readdirSync(stagingRoot).sort()).toEqual(before);
   const denied = await dispatchOpenkitWorkTool(f.input, 'work_source_search', {
     path: `${f.packagePath}/unselected`,
     query: 'needle',
@@ -1211,3 +1303,178 @@ it('searches only the selected retained PDF text through the real Worker Tool an
   expect(denied.structuredContent).toEqual({ status: 'unavailable', reason: 'unavailable' });
   expect(JSON.stringify(denied)).not.toContain(f.artifactId);
 }, 30_000);
+
+it('refuses changed or missing canonical original bytes without using delivered package bytes', async () => {
+  const f = await sourceToolFixture(Buffer.from('Exact admitted original\n'), 'text/plain');
+  const path = artifactFilePayloadPath(
+    join(f.dataRoot, 'workspaces', f.turn.workspaceId),
+    f.artifactId,
+    1
+  );
+  writeFileSync(path, Buffer.alloc(f.source.byteLength, 0x78));
+  for (const tool of ['work_source_read', 'work_source_search', 'work_source_view']) {
+    const result = await dispatchOpenkitWorkTool(f.input, tool, {
+      path: f.packagePath,
+      query: 'original',
+    });
+    expect(result.structuredContent).toMatchObject({ status: 'unavailable' });
+    expect(JSON.stringify(result)).not.toContain('original bytes');
+    expect(JSON.stringify(result)).not.toContain(f.source.originalDigest);
+  }
+  rmSync(path);
+  const missing = await dispatchOpenkitWorkTool(f.input, 'work_source_read', {
+    path: f.packagePath,
+  });
+  expect(missing.structuredContent).toEqual({ status: 'unavailable', reason: 'unavailable' });
+});
+
+it('does not replace a selected Artifact version with the current owner head', async () => {
+  const f = await sourceToolFixture(Buffer.from('Selected version\n'), 'text/plain');
+  f.store.getArtifact(f.turn.workspaceId, f.artifactId).version += 1;
+  const result = await dispatchOpenkitWorkTool(f.input, 'work_source_read', {
+    path: f.packagePath,
+  });
+  expect(result.structuredContent).toEqual({ status: 'unavailable', reason: 'unavailable' });
+  expect(JSON.stringify(result)).not.toContain('Selected version');
+});
+
+it('rejects a regenerated PDF representation when the captured recipe differs', async () => {
+  const f = await sourceToolFixture(createPdfFixture(['exact needle']), 'application/pdf');
+  f.source.projection.pdfTextLayer!.processor.pdfjsVersion = 'changed-captured-recipe';
+  for (const tool of ['work_source_read', 'work_source_search']) {
+    const result = await dispatchOpenkitWorkTool(f.input, tool, {
+      path: f.packagePath,
+      query: 'needle',
+    });
+    expect(result.structuredContent).toEqual({ status: 'unavailable', reason: 'unavailable' });
+    expect(JSON.stringify(result)).not.toContain('needle');
+  }
+}, 30_000);
+
+it('reads the exact immutable Material revision after a later canonical save', async () => {
+  const f = await sourceToolFixture(Buffer.from('Other source'), 'text/plain');
+  const actor = { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' };
+  const acceptedAt = '2026-10-18T00:00:00.000Z';
+  const { materialId } = createWorkspaceMaterial(f.workspaceDb, {
+    actor,
+    acceptedAt,
+    requestId: 'create-selected-material',
+    title: 'Selected Material',
+    kind: 'text',
+    sensitivity: 'internal',
+  });
+  const content = 'Exact selected immutable Material\n';
+  const contentDigest = `sha256:${createHash('sha256').update(content).digest('hex')}`;
+  const { revisionId } = saveWorkspaceMaterialRevision(f.workspaceDb, {
+    actor,
+    acceptedAt,
+    materialId,
+    requestId: 'save-selected-material',
+    expectedRevisionId: null,
+    content,
+    contentDigest,
+  });
+  const revision = getWorkspaceMaterialRevision(f.workspaceDb, materialId, revisionId);
+  const prepared = await prepareMaterialSourceInput({
+    workspaceId: f.turn.workspaceId,
+    selection: {
+      ...revision,
+      sensitivity: 'internal',
+      inclusionReason: 'thread_binding',
+      bindingMutationRequestId: 'selected-binding',
+    },
+    assertCurrent() {},
+  });
+  f.proof.mockReturnValue({
+    ...f.trace,
+    sourceFiles: [
+      packageOwner.WorkerContextPackageManifestSchema.shape.sourceFiles
+        .unwrap()
+        .element.parse(prepared.source),
+    ],
+    materialSelections: [
+      {
+        ...prepared.selection,
+        sensitivity: 'internal',
+        sensitivityDecision: 'included',
+        packagePath: prepared.source.packagePath,
+      },
+    ],
+  });
+  const later = 'Later current Material body\n';
+  saveWorkspaceMaterialRevision(f.workspaceDb, {
+    actor,
+    acceptedAt,
+    materialId,
+    requestId: 'save-later-material',
+    expectedRevisionId: revisionId,
+    content: later,
+    contentDigest: `sha256:${createHash('sha256').update(later).digest('hex')}`,
+  });
+  const result = await dispatchOpenkitWorkTool(f.input, 'work_source_read', {
+    path: prepared.source.packagePath,
+    mode: 'read',
+  });
+  expect(result.structuredContent).toMatchObject({
+    status: 'ready',
+    text: content,
+    identity: { revision: revisionId },
+  });
+  expect(JSON.stringify(result)).not.toContain(later);
+});
+
+it('reads the selected canonical Turn input ordinal when an unrelated original is missing', async () => {
+  const f = await sourceToolFixture(Buffer.from('Other source'), 'text/plain', false, [
+    Buffer.from('Unrelated input'),
+    Buffer.from('Exact ordinal one\n'),
+  ]);
+  const workspaceRoot = join(f.dataRoot, 'workspaces', f.turn.workspaceId);
+  const source = (
+    await prepareTurnFileSourceInputs({
+      workspaceRoot,
+      turn: f.store.getTurnById(f.turn.id),
+      onlyOrdinal: 1,
+      assertCurrent() {},
+    })
+  )[0]!;
+  f.proof.mockReturnValue({
+    ...f.trace,
+    sourceFiles: [
+      packageOwner.WorkerContextPackageManifestSchema.shape.sourceFiles
+        .unwrap()
+        .element.parse(source),
+    ],
+  });
+  rmSync(turnFilePayloadPath(workspaceRoot, f.turn.threadId, f.turn.id, 0));
+  const result = await dispatchOpenkitWorkTool(f.input, 'work_source_read', {
+    path: source.packagePath,
+    mode: 'read',
+  });
+  expect(result.structuredContent).toMatchObject({
+    status: 'ready',
+    text: 'Exact ordinal one\n',
+    identity: { revision: '1' },
+  });
+  rmSync(turnFilePayloadPath(workspaceRoot, f.turn.threadId, f.turn.id, 1));
+  const missing = await dispatchOpenkitWorkTool(f.input, 'work_source_read', {
+    path: source.packagePath,
+  });
+  expect(missing.structuredContent).toEqual({ status: 'unavailable', reason: 'unavailable' });
+});
+
+it('withholds a vision image after same-size canonical original corruption', async () => {
+  const bytes = await createCanvas(2, 2).encode('png');
+  const f = await sourceToolFixture(bytes, 'image/png');
+  const path = artifactFilePayloadPath(
+    join(f.dataRoot, 'workspaces', f.turn.workspaceId),
+    f.artifactId,
+    1
+  );
+  writeFileSync(path, Buffer.alloc(bytes.length));
+  const result = await dispatchOpenkitWorkTool(f.input, 'work_source_view', {
+    path: f.packagePath,
+  });
+  expect(result.structuredContent).toMatchObject({ status: 'unavailable' });
+  expect(result.content.some((block) => block.type === 'image')).toBe(false);
+  expect(JSON.stringify(result)).not.toContain(f.source.originalDigest);
+});

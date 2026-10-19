@@ -4,6 +4,7 @@ import {
   DeploymentIdSchema,
   KnowledgeBaseIdSchema,
   PolicyDocumentV1Schema,
+  RETAINED_FORMAT_VERSION,
   UserIdSchema,
 } from '@openkit/protocol';
 
@@ -380,7 +381,7 @@ export const OpenKitConfigSchema = z
       .optional(),
     nanohost: OpenKitNanoHostConfigSchema.optional(),
     requiredFeatures: AuthoredConfigRequiredFeaturesSchema.optional(),
-    schemaVersion: z.literal(1).optional(),
+    schemaVersion: z.literal(RETAINED_FORMAT_VERSION),
     server: OpenKitServerRuntimeSchema.optional(),
     vault: OpenKitVaultConfigSchema.optional(),
   })
