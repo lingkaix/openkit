@@ -42,10 +42,10 @@ test('execution inventory refuses missing and repeated files or cases', () => {
   );
 });
 
-test('the nine-job plan preserves every owner and all four static tasks', () => {
+test('the twelve-job plan preserves every owner and all four static tasks', () => {
   const owners = testOwners(process.cwd());
   const plan = shardPlan();
-  assert.equal(plan.length, 9);
+  assert.equal(plan.length, 12);
   assert.equal(new Set(plan.map((s) => s.id)).size, plan.length);
   assert.equal(plan.filter((s) => s.kind === 'root').length, 1);
   const statics = plan.filter((s) => s.kind === 'static');
@@ -61,7 +61,8 @@ test('the nine-job plan preserves every owner and all four static tasks', () => 
   ]);
   for (const owner of owners) {
     const matches = plan.filter((s) => s.owners.includes(owner.name));
-    const count = owner.name === '@openkit/worker-shim' ? 2 : 1;
+    const count =
+      owner.name === '@openkit/nanocore' ? 4 : owner.name === '@openkit/worker-shim' ? 2 : 1;
     assert.equal(matches.length, count);
     for (const shard of matches) assert.equal(shard.kind, owner.vitest ? 'coverage' : 'native');
     if (count > 1) {
@@ -79,7 +80,6 @@ test('the nine-job plan preserves every owner and all four static tasks', () => 
       );
     } else assert.equal(matches[0].partition, undefined);
   }
-  assert.deepEqual(plan.find((s) => s.id === 'nanocore').owners, ['@openkit/nanocore']);
   assert.deepEqual(plan.find((s) => s.id === 'web').owners, ['@openkit/web']);
   assert.deepEqual(
     plan
@@ -109,13 +109,17 @@ test('the nine-job plan preserves every owner and all four static tasks', () => 
 });
 
 test('default aggregate requires split-owner coverage and the exact root inventory', () => {
-  const results = [...shardPlan().map((s) => s.id), 'worker-shim-coverage'].map((id) => ({
+  const results = [
+    ...shardPlan().map((s) => s.id),
+    'nanocore-coverage',
+    'worker-shim-coverage',
+  ].map((id) => ({
     id,
     conclusion: 'success',
     ...(id === 'root' ? { files: rootNodeInventory().files } : {}),
   }));
   assert.doesNotThrow(() => requireShardResults(results));
-  for (const id of ['worker-shim-coverage']) {
+  for (const id of ['nanocore-coverage', 'worker-shim-coverage']) {
     assert.throws(() => requireShardResults(results.filter((r) => r.id !== id)));
     assert.throws(() => requireShardResults([...results, { id, conclusion: 'success' }]));
     assert.throws(() =>
@@ -126,6 +130,7 @@ test('default aggregate requires split-owner coverage and the exact root invento
 
 test('coverage merge matrix contains exactly the partitioned owners', () => {
   assert.deepEqual(coveragePlan(), [
+    { id: 'nanocore', owners: ['@openkit/nanocore'], count: 4 },
     { id: 'worker-shim', owners: ['@openkit/worker-shim'], count: 2 },
   ]);
 });

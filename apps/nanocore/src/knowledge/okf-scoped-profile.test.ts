@@ -63,7 +63,8 @@ describe('OpenKit scoped profile v4', () => {
     expect(DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION).toBe('openkit-scope-knowledge-schema-v4');
   });
 
-  it.each([user, workspace, { kind: 'server' }])('accepts complete owner %j', (scope) => {
+  // Generated scope IDs are inputs; collected case names must agree across separate processes.
+  it.each([user, workspace, { kind: 'server' }])('accepts complete owner (case %#)', (scope) => {
     expect(validateOpenKitKnowledgeProfile(parsedPage({ scope }))).toMatchObject({
       conformance: 'OpenKit-profile-valid',
       errors: [],
@@ -85,7 +86,7 @@ describe('OpenKit scoped profile v4', () => {
       { kind: 'server', userId: user.userId },
       { ...workspace, userId: user.userId },
     ].map((value) => [value])
-  )('rejects an incomplete or contradictory owner %j', (scope) => {
+  )('rejects an incomplete or contradictory owner (case %#)', (scope) => {
     expect(validateOpenKitKnowledgeProfile(parsedPage({ scope })).errors).toContainEqual(
       expect.objectContaining({ code: 'profile.invalid_scope', field: 'scope' })
     );
@@ -122,7 +123,7 @@ describe('OpenKit scoped profile v4', () => {
     { owner_scope: workspace },
     { openkit_revision: 1 },
     { openkit_revision: '1' },
-  ])('refuses a second owner or page counter %j', (fields) => {
+  ])('refuses a second owner or page counter (case %#)', (fields) => {
     expect(validateOpenKitKnowledgeProfile(parsedPage(fields)).errors).toContainEqual(
       expect.objectContaining({ code: 'profile.obsolete_authority_field' })
     );
@@ -160,7 +161,7 @@ describe('OpenKit scoped profile v4', () => {
     [user, { ...user, userId: allocateEntityId('usr') }],
     [workspace, { ...workspace, workspaceId: allocateEntityId('ws') }],
     [{ kind: 'server' }, user],
-  ])('refuses a valid page owned by another admitted notebook %j', (scope, expectedOwnerScope) => {
+  ])('refuses a valid page owned by another admitted notebook (case %#)', (scope, expectedOwnerScope) => {
     const document = parsedPage({ scope });
     const expected = KnowledgeOwnerScopeSchema.parse(expectedOwnerScope);
     expect(validateScopeKnowledgeSchema(document, undefined, expected)).toMatchObject({

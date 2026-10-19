@@ -24,7 +24,7 @@ Authored Agent `resources` remains loadable configuration, but no resource key i
 
 NanoCore consumes this package so runtime loading, draft validation, reload planning, and UI schema hints follow one contract instead of copying rules into routes or UI components.
 
-The required-feature registry includes `openkit.thread-entry.v1` for file-backed Thread records carrying the immutable server-authored conversation or administration entry path. Readers must name support before accepting those records.
+The required-feature registry includes `openkit.thread-entry.v1` for file-backed Thread records carrying the immutable server-authored conversation or administration entry path. It also registers the existing evidence writer features `runtime.evidence.v1`, `worker.runtime-provenance.v1`, and `evidence.bundle.v1`. Registration does not enable a runtime capability; readers must name support before accepting a required feature.
 
 Worker sandbox filesystem grants must use canonical absolute paths. Authored read-write grants cannot equal, descend from, or contain any fixed read-only image root; read-only grants and writable paths beneath `/workspace` or `/sandbox` remain valid.
 

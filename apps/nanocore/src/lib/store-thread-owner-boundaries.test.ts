@@ -155,7 +155,14 @@ describe('canonical work owner and retained storage boundaries', () => {
     { kind: 'workspace', workspaceId: allocateEntityId('ws') },
     { kind: 'user', userId: actor.id },
   ]) {
-    it(`refuses retained Workspace Turn owner ${JSON.stringify(invalidOwner)} without rewriting its bytes`, () => {
+    // Generated ids stay out of the name so every collection yields the same case inventory.
+    const label =
+      invalidOwner === undefined
+        ? 'missing'
+        : invalidOwner.kind === 'workspace'
+          ? 'of another Workspace'
+          : invalidOwner.kind;
+    it(`refuses retained Workspace Turn owner ${label} without rewriting its bytes`, () => {
       const f = fixture();
       const path = join(
         f.dataRoot,

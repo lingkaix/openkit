@@ -32,6 +32,24 @@ export interface RequiredFeatureDefinition {
  * Known required features used by fail-closed readers.
  */
 export const REQUIRED_FEATURE_REGISTRY = {
+  'runtime.evidence.v1': {
+    id: 'runtime.evidence.v1',
+    status: 'active',
+    description:
+      'Runtime evidence retains execution outcomes, backend summaries, and evidence bundle linkage.',
+  },
+  'worker.runtime-provenance.v1': {
+    id: 'worker.runtime-provenance.v1',
+    status: 'active',
+    description:
+      'Worker runtime provenance links admitted Agent Environment Packages to retained transcript evidence.',
+  },
+  'evidence.bundle.v1': {
+    id: 'evidence.bundle.v1',
+    status: 'active',
+    description:
+      'Evidence bundles retain exact lineage, content digests, retention, sensitivity, and import disposition.',
+  },
   'openkit.workspace-resource-policy.v1': {
     id: 'openkit.workspace-resource-policy.v1',
     status: 'active',
@@ -117,6 +135,12 @@ export const REQUIRED_FEATURE_REGISTRY = {
     status: 'active',
     description:
       'Workspace export includes inert recurring definitions and exact occurrence and expired-range history.',
+  },
+  'recurring-history-v1': {
+    id: 'recurring-history-v1',
+    status: 'active',
+    description:
+      'Workspace deletion closures retain the inert recurring definitions and exact occurrence and expired-range history.',
   },
   'workspace.generative-kernel.v1': {
     id: 'workspace.generative-kernel.v1',

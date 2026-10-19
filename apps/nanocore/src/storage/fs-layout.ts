@@ -34,6 +34,7 @@ const EXAMPLE_PROVIDER_TEMPLATE_FILES = new Set([
 const DATA_ROOT_LAYOUT_VERSION = 2;
 const DATA_ROOT_SUPPORTED_CANONICAL_RECORD_TYPES = new Set([
   'data-root-backup',
+  'source',
   'thread',
   'workspace-deletion-closure',
   'workspace-export',
