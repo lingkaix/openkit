@@ -1,7 +1,7 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createVaultInjectionPlan, listVaultInjectionPlans } from '../vault-injection-plans.js';
@@ -230,3 +230,57 @@ function createGrantWithRuntimeFileReceipt(coreDb: CoreDb): void {
     revocationStatus: 'active',
   });
 }
+
+/** Creates a disposable metadata-only grant; no backend material is read or written. */
+function retainedGrantFixture() {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-retained-grant-'));
+  const db = openCoreDb(root);
+  onTestFinished(() => {
+    db.sqlite.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+  applyMigrations(db);
+  const referenceId = 'vault_00000000-0000-7f73-bffa-d96a61ee4d70';
+  createVaultReference(db, {
+    backendKind: 'encrypted-file',
+    displayName: 'Retained grant fixture',
+    ownerScope: 'server',
+    referenceId,
+    secretKind: 'repository-token',
+  });
+  const input: Parameters<typeof createVaultGrant>[1] = {
+    grantId: 'grant_00000000-0000-7502-bb07-4104daba6c66',
+    vaultReferenceId: referenceId,
+    ownerScope: 'server',
+    lifetime: 'server',
+    allowedInjectionPaths: ['gateway-only'],
+    now: () => '2026-10-18T00:00:00.000Z',
+  };
+  createVaultGrant(db, input);
+  return { db, input };
+}
+
+describe('retained Vault Grant SQL format', () => {
+  it('writes v1 and preserves exact injection-path bytes across reads and replay', () => {
+    const { db, input } = retainedGrantFixture();
+    const before = db.sqlite.prepare('SELECT * FROM vault_grants').get();
+    expect(before).toMatchObject({ schema_version: 1 });
+    expect(getVaultGrant(db, input.grantId)?.allowedInjectionPaths).toEqual(['gateway-only']);
+    createVaultGrant(db, input);
+    expect(db.sqlite.prepare('SELECT * FROM vault_grants').get()).toEqual(before);
+  });
+
+  it('refuses an unknown version before malformed JSON decoding, replacement or revocation', () => {
+    const { db, input } = retainedGrantFixture();
+    db.sqlite
+      .prepare("UPDATE vault_grants SET schema_version=2, allowed_injection_paths='{invalid'")
+      .run();
+    const before = db.sqlite.prepare('SELECT * FROM vault_grants').get();
+    expect(() => getVaultGrant(db, input.grantId)).toThrow('Unsupported retained record format');
+    expect(() => createVaultGrant(db, input)).toThrow('Unsupported retained record format');
+    expect(() => revokeVaultGrant(db, { grantId: input.grantId })).toThrow(
+      'Unsupported retained record format'
+    );
+    expect(db.sqlite.prepare('SELECT * FROM vault_grants').get()).toEqual(before);
+  });
+});

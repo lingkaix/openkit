@@ -33,6 +33,7 @@ import {
 } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
 import { recordProductPermissionDecision } from '../policy/permission-decisions.js';
+import { readAuditEventRowV1 } from '../policy/retained-records-v1.js';
 import { findNamedAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import { projectApprovalEffect } from '../runtime/pending-request-disclosure.js';
 import {
@@ -331,6 +332,16 @@ function currentRequester(dependencies: Dependencies, record: PendingRequestReco
     origin.kind === 'public'
       ? origin.actor.userId
       : responsibleUserIdForActor(origin.actor as ActorRef);
+  const turn = origin.kind === 'worker' ? store.getTurnById(origin.lineage.turnId) : null;
+  const requestingAgent =
+    turn?.agentId && turn.agentSessionId && actorId
+      ? {
+          kind: 'agent' as const,
+          userId: actorId,
+          agentId: turn.agentId,
+          processId: turn.agentSessionId,
+        }
+      : undefined;
   const authorized =
     origin.kind === 'public'
       ? authorizeWorkspace(coreDb, origin.actor as Actor, record.workspaceId, {
@@ -346,6 +357,7 @@ function currentRequester(dependencies: Dependencies, record: PendingRequestReco
   if (
     !authorized ||
     actorId !== record.responsibleUserId ||
+    (origin.kind === 'worker' && !requestingAgent) ||
     !isThreadIdVisible(
       store,
       record.workspaceId,
@@ -356,7 +368,9 @@ function currentRequester(dependencies: Dependencies, record: PendingRequestReco
           origin.actor.kind === 'local' ||
             origin.actor.adminTokenId ||
             origin.actor.tokenScope === 'server-admin'
-        )
+        ),
+      'workspace.write',
+      requestingAgent
     )
   )
     throw new PendingRequestCommandError(
@@ -372,8 +386,8 @@ function currentRequester(dependencies: Dependencies, record: PendingRequestReco
       409
     );
   if (origin.kind === 'worker') {
-    const turn = store.getTurnById(origin.lineage.turnId);
     if (
+      !turn ||
       turn.workspaceId !== record.workspaceId ||
       turn.threadId !== record.threadId ||
       turn.agentId !== record.agentId ||
@@ -429,11 +443,10 @@ export function checkVaultGrantCommandIntent(
 /** Reads the immutable issue Audit link, which survives later narrowing and held-result cleanup. */
 function issuedGrantId(dependencies: Dependencies, requestId: string): string | null {
   const rows = dependencies.coreDb?.sqlite
-    .prepare(
-      "SELECT vault_grant_id FROM audit_events WHERE action = 'vault.grant-issue' AND resource = ?"
-    )
+    .prepare("SELECT * FROM audit_events WHERE action = 'vault.grant-issue' AND resource = ?")
     .all(`approval:${requestId}`) as { vault_grant_id: string | null }[] | undefined;
   if (!rows?.length) return null;
+  for (const row of rows) readAuditEventRowV1(row);
   if (rows.length !== 1 || !rows[0]?.vault_grant_id)
     throw new PendingRequestCommandError(
       'recovery_required',

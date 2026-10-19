@@ -24,6 +24,7 @@ import {
   type WorkspaceDataSourceCatalog,
   type WorkspaceMcpServerCatalog,
 } from '@openkit/config-schema';
+import { readRetainedV1 } from '@openkit/protocol';
 import type { CaptureCoverageBinding } from '@openkit/worker-protocol';
 import { z } from 'zod';
 import type { AgentManifest } from '../agents/manifest.js';
@@ -903,6 +904,18 @@ export function diffRuntimeConfig(
       )
     );
   }
+  if (
+    !equalSemantic(previous.openKitConfig.policy?.mediation, next.openKitConfig.policy?.mediation)
+  ) {
+    applied.push(
+      change(
+        'policy.mediation',
+        'hot-swappable',
+        'applied',
+        'Authored Policy statements changed; native admission rechecks their exact revision before effects.'
+      )
+    );
+  }
   if (!equalSemantic(previous.gatewayConfig, next.gatewayConfig)) {
     applied.push(
       change(
@@ -1381,7 +1394,14 @@ function loadWorkspaceConfigs(
     }
 
     const parsed = parseJsoncObject(readFileSync(configPath, 'utf8'), configPath);
-    const result = WorkspaceConfigSchema.safeParse(parsed);
+    let result: ReturnType<typeof WorkspaceConfigSchema.safeParse>;
+    try {
+      result = readRetainedV1(parsed, (record) => WorkspaceConfigSchema.safeParse(record));
+    } catch {
+      throw new Error(
+        `Invalid workspace config ${configPath}: Unsupported retained record format.`
+      );
+    }
 
     if (!result.success) {
       throw new Error(`Invalid workspace config ${configPath}: ${z.prettifyError(result.error)}`);

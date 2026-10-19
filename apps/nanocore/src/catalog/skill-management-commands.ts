@@ -5,6 +5,7 @@ import { isWorkspaceOperationAuthorized } from '../auth/operation-authorizer.js'
 import type { OperationInvocationDependencies } from '../operation-composition.js';
 import { type AdmittedOperationContext, publicOperationActor } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
+import { readAuditEventRowV1 } from '../policy/retained-records-v1.js';
 import { runIdempotentCommand } from '../runtime/idempotent-command.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import type { CatalogOperationHooks } from './catalog-operations.js';
@@ -138,11 +139,12 @@ export function createSkillManagementCommands(
           const catalog = loadWorkspaceResourceCatalog(root(), input.workspaceId);
           const admitted = workspaceDb.sqlite
             .prepare(
-              'SELECT actor_json AS actor FROM audit_events WHERE workspace_id = ? AND request_id = ? AND action = ?'
+              'SELECT *, actor_json AS actor FROM audit_events WHERE workspace_id = ? AND request_id = ? AND action = ?'
             )
             .all(input.workspaceId, input.requestId, `${operation}.admit`) as {
             actor: string | null;
           }[];
+          for (const row of admitted) readAuditEventRowV1(row);
           // A purge can delete bytes before its catalog revision advances. Its admitted result
           // therefore needs inspection even if the old revision is still current.
           if (

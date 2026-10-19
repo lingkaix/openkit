@@ -12,7 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { ItemSchema, PROTOCOL_VERSION } from '@openkit/protocol';
+import { ItemSchema, PROTOCOL_VERSION, writeRetainedV1 } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
 
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
@@ -591,7 +591,7 @@ describe('workspace file-record write and load boundaries', () => {
         turn.id,
         'items.jsonl'
       ),
-      `${supportingRequest ? `${JSON.stringify(supportingRequest)}\n` : ''}${JSON.stringify(item)}\n${JSON.stringify(changedItem)}\n`
+      `${supportingRequest ? `${JSON.stringify(writeRetainedV1(supportingRequest))}\n` : ''}${JSON.stringify(writeRetainedV1(item))}\n${JSON.stringify(writeRetainedV1(changedItem))}\n`
     );
     expect(() => new FsStore({ dataRoot })).toThrow(/attribution cannot change/);
   });
@@ -640,7 +640,7 @@ describe('workspace file-record write and load boundaries', () => {
 
     appendFileSync(
       join(first.root, 'threads', first.thread.id, 'turns', first.turn.id, 'items.jsonl'),
-      `${JSON.stringify(response)}\n`
+      `${JSON.stringify(writeRetainedV1(response))}\n`
     );
 
     expect(() => new FsStore({ dataRoot })).toThrow(/responsible user/);
@@ -1047,13 +1047,15 @@ describe('workspace file-record write and load boundaries', () => {
     );
     writeFileSync(
       eventLogPath,
-      `${JSON.stringify({
-        ...event,
-        protocolVersion: PROTOCOL_VERSION,
-        requestId: event.requestId ?? null,
-        sequence: 1,
-        timestamp: new Date().toISOString(),
-      })}\n`
+      `${JSON.stringify(
+        writeRetainedV1({
+          ...event,
+          protocolVersion: PROTOCOL_VERSION,
+          requestId: event.requestId ?? null,
+          sequence: 1,
+          timestamp: new Date().toISOString(),
+        })
+      )}\n`
     );
     expect.soft(() => new FsStore({ dataRoot })).toThrow();
   });

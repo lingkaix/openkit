@@ -2,6 +2,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { writeRetainedV1 } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 
 const partialWriteState = vi.hoisted(() => ({ calls: 0, failSync: false, fullReads: 0 }));
@@ -156,7 +157,7 @@ describe('canonical append writes', () => {
       join(workspaceRoot, 'threads', threadId, 'turns', turnId, 'items.jsonl'),
       'utf8'
     );
-    expect(JSON.parse(content)).toEqual(item);
+    expect(JSON.parse(content)).toEqual(writeRetainedV1(item));
     expect(partialWriteState.calls).toBeGreaterThan(1);
   });
 });

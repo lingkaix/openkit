@@ -469,7 +469,7 @@ describe('Item-confirmed self Memory forget', () => {
     writeFileSync(
       join(configRoot, 'user.jsonc'),
       JSON.stringify({
-        schemaVersion: 1,
+        ...JSON.parse(readFileSync(join(configRoot, 'user.jsonc'), 'utf8')),
         knowledgeMaintenance: { enabled: false, reviewRequiredPageIds: ['preference'] },
       })
     );

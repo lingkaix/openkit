@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
-import { allocateEntityId } from '@openkit/protocol';
+import { type ActorRef, allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { type Actor, ensureLocalUser } from './auth/identity.js';
@@ -43,7 +43,7 @@ const tree = [
   },
 ];
 
-function fixture(body = JSON.stringify(tree)) {
+function fixture(body = JSON.stringify(tree), importedActor?: ActorRef) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-skill-artifact-'));
   cleanup.push(() => rmSync(dataRoot, { recursive: true, force: true }));
   const coreDb = openCoreDb(dataRoot);
@@ -78,7 +78,7 @@ function fixture(body = JSON.stringify(tree)) {
       sourceKind: 'direct-import',
       sourceId: 'import-candidate',
       sourceDigest: selection.contentDigest,
-      actor: { kind: 'user', id: userId },
+      actor: importedActor ?? { kind: 'user', id: userId },
       requestId: 'import-candidate',
       recordedAt: '2026-10-16T00:00:00Z',
     },
@@ -175,6 +175,96 @@ describe('Skill Artifact source admission', () => {
     });
   });
 
+  it('retains exact v1 and v2 trees and their distinct producers after a head advance', () => {
+    const state = workSource(fixture(), undefined, 'ag_original_worker');
+    state.store.updateTurn(state.turn.id, {
+      status: 'completed',
+      completedAt: '2026-10-16T00:01:00Z',
+    });
+    const revisedTree = [
+      { ...tree[0], contentBase64: Buffer.from('Human correction.\n').toString('base64') },
+    ];
+    const revisedBody = JSON.stringify(revisedTree);
+    const second = state.store.commitArtifactVersion({
+      workspaceId: state.selection.workspaceId,
+      artifactId: state.selection.artifactId,
+      threadId: state.thread.id,
+      expectedArtifactVersion: 1,
+      title: 'Corrected candidate',
+      summary: null,
+      content: { format: 'json', body: revisedBody },
+      actor: { kind: 'user', id: state.actor.userId },
+      requestId: 'correct-candidate',
+      recordedAt: '2026-10-16T00:02:00Z',
+    });
+    state.store.commitArtifactVersion({
+      workspaceId: state.selection.workspaceId,
+      artifactId: state.selection.artifactId,
+      threadId: state.thread.id,
+      expectedArtifactVersion: 2,
+      title: 'Later candidate',
+      summary: null,
+      content: { format: 'json', body: JSON.stringify([]) },
+      actor: { kind: 'user', id: state.actor.userId },
+      requestId: 'advance-candidate',
+      recordedAt: '2026-10-16T00:03:00Z',
+    });
+    const store = new FsStore({ dataRoot: state.dataRoot });
+    const firstInput = readSkillCandidateArtifact({
+      ...state,
+      store,
+      destination: 'workspace-skill',
+    });
+    const secondSelection = {
+      ...state.selection,
+      version: 2,
+      contentDigest: second.version.contentDigest,
+    };
+    const secondInput = readSkillCandidateArtifact({
+      ...state,
+      store,
+      selection: secondSelection,
+      destination: 'workspace-skill',
+    });
+    expect(firstInput).toMatchObject({
+      tree,
+      digest: validateCatalogTree(tree).digest,
+      source: state.selection,
+      producer: { kind: 'agent', id: 'ag_original_worker' },
+      producingTurn: { turnId: state.turn.id, agentId: 'ag_original_worker' },
+    });
+    expect(secondInput).toMatchObject({
+      tree: revisedTree,
+      digest: validateCatalogTree(revisedTree).digest,
+      source: { ...secondSelection, origin: firstInput.source.origin },
+      producer: { kind: 'user', id: state.actor.userId },
+      producingTurn: { turnId: second.version.turnId, agentId: null },
+    });
+    expect(second.version).toMatchObject({
+      parentVersion: 1,
+      actor: { kind: 'user', id: state.actor.userId },
+      threadId: state.thread.id,
+      recordedAt: '2026-10-16T00:02:00Z',
+    });
+    expect(secondInput.producingTurn?.turnId).not.toBe(firstInput.producingTurn?.turnId);
+    expect(
+      store.getArtifactVersion(state.selection.workspaceId, state.selection.artifactId, 1).artifact
+        .content
+    ).toEqual({ format: 'json', body: JSON.stringify(tree) });
+    expect(
+      store.getArtifactVersion(state.selection.workspaceId, state.selection.artifactId, 2).artifact
+        .content
+    ).toEqual({ format: 'json', body: revisedBody });
+    expect(store.getArtifact(state.selection.workspaceId, state.selection.artifactId).version).toBe(
+      3
+    );
+    expect(
+      existsSync(
+        join(state.dataRoot, 'workspaces', state.selection.workspaceId, 'catalog', 'catalog.json')
+      )
+    ).toBe(false);
+  });
+
   it('reads exact file-backed Worker JSON as a native Skill candidate without changing the original', async () => {
     const state = workSource(fixture(), undefined, 'ag_producing_worker');
     const original = state.store.getArtifact(
@@ -249,22 +339,17 @@ describe('Skill Artifact source admission', () => {
   });
 
   it('preserves imported attribution without inventing a Worker or Thread', () => {
-    const state = fixture();
-    const artifact = state.store.getArtifact(
-      state.selection.workspaceId,
-      state.selection.artifactId
-    );
-    if (artifact.origin.kind !== 'imported') throw new Error('Expected imported fixture.');
-    artifact.origin.actor = {
-      kind: 'integration',
+    const actor = {
+      kind: 'integration' as const,
       id: 'integration_source',
       responsibleUserId: null,
     };
+    const state = fixture(undefined, actor);
     expect(readSkillCandidateArtifact(state)).toMatchObject({
-      producer: artifact.origin.actor,
+      producer: actor,
       producingTurn: null,
       submitter: { kind: 'user', id: state.actor.userId },
-      source: { origin: { kind: 'imported', actor: artifact.origin.actor } },
+      source: { origin: { kind: 'imported', actor } },
     });
   });
 
@@ -380,22 +465,26 @@ describe('Skill Artifact source admission', () => {
 
   it('rechecks the exact selected source after decoding', () => {
     const state = fixture();
-    const artifact = state.store.getArtifact(
-      state.selection.workspaceId,
-      state.selection.artifactId
-    );
+    const readVersion = state.store.getArtifactVersion.bind(state.store);
     let reads = 0;
-    vi.spyOn(state.store, 'getArtifact').mockImplementation(() => ({
-      ...artifact,
-      version: ++reads === 1 ? 1 : 2,
-    }));
+    vi.spyOn(state.store, 'getArtifactVersion').mockImplementation((...args) => {
+      const retained = readVersion(...args);
+      if (++reads > 1) retained.artifact.contentDigest = `sha256:${'0'.repeat(64)}`;
+      return retained;
+    });
     refuses(state, 'stale');
   });
 
   it('verifies actual retained bytes rather than trusting the stored digest field', () => {
     const state = fixture();
-    state.store.getArtifact(state.selection.workspaceId, state.selection.artifactId).content.body =
-      '["corrupt-original-canary"]';
+    writeFileSync(
+      artifactFilePayloadPath(
+        join(state.dataRoot, 'workspaces', state.selection.workspaceId),
+        state.selection.artifactId,
+        state.selection.version
+      ),
+      '["corrupt-original-canary"]'
+    );
     refuses(state, 'source_unavailable');
   });
 

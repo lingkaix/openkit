@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { RETAINED_FORMAT_VERSION } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 
 import { BootConfigError } from './mode.js';
@@ -27,11 +28,14 @@ describe('loadOpenKitConfig', () => {
   it('treats a config without defaults as having no default Agent', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-config-'));
     mkdirSync(join(dataRoot, 'config'), { recursive: true });
-    writeFileSync(join(dataRoot, 'config', 'server.jsonc'), '{ "mode": "local" }');
+    writeFileSync(
+      join(dataRoot, 'config', 'server.jsonc'),
+      '{ "schemaVersion": 1, "mode": "local" }'
+    );
 
     const config = loadOpenKitConfig(dataRoot);
 
-    expect(config).toEqual({ mode: 'local' });
+    expect(config).toEqual({ schemaVersion: RETAINED_FORMAT_VERSION, mode: 'local' });
     expect(config.defaults?.defaultAgentId).toBeUndefined();
   });
 
@@ -41,6 +45,7 @@ describe('loadOpenKitConfig', () => {
     writeFileSync(
       join(dataRoot, 'config', 'server.jsonc'),
       JSON.stringify({
+        schemaVersion: RETAINED_FORMAT_VERSION,
         defaults: {
           defaultAgentId: 'agent_codex',
         },
@@ -63,6 +68,7 @@ describe('loadOpenKitConfig', () => {
     writeFileSync(
       join(dataRoot, 'config', 'server.jsonc'),
       JSON.stringify({
+        schemaVersion: RETAINED_FORMAT_VERSION,
         defaults: {
           defaultAgentId: 123,
         },
@@ -86,6 +92,7 @@ describe('loadOpenKitConfig', () => {
       join(dataRoot, 'config', 'server.jsonc'),
       `{
         // Explicit mode from file-backed config.
+        "schemaVersion": 1,
         "mode": "server",
         "defaults": {
           "defaultAgentId": "agent_codex",
@@ -94,6 +101,7 @@ describe('loadOpenKitConfig', () => {
     );
 
     expect(loadOpenKitConfig(dataRoot)).toEqual({
+      schemaVersion: RETAINED_FORMAT_VERSION,
       mode: 'server',
       defaults: {
         defaultAgentId: 'agent_codex',
@@ -173,7 +181,10 @@ describe('loadOpenKitConfig', () => {
     );
     writeFileSync(
       join(dataRoot, 'config', 'server.jsonc'),
-      JSON.stringify({ defaults: { defaultAgentId: 'current-agent' } })
+      JSON.stringify({
+        schemaVersion: RETAINED_FORMAT_VERSION,
+        defaults: { defaultAgentId: 'current-agent' },
+      })
     );
 
     const result = loadOpenKitConfigWithDiagnostics(dataRoot);
@@ -189,6 +200,7 @@ describe('loadOpenKitConfig', () => {
     writeFileSync(
       join(dataRoot, 'config', 'server.jsonc'),
       JSON.stringify({
+        schemaVersion: RETAINED_FORMAT_VERSION,
         providers: [
           {
             apiKey: 'sk-raw-secret',
@@ -203,7 +215,7 @@ describe('loadOpenKitConfig', () => {
     );
 
     const loaded = loadOpenKitConfigWithDiagnostics(dataRoot);
-    expect(loaded.config).toEqual({});
+    expect(loaded.config).toEqual({ schemaVersion: RETAINED_FORMAT_VERSION });
     expect(loaded.diagnostics[0]?.message).toContain('providers');
     expect(JSON.stringify(loaded)).not.toContain('sk-raw-secret');
   });
@@ -217,6 +229,7 @@ describe('loadOpenKitConfig', () => {
     writeFileSync(
       join(dataRoot, 'config', 'server.jsonc'),
       JSON.stringify({
+        schemaVersion: RETAINED_FORMAT_VERSION,
         providers: [
           {
             displayName: 'OpenRouter',
@@ -231,7 +244,7 @@ describe('loadOpenKitConfig', () => {
     );
 
     const loaded = loadOpenKitConfigWithDiagnostics(dataRoot);
-    expect(loaded.config).toEqual({});
+    expect(loaded.config).toEqual({ schemaVersion: RETAINED_FORMAT_VERSION });
     expect(loaded.diagnostics[0]?.message).toContain('providers');
   });
 
@@ -241,6 +254,7 @@ describe('loadOpenKitConfig', () => {
     writeFileSync(
       join(dataRoot, 'config', 'server.jsonc'),
       JSON.stringify({
+        schemaVersion: RETAINED_FORMAT_VERSION,
         internal: {
           openaiCompatFacade: {
             defaultModel: 'gpt-5.1',
@@ -252,14 +266,17 @@ describe('loadOpenKitConfig', () => {
     );
 
     const loaded = loadOpenKitConfigWithDiagnostics(dataRoot);
-    expect(loaded.config).toEqual({});
+    expect(loaded.config).toEqual({ schemaVersion: RETAINED_FORMAT_VERSION });
     expect(loaded.diagnostics[0]?.message).toContain('internal');
   });
 
   it('rejects invalid config values with a boot error', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-config-'));
     mkdirSync(join(dataRoot, 'config'), { recursive: true });
-    writeFileSync(join(dataRoot, 'config', 'server.jsonc'), '{ "mode": "desktop" }');
+    writeFileSync(
+      join(dataRoot, 'config', 'server.jsonc'),
+      '{ "schemaVersion": 1, "mode": "desktop" }'
+    );
 
     expect(() => loadOpenKitConfig(dataRoot)).toThrow(/Invalid OpenKit config/);
   });

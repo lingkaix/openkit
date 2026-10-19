@@ -5,6 +5,7 @@ import {
   PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS,
   RUNTIME_CONFIG_OPERATION_DEFINITIONS,
 } from '@openkit/app-api-schemas';
+import { RETAINED_FORMAT_VERSION } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { computeBootReadinessSnapshot } from '../bootstrap/readiness.js';
@@ -47,6 +48,7 @@ it('retires all ten former runtime bindings for the authorized local actor witho
   const path = join(dataRoot, 'config', id);
   mkdirSync(join(dataRoot, 'config/providers'), { recursive: true });
   const content = JSON.stringify({
+    schemaVersion: RETAINED_FORMAT_VERSION,
     id: 'kept',
     kind: 'custom',
     vendor: 'openai',
@@ -139,6 +141,7 @@ it('gates every B4 mutation before exact effects and preserves owner failures an
   writeFileSync(
     profilePath,
     JSON.stringify({
+      schemaVersion: RETAINED_FORMAT_VERSION,
       id: 'kept',
       kind: 'custom',
       vendor: 'openai',
@@ -398,6 +401,7 @@ it('reaches all ten owned runtime responses with explicit local authority', asyn
   });
   const id = 'providers/parity.provider.jsonc';
   const content = JSON.stringify({
+    schemaVersion: RETAINED_FORMAT_VERSION,
     id: 'parity',
     kind: 'custom',
     vendor: 'openai',

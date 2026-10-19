@@ -257,7 +257,7 @@ async function exportHistory(f: ReturnType<typeof deployment>) {
   return { exportId, verified };
 }
 
-/** Creates valid original proofs whose tied Turn order changes under index-based import identities. */
+/** Creates valid original proofs whose tied Turn order changes under reminted identities. */
 async function seedTiedOrderSummaryChain() {
   const f = deployment();
   const thread = f.store.createThread(
@@ -537,8 +537,16 @@ describe('Assistant conversation context portability', () => {
         const bytes = new Uint8Array(array.buffer, array.byteOffset, array.byteLength);
         bytes.fill(0);
         ordinal += 1;
-        const turn = ordinal - 1; // One imported Thread precedes the twelve Turn allocations.
-        bytes[15] = turn === 10 ? 2 : turn >= 2 && turn <= 9 ? turn + 1 : turn > 0 ? turn : ordinal;
+        // Perturb identity order; the retained-order checks below do not assume allocation offsets.
+        const suffix = ordinal - 1;
+        bytes[15] =
+          suffix === 10
+            ? 2
+            : suffix >= 2 && suffix <= 9
+              ? suffix + 1
+              : suffix > 0
+                ? suffix
+                : ordinal;
         return array;
       });
       try {
@@ -571,9 +579,14 @@ describe('Assistant conversation context portability', () => {
       control.store,
       targetTurns.find((turn) => turn.id === targetSummary.turnId)!
     );
-    expect(targetHistory.map((item) => ('text' in item ? item.text : ''))).toEqual(
-      [1, 10, 2, 3, 4, 5, 6, 7, 8, 9].map((index) => `Tied source ${index}`)
-    );
+    const sourceTexts = source.originals.map((item) => ('text' in item ? item.text : ''));
+    const targetTexts = targetHistory.map((item) => ('text' in item ? item.text : ''));
+    const targetSourceTurnIds = targetHistory.map((item) => item.turnId);
+    expect(new Set(targetTurns.map((turn) => turn.startedAt))).toEqual(new Set([timestamp]));
+    expect(targetSourceTurnIds).toEqual(targetSourceTurnIds.toSorted());
+    expect(targetHistory).toHaveLength(10);
+    expect(targetTexts.toSorted()).toEqual(sourceTexts.toSorted());
+    expect(targetTexts).not.toEqual(sourceTexts);
     expect(targetSummary.sourceRange.sourceDigest).toBe(
       source.summaries[1]!.sourceRange.sourceDigest
     );

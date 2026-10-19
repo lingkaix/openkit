@@ -1,3 +1,4 @@
+import { RETAINED_FORMAT_VERSION } from '@openkit/protocol';
 import { z } from 'zod';
 
 import {
@@ -218,11 +219,16 @@ function addProviderProfileCrossFieldIssues(
 }
 
 /**
- * File-backed provider profile schema.
+ * Logical provider profile schema, independent of retained-file framing.
  */
 export const ProviderProfileSchema = ProviderProfileObjectSchema.superRefine(
   addProviderProfileCrossFieldIssues
 );
+
+/** Authored Provider file format v1; native I/O checks this marker before decoding the profile. */
+export const AuthoredProviderProfileSchema = ProviderProfileObjectSchema.extend({
+  schemaVersion: z.literal(RETAINED_FORMAT_VERSION),
+}).superRefine(addProviderProfileCrossFieldIssues);
 
 /**
  * Configured provider instance schema derived from the canonical provider profile.
@@ -255,6 +261,9 @@ export const OpenKitProviderInstanceSchema = z
   .superRefine(addProviderProfileCrossFieldIssues);
 
 /**
- * File-backed provider profile.
+ * Logical provider profile, without a retained-file marker.
  */
 export type ProviderProfile = z.infer<typeof ProviderProfileSchema>;
+
+/** Authored Provider file with its required retained-format marker. */
+export type AuthoredProviderProfile = z.infer<typeof AuthoredProviderProfileSchema>;

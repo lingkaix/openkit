@@ -14,6 +14,7 @@ import {
   parseReferenceScope,
   type RetrievalTraceReference,
 } from '@openkit/protocol';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { readWorkspaceNotebookIndexSource } from '../knowledge/notebook-index-source.js';
 import {
   DEFAULT_SCOPE_KNOWLEDGE_SCHEMA,
@@ -23,6 +24,7 @@ import {
   type KnowledgeValidationError,
   knowledgeReferenceErrors,
   type OkfDocument,
+  parseKnowledgePageSourceReference,
   parseOkfDocument,
   parseScopeKnowledgeSchema,
   resolveRegisteredKnowledgeSourceReference,
@@ -220,6 +222,10 @@ export interface RetrieveWorkspaceKnowledgeInput extends ReadWorkspaceKnowledgeD
   limit?: number | undefined;
   /** Concepts that should be included when present and active. */
   pinnedReferences?: readonly PageReference[] | undefined;
+  /** Optional any-match governed type names; combined selectors intersect. */
+  types?: readonly string[] | undefined;
+  /** Exact declared tool/work-step identifiers on Rule, Effect or Objective pages. */
+  appliesTo?: readonly string[] | undefined;
   /** Narrowing-only base selection; the current Workspace is the default. */
   sourceScope?: 'workspace' | 'server' | undefined;
   /** Optional trace id for deterministic tests and route ownership. */
@@ -267,6 +273,8 @@ export interface WorkspaceKnowledgeRetrievalExclusion {
 export interface ResolvedWorkspaceKnowledgeRetrievalPage {
   /** Exact selected Notebook commit, independent of page digest. */
   notebookRevision: string;
+  /** Exact retained default Knowledge Base that supplied the selected bytes. */
+  knowledgeBaseId: string;
   /** Qualified identity retained through citations and current-byte resolution. */
   reference: PageReference;
   /** Selected Knowledge Page id. */
@@ -319,27 +327,38 @@ export function rebuildWorkspaceDerivedIndexes(
   const indexesRoot = join(workspaceRoot, 'indexes');
   const indexPath = join(indexesRoot, 'knowledge-validation.json');
   const rebuiltAt = input.now?.() ?? new Date().toISOString();
+  const pageScopeId = currentKnowledgePageScope(input, 'workspace');
   const source = readWorkspaceNotebookIndexSource(workspaceRoot, input.notebookRevision);
   const linkGraph: WorkspaceKnowledgeLinkGraph = {
     notebookRevision: source.notebookRevision,
     schemaVersion: 1,
     workspaceId: input.workspaceId,
     rebuiltAt,
-    edges: buildKnowledgeLinkEdges(workspaceRoot, input.workspaceId, source.pages),
+    edges: buildKnowledgeLinkEdges(workspaceRoot, input.workspaceId, source.pages, pageScopeId),
   };
   const validationIndex: WorkspaceKnowledgeValidationIndex = {
     notebookRevision: source.notebookRevision,
     schemaVersion: 1,
     workspaceId: input.workspaceId,
     rebuiltAt,
-    records: buildKnowledgeValidationRecords(workspaceRoot, input.workspaceId, source.pages),
+    records: buildKnowledgeValidationRecords(
+      workspaceRoot,
+      input.workspaceId,
+      source.pages,
+      pageScopeId
+    ),
   };
   const sourceReferenceIndex: WorkspaceKnowledgeSourceReferenceIndex = {
     notebookRevision: source.notebookRevision,
     schemaVersion: 1,
     workspaceId: input.workspaceId,
     rebuiltAt,
-    references: buildKnowledgeSourceReferences(workspaceRoot, input.workspaceId, source.pages),
+    references: buildKnowledgeSourceReferences(
+      workspaceRoot,
+      input.workspaceId,
+      source.pages,
+      pageScopeId
+    ),
   };
   const removedEntries = clearIndexDirectory(indexesRoot);
 
@@ -607,21 +626,30 @@ async function retrieveNotebookSelection(
     query: input.query,
     limit: input.limit,
     pinnedReferences: input.pinnedReferences,
+    types: input.types,
+    appliesTo: input.appliesTo,
     sourceScope: input.sourceScope,
     states: input.states,
   });
   const states = [...new Set(normalized.states)].sort(compareBytewise);
+  const filters = {
+    ...(normalized.types === undefined
+      ? {}
+      : { types: [...new Set(normalized.types)].sort(compareBytewise) }),
+    ...(normalized.appliesTo === undefined
+      ? {}
+      : { appliesTo: [...new Set(normalized.appliesTo)].sort(compareBytewise) }),
+  };
   if (input.caller !== 'app-api' && states.some((state) => state !== 'active'))
     throw new OperationError(
       'invalid_request',
       'Automatic Knowledge retrieval requires active state.',
       400
     );
-  const sourceScope = memory
-    ? `page/user/${input.access.requestActor!.userId}`
-    : normalized.sourceScope === 'server'
-      ? 'page/server'
-      : `page/workspace/${input.workspaceId}`;
+  const sourceScope = currentKnowledgePageScope(
+    input,
+    memory ? 'user' : server ? 'server' : 'workspace'
+  );
   if (
     memory &&
     (normalized.sourceScope !== undefined || !['app-api', 'assistant'].includes(input.caller))
@@ -749,8 +777,14 @@ async function retrieveNotebookSelection(
       const path = `${memory ? 'memory' : 'knowledge'}/pages/${id}.md`;
       const document = parseOkfDocument({ path, content }).document!;
       const report = validateKnowledgePageCandidate({
+        pageScopeId: sourceScope,
         path,
         content,
+        resolvedReferences: verifiedKnowledgePageSourceReferences(
+          stringListFrontmatterField(document, 'source_refs') ?? [],
+          pinnedPages,
+          sourceScope
+        ),
         scopeSchemaText: scopeSchemaText!,
         expectedOwnerScope: expectedOwnerScope!,
         registeredSources,
@@ -827,8 +861,14 @@ async function retrieveNotebookSelection(
     const parsed = parseOkfDocument({ path: expectedPath, content });
     const document = parsed.document;
     const indexValidation = validateKnowledgePageCandidate({
+      pageScopeId: sourceScope,
       path: expectedPath,
       content,
+      resolvedReferences: verifiedKnowledgePageSourceReferences(
+        document ? (stringListFrontmatterField(document, 'source_refs') ?? []) : [],
+        pinnedPages,
+        sourceScope
+      ),
       ...(scopeSchemaText ? { scopeSchemaText } : {}),
       registeredSources,
       knowledgeIds,
@@ -846,13 +886,17 @@ async function retrieveNotebookSelection(
       sourceReferences
     );
     const validation = validateKnowledgePageCandidate({
+      pageScopeId: sourceScope,
       path: expectedPath,
       content,
       ...(scopeSchemaText ? { scopeSchemaText } : {}),
       registeredSources,
       knowledgeIds,
       ...(expectedOwnerScope ? { expectedOwnerScope } : {}),
-      ...(referenceProof ? { resolvedReferences: referenceProof.resolvedReferences } : {}),
+      resolvedReferences: new Set([
+        ...verifiedKnowledgePageSourceReferences(sourceReferences, pinnedPages, sourceScope),
+        ...(referenceProof?.resolvedReferences ?? []),
+      ]),
     });
     const projectedSourceReferences = [
       ...new Set(sourceReferencesByConcept.get(candidate.knowledgePageId) ?? []),
@@ -919,7 +963,9 @@ async function retrieveNotebookSelection(
       !states.includes(
         stringFrontmatterField(document, 'openkit_status') as (typeof states)[number]
       ) ||
-      (!memory && !server && knowledgePageConflicted(workspaceRoot, candidate.knowledgePageId)) ||
+      (!memory &&
+        !server &&
+        knowledgePageConflicted(workspaceRoot, candidate.knowledgePageId, sourceScope)) ||
       (reviewState !== 'accepted' &&
         reviewState !== 'user-authored' &&
         !(
@@ -952,6 +998,23 @@ async function retrieveNotebookSelection(
       continue;
     }
 
+    // Metadata narrows already governed candidates, including pins, before the result budget.
+    const type = stringFrontmatterField(document, 'type');
+    const appliesTo = stringListFrontmatterField(document, 'applies_to') ?? [];
+    if (
+      (filters.types && !filters.types.includes(type ?? '')) ||
+      (filters.appliesTo &&
+        (!['Rule', 'Effect', 'Objective'].includes(type ?? '') ||
+          !filters.appliesTo.some((identifier) => appliesTo.includes(identifier))))
+    ) {
+      excluded.push({
+        knowledgePageId: candidate.knowledgePageId,
+        contentDigest,
+        reason: 'policy_excluded',
+      });
+      continue;
+    }
+
     if (selected.length >= limit) {
       excluded.push({
         knowledgePageId: candidate.knowledgePageId,
@@ -971,6 +1034,7 @@ async function retrieveNotebookSelection(
 
   const request = {
     query: input.query,
+    ...filters,
     limit,
     pinnedReferences: normalizedPinnedReferences,
     states,
@@ -989,6 +1053,7 @@ async function retrieveNotebookSelection(
       canonicalJson({ queryContext, sourceScope, caller: input.caller, request })
     ),
     retrievalParameters: {
+      ...filters,
       limit,
       pinnedReferences: normalizedPinnedReferences,
       states,
@@ -1045,6 +1110,29 @@ async function retrieveNotebookSelection(
   return result;
 }
 
+/** Resolves only the retained default collection after its caller admits the current owner. */
+function currentKnowledgePageScope(
+  input: { dataRoot: string; workspaceId: string; access?: KnowledgeRetrievalAccess },
+  kind: 'workspace' | 'server' | 'user'
+): string {
+  if (kind === 'user') {
+    const userId = input.access?.requestActor?.userId;
+    if (!userId) throw knowledgeTraceUnavailable();
+    const knowledgeBaseId = readDefaultKnowledgeBaseId({
+      dataRoot: input.dataRoot,
+      scope: { kind, userId },
+    });
+    return `page/user/${userId}/${knowledgeBaseId}`;
+  }
+  const knowledgeBaseId = readDefaultKnowledgeBaseId({
+    dataRoot: input.dataRoot,
+    scope: kind === 'server' ? { kind } : { kind, workspaceId: input.workspaceId },
+  });
+  return kind === 'server'
+    ? `page/server/${knowledgeBaseId}`
+    : `page/workspace/${input.workspaceId}/${knowledgeBaseId}`;
+}
+
 interface KnowledgeTraceReadInput {
   dataRoot: string;
   workspaceId: string;
@@ -1074,21 +1162,22 @@ function readAdmittedKnowledgeTrace(input: KnowledgeTraceReadInput): KnowledgeRe
   if (!trace)
     throw new OperationError('knowledge_retrieval_failed', 'Knowledge trace is unavailable.', 503);
   if (trace.queryContext.serverId !== context.serverId) throw knowledgeTraceUnavailable();
-  const sourceScope =
-    trace.retrievalParameters.sourceScope === 'user'
-      ? `page/user/${trace.queryContext.actor.kind === 'user' ? trace.queryContext.actor.id : ''}`
-      : trace.retrievalParameters.sourceScope === 'server'
-        ? 'page/server'
-        : `page/workspace/${trace.queryContext.workspaceId}`;
-  if (trace.sourceScope !== sourceScope) throw knowledgeTraceUnavailable();
+  if (
+    trace.retrievalParameters.sourceScope === 'user' &&
+    (trace.queryContext.actor.kind !== 'user' ||
+      trace.queryContext.actor.id !== input.access.requestActor?.userId)
+  )
+    throw knowledgeTraceUnavailable();
   if (trace.retrievalParameters.sourceScope === 'user') {
     // Record inspection uses the addressed owner after current audience and self admission.
-    if (sourceScope !== `page/user/${input.access.requestActor?.userId}`)
-      throw knowledgeTraceUnavailable();
     admitUserMemoryRetrieval(target);
   } else if (trace.retrievalParameters.sourceScope === 'server') {
     admitServerKnowledgeRetrieval(target);
   }
+  if (
+    trace.sourceScope !== currentKnowledgePageScope(target, trace.retrievalParameters.sourceScope)
+  )
+    throw knowledgeTraceUnavailable();
   return trace;
 }
 
@@ -1112,9 +1201,11 @@ function currentKnowledgeReferenceContent(
   reference: PageReference,
   serverId: string
 ): string | null {
-  if (reference.scopeId.startsWith('page/user/')) {
+  const scope = parseReferenceScope(reference.scopeId);
+  if (!scope || scope.family !== 'page') throw knowledgeTraceUnavailable();
+  if (scope.kind === 'user') {
     // Current self Memory is independent of Workspace import lineage; the trace reader still binds its Server.
-    if (reference.scopeId !== `page/user/${input.access.requestActor?.userId}`)
+    if (reference.scopeId !== currentKnowledgePageScope(input, 'user'))
       throw knowledgeTraceUnavailable();
     try {
       return (
@@ -1128,12 +1219,11 @@ function currentKnowledgeReferenceContent(
     }
   }
   // The selected trace's originating Server controls authority, not the Workspace's import history.
-  if (
-    reference.scopeId === 'page/server' &&
-    serverId !== resolveKnowledgeQueryContext(input).serverId
-  )
+  if (scope.kind === 'server' && serverId !== resolveKnowledgeQueryContext(input).serverId)
     throw knowledgeTraceUnavailable();
-  if (reference.scopeId === 'page/server') {
+  if (scope.kind === 'server') {
+    if (reference.scopeId !== currentKnowledgePageScope(input, 'server'))
+      throw knowledgeTraceUnavailable();
     try {
       return (
         readAuthorizedServerNotebookPages({ ...input, pageIds: [reference.objectId] }).pages[0]
@@ -1145,7 +1235,7 @@ function currentKnowledgeReferenceContent(
       throw error;
     }
   }
-  if (reference.scopeId !== `page/workspace/${input.workspaceId}`)
+  if (reference.scopeId !== currentKnowledgePageScope(input, 'workspace'))
     throw knowledgeTraceUnavailable();
   admitKnowledgeRetrieval(input);
   const workspaceRoot = resolveDataRootPath(input.dataRoot, 'workspaces', input.workspaceId);
@@ -1331,6 +1421,9 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
     throw new Error('Knowledge retrieval trace lineage is contradictory.');
 
   if (trace.notebookRevision === null) throw knowledgeTraceUnavailable();
+  const selectedScope = parseReferenceScope(trace.sourceScope);
+  if (!selectedScope || selectedScope.family !== 'page') throw knowledgeTraceUnavailable();
+  const knowledgeBaseId = selectedScope.knowledgeBaseId;
   const notebookRevision = trace.notebookRevision;
   const pinnedInput = { ...input, notebookRevision };
   if (
@@ -1342,8 +1435,7 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
       server ? admitServerKnowledgeRetrieval(input) : admitUserMemoryRetrieval(input);
     admit();
     if (
-      trace.sourceScope !==
-        (server ? 'page/server' : `page/user/${input.access.requestActor!.userId}`) ||
+      trace.sourceScope !== currentKnowledgePageScope(input, server ? 'server' : 'user') ||
       trace.queryContext.threadId !== context.threadId
     )
       throw knowledgeTraceUnavailable();
@@ -1387,6 +1479,7 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
       const kind = stringFrontmatterField(document, 'openkit_entry_kind');
       pages.push({
         notebookRevision,
+        knowledgeBaseId,
         reference: selected.reference,
         knowledgePageId: selected.reference.objectId,
         contentDigest: selected.contentDigest,
@@ -1400,6 +1493,8 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
     admit();
     return pages;
   }
+  if (trace.sourceScope !== currentKnowledgePageScope(input, 'workspace'))
+    throw knowledgeTraceUnavailable();
   const referenceProofs = currentKnowledgeReferenceProofs(pinnedInput);
   const pinnedPages = readWorkspaceNotebookIndexSource(workspaceRoot, notebookRevision).pages;
   const scopeSchemaText = readScopeKnowledgeSchemaText(workspaceRoot);
@@ -1435,12 +1530,16 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
       sourceRefs
     );
     const validation = validateKnowledgePageCandidate({
+      pageScopeId: trace.sourceScope,
       path,
       content,
       ...(scopeSchemaText ? { scopeSchemaText } : {}),
       registeredSources,
       knowledgeIds,
-      ...(referenceProof ? { resolvedReferences: referenceProof.resolvedReferences } : {}),
+      resolvedReferences: new Set([
+        ...verifiedKnowledgePageSourceReferences(sourceRefs, pinnedPages, trace.sourceScope),
+        ...(referenceProof?.resolvedReferences ?? []),
+      ]),
     });
     const reviewState = document ? stringFrontmatterField(document, 'review_state') : null;
     const sensitivity = document ? stringFrontmatterField(document, 'sensitivity') : null;
@@ -1475,6 +1574,7 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
 
     pages.push({
       notebookRevision,
+      knowledgeBaseId,
       reference: selected.reference,
       knowledgePageId: selected.reference.objectId,
       contentDigest,
@@ -1579,7 +1679,7 @@ function sameStrings(left: readonly string[], right: readonly string[]): boolean
  * Reads Knowledge ids from one pinned Notebook tree.
  *
  * @param pages Exact page bytes from one Notebook revision.
- * @returns Knowledge ids available for knowledge-prefixed references.
+ * @returns Knowledge ids available for canonical same-base Page references.
  */
 function readKnowledgePageIds(pages: ReadonlyMap<string, string>): Set<string> {
   const ids = new Set<string>();
@@ -1628,6 +1728,25 @@ function readRegisteredSources(
   return sources;
 }
 
+/** Checks only exact same-base page bytes in the selected Notebook tree; native retrieval still owns current access. */
+function verifiedKnowledgePageSourceReferences(
+  references: readonly string[],
+  pages: ReadonlyMap<string, string>,
+  pageScopeId: string
+): ReadonlySet<string> {
+  return new Set(
+    references.filter((reference) => {
+      const parsed = parseKnowledgePageSourceReference(reference, pageScopeId);
+      if (!parsed) return false;
+      const content = pages.get(parsed.reference.objectId);
+      return (
+        content !== undefined &&
+        (parsed.contentDigest === undefined || sha256Digest(content) === parsed.contentDigest)
+      );
+    })
+  );
+}
+
 /**
  * Returns whether source-prefixed references resolve to registered sources.
  *
@@ -1639,15 +1758,21 @@ function sourceReferencesResolve(
   document: OkfDocument,
   registeredSources: ReadonlyMap<string, string | null>,
   knowledgeIds: ReadonlySet<string>,
-  resolvedReferences?: ReadonlySet<string>
+  resolvedReferences?: ReadonlySet<string>,
+  pageScopeId?: string
 ): boolean {
   if (stringListFrontmatterField(document, 'source_refs') === null) {
     return false;
   }
 
   return (
-    knowledgeReferenceErrors(document, registeredSources, knowledgeIds, resolvedReferences)
-      .length === 0
+    knowledgeReferenceErrors(
+      document,
+      registeredSources,
+      knowledgeIds,
+      resolvedReferences,
+      pageScopeId
+    ).length === 0
   );
 }
 
@@ -1661,18 +1786,28 @@ function sourceReferencesResolve(
  * @param schema Current Workspace Knowledge schema.
  * @param registeredSources Current registered Source identities and digests.
  * @param knowledgeIds Current Workspace Knowledge identities.
+ * @param pageScopeId Exact retained Workspace page collection.
+ * @param resolvedReferences Page references verified against the exact selected tree.
  * @returns True only for an active, valid, directly user-authored Page.
  */
 function isStaticKnowledgeIndexPage(
   document: OkfDocument,
   schema: ScopeKnowledgeSchema,
   registeredSources: ReadonlyMap<string, string | null>,
-  knowledgeIds: ReadonlySet<string>
+  knowledgeIds: ReadonlySet<string>,
+  pageScopeId: string,
+  resolvedReferences: ReadonlySet<string>
 ): boolean {
   return (
     stringFrontmatterField(document, 'review_state') === 'user-authored' &&
     isActiveOpenKitKnowledgePage(document, schema) &&
-    sourceReferencesResolve(document, registeredSources, knowledgeIds)
+    sourceReferencesResolve(
+      document,
+      registeredSources,
+      knowledgeIds,
+      resolvedReferences,
+      pageScopeId
+    )
   );
 }
 
@@ -1681,12 +1816,15 @@ function isStaticKnowledgeIndexPage(
  *
  * @param workspaceRoot Workspace root path.
  * @param workspaceId Workspace id.
+ * @param pages Exact pinned Notebook pages.
+ * @param pageScopeId Exact retained Workspace page collection.
  * @returns Validation records for knowledge pages.
  */
 function buildKnowledgeValidationRecords(
   workspaceRoot: string,
   workspaceId: string,
-  pages: ReadonlyMap<string, string>
+  pages: ReadonlyMap<string, string>,
+  pageScopeId: string
 ): WorkspaceKnowledgeValidationRecord[] {
   const scopeSchemaText = readScopeKnowledgeSchemaText(workspaceRoot);
   const registeredSources = readRegisteredSources(workspaceRoot, workspaceId);
@@ -1700,6 +1838,12 @@ function buildKnowledgeValidationRecords(
     const parsed = parseOkfDocument({ path, content });
 
     const report = validateKnowledgePageCandidate({
+      pageScopeId,
+      resolvedReferences: verifiedKnowledgePageSourceReferences(
+        parsed.document ? (stringListFrontmatterField(parsed.document, 'source_refs') ?? []) : [],
+        pages,
+        pageScopeId
+      ),
       path,
       content,
       ...(scopeSchemaText ? { scopeSchemaText } : {}),
@@ -1736,12 +1880,15 @@ function buildKnowledgeValidationRecords(
  *
  * @param workspaceRoot Workspace root path.
  * @param workspaceId Workspace id.
+ * @param pages Exact pinned Notebook pages.
+ * @param pageScopeId Exact retained Workspace page collection.
  * @returns Source-reference records declared by knowledge pages.
  */
 function buildKnowledgeSourceReferences(
   workspaceRoot: string,
   workspaceId: string,
-  pages: ReadonlyMap<string, string>
+  pages: ReadonlyMap<string, string>,
+  pageScopeId: string
 ): WorkspaceKnowledgeSourceReference[] {
   const registeredSources = readRegisteredSources(workspaceRoot, workspaceId);
   const knowledgeIds = readKnowledgePageIds(pages);
@@ -1759,6 +1906,11 @@ function buildKnowledgeSourceReferences(
 
     const conceptId = document.conceptId ?? knowledgePageId;
     const workspacePath = `knowledge/pages/${knowledgePageId}.md`;
+    const resolvedReferences = verifiedKnowledgePageSourceReferences(
+      sourceRefs,
+      pages,
+      pageScopeId
+    );
 
     for (const reference of sourceRefs) {
       references.push(
@@ -1768,6 +1920,8 @@ function buildKnowledgeSourceReferences(
           reference,
           registeredSources,
           knowledgeIds,
+          pageScopeId,
+          resolvedReferences,
         })
       );
     }
@@ -1797,6 +1951,10 @@ function classifyKnowledgeSourceReference(input: {
   registeredSources: ReadonlyMap<string, string | null>;
   /** File-backed workspace knowledge ids. */
   knowledgeIds: ReadonlySet<string>;
+  /** Exact current Workspace page collection. */
+  pageScopeId: string;
+  /** Page references verified against the exact selected tree. */
+  resolvedReferences: ReadonlySet<string>;
 }): WorkspaceKnowledgeSourceReference {
   if (input.reference.startsWith('source:')) {
     const resolution = resolveRegisteredKnowledgeSourceReference(
@@ -1813,10 +1971,10 @@ function classifyKnowledgeSourceReference(input: {
     };
   }
 
-  if (input.reference.startsWith('knowledge:')) {
-    const targetId = input.reference
-      .slice('knowledge:'.length)
-      .replace(/@sha256:[a-f0-9]{64}$/, '');
+  if (input.reference.startsWith('openkit:')) {
+    const targetId =
+      parseKnowledgePageSourceReference(input.reference, input.pageScopeId)?.reference.objectId ??
+      null;
 
     return {
       conceptId: input.conceptId,
@@ -1824,7 +1982,10 @@ function classifyKnowledgeSourceReference(input: {
       reference: input.reference,
       kind: 'workspace-knowledge',
       targetId,
-      resolved: input.knowledgeIds.has(targetId),
+      resolved:
+        targetId !== null &&
+        input.knowledgeIds.has(targetId) &&
+        input.resolvedReferences.has(input.reference),
     };
   }
 
@@ -1838,7 +1999,9 @@ function classifyKnowledgeSourceReference(input: {
         reserved: false,
       },
       input.registeredSources,
-      input.knowledgeIds
+      input.knowledgeIds,
+      input.resolvedReferences,
+      input.pageScopeId
     ).length === 0;
 
   return {
@@ -1861,7 +2024,8 @@ function classifyKnowledgeSourceReference(input: {
 function buildKnowledgeLinkEdges(
   workspaceRoot: string,
   workspaceId: string,
-  pages: ReadonlyMap<string, string>
+  pages: ReadonlyMap<string, string>,
+  pageScopeId: string
 ): WorkspaceKnowledgeLinkEdge[] {
   const schema = readScopeKnowledgeSchema(workspaceRoot);
   const registeredSources = readRegisteredSources(workspaceRoot, workspaceId);
@@ -1879,7 +2043,18 @@ function buildKnowledgeLinkEdges(
 
     if (
       !parsed.ok ||
-      !isStaticKnowledgeIndexPage(parsed.document, schema, registeredSources, knowledgeIds)
+      !isStaticKnowledgeIndexPage(
+        parsed.document,
+        schema,
+        registeredSources,
+        knowledgeIds,
+        pageScopeId,
+        verifiedKnowledgePageSourceReferences(
+          stringListFrontmatterField(parsed.document, 'source_refs') ?? [],
+          pages,
+          pageScopeId
+        )
+      )
     ) {
       continue;
     }

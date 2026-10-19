@@ -154,7 +154,10 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
       createdAt,
       updatedAt: createdAt,
     });
-    const workerTurn = store.updateTurn(turn.id, { agentSessionId });
+    const workerTurn = store.updateTurn(turn.id, {
+      agentId: resolved.setup!.manifest.id,
+      agentSessionId,
+    });
     const environmentPackage = resolveAgentEnvironmentPackage({
       coreDb,
       agentSetup: resolved.setup!,

@@ -2,7 +2,11 @@ import { posix } from 'node:path';
 import type { KnowledgeOwnerScope } from '@openkit/protocol';
 import MarkdownIt from 'markdown-it';
 import type { NotebookRevision } from './notebook.js';
-import { parseOkfDocument, validateKnowledgePageCandidate } from './okf.js';
+import {
+  parseKnowledgePageSourceReference,
+  parseOkfDocument,
+  validateKnowledgePageCandidate,
+} from './okf.js';
 
 const markdown = new MarkdownIt({ html: false, linkify: false });
 const MAX_DIAGNOSTICS = 100;
@@ -51,6 +55,8 @@ function pageLinks(path: string, body: string): ReadonlySet<string> {
 /** Validates one complete immutable candidate, with changed pages and affected existing links checked together. */
 export function validateNotebookCandidate(input: {
   readonly ownerScope: KnowledgeOwnerScope;
+  /** Exact page scope supplied by current owner admission, including its retained Knowledge Base. */
+  readonly pageScopeId?: string;
   readonly base: Pick<NotebookRevision, 'files'>;
   readonly candidate: Pick<NotebookRevision, 'files'>;
   readonly scopeSchemaText: string;
@@ -104,6 +110,7 @@ export function validateNotebookCandidate(input: {
         expectedOwnerScope: input.ownerScope,
         registeredSources: input.registeredSources,
         knowledgeIds,
+        ...(input.pageScopeId === undefined ? {} : { pageScopeId: input.pageScopeId }),
         ...(input.resolvedReferences.has(pageId)
           ? { resolvedReferences: input.resolvedReferences.get(pageId)! }
           : {}),
@@ -134,8 +141,10 @@ export function validateNotebookCandidate(input: {
       const references = parsed.document.frontmatter.source_refs;
       if (Array.isArray(references))
         for (const reference of references) {
-          if (typeof reference !== 'string' || !reference.startsWith('knowledge:')) continue;
-          const target = reference.slice('knowledge:'.length).split('@', 1)[0]!;
+          if (typeof reference !== 'string') continue;
+          const parsedReference = parseKnowledgePageSourceReference(reference, input.pageScopeId);
+          if (!parsedReference) continue;
+          const target = parsedReference.reference.objectId;
           if (removed.has(`${target}.md`) && !suppressedPaths.has(`${target}.md`)) {
             fail(pageId, 'notebook.unresolved_page_reference');
             break;

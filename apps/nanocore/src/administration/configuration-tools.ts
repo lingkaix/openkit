@@ -41,12 +41,12 @@ export function createAdministrationConfigurationTools(
     {
       name: 'administration.configuration.read',
       description:
-        'List or read current Agent, Provider or Gateway configuration. Agent detail includes its current network rules and exact source revision. Provider/Gateway reads return editable catalog fields and the exact revision; use targetId gateway for Gateway.',
+        'List or read current Agent, Provider, Gateway or Policy configuration. Agent detail includes its current network rules and exact source revision. Provider/Gateway reads return editable catalog fields and the exact revision; Use targetId gateway for Gateway and server for Policy.',
       inputSchema: {
         type: 'object',
         additionalProperties: false,
         properties: {
-          targetFamily: { enum: ['agent', 'provider', 'gateway'] },
+          targetFamily: { enum: ['agent', 'provider', 'gateway', 'policy'] },
           targetId: { type: 'string', minLength: 1 },
           agentId: { type: 'string', minLength: 1 },
         },
@@ -55,27 +55,31 @@ export function createAdministrationConfigurationTools(
       execute: async (value) => {
         const args = value as { targetFamily: string; targetId?: string };
         if (args.targetFamily === 'agent') return readAgentConfiguration(snapshot, files, value);
-        if (args.targetFamily !== 'gateway' && args.targetFamily !== 'provider')
+        if (
+          args.targetFamily !== 'gateway' &&
+          args.targetFamily !== 'provider' &&
+          args.targetFamily !== 'policy'
+        )
           return configurationFailure('configuration_target_not_found');
         return catalogResult(() =>
-          catalog.read(args.targetFamily as 'gateway' | 'provider', args.targetId)
+          catalog.read(args.targetFamily as 'gateway' | 'provider' | 'policy', args.targetId)
         );
       },
     },
     {
       name: 'administration.schema.read',
       description:
-        'Read the registered Agent schema for image preparation and its finite Git-read proposal shape, or allowed Provider/Gateway catalog change fields. Configuration application excludes credential and endpoint changes.',
+        'Read the registered Agent schema for image preparation and its finite Git-read proposal shape, or allowed Provider/Gateway/Policy change fields. Configuration application excludes credential and endpoint changes.',
       inputSchema: {
         type: 'object',
         additionalProperties: false,
-        properties: { targetFamily: { enum: ['agent', 'provider', 'gateway'] } },
+        properties: { targetFamily: { enum: ['agent', 'provider', 'gateway', 'policy'] } },
         required: ['targetFamily'],
       },
       execute: async (value) => {
         const family = (value as { targetFamily: string }).targetFamily;
         if (family !== 'agent') {
-          if (family !== 'gateway' && family !== 'provider')
+          if (family !== 'gateway' && family !== 'provider' && family !== 'policy')
             return configurationFailure('configuration_schema_unavailable');
           return catalogResult(() => catalog.schema(family));
         }
@@ -92,14 +96,14 @@ export function createAdministrationConfigurationTools(
     {
       name: 'administration.configuration.propose',
       description:
-        'Publish an immutable registered Provider, Gateway or finite Worker Git-read candidate. Include the exact failed Turn for a Worker correction. This Tool never writes configuration.',
+        'Publish an immutable registered Provider, Gateway, Policy or finite Worker Git-read candidate. Include the exact failed Turn for a Worker correction. This Tool never writes configuration.',
       inputSchema: z.toJSONSchema(ProposeAdministrationConfigurationRequestSchema),
       execute: async (value) => catalogResult(() => catalog.propose(value)),
     },
     {
       name: 'administration.configuration.dispatch',
       description:
-        'Apply an exact Worker Git-read candidate only under the current finite Server Policy assignment. Provider and Gateway candidates require human confirmation through their public command. Inspect the receipt and source after an unknown outcome; do not regenerate a request to retry.',
+        'Apply an exact Worker Git-read candidate only under the current finite Server Policy assignment. Provider, Gateway and Policy candidates require human confirmation through their public command. Inspect the receipt and source after an unknown outcome; do not regenerate a request to retry.',
       inputSchema: z.toJSONSchema(ApplyDelegatedAdministrationConfigurationRequestSchema),
       execute: async (value, context) => applyResult(() => catalog.applyDelegated(value, context)),
     },

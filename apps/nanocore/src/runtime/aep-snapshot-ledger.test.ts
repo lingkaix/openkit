@@ -170,6 +170,41 @@ function snapshotPath(
 }
 
 describe('AEP snapshot ledger', () => {
+  it('refuses missing or unknown outer versions before decoding the embedded AEP or replaying', () => {
+    const db = createWorkspaceDb();
+    const environmentPackage = createEnvironmentPackage();
+    try {
+      recordAgentEnvironmentPackageSnapshot(db, {
+        environmentPackage,
+        createdAt: '2026-07-06T00:00:01.000Z',
+      });
+      const path = snapshotPath(db, environmentPackage);
+      const markerRefusal = expect.objectContaining({
+        message: 'The retained record could not be read.',
+        cause: expect.objectContaining({
+          name: 'TypeError',
+          message: 'Unsupported retained record format.',
+        }),
+      });
+      for (const marker of [{}, { schemaVersion: 2 }]) {
+        const invalid = JSON.stringify({ ...marker, snapshot: 'invalid' });
+        writeFileSync(path, invalid);
+        expect(() =>
+          requireAgentEnvironmentPackageSnapshot(db, db.workspaceId, environmentPackage.snapshotId)
+        ).toThrowError(markerRefusal);
+        expect(() =>
+          recordAgentEnvironmentPackageSnapshot(db, {
+            environmentPackage,
+            createdAt: '2026-07-06T00:00:01.000Z',
+          })
+        ).toThrowError(markerRefusal);
+        expect(readFileSync(path, 'utf8')).toBe(invalid);
+      }
+    } finally {
+      db.sqlite.close();
+      rmSync(db.dataRoot, { recursive: true, force: true });
+    }
+  });
   it('reads only the exact snapshot across many sessions and leaves export validation intact', () => {
     const db = createWorkspaceDb();
     const named = createEnvironmentPackage();
@@ -772,7 +807,9 @@ describe('AEP snapshot ledger', () => {
     });
 
     expect.soft(existsSync(path)).toBe(true);
-    expect.soft(existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : null).toEqual(record);
+    expect
+      .soft(existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : null)
+      .toEqual({ ...record, schemaVersion: 1 });
     expect(record).toMatchObject({
       snapshotId: environmentPackage.snapshotId,
       workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
@@ -1197,6 +1234,7 @@ describe('AEP snapshot ledger', () => {
       legacyScope.userId = 'usr_00000000-0000-7000-8000-000000000001';
       const legacyRecord = {
         ...record,
+        schemaVersion: 1,
         snapshot: { ...record.snapshot, schemaVersion: 1, scope: legacyScope },
       };
       legacyRecord.contentDigest = snapshotDigest(legacyRecord.snapshot);

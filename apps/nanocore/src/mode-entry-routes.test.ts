@@ -10,7 +10,7 @@ import {
   SubmitConversationResponseSchema,
 } from '@openkit/app-api-schemas';
 import { UserConfigSchema, WorkspaceConfigSchema } from '@openkit/config-schema';
-import { allocateEntityId, deriveEntityId } from '@openkit/protocol';
+import { allocateEntityId, deriveEntityId, formatReferenceUri } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import {
@@ -24,6 +24,7 @@ import {
   setWorkspaceSkillPin,
   skillSnapshotPath,
 } from './catalog/resource-catalog.js';
+import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
@@ -1126,7 +1127,7 @@ describe('conversation.submit worker storage choice', () => {
 });
 
 describe('conversation.submit worker acceptance wait', () => {
-  it('accepts the durable running Worker tuple before Worker completion is released', async () => {
+  it('accepts the durable running Worker tuple with a historical pinned Artifact before completion', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-conversation-accept-before-complete-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -1155,6 +1156,20 @@ describe('conversation.submit worker acceptance wait', () => {
     });
     const artifactRefs = [{ artifactId: artifact.id, artifactVersion: artifact.version }];
 
+    const publicationThread = store.createThread(artifact.workspaceId, 'Advance selected Artifact');
+    store.commitArtifactVersion({
+      workspaceId: artifact.workspaceId,
+      threadId: publicationThread.id,
+      artifactId: artifact.id,
+      expectedArtifactVersion: 1,
+      actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+      requestId: '0190f4c8-0000-7000-8000-000000000502',
+      recordedAt: new Date().toISOString(),
+      title: 'Later context',
+      summary: null,
+      content: { format: 'text', body: 'This newer version must not replace selected v1.' },
+    });
+
     const pending = app.request(
       ...operationRequest(
         'conversation.submit',
@@ -1178,7 +1193,15 @@ describe('conversation.submit worker acceptance wait', () => {
     let workerTurnId: string | undefined;
 
     try {
-      await executor.launched.promise;
+      await Promise.race([
+        executor.launched.promise,
+        pending.then(async (response) => {
+          if (response.status === 202) return executor.launched.promise;
+          throw new Error(
+            `Submission returned before Worker launch: ${response.status} ${await response.text()}`
+          );
+        }),
+      ]);
       const receivingThreads = store
         .listThreads('ws_00000000-0000-7000-8000-000000000001')
         .filter((thread) => thread.parentThreadId === 'th_00000000-0000-7000-8000-000000000001');
@@ -2188,6 +2211,7 @@ describe('Task durable admission response', () => {
     }
   });
 
+  // The held completion proves admission ordering; this budget covers real fixture setup.
   it.each([
     ...(['direct', 'assistant', 'remote-mcp', 'closeout-failure'] as const).map((entry) => ({
       entry,
@@ -2651,7 +2675,7 @@ describe('Task durable admission response', () => {
       coreDb.sqlite.close();
       rmSync(dataRoot, { force: true, recursive: true });
     }
-  });
+  }, 60_000);
 });
 
 describe('Task terminal replay closeout ownership', () => {
@@ -4442,7 +4466,11 @@ function skillModelObservations(
 describe('#144 real Assistant command wiring', () => {
   it('uses actual Assistant Memory tell and ask with User publication, citations and separate role usage', async () => {
     const f = assistantWiringFixture(false, undefined, false, undefined, true);
-    const citation = `page/user/${f.actorUserId}/labels`;
+    const citation = () =>
+      formatReferenceUri({
+        scopeId: `page/user/${f.actorUserId}/${readDefaultKnowledgeBaseId({ dataRoot: f.dataRoot, scope: { kind: 'user', userId: f.actorUserId } })}`,
+        objectId: 'labels',
+      });
     const call = (name: string, value: unknown, id: string) => ({
       id: `response-${id}`,
       object: 'response',
@@ -4494,11 +4522,13 @@ describe('#144 real Assistant command wiring', () => {
       )
       .mockResolvedValueOnce(call('memory_ask', { question: 'Which labels do I prefer?' }, 'ask'))
       .mockResolvedValueOnce(call('knowledge_retrieval', { query: 'green labels' }, 'search'))
-      .mockResolvedValueOnce(call('knowledge_page_read', { pageId: citation }, 'read'))
-      .mockResolvedValueOnce(
+      .mockImplementationOnce(async () =>
+        call('knowledge_page_read', { pageId: citation() }, 'read')
+      )
+      .mockImplementationOnce(async () =>
         call(
           'knowledge_result',
-          { answer: 'You prefer green labels.', citationIds: [citation], uncertainty: null },
+          { answer: 'You prefer green labels.', citationIds: [citation()], uncertainty: null },
           'answer'
         )
       );
@@ -4514,7 +4544,7 @@ describe('#144 real Assistant command wiring', () => {
       expect(observations[0]).toMatchObject({ outcome: 'published' });
       expect(observations[1]).toMatchObject({
         answer: 'You prefer green labels.',
-        citations: [{ reference: expect.stringContaining(`${citation}@`) }],
+        citations: [{ reference: expect.stringContaining(`${citation()}@`) }],
       });
       const userDb = openUserDb(f.dataRoot, f.actorUserId);
       try {
@@ -5009,6 +5039,7 @@ describe('#144 real Assistant command wiring', () => {
             .prepare('SELECT * FROM audit_events WHERE capability_call_id = ?')
             .all(call.id)
         ).toEqual([
+          expect.objectContaining({ action: 'capability.admit', request_id: f.requestId }),
           expect.objectContaining({
             action: 'capability.finish',
             capability_call_id: call.id,

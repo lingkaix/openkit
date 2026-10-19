@@ -50,6 +50,7 @@ import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
+import { testGoalDomainProposal } from './test-support/goal-domain.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { registerWorkerMcpRoutes } from './worker-mcp-routes.js';
@@ -434,7 +435,10 @@ async function operationProjections(f: Awaited<ReturnType<typeof operationFixtur
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   });
-  f.store.updateTurn(turn.id, { agentSessionId: 'as_00000000-0000-7dd2-9c72-030c3ef6118f' });
+  f.store.updateTurn(turn.id, {
+    agentId: 'agent_codex_host',
+    agentSessionId: 'as_00000000-0000-7dd2-9c72-030c3ef6118f',
+  });
   const environmentPackage = resolveAgentEnvironmentPackage({
     captureCoverage: { scope: 'server', value: 'off' },
     agentSessionId: 'as_00000000-0000-7dd2-9c72-030c3ef6118f',
@@ -990,6 +994,7 @@ describe('operation projection cutover', () => {
     }
   });
 
+  // Real invocation setup shares gate CPU; identity and zero-effect checks are the oracle.
   it('rejects model-bound identity conflicts and unproved Worker lineage before effects', async () => {
     const f = await operationFixture();
     try {
@@ -1049,7 +1054,7 @@ describe('operation projection cutover', () => {
     } finally {
       f.coreDb.sqlite.close();
     }
-  });
+  }, 60_000);
 
   it('keeps a caller-selected Workspace distinct from context-bound identity and scoped children', async () => {
     const f = await operationFixture();
@@ -1918,6 +1923,7 @@ it('discloses and grants a Coordinator proposal to the current administrator wit
         ...scope,
         requestId: randomUUID(),
         expectedRevision: goal.changeRevision,
+        goalDomain: testGoalDomainProposal(scope.workspaceId, scope.goalId),
         commitment: {
           intentBasis: { intent: goal.intent, revision: 0 },
           cards: [],

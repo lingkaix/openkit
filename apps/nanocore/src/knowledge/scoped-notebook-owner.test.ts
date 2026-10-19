@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { KnowledgeOwnerScope } from '@openkit/protocol';
+import { isKnowledgeBaseId, type KnowledgeOwnerScope } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import {
   createOpenKitAccessTokenRecord,
@@ -10,6 +10,7 @@ import {
   verifyOpenKitAccessTokenRecord,
 } from '../auth/access-token-store.js';
 import type { Actor } from '../auth/identity.js';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { openCoreDb, openUserDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook, NotebookError } from './notebook.js';
@@ -105,6 +106,13 @@ describe('User Memory and Server Knowledge scope foundation', () => {
     });
     const pinned = pinScopedNotebook(input);
     expect(pinned.notebookRevision).toBe(revision);
+    expect(isKnowledgeBaseId(pinned.knowledgeBaseId)).toBe(true);
+    expect(pinned.knowledgeBaseId).toBe(
+      readDefaultKnowledgeBaseId({
+        dataRoot: f.dataRoot,
+        scope: owner.ownerScope,
+      })
+    );
     expect(pinned.read()).toMatchObject({
       revision,
       parentRevision: null,
@@ -131,6 +139,10 @@ describe('User Memory and Server Knowledge scope foundation', () => {
     expect(existsSync(join(f.dataRoot, 'server', 'knowledge'))).toBe(false);
     expect(existsSync(join(f.dataRoot, 'users', bob, 'memory'))).toBe(false);
     expect(() => f.initializeUser()).toThrow(NotebookError);
+    rmSync(join(f.dataRoot, 'users', alice, 'config', 'user.jsonc'));
+    expect(() => pinScopedNotebook(input)).toThrow(NotebookError);
+    expect(() => pinned.read()).toThrow(NotebookError);
+    expect(existsSync(join(f.dataRoot, 'users', alice, 'config', 'user.jsonc'))).toBe(false);
   });
 
   it('refuses a different User Audit owner before fresh notebook effects', () => {
@@ -272,7 +284,15 @@ describe('User Memory and Server Knowledge scope foundation', () => {
       ownerScope: { kind: 'server' },
       notebookRoot: join(f.dataRoot, 'server', 'knowledge'),
     });
-    expect(pinScopedNotebook({ ...input, actor }).read().revision).toBe(revision);
+    const server = pinScopedNotebook({ ...input, actor });
+    expect(server.read().revision).toBe(revision);
+    expect(isKnowledgeBaseId(server.knowledgeBaseId)).toBe(true);
+    expect(server.knowledgeBaseId).not.toBe(
+      readDefaultKnowledgeBaseId({
+        dataRoot: f.dataRoot,
+        scope: { kind: 'user', userId: alice },
+      })
+    );
     expect(
       pinScopedNotebook({ ...input, target: { kind: 'user' }, actor: f.actor }).read().revision
     ).toBe(userRevision);

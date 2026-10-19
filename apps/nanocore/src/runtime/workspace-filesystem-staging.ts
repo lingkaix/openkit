@@ -1,7 +1,56 @@
 import { realpathSync, statSync } from 'node:fs';
+import {
+  readRetainedV1,
+  TimestampSchema,
+  WorkspaceIdSchema,
+  writeRetainedV1,
+} from '@openkit/protocol';
 import { z } from 'zod';
 import type { WorkspaceDb } from '../storage/db.js';
 import type { FilesystemSnapshotManifest } from './filesystem-workspace-sync.js';
+
+// SQL owns the outer marker. Freeze native manifest predicates independently of wire schemas.
+const StoredFilesystemSnapshotManifestV1Schema = z
+  .object({
+    workspaceId: WorkspaceIdSchema,
+    resourceId: z.string(),
+    contentDigest: z.string(),
+    createdAt: TimestampSchema,
+    entries: z.array(
+      z
+        .object({
+          path: z
+            .string()
+            .refine(
+              (path) =>
+                path.length > 0 &&
+                !path.startsWith('/') &&
+                !/(^|\/)\.\.(\/|$)/.test(path) &&
+                !path.includes('\0'),
+              { message: 'Unsafe filesystem workspace path.' }
+            ),
+          kind: z.enum(['file', 'directory', 'symlink', 'ignored']),
+          size: z.number().int().nonnegative().nullable(),
+          digest: z.string().nullable(),
+          permissions: z
+            .string()
+            .regex(/^0[0-7]{3}$/)
+            .nullable(),
+          writable: z.boolean(),
+          ignoreReason: z.string().nullable(),
+        })
+        .strip()
+    ),
+  })
+  .strip();
+
+const StoredFilesystemStagingPayloadV1Schema = z
+  .object({
+    before: StoredFilesystemSnapshotManifestV1Schema,
+    stagingRootIdentity: z.string(),
+    targetRootIdentity: z.string(),
+  })
+  .strip();
 
 /** Input for recording one internal filesystem staging root. */
 export interface RecordFilesystemWorkspaceStagingRootInput {
@@ -46,6 +95,7 @@ export interface FilesystemWorkspaceStagingRootRecord {
 }
 
 interface FilesystemWorkspaceStagingRootRow {
+  readonly schemaVersion: unknown;
   readonly workspace_id: string;
   readonly review_id: string;
   readonly change_set_id: string;
@@ -93,6 +143,7 @@ export function recordFilesystemWorkspaceStagingRoot(
     return existing;
   }
 
+  StoredFilesystemSnapshotManifestV1Schema.parse(input.before);
   workspaceDb.sqlite
     .prepare(
       `INSERT INTO workspace_filesystem_staging_roots (
@@ -103,8 +154,9 @@ export function recordFilesystemWorkspaceStagingRoot(
         target_root_path,
         before_manifest_json,
         created_at,
-        updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        updated_at,
+        schema_version
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       input.workspaceId,
@@ -118,7 +170,8 @@ export function recordFilesystemWorkspaceStagingRoot(
         targetRootIdentity: targetRoot.identity,
       }),
       input.createdAt,
-      input.createdAt
+      input.createdAt,
+      writeRetainedV1({}).schemaVersion
     );
 
   const stored = getFilesystemWorkspaceStagingRoot(workspaceDb, input.workspaceId, input.reviewId);
@@ -146,6 +199,7 @@ export function getFilesystemWorkspaceStagingRoot(
   const row = workspaceDb.sqlite
     .prepare(
       `SELECT
+        schema_version AS schemaVersion,
         workspace_id,
         review_id,
         change_set_id,
@@ -163,7 +217,9 @@ export function getFilesystemWorkspaceStagingRoot(
     return null;
   }
 
-  const payload = createFilesystemStagingPayloadFromJson(row.before_manifest_json);
+  const payload = readRetainedV1(row, () =>
+    createFilesystemStagingPayloadFromJson(row.before_manifest_json)
+  );
   return {
     before: payload.before,
     changeSetId: row.change_set_id,
@@ -208,24 +264,14 @@ function createFilesystemStagingPayloadFromJson(json: string): {
   readonly stagingRootIdentity: string;
   readonly targetRootIdentity: string;
 } {
-  const payload = JSON.parse(json) as {
-    before?: unknown;
-    stagingRootIdentity?: unknown;
-    targetRootIdentity?: unknown;
-  };
-  if (
-    !payload.before ||
-    typeof payload.before !== 'object' ||
-    typeof payload.stagingRootIdentity !== 'string' ||
-    typeof payload.targetRootIdentity !== 'string'
-  ) {
-    throw new z.ZodError([
-      { code: 'custom', message: 'Stored filesystem staging payload is invalid.', path: [] },
-    ]);
-  }
+  const payload: unknown = JSON.parse(json);
+  const validated = StoredFilesystemStagingPayloadV1Schema.parse(payload);
+  // Exact replay compares serialized manifests. Validate without changing their property order
+  // or dropping descriptive annotations that were already part of that retained replay tuple.
+  const original = payload as { readonly before: FilesystemSnapshotManifest };
   return {
-    before: payload.before as FilesystemSnapshotManifest,
-    stagingRootIdentity: payload.stagingRootIdentity,
-    targetRootIdentity: payload.targetRootIdentity,
+    before: original.before,
+    stagingRootIdentity: validated.stagingRootIdentity,
+    targetRootIdentity: validated.targetRootIdentity,
   };
 }

@@ -1,37 +1,14 @@
+import { readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
+import type { z } from 'zod';
 import type { WorkspaceDb } from '../storage/db.js';
 import type { ResolvedAgentSetup } from './setup-resolver.js';
+import {
+  StoredResolvedAgentSetupV1Schema,
+  StoredSetupRequiredFeaturesV1Schema,
+} from './setup-retained-v1.js';
 
-/** Deliberate non-secret projection of the setup facts needed for durable evidence. */
-export interface RedactedResolvedAgentSetup {
-  /** Selected manifest facts that determined runtime and sandbox policy. */
-  readonly manifest: {
-    /** Selected agent id. */
-    readonly id: string;
-    /** Required feature ids used during setup resolution. */
-    readonly requiredFeatures: string[];
-    /** Exact runtime, image, and binary declarations. */
-    readonly runtime: ResolvedAgentSetup['manifest']['runtime'];
-    /** Exact network and non-secret credential declaration metadata. */
-    readonly sandbox: {
-      /** Credential declaration metadata without resolved values. */
-      readonly credentialDeclarations: NonNullable<
-        ResolvedAgentSetup['manifest']['sandbox']
-      >['credentialDeclarations'];
-      /** Exact authored network grants. */
-      readonly network: NonNullable<ResolvedAgentSetup['manifest']['sandbox']>['network'];
-    };
-  };
-  /** Exact logical model contract exposed to the selected worker. */
-  readonly logicalModels: {
-    readonly preferredLogicalModelId: string;
-    readonly allowed: Array<{
-      readonly id: string;
-      readonly capabilities: readonly string[];
-      /** Catalog family when known; null when inventory does not name a family. */
-      readonly modelFamilyId: string | null;
-    }>;
-  };
-}
+/** Deliberate non-secret evidence shape, independent of the current launch manifest. */
+export type RedactedResolvedAgentSetup = z.infer<typeof StoredResolvedAgentSetupV1Schema>;
 
 /** Durable workspace-scoped resolved setup record. */
 export interface ResolvedAgentSetupRecord {
@@ -76,6 +53,7 @@ export interface RecordResolvedAgentSetupInput {
 }
 
 interface ResolvedAgentSetupRow {
+  readonly schemaVersion: unknown;
   readonly setup_record_id: string;
   readonly workspace_id: string;
   readonly turn_id: string | null;
@@ -100,7 +78,10 @@ export function recordResolvedAgentSetup(
   workspaceDb: WorkspaceDb,
   input: RecordResolvedAgentSetupInput
 ): ResolvedAgentSetupRecord {
-  const redactedSetup = redactResolvedAgentSetup(input.setup);
+  guardExistingResolvedAgentSetup(workspaceDb, input.recordId);
+  const redactedSetup = StoredResolvedAgentSetupV1Schema.parse(
+    redactResolvedAgentSetup(input.setup)
+  );
 
   workspaceDb.sqlite
     .prepare(
@@ -115,8 +96,9 @@ export function recordResolvedAgentSetup(
         runtime_adapter,
         required_features_json,
         setup_json,
-        created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        created_at,
+        schema_version
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       input.recordId,
@@ -129,7 +111,8 @@ export function recordResolvedAgentSetup(
       input.setup.manifest.runtime.adapter,
       JSON.stringify(input.setup.manifest.requiredFeatures),
       JSON.stringify(redactedSetup),
-      input.createdAt
+      input.createdAt,
+      writeRetainedV1({}).schemaVersion
     );
 
   return requireResolvedAgentSetup(workspaceDb, input.workspaceId, input.recordId);
@@ -151,6 +134,7 @@ export function requireResolvedAgentSetup(
   const row = workspaceDb.sqlite
     .prepare(
       `SELECT
+        schema_version AS schemaVersion,
         setup_record_id,
         workspace_id,
         turn_id,
@@ -189,6 +173,7 @@ export function listExportableResolvedAgentSetups(
     workspaceDb.sqlite
       .prepare(
         `SELECT
+          schema_version AS schemaVersion,
           setup_record_id,
           workspace_id,
           turn_id,
@@ -230,11 +215,15 @@ export function importResolvedAgentSetups(
       runtime_adapter,
       required_features_json,
       setup_json,
-      created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      created_at,
+      schema_version
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
 
   for (const record of records) {
+    guardExistingResolvedAgentSetup(workspaceDb, record.id);
+    const requiredFeatures = StoredSetupRequiredFeaturesV1Schema.parse(record.requiredFeatures);
+    const setup = StoredResolvedAgentSetupV1Schema.parse(redactResolvedAgentSetup(record.setup));
     insert.run(
       record.id,
       record.workspaceId,
@@ -244,9 +233,10 @@ export function importResolvedAgentSetups(
       record.logicalModelId,
       record.runtimeKind,
       record.runtimeAdapter,
-      JSON.stringify(record.requiredFeatures),
-      JSON.stringify(redactResolvedAgentSetup(record.setup)),
-      record.createdAt
+      JSON.stringify(requiredFeatures),
+      JSON.stringify(setup),
+      record.createdAt,
+      writeRetainedV1({}).schemaVersion
     );
   }
 }
@@ -258,9 +248,7 @@ export function importResolvedAgentSetups(
  * @returns Parsed resolved setup record.
  */
 function resolvedAgentSetupFromRow(row: ResolvedAgentSetupRow): ResolvedAgentSetupRecord {
-  const setup = JSON.parse(row.setup_json) as ResolvedAgentSetup | RedactedResolvedAgentSetup;
-
-  return {
+  return readRetainedV1(row, () => ({
     id: row.setup_record_id,
     workspaceId: row.workspace_id,
     turnId: row.turn_id,
@@ -269,10 +257,24 @@ function resolvedAgentSetupFromRow(row: ResolvedAgentSetupRow): ResolvedAgentSet
     logicalModelId: row.logical_model_id,
     runtimeKind: row.runtime_kind,
     runtimeAdapter: row.runtime_adapter,
-    requiredFeatures: JSON.parse(row.required_features_json) as string[],
-    setup: redactResolvedAgentSetup(setup),
+    requiredFeatures: StoredSetupRequiredFeaturesV1Schema.parse(
+      JSON.parse(row.required_features_json)
+    ),
+    setup: redactResolvedAgentSetup(
+      StoredResolvedAgentSetupV1Schema.parse(JSON.parse(row.setup_json))
+    ),
     createdAt: row.created_at,
-  };
+  }));
+}
+
+/** Validates the existing primary-key owner before replacement or an ignored import collision. */
+function guardExistingResolvedAgentSetup(workspaceDb: WorkspaceDb, recordId: string): void {
+  const row = workspaceDb.sqlite
+    .prepare(
+      'SELECT *, schema_version AS schemaVersion FROM resolved_agent_setups WHERE setup_record_id = ?'
+    )
+    .get(recordId) as ResolvedAgentSetupRow | undefined;
+  if (row) resolvedAgentSetupFromRow(row);
 }
 
 /**

@@ -1,7 +1,5 @@
 import { createHash } from 'node:crypto';
-import { type BigIntStats, constants } from 'node:fs';
-import { lstat, open } from 'node:fs/promises';
-import { join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import {
   MAX_ARTIFACT_FILE_BYTES,
@@ -10,21 +8,25 @@ import {
 } from '@openkit/protocol';
 import { currentSchedulerAdmissionWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import {
+  canDiscloseThreadToAudience,
   isArtifactVisible,
   isThreadIdVisible,
   isThreadVisible,
 } from '../auth/thread-visibility.js';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import type { FsStore } from '../lib/store.js';
 import { readAuthorizedWorkspaceNotebookPages } from '../retrieval-knowledge-adapter.js';
 import { getWorkerControlAcceptedFinalStatus } from '../runtime/worker-control-records.js';
 import { findSchedulerAdmissionForWorkerLineage } from '../scheduler-records.js';
+import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { resolveDataRootPath } from '../storage/fs-layout.js';
 import {
-  assertCanonicalDirectory,
-  assertSafeWorkspacePathSegment,
-} from '../storage/workspace-file-records.js';
-import { readWorkspaceMaterialSensitivity } from '../workspace-materials.js';
+  getWorkspaceMaterial,
+  getWorkspaceMaterialRevision,
+  readWorkspaceMaterialSensitivity,
+} from '../workspace-materials.js';
+import { prepareArtifactSourceInputs } from './artifact-source-files.js';
 import {
   BoundedSourceError,
   openBoundedSourceView,
@@ -33,12 +35,16 @@ import {
   type SourceViewUnavailable,
   type SourceViewUnavailableReason,
 } from './bounded-source-view.js';
+import { prepareMaterialSourceInput } from './material-source-files.js';
 import type { MediaByteSource } from './media-process.js';
+import { PdfTextLayerEvidenceSchema } from './pdf-text-layer.js';
+import { prepareTurnFileSourceInputs } from './turn-source-files.js';
 import { createWorkerContextPackageAuthorityReader } from './worker-context-authorities.js';
 import {
   readWorkerContextPackageTrace,
   type WorkerContextPackageKnowledgeSelection,
   type WorkerContextPackageSourceFile,
+  type WorkerContextPackageSourceFileInput,
 } from './worker-context-package.js';
 
 type Coverage =
@@ -51,13 +57,13 @@ export type WorkerSourceReadResult =
   | (SourceViewPage & { readonly sourceByteLength: number; readonly coverage: Coverage });
 
 /**
- * Resolves one exact inventory path under current Worker, source and receiving-audience authority. The returned paths and callback are private per-operation inputs, never a retained grant or model projection.
+ * Resolves one exact inventory path under current Worker, source and receiving-audience authority. The returned suppliers and callback are private per-operation inputs, never a retained grant or model projection.
  * @param input Current authenticated Worker package and existing authority owners.
  * @param inventoryPath Exact sourceFiles or knowledgeSelections packagePath from the accepted Turn snapshot.
- * @returns Verified file or pinned Knowledge selection, canonical package root and a current-authority check for the caller's bounded operation.
+ * @returns Exact current source suppliers or a pinned Knowledge selection, with a current-authority check for bounded consumption.
  * @throws Error when authority or inventory is unavailable; callers must return a value-free refusal.
  */
-export function resolveCurrentWorkerSource(
+export async function resolveCurrentWorkerSource(
   input: {
     readonly environmentPackage: AgentEnvironmentPackage;
     readonly coreDb: CoreDb;
@@ -65,6 +71,7 @@ export function resolveCurrentWorkerSource(
     readonly workspaceDb: WorkspaceDb;
     readonly signal?: AbortSignal | undefined;
     readonly requireAdmission?: (() => void) | undefined;
+    readonly fileAdmission?: FileStorageAdmission | undefined;
   },
   inventoryPath: string
 ) {
@@ -94,8 +101,25 @@ export function resolveCurrentWorkerSource(
       throw new Error('Current source read admission is unavailable.');
     const userId = responsibleUserIdForActor(admission.triggerActor) ?? undefined;
     const administrator = admission.serverAdminTokenId !== null;
+    if (!userId) throw new Error('Current Worker responsibility is unavailable.');
+    const resourcePolicyActor = {
+      kind: 'agent' as const,
+      userId,
+      agentId: input.environmentPackage.agent.agentId,
+      processId: scope.agentSessionId,
+    };
+
     const destination = input.store.getThread(scope.workspaceId, scope.threadId);
-    if (!isThreadVisible(input.store, destination, userId, administrator))
+    if (
+      !isThreadVisible(
+        input.store,
+        destination,
+        userId,
+        administrator,
+        'thread.read',
+        resourcePolicyActor
+      )
+    )
       throw new Error('Current source read audience is unavailable.');
     if (!source) return admission;
     const referenceScope = parseReferenceScope(source.source.reference.scopeId);
@@ -108,10 +132,24 @@ export function resolveCurrentWorkerSource(
     let sourceThreadId: string | null = null;
     if (source.source.kind === 'artifact') {
       const artifact = input.store.getArtifact(scope.workspaceId, source.source.reference.objectId);
-      if (!isArtifactVisible(input.store, artifact, userId, administrator))
+      if (
+        artifact.version < source.source.artifactVersion ||
+        !isArtifactVisible(input.store, artifact, userId, administrator, resourcePolicyActor)
+      )
         throw new Error('Current source is unavailable.');
       sourceThreadId = artifact.origin.kind === 'turn-output' ? artifact.origin.threadId : null;
     } else if (source.source.kind === 'material') {
+      const revision = getWorkspaceMaterialRevision(
+        input.workspaceDb,
+        source.source.reference.objectId,
+        source.source.revisionId
+      );
+      if (
+        revision.contentDigest !== source.originalDigest ||
+        Buffer.byteLength(revision.content) !== source.byteLength ||
+        revision.mediaType !== source.mediaType
+      )
+        throw new Error('Current Material revision is unavailable.');
       if (
         readWorkspaceMaterialSensitivity(input.workspaceDb, source.source.reference.objectId) ===
         'restricted'
@@ -125,7 +163,9 @@ export function resolveCurrentWorkerSource(
           scope.workspaceId,
           referenceScope.threadId,
           userId,
-          administrator
+          administrator,
+          'thread.read',
+          resourcePolicyActor
         )
       )
         throw new Error('Current source is unavailable.');
@@ -134,17 +174,19 @@ export function resolveCurrentWorkerSource(
         referenceScope.threadId,
         referenceScope.turnId
       );
-      if (!owner.fileInputs?.[Number(source.source.reference.objectId)])
+      const original = owner.fileInputs?.[Number(source.source.reference.objectId)];
+      if (
+        !original ||
+        original.contentDigest !== source.originalDigest ||
+        original.sizeBytes !== source.byteLength ||
+        original.mediaType !== source.mediaType
+      )
         throw new Error('Current source is unavailable.');
       sourceThreadId = referenceScope.threadId;
     }
     if (sourceThreadId) {
       const sourceThread = input.store.getThread(scope.workspaceId, sourceThreadId);
-      if (
-        sourceThread.visibility === 'private' &&
-        (destination.visibility !== 'private' ||
-          destination.privateOwnerUserId !== sourceThread.privateOwnerUserId)
-      )
+      if (!canDiscloseThreadToAudience(input.store, sourceThread, destination))
         throw new Error('Current source destination is unavailable.');
     }
     return admission;
@@ -175,6 +217,11 @@ export function resolveCurrentWorkerSource(
     const admission = admit();
     if (
       !knowledge?.notebookRevision ||
+      knowledge.knowledgeBaseId !==
+        readDefaultKnowledgeBaseId({
+          dataRoot: input.workspaceDb.dataRoot,
+          scope: { kind: 'workspace', workspaceId: scope.workspaceId },
+        }) ||
       !knowledge.projection ||
       knowledge.projection.sourceRevision !== knowledge.notebookRevision ||
       knowledge.projection.representationId !== 'original-utf8'
@@ -204,23 +251,77 @@ export function resolveCurrentWorkerSource(
   };
   admit(source);
   if (knowledge) readKnowledge();
+  const assertCurrent = () => {
+    admit(source);
+  };
+  let currentSource: WorkerContextPackageSourceFileInput | undefined;
+  if (source?.source.kind === 'artifact') {
+    // Current source and receiving-audience admission precede any retained original read.
+    const artifact = input.store.getArtifactVersion(
+      scope.workspaceId,
+      source.source.reference.objectId,
+      source.source.artifactVersion
+    ).artifact;
+    if (artifact.contentDigest !== source.originalDigest)
+      throw new Error('Current source is unavailable.');
+    [currentSource] = await prepareArtifactSourceInputs({
+      workspaceRoot,
+      artifacts: [artifact],
+      assertCurrent,
+      ...(input.fileAdmission ? { admission: input.fileAdmission } : {}),
+      ...(input.signal ? { signal: input.signal } : {}),
+    });
+  } else if (source?.source.kind === 'material') {
+    const { reference, revisionId } = source.source;
+    const selected = trace.materialSelections.find(
+      (entry) => entry.materialId === reference.objectId && entry.revisionId === revisionId
+    );
+    if (!selected) throw new Error('Selected Material is unavailable.');
+    const revision = getWorkspaceMaterialRevision(
+      input.workspaceDb,
+      selected.materialId,
+      selected.revisionId
+    );
+    const material = getWorkspaceMaterial(input.workspaceDb, selected.materialId);
+    currentSource = (
+      await prepareMaterialSourceInput({
+        workspaceId: scope.workspaceId,
+        selection: { ...selected, ...revision, sensitivity: material.sensitivity },
+        assertCurrent,
+        ...(input.signal ? { signal: input.signal } : {}),
+      })
+    ).source;
+  } else if (source) {
+    const owner = parseReferenceScope(source.source.reference.scopeId);
+    if (owner?.family !== 'input') throw new Error('Selected Turn input is unavailable.');
+    [currentSource] = await prepareTurnFileSourceInputs({
+      workspaceRoot,
+      turn: input.store.getTurn(scope.workspaceId, owner.threadId, owner.turnId),
+      onlyOrdinal: Number(source.source.reference.objectId),
+      assertCurrent,
+      ...(input.signal ? { signal: input.signal } : {}),
+    });
+  }
+  if (
+    source &&
+    (!currentSource ||
+      !isDeepStrictEqual(currentSource.source, source.source) ||
+      currentSource.originalDigest !== source.originalDigest ||
+      currentSource.byteLength !== source.byteLength ||
+      currentSource.mediaType !== source.mediaType)
+  )
+    throw new Error('Selected exact original is unavailable.');
+  assertCurrent();
   return {
     source,
+    currentSource,
     knowledge,
     workspaceId: scope.workspaceId,
     readKnowledge: knowledge ? readKnowledge : undefined,
     workspaceRoot,
-    packageRoot: join(
-      workspaceRoot,
-      'threads',
-      scope.threadId,
-      'turns',
-      scope.turnId,
-      'context-package'
-    ),
     threadId: scope.threadId,
     turnId: scope.turnId,
-    assertCurrent: () => admit(source),
+    assertCurrent,
   };
 }
 
@@ -230,11 +331,10 @@ export function resolveCurrentWorkerSource(
  * @returns A bounded UTF-8 page and pinned continuation, or a content-free unavailable result.
  */
 export async function readWorkerSourceSnapshot(input: {
-  readonly workspaceRoot: string;
   readonly workspaceId?: string | undefined;
-  readonly threadId: string;
-  readonly turnId: string;
   readonly source?: WorkerContextPackageSourceFile | undefined;
+  /** Transient exact-owner supplier; never serialized in the Context Package. */
+  readonly currentSource?: WorkerContextPackageSourceFileInput | undefined;
   readonly knowledge?: WorkerContextPackageKnowledgeSelection | undefined;
   /** Private canonical pinned reader supplied only after current Worker and selection admission. */
   readonly readKnowledge?: (() => string) | undefined;
@@ -253,11 +353,9 @@ export async function readWorkerSourceSnapshot(input: {
     if (projection.kind === 'descriptor' || projection.availability === 'unavailable')
       return unavailable('unsupported');
     if (input.cursor && input.mode !== 'read') return unavailable('invalid_request');
-    const relative = projection.representationSnapshotPath ?? source.originalSnapshotPath;
-    if (
-      (!projection.representationSnapshotPath && projection.representationId !== 'original-utf8') ||
-      (projection.representationSnapshotPath && !projection.pdfTextLayer)
-    )
+    const current = input.currentSource;
+    if (!current || !sameCurrentRepresentation(source, current)) return unavailable('unavailable');
+    if (projection.representationId !== 'original-utf8' && !projection.pdfTextLayer)
       return unavailable('unsupported');
     // Select known coverage only: retained descriptive additions are not Tool output.
     const pdf = projection.pdfTextLayer?.coverage;
@@ -275,19 +373,11 @@ export async function readWorkerSourceSnapshot(input: {
     const extra = { sourceByteLength: source.byteLength, coverage };
     const envelopeBytes = 65_536 - Buffer.byteLength(JSON.stringify(extra), 'utf8');
     if (envelopeBytes < 128) return unavailable('resource_limited');
-    if (Buffer.byteLength(relative, 'utf8') > 4096) return unavailable('resource_limited');
-    const path = sourceSnapshotPath(input, relative);
-    const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const reader = streamRangeReader(
+      projection.pdfTextLayer ? current.openRepresentation! : current.open,
+      input.assertCurrent
+    );
     try {
-      input.signal?.throwIfAborted();
-      input.assertCurrent();
-      const pinned = await file.stat({ bigint: true });
-      if (
-        !pinned.isFile() ||
-        pinned.nlink !== 1n ||
-        pinned.size !== BigInt(projection.representationByteLength)
-      )
-        throw new BoundedSourceError('corrupt');
       const view = await openBoundedSourceView(
         {
           identity: {
@@ -298,22 +388,11 @@ export async function readWorkerSourceSnapshot(input: {
             representationDigest: projection.representationDigest,
           },
           byteLength: projection.representationByteLength,
-          read: async (offset, maximum, signal) => {
-            signal.throwIfAborted();
-            const bytes = Buffer.alloc(Math.min(maximum, 65_536));
-            const { bytesRead } = await file.read(bytes, 0, bytes.length, offset);
-            signal.throwIfAborted();
-            return bytes.subarray(0, bytesRead);
-          },
+          read: reader.read,
           assertUnchanged: async (signal) => {
             signal.throwIfAborted();
             input.assertCurrent();
-            const held = await file.stat({ bigint: true });
-            const named = await lstat(path, { bigint: true });
-            signal.throwIfAborted();
-            if (!sameFile(pinned, held) || !sameFile(pinned, named))
-              throw new BoundedSourceError('stale');
-            input.assertCurrent();
+            await current.assertUnchanged(signal);
           },
         },
         {
@@ -332,7 +411,7 @@ export async function readWorkerSourceSnapshot(input: {
       input.assertCurrent();
       return page.status === 'ready' ? { ...page, ...extra } : page;
     } finally {
-      await file.close();
+      await reader.close();
     }
   } catch (error) {
     return unavailable(
@@ -346,94 +425,116 @@ export async function readWorkerSourceSnapshot(input: {
 }
 
 /**
- * Supplies the retained exact original only to the bounded vision consumer. Each open and chunk rechecks current authority; the staging owner verifies the complete original digest before processing.
- * @param input Accepted selected source, canonical Turn root and fresh authority callback.
+ * Supplies the current exact canonical original only to the bounded vision consumer. Each open and chunk rechecks current authority; the staging owner verifies the complete original digest before processing.
+ * @param input Accepted selected source, exact canonical supplier and fresh authority callback.
  * @returns A private bounded byte supplier, never a model-visible path or retained grant.
  */
 export function workerSourceOriginal(input: {
-  readonly workspaceRoot: string;
-  readonly threadId: string;
-  readonly turnId: string;
   readonly source: WorkerContextPackageSourceFile;
+  readonly currentSource?: WorkerContextPackageSourceFileInput | undefined;
   readonly assertCurrent: () => void;
 }): MediaByteSource {
-  const source = structuredClone(input.source);
+  const { source, currentSource } = input;
+  if (
+    !currentSource ||
+    !isDeepStrictEqual(currentSource.source, source.source) ||
+    currentSource.originalDigest !== source.originalDigest ||
+    currentSource.byteLength !== source.byteLength ||
+    currentSource.mediaType !== source.mediaType
+  )
+    throw new Error('Selected original is unavailable.');
   return {
     sourceKey: `${source.source.reference.scopeId}/${source.source.reference.objectId}`,
     revision: source.projection.sourceRevision,
     originalDigest: source.originalDigest,
     byteLength: source.byteLength,
     async *open(signal) {
-      signal.throwIfAborted();
       input.assertCurrent();
-      const path = sourceSnapshotPath(input, source.originalSnapshotPath);
-      const file = await open(
-        path,
-        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
-      );
-      try {
-        const pinned = await file.stat({ bigint: true });
-        if (!pinned.isFile() || pinned.nlink !== 1n || pinned.size !== BigInt(source.byteLength))
-          throw new BoundedSourceError('corrupt');
-        let offset = 0;
-        while (offset < source.byteLength) {
-          signal.throwIfAborted();
-          input.assertCurrent();
-          const buffer = Buffer.alloc(Math.min(65_536, source.byteLength - offset));
-          const { bytesRead } = await file.read(buffer, 0, buffer.length, offset);
-          if (bytesRead < 1) throw new BoundedSourceError('corrupt');
-          offset += bytesRead;
-          yield buffer.subarray(0, bytesRead);
-        }
+      for await (const chunk of currentSource.open(signal)) {
         signal.throwIfAborted();
-        if (
-          !sameFile(pinned, await file.stat({ bigint: true })) ||
-          !sameFile(pinned, await lstat(path, { bigint: true }))
-        )
-          throw new BoundedSourceError('stale');
         input.assertCurrent();
-      } finally {
-        await file.close();
+        yield chunk;
       }
+      await currentSource.assertUnchanged(signal);
+      input.assertCurrent();
     },
   };
 }
 
-/** Resolves only one inventory-owned snapshot path through canonical no-link directories. */
-function sourceSnapshotPath(
-  input: { workspaceRoot: string; threadId: string; turnId: string },
-  relative: string
-): string {
-  if (Buffer.byteLength(relative, 'utf8') > 4096) throw new BoundedSourceError('resource_limited');
-  const parts = [
-    'threads',
-    input.threadId,
-    'turns',
-    input.turnId,
-    'context-package',
-    ...relative.split('/'),
-  ];
-  for (const part of parts) assertSafeWorkspacePathSegment(part, 'Context Package path');
-  let path = input.workspaceRoot;
-  assertCanonicalDirectory(path);
-  for (const part of parts.slice(0, -1)) {
-    path = join(path, part);
-    assertCanonicalDirectory(path);
-  }
-  return join(path, parts.at(-1)!);
+/**
+ * Compares known representation and recipe facts; descriptive additions carry no authority.
+ * @param source Captured digest reference and representation proof.
+ * @param current Transient source supplied by its exact canonical owner.
+ * @returns Whether the current representation has all captured identity and lineage facts.
+ */
+export function sameCurrentRepresentation(
+  source: WorkerContextPackageSourceFile,
+  current: WorkerContextPackageSourceFileInput
+): boolean {
+  const a = source.projection;
+  const b = current.projection;
+  return (
+    isDeepStrictEqual(source.source, current.source) &&
+    source.originalDigest === current.originalDigest &&
+    source.byteLength === current.byteLength &&
+    source.mediaType === current.mediaType &&
+    a.sourceRevision === b.sourceRevision &&
+    a.representationId === b.representationId &&
+    a.representationDigest === b.representationDigest &&
+    a.representationByteLength === b.representationByteLength &&
+    (a.pdfTextLayer
+      ? !!current.openRepresentation &&
+        isDeepStrictEqual(
+          PdfTextLayerEvidenceSchema.parse(a.pdfTextLayer),
+          PdfTextLayerEvidenceSchema.parse(b.pdfTextLayer)
+        )
+      : !b.pdfTextLayer)
+  );
 }
 
-/** Detects mutation or replacement of the held immutable snapshot, without reopening current sources. */
-function sameFile(before: BigIntStats, after: BigIntStats): boolean {
-  return (
-    after.isFile() &&
-    after.nlink === 1n &&
-    before.dev === after.dev &&
-    before.ino === after.ino &&
-    before.size === after.size &&
-    before.mtimeNs === after.mtimeNs &&
-    before.ctimeNs === after.ctimeNs
-  );
+/** Adapts the existing bounded stream supplier to the view's sequential verification and range reads without retaining a complete original. */
+function streamRangeReader(
+  open: WorkerContextPackageSourceFileInput['open'],
+  assertCurrent: () => void
+) {
+  let iterator: AsyncIterator<Uint8Array> | undefined;
+  let position = 0;
+  let pending: Uint8Array = new Uint8Array();
+  const close = async () => {
+    await iterator?.return?.();
+    iterator = undefined;
+    pending = new Uint8Array();
+  };
+  return {
+    close,
+    async read(offset: number, maximum: number, signal: AbortSignal): Promise<Uint8Array> {
+      signal.throwIfAborted();
+      assertCurrent();
+      if (!iterator || offset < position) {
+        await close();
+        iterator = open(signal)[Symbol.asyncIterator]();
+        position = 0;
+      }
+      while (position < offset || pending.byteLength === 0) {
+        if (!pending.byteLength) {
+          const next = await iterator.next();
+          if (next.done) return new Uint8Array();
+          if (next.value.byteLength > 65_536) throw new BoundedSourceError('resource_limited');
+          pending = next.value;
+        }
+        const skip = Math.min(offset - position, pending.byteLength);
+        pending = pending.subarray(skip);
+        position += skip;
+        if (position === offset && pending.byteLength) break;
+      }
+      const result = Buffer.from(pending.subarray(0, Math.min(maximum, 65_536)));
+      pending = pending.subarray(result.length);
+      position += result.length;
+      signal.throwIfAborted();
+      assertCurrent();
+      return result;
+    },
+  };
 }
 
 /** No source name, digest, body or cursor is published on refusal. */
@@ -477,7 +578,7 @@ async function readKnowledgeSelection(
   const view = await openBoundedSourceView(
     {
       identity: {
-        sourceKey: `page/workspace/${input.workspaceId}/${selected.knowledgePageId}`,
+        sourceKey: `page/workspace/${input.workspaceId}/${selected.knowledgeBaseId}/${selected.knowledgePageId}`,
         revision: selected.notebookRevision,
         originalDigest: digest,
         representationId: 'original-utf8',

@@ -3,8 +3,13 @@ import { join } from 'node:path';
 import {
   KnowledgeAskResponseSchema,
   type KnowledgeRetrievalCandidate,
+  RetrieveKnowledgeRequestSchema,
 } from '@openkit/app-api-schemas';
-import { responsibleUserIdForActor } from '@openkit/protocol';
+import {
+  formatReferenceUri,
+  parseReferenceScope,
+  responsibleUserIdForActor,
+} from '@openkit/protocol';
 import { z } from 'zod';
 import { createAssistantHistory } from '../internal-agents/assistant-history.js';
 import type { AgentTool } from '../internal-agents/internal-agent-loop.js';
@@ -62,8 +67,12 @@ const answerSchema = z
     uncertainty: z.string().min(1).nullable(),
   })
   .strict();
-const searchSchema = z
-  .object({ query: z.string().min(1), limit: z.number().int().min(1).max(10).default(5) })
+const searchSchema = RetrieveKnowledgeRequestSchema.pick({
+  query: true,
+  types: true,
+  appliesTo: true,
+})
+  .extend({ limit: z.number().int().min(1).max(10).default(5) })
   .strict();
 const pageSchema = z
   .object({ pageId: z.string().min(1), offset: z.number().int().nonnegative().default(0) })
@@ -78,7 +87,7 @@ const sourceSchema = z
 
 /** Selected identities contain their admitted owner; they are not scope selection arguments. */
 function citationId(candidate: KnowledgeRetrievalCandidate): string {
-  return `${candidate.reference.scopeId}/${candidate.reference.objectId}`;
+  return formatReferenceUri(candidate.reference);
 }
 
 /** A bounded overview keeps its original digest and names the exact remaining read. */
@@ -184,9 +193,13 @@ export async function askKnowledgeAgent(
             'notebook.git'
           ),
         });
-    const baseRevision = notebook
-      ? notebook.publishedRevision()
-      : readAuthorizedUserMemoryPages({ ...bound, pageIds: [] }).notebookRevision;
+    const primaryNotebook = memory
+      ? readAuthorizedUserMemoryPages({ ...bound, pageIds: [] })
+      : readAuthorizedWorkspaceNotebookPages({ ...bound, pageIds: [] });
+    const baseRevision = primaryNotebook.notebookRevision;
+    const primaryScopeId = memory
+      ? `page/user/${userId}/${primaryNotebook.knowledgeBaseId}`
+      : `page/workspace/${input.workspaceId}/${primaryNotebook.knowledgeBaseId}`;
     const pinned = { ...bound, notebookRevision: baseRevision };
     const overviewPage = memory
       ? undefined
@@ -194,10 +207,10 @@ export async function askKnowledgeAgent(
     if (!memory && !overviewPage) throw new Error('Knowledge overview is unavailable.');
     const candidates = new Map<string, KnowledgeRetrievalCandidate>();
     const navigation = parseOkfDocument({ path: 'index.md', content: overviewPage?.content ?? '' });
-    const workspaceIndexId = `page/workspace/${input.workspaceId}/index`;
+    const workspaceIndexId = formatReferenceUri({ scopeId: primaryScopeId, objectId: 'index' });
     if (overviewPage)
       candidates.set(workspaceIndexId, {
-        reference: { scopeId: `page/workspace/${input.workspaceId}`, objectId: 'index' },
+        reference: { scopeId: primaryScopeId, objectId: 'index' },
         revision: baseRevision,
         contentDigest: overviewPage.contentDigest,
         score: 0,
@@ -228,10 +241,10 @@ export async function askKnowledgeAgent(
       try {
         const page = readAuthorizedUserMemoryPages({ ...pinned, pageIds: ['index'] }).pages[0];
         if (!page) throw new Error('Memory overview is unavailable.');
-        const pageId = `page/user/${userId}/index`;
+        const pageId = formatReferenceUri({ scopeId: primaryScopeId, objectId: 'index' });
         overviews.push({ source: 'memory', ...overviewProjection(page, pageId, baseRevision) });
         candidates.set(pageId, {
-          reference: { scopeId: `page/user/${userId}`, objectId: 'index' },
+          reference: { scopeId: primaryScopeId, objectId: 'index' },
           revision: baseRevision,
           contentDigest: page.contentDigest,
           score: 0,
@@ -248,13 +261,15 @@ export async function askKnowledgeAgent(
         const page = server.pages[0];
         if (!page) throw new Error('Server overview is unavailable.');
         serverRevision = server.notebookRevision;
+        const serverScopeId = `page/server/${server.knowledgeBaseId}`;
+        const pageId = formatReferenceUri({ scopeId: serverScopeId, objectId: 'index' });
         overviews.push({
           source: 'server',
-          ...overviewProjection(page, 'page/server/index', serverRevision),
+          ...overviewProjection(page, pageId, serverRevision),
         });
         const document = parseOkfDocument({ path: 'index.md', content: page.content }).document;
-        candidates.set('page/server/index', {
-          reference: { scopeId: 'page/server', objectId: 'index' },
+        candidates.set(pageId, {
+          reference: { scopeId: serverScopeId, objectId: 'index' },
           revision: serverRevision,
           contentDigest: page.contentDigest,
           score: 0,
@@ -275,13 +290,15 @@ export async function askKnowledgeAgent(
         notebookRevision: candidate.revision,
         pageIds: selection.map((page) => page.reference.objectId),
       };
-      return (
-        memory
-          ? readAuthorizedUserMemoryPages(selected)
-          : candidate.reference.scopeId === 'page/server'
-            ? readAuthorizedServerNotebookPages(selected)
-            : readAuthorizedWorkspaceNotebookPages(selected)
-      ).pages;
+      const current = memory
+        ? readAuthorizedUserMemoryPages(selected)
+        : parseReferenceScope(candidate.reference.scopeId)?.kind === 'server'
+          ? readAuthorizedServerNotebookPages(selected)
+          : readAuthorizedWorkspaceNotebookPages(selected);
+      const scope = parseReferenceScope(candidate.reference.scopeId);
+      if (scope?.family !== 'page' || scope.knowledgeBaseId !== current.knowledgeBaseId)
+        throw new Error('Knowledge Base is no longer available.');
+      return current.pages;
     };
     const currentSource = (candidate: KnowledgeRetrievalCandidate, sourceId: string) => {
       if (memoryAccess)
@@ -294,7 +311,7 @@ export async function askKnowledgeAgent(
           sourceId,
           'model'
         );
-      if (candidate.reference.scopeId === 'page/server')
+      if (parseReferenceScope(candidate.reference.scopeId)?.kind === 'server')
         return readServerKnowledgeSource(serverContext, sourceId);
       if (!knowledgeSourceAudienceReadable(bound, sourceId)) return null;
       const source = store.getKnowledgeSource(input.workspaceId, sourceId);
@@ -317,7 +334,8 @@ export async function askKnowledgeAgent(
       for (const { candidate } of read.values()) selected.set(citationId(candidate), candidate);
       for (const server of [false, true]) {
         const source = [...selected.values()].filter(
-          (candidate) => (candidate.reference.scopeId === 'page/server') === server
+          (candidate) =>
+            (parseReferenceScope(candidate.reference.scopeId)?.kind === 'server') === server
         );
         if (!source.length) continue;
         const pages = new Map(currentPages(source).map((page) => [page.id, page]));
@@ -631,9 +649,11 @@ export async function askKnowledgeAgent(
         citations: [...new Set(answer.citationIds)].map((id) => {
           const { candidate } = read.get(id)!;
           const registered =
-            candidate.reference.scopeId === 'page/server' ? serverSources : primarySources;
+            parseReferenceScope(candidate.reference.scopeId)?.kind === 'server'
+              ? serverSources
+              : primarySources;
           return {
-            reference: `${id}@${candidate.revision}`,
+            reference: formatReferenceUri(candidate.reference, candidate.contentDigest),
             revision: candidate.revision,
             contentDigest: candidate.contentDigest,
             sourceReferences: candidate.sourceReferences.map((reference) => {

@@ -1,4 +1,9 @@
-import { AutomationIdSchema, TurnIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
+import {
+  AutomationIdSchema,
+  readRetainedV1,
+  TurnIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
 import type { CoreDb } from './db.js';
@@ -81,9 +86,12 @@ export function listWorkspaceExternalTriggerAdmissions(
 function readAdmission(coreDb: CoreDb, value: unknown): ExternalTriggerAdmission {
   const record = ExternalTriggerAdmissionSchema.parse(value);
   const schedule = coreDb.sqlite
-    .prepare('SELECT workspace_id FROM recurring_schedules WHERE id = ?')
-    .get(record.scheduleId) as { workspace_id: string } | undefined;
+    .prepare(
+      'SELECT schema_version AS schemaVersion, workspace_id FROM recurring_schedules WHERE id = ?'
+    )
+    .get(record.scheduleId) as { schemaVersion: unknown; workspace_id: string } | undefined;
   if (!schedule) throw new Error('ExternalTriggerAdmission has no retained RecurringSchedule.');
+  readRetainedV1(schedule, () => undefined);
   const entry = requireSchedulerAdmissionEntry(coreDb, record.queueEntryId);
   if (entry.workspaceId !== schedule.workspace_id)
     throw new Error('ExternalTriggerAdmission contradicts its scheduler Workspace lineage.');

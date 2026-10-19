@@ -25,6 +25,11 @@ import {
   loadWorkspaceResourceCatalog,
   readWorkspaceSkillSnapshot,
 } from '../catalog/resource-catalog.js';
+import {
+  type WorkerContextPackageSourceFileInput,
+  workerContextPackageDeliveryInventory,
+  workerContextPackageOriginalPath,
+} from '../context/worker-context-package.js';
 import type { SchedulerWorkerStorageChoice } from '../scheduler-records.js';
 import type { CapturedWorkerFile } from '../storage/artifacts/worker-file-transfer.js';
 import { assertCanonicalDirectory } from '../storage/workspace-file-records.js';
@@ -298,6 +303,8 @@ export interface WorkerGovernanceNativeResume {
  * Backend-private workspace context used for transport effects.
  */
 export interface WorkerGovernanceMaterializationContext {
+  /** Current exact canonical suppliers for disposable live originals; never serialized or retained. */
+  contextPackageSources?: readonly WorkerContextPackageSourceFileInput[];
   /** Publishes Core execution lineage synchronously after all no-effect capacity refusals and before any incoming reservation or effect. */
   beforeMaterialization?: () => void;
   /** Workspace data root used to read verified Skill snapshots for worker-supply imports. */
@@ -456,7 +463,11 @@ export async function prepareNanoHostContextPackageImports(
   } catch {
     throw openShellContextPackageSourceUnavailableError();
   }
-  const fileInventory = workspaceBundleFileInventory(files);
+  const sources = context.contextPackageSources ?? [];
+  const fileInventory = workerContextPackageDeliveryInventory(
+    workspaceBundleFileInventory(files),
+    sources
+  );
   if (workspaceBundleFileInventoryDigest(fileInventory) !== expectedRootDigest) {
     throw new Error('NanoHost Context Package root digest does not match its file inventory.');
   }
@@ -465,6 +476,32 @@ export async function prepareNanoHostContextPackageImports(
     environmentPackage,
     context.dataRoot
   );
+  const originals = new Map<string, NanoHostContextPackageImport>();
+  const signal = new AbortController().signal;
+  for (const source of sources) {
+    try {
+      await source.assertUnchanged(signal);
+    } catch {
+      throw openShellContextPackageSourceUnavailableError();
+    }
+    const path = workerContextPackageOriginalPath(source.originalDigest);
+    if (originals.has(path)) continue;
+    originals.set(path, {
+      entryKind: 'file',
+      executable: false,
+      source: {
+        async *open(signal) {
+          await source.assertUnchanged(signal);
+          yield* source.open(signal);
+          await source.assertUnchanged(signal);
+        },
+      },
+      byteLength: source.byteLength,
+      contentDigest: source.originalDigest,
+      relativePath: `${inputPaths.contextRelativePath}/${path}`,
+      slot: 'context',
+    });
+  }
   return [
     packageConfigImport,
     ...workerSupplyImports,
@@ -478,6 +515,9 @@ export async function prepareNanoHostContextPackageImports(
         relativePath: `${inputPaths.contextRelativePath}/${file.path}`,
         slot: 'context',
       })
+    ),
+    ...[...originals.values()].sort((left, right) =>
+      left.relativePath.localeCompare(right.relativePath)
     ),
   ];
 }
@@ -517,12 +557,14 @@ async function prepareWorkerSupplyImports(
       entryId: skill.id,
       workspaceId: environmentPackage.scope.workspaceId,
     });
+    // Pin attribution is retained evidence, not part of immutable Skill content identity.
+    const { pinAuditRef: _pinAuditRef, ...contentLineage } = skill.lineage ?? {};
     if (
       skill.digestFormat !== version.digestFormat ||
       skill.version !== (version.publisherVersion ?? digest) ||
       skill.sourceRef !== `catalog:skill:${skill.id}:${digest}` ||
       !isDeepStrictEqual(skill.inventory, version.inventory) ||
-      !isDeepStrictEqual(skill.lineage, {
+      !isDeepStrictEqual(contentLineage, {
         baseDigest: version.provenance.baseDigest,
         pluginMemberKey: version.provenance.pluginMemberKey,
         pluginVersionDigest: version.provenance.pluginVersionDigest,

@@ -1,3 +1,4 @@
+import { auditAuthenticationFromActor } from '../auth/audit-attribution.js';
 import type { Actor } from '../auth/identity.js';
 import { authorizeWorkspace } from '../auth/operation-authorizer.js';
 import { normalizeCapabilityRequestId } from '../capability/usage-ledger.js';
@@ -212,6 +213,7 @@ export async function runAssistantCommand(
           callContext: {
             workspaceId: turn.workspaceId,
             authorityActor: { kind: 'user', id: actor.userId },
+            authentication: auditAuthenticationFromActor(actor),
             agentId: turn.agentId ?? 'quick-chat',
             agentSessionId: null,
             capabilityId: 'inference.local.quick_chat',

@@ -1,3 +1,4 @@
+import { RETAINED_FORMAT_VERSION } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import { KnowledgeMaintenanceSchema } from './knowledge-maintenance.js';
 import { OpenKitConfigSchema } from './server.js';
@@ -12,17 +13,27 @@ describe('Authored scoped notebook maintenance settings', () => {
         .knowledgeMaintenance
     ).toEqual({ ...selected, schedule: { enabled: false } });
     expect(
-      WorkspaceConfigSchema.parse({ workspace: { name: 'Work', knowledgeMaintenance: selected } })
-        .workspace.knowledgeMaintenance
+      WorkspaceConfigSchema.parse({
+        schemaVersion: RETAINED_FORMAT_VERSION,
+        workspace: { name: 'Work', knowledgeMaintenance: selected },
+      }).workspace.knowledgeMaintenance
     ).toEqual({ ...selected, schedule: { enabled: false } });
     expect(
-      OpenKitConfigSchema.parse({ knowledgeMaintenance: selected }).knowledgeMaintenance
+      OpenKitConfigSchema.parse({
+        schemaVersion: RETAINED_FORMAT_VERSION,
+        knowledgeMaintenance: selected,
+      }).knowledgeMaintenance
     ).toEqual({ ...selected, schedule: { enabled: false } });
     expect(UserConfigSchema.parse({ schemaVersion: 1 }).knowledgeMaintenance).toBeUndefined();
     expect(
-      WorkspaceConfigSchema.parse({ workspace: { name: 'Work' } }).workspace.knowledgeMaintenance
+      WorkspaceConfigSchema.parse({
+        schemaVersion: RETAINED_FORMAT_VERSION,
+        workspace: { name: 'Work' },
+      }).workspace.knowledgeMaintenance
     ).toBeUndefined();
-    expect(OpenKitConfigSchema.parse({}).knowledgeMaintenance).toBeUndefined();
+    expect(
+      OpenKitConfigSchema.parse({ schemaVersion: RETAINED_FORMAT_VERSION }).knowledgeMaintenance
+    ).toBeUndefined();
   });
 
   it('enables the daily schedule separately from publication delegation in each scope', () => {
@@ -36,11 +47,16 @@ describe('Authored scoped notebook maintenance settings', () => {
         .knowledgeMaintenance
     ).toEqual(selected);
     expect(
-      WorkspaceConfigSchema.parse({ workspace: { name: 'Work', knowledgeMaintenance: selected } })
-        .workspace.knowledgeMaintenance
+      WorkspaceConfigSchema.parse({
+        schemaVersion: RETAINED_FORMAT_VERSION,
+        workspace: { name: 'Work', knowledgeMaintenance: selected },
+      }).workspace.knowledgeMaintenance
     ).toEqual(selected);
     expect(
-      OpenKitConfigSchema.parse({ knowledgeMaintenance: selected }).knowledgeMaintenance
+      OpenKitConfigSchema.parse({
+        schemaVersion: RETAINED_FORMAT_VERSION,
+        knowledgeMaintenance: selected,
+      }).knowledgeMaintenance
     ).toEqual(selected);
     expect(KnowledgeMaintenanceSchema.parse({ ...selected, schedule: {} }).schedule.enabled).toBe(
       false

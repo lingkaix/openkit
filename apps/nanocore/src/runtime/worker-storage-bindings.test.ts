@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { workerStorageWorkSlotRef } from './worker-governance-turn-executor.js';
@@ -37,7 +37,12 @@ const LAYOUT: WorkerStorageLayout = {
 
 /** Creates one migrated Core database with its configured NanoHost target. */
 function createCoreDb(): CoreDb {
-  const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-worker-storage-')));
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-storage-'));
+  const coreDb = openCoreDb(dataRoot);
+  onTestFinished(() => {
+    if (coreDb.sqlite.open) coreDb.sqlite.close();
+    rmSync(dataRoot, { force: true, recursive: true });
+  });
   applyMigrations(coreDb);
   coreDb.sqlite
     .prepare(
@@ -81,7 +86,7 @@ function selection(binding: ReturnType<typeof createBinding>) {
 }
 
 describe('Worker storage bindings', () => {
-  it('reads inert retained target additions without changing storage, volume or layout identity', () => {
+  it('writes v1 storage and reads inert target additions without changing retained identity', () => {
     const coreDb = createCoreDb();
     try {
       const original = createBinding(coreDb);
@@ -100,10 +105,52 @@ describe('Worker storage bindings', () => {
       expect(
         coreDb.sqlite
           .prepare(
-            'SELECT targets_json AS bytes FROM worker_storage_bindings WHERE storage_ref = ?'
+            'SELECT schema_version AS schemaVersion, targets_json AS bytes FROM worker_storage_bindings WHERE storage_ref = ?'
           )
           .get(original.storageRef)
-      ).toEqual({ bytes: retained });
+      ).toEqual({ schemaVersion: 1, bytes: retained });
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('refuses an unknown storage version before target decode or attachment reservation', () => {
+    const coreDb = createCoreDb();
+    try {
+      const original = createBinding(coreDb);
+      coreDb.sqlite
+        .prepare(`UPDATE worker_storage_bindings SET schema_version = 2,
+        targets_json = '{' WHERE storage_ref = ?`)
+        .run(original.storageRef);
+      coreDb.sqlite.exec(`CREATE TRIGGER reject_unsupported_storage_update BEFORE UPDATE ON worker_storage_bindings
+        BEGIN SELECT RAISE(FAIL, 'Unsupported storage reached an UPDATE'); END`);
+      expect(() => getWorkerStorageBinding(coreDb, { storageRef: original.storageRef })).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(() =>
+        listWorkerStorageBindings(coreDb, {
+          authorizeContributor: allowContributor,
+          workspaceId: original.workspaceId,
+        })
+      ).toThrow('Unsupported retained record format.');
+      expect(() =>
+        reserveWorkerStorageAttachment(coreDb, {
+          ...selection(original),
+          agentSessionId: 'session_unknown_version',
+          runtimeTargetId: original.runtimeTargetId,
+        })
+      ).toThrow('Unsupported retained record format.');
+      expect(
+        coreDb.sqlite
+          .prepare(`SELECT schema_version AS schemaVersion, targets_json, state, revision
+        FROM worker_storage_bindings WHERE storage_ref = ?`)
+          .get(original.storageRef)
+      ).toEqual({
+        schemaVersion: 2,
+        targets_json: '{',
+        state: original.state,
+        revision: original.revision,
+      });
     } finally {
       coreDb.sqlite.close();
     }

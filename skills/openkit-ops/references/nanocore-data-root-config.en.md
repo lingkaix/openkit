@@ -262,6 +262,28 @@ The Workspace file owns shared editable composition.
 
 Authored Workspace roots are relative `host-dir` declarations with `read-only` or `read-write` access and remain loadable. Configuration operations refuse their work-slot materialization in this release; only credential-free remote Git sources can be materialized, and work without a source input still runs. `createIfMissing` is valid only for a read-write root. `workspace.assistant.repositoryInspection` remains loadable as inert authored configuration after removal of the host reader. The Assistant's repository inspection target is a selected Gateway vendor MCP read or a Task handoff.
 
+### Named Thread Access
+
+`workspace.policy.resourceAccess` stores shared-Thread privacy boundaries and their exact User or Agent assignments. Use the reviewed request and confirmation commands to change it. Generic configuration writes cannot create, replace or remove this subtree. Membership, credentials and private-Thread audiences remain separate requirements. A managed Thread with an empty `grants` array remains closed; explicit boundary removal is a separate reviewed change.
+
+Use `openkit ops describe workspace.resource-access-request`, then submit a new request on a Thread you can use. Replace `WORKSPACE`, `REQUEST-THREAD`, `RESOURCE-THREAD` and `USER` with current identifiers and `UNIQUE-UUID` with a new command request identity. The target must be a shared Thread in the same Workspace; creation captures only the selectors and grants no access.
+
+```bash
+printf '%s' '{"workspaceId":"WORKSPACE","threadId":"REQUEST-THREAD","requestId":"UNIQUE-UUID","change":{"resource":{"family":"thread","id":"RESOURCE-THREAD"},"replacement":{"resource":{"family":"thread","id":"RESOURCE-THREAD"},"grants":[{"subject":{"kind":"user","userId":"USER"},"operations":["thread.read"]}],"prohibitions":[]}}}' | openkit ops call workspace.resource-access-request --input -
+```
+
+Inspect the returned request `id` and captured `change.expectedRevision`. A current Workspace Policy administrator or deployment administrator reviews it through the existing `approval.respond` command. Read that command's current schema with `openkit ops describe approval.respond`; approve only the exact captured terms. Approval alone changes no assignment. Then use the same approval request identity with distinct confirmation:
+
+```bash
+printf '%s' '{"workspaceId":"WORKSPACE","threadId":"REQUEST-THREAD","approvalRequestId":"APPROVAL-REQUEST","confirmation":"APPLY WORKSPACE RESOURCE POLICY"}' | openkit ops call workspace.resource-access-apply --input -
+```
+
+Check `savedRevision` and `reloadStatus` separately. Only an applied reload changes future checks. A stale revision, lost requester rights or revoked deciding credential refuses the change. After an uncertain result, inspect saved and effective configuration and the existing request outcome; do not replay a consumed approval. Narrowing replaces the captured entry with fewer operations; last-grant revocation replaces it with `grants: []`; explicit removal uses `replacement: null`. Each change needs a new reviewed request.
+
+For an Agent assignment, use `subject: {"kind":"agent","userId":"RESPONSIBLE-USER","agentId":"REGISTERED-AGENT"}`. A human grant does not become an Agent grant. The actual AgentSession is a mapped process, not the stored Policy subject.
+
+Export retains current effective boundaries and refuses saved/effective disagreement. Import remints resource identifiers and keeps last-revoke boundaries. It rejects unsupported restrictions or unvalidated principal bindings before publication; it never falls back to full-member access. Current cross-deployment imports support closed boundaries without assignments; active source assignments require verified target bindings, and matching bare identifiers are insufficient. Keep the original archive when import refuses.
+
 ## `users/<userId>/config/user.jsonc`
 
 User configuration stores personal preferences and never modifies shared Workspace state.
@@ -403,3 +425,19 @@ This offline command reads the existing `DISCORD_OPENKIT_COMMAND` descriptor fro
 Every configured Discord adapter requires an HTTPS `server.publicBaseUrl` for authenticated App link-back. For attention sending, also configure `channels.discord.botTokenRef`. This field accepts an `env:` reference to an operator-held variable. Supply the credential through the deployment environment. Never put its value in configuration, command arguments, logs, or evidence. An absent send credential does not prevent fake-backed verification, account pairing, or signed request responses. The bot account and a specifically authorized real send are needed for real delivery proof.
 
 Discord source references, account bindings, pairing digests, disclosures, inbound event receipts, and send attempts live in the Core database. Inbound receipts retain the signed external actor and each admitted response's Core actor and exact request source before dispatch. Rebinding does not relabel earlier responses. Missing historical attribution stays unknown. These facts do not prove a response was accepted or executed. Full deployment backup retains them. Portable Workspace import does not restore account control or replay external effects. Restart preserves incomplete sends and response dispatch as unknown. Inspect Core outcomes before any new request or explicit no-send retry.
+
+## Governed Policy Changes
+
+The shared Policy collection is `policy.mediation` in `config/server.jsonc`. It carries `schemaVersion: 1` and a `statements` array. The version marker identifies the retained format. Core derives exact content revisions; do not supply a mutable revision label.
+
+Use the existing configuration proposal operation with `targetFamily: "policy"` and `targetId: "server"`. Supply the exact current file revision, the proposed collection and a rationale. Inspect the immutable candidate in its private administration Thread. Apply that exact candidate with explicit human confirmation through the existing configuration apply operation. Current deployment-admin authority is required at both steps. Generic configuration-file updates refuse Policy collection changes.
+
+Inspect the saved revision and reload outcome separately. A saved file does not prove that its Policy is active. If reload or evidence fails, inspect the existing candidate and outcome before a new request. Core does not automatically repeat an uncertain effect.
+
+This slice supports human-authored I16 gates and completed observations with exact Workspace Tool scopes. Shadow gates retain evidence and cannot change the result. Advice and transform cannot activate until safe output has a retained reference. Finite-use observations, agent authority, delegated Goal grants, Gateway rules and storage leases cannot activate. New Goal-domain, agent-principal and lease declarations arrive additively with their consumers. A software update does not replace explicit human activation. The v1 contract fixes inputs and outputs by mode; do not supply point, inputContract or outputContract selectors. Candidate diff and classification are computed from the pinned candidate and base, not saved as independent fields.
+
+A participant timeout or unavailable result uses its declared behavior and defaults to a human Pending Request. A response rechecks the original proposal and current authority. Changed Policy, input or authority requires a fresh decision. Observation failure after a settled Tool call cannot change that call's known result or authorize a retry.
+
+### Joint Goal-Domain Changes
+
+When the Goal approval workflow is joined, review its exact Plan and full typed Goal-domain scope together. One human approval covers both; do not create a second Policy candidate to activate the same delegation. The Goal owner publishes only after the Plan approval transaction completes. A saved or approved Plan alone does not prove an active domain. If publication or reload fails, inspect the saved and admitted revisions before retrying. Generic Server Policy candidates preserve Goal-owned statements; Goal closure withdraws them through their owner. The native seam is under qualification; this slice does not yet expose the complete Goal approval workflow.
