@@ -191,6 +191,43 @@ describe('evaluateAccess', () => {
     ]);
   });
 
+  it('reports a matching prohibition before an earlier missing required privilege', () => {
+    const policy: PolicyState = {
+      ...baselinePolicy,
+      operations: [{ id: 'artifact.review', accessRights: ['write', 'read'] }],
+      associations: [],
+      processUsers: [{ process: 'process:agent-turn', user: 'user:alice' }],
+      prohibitions: [
+        {
+          id: 'deny:agent-report-read',
+          kind: 'process',
+          subject: 'process:agent-turn',
+          accessRights: ['read'],
+          range: { type: 'disjunctive', include: ['oa:workspace-artifacts'] },
+        },
+      ],
+    };
+    const request = {
+      process: 'process:agent-turn',
+      operation: 'artifact.review',
+      target: 'object:report',
+    };
+
+    const prohibited = evaluateAccess(policy, request);
+    expect(prohibited.effect).toBe('deny');
+    expect(prohibited.reasons).toEqual([
+      { code: 'restriction', prohibitionId: 'deny:agent-report-read' },
+    ]);
+    expect(prohibited.trace.requiredAccessRights).toEqual(['write', 'read']);
+    expect(prohibited.trace.matchedAssociations).toEqual([]);
+    expect(prohibited.trace.matchedProhibitions).toEqual(['deny:agent-report-read']);
+
+    const missing = evaluateAccess({ ...policy, prohibitions: [] }, request);
+    expect(missing.effect).toBe('deny');
+    expect(missing.reasons).toEqual([{ code: 'missing-privilege', accessRight: 'write' }]);
+    expect(missing.trace.matchedProhibitions).toEqual([]);
+  });
+
   it('applies a matching NGAC process prohibition range after a privilege is found', () => {
     const policy: PolicyState = {
       ...baselinePolicy,

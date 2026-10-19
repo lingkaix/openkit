@@ -2,13 +2,21 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { evaluateAccess, type PolicyState } from '@openkit/policy-kernel';
-import type { PolicyBindingV1, PolicyDocumentV1 } from '@openkit/protocol';
+import {
+  type PolicyBindingV1,
+  PolicyDelegationV1Schema,
+  type PolicyDocumentV1,
+} from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as audit from '../audit-events.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { PolicyInterception } from './interception.js';
-import { listExportableWorkspacePermissionDecisions } from './permission-decisions.js';
+import {
+  listExportableWorkspacePermissionDecisions,
+  policyStatementUsedByDecision,
+  readPolicyStatementUseCount,
+} from './permission-decisions.js';
 import { type PolicyProposal, policyDigest } from './statements.js';
 
 const userId = 'usr_00000000-0000-7000-8000-000000000001';
@@ -95,7 +103,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   for (const close of cleanup.splice(0)) close();
 });
-function fixture(bindings: PolicyBindingV1[]) {
+function fixture(bindings: PolicyDocumentV1['statements']) {
   const root = mkdtempSync(join(tmpdir(), 'openkit-policy-interception-'));
   const workspaceDb = openWorkspaceDb(root, workspaceId);
   cleanup.push(() => {
@@ -118,6 +126,67 @@ function fixture(bindings: PolicyBindingV1[]) {
 }
 
 describe('bounded native Policy pipeline', () => {
+  it('consumes a finite admitted authorization in the existing final decision transaction', async () => {
+    const finite = PolicyDelegationV1Schema.parse({
+      id: 'goal-domain',
+      kind: 'delegation',
+      purpose: 'goal-domain',
+      state: 'active',
+      author: principal,
+      authority: { kind: 'human', userId },
+      authoredAt: '2026-10-18T00:00:00Z',
+      delegate: { kind: 'agent', id: 'goal-coordinator' },
+      source: {
+        workspaceId,
+        goalId: 'goal',
+        planVersionId: 'plan',
+        planDigest: policyDigest('plan'),
+        approvalRequestId: 'approval',
+      },
+      scope: { ...scope, subjects: [{ kind: 'agent', id: 'worker' }] },
+      lifetime: {
+        anchor: { owner: { kind: 'workspace', workspaceId }, kind: 'goal', id: 'goal' },
+        uses: 1,
+      },
+    });
+    const input = fixture([finite]);
+    const statement = { id: finite.id, digest: policyDigest(finite) };
+    const evaluation = {
+      ...input,
+      proposal: {
+        ...proposal,
+        subject: { ...proposal.subject, principal: { kind: 'agent', id: 'worker' } },
+      },
+      authorizationUses: [{ statement, limit: 1 }],
+    };
+    const pipeline = new PolicyInterception();
+    expect(
+      (await pipeline.decide({ ...evaluation, finalKernel: () => kernel(false) })).result
+    ).toBe('deny');
+    expect(readPolicyStatementUseCount(input.workspaceDb, statement)).toBe(0);
+    const decision = await pipeline.decide(evaluation);
+    expect(decision.result).toBe('allow');
+    expect(readPolicyStatementUseCount(input.workspaceDb, statement)).toBe(1);
+    expect(policyStatementUsedByDecision(input.workspaceDb, statement, decision)).toBe(true);
+    expect(
+      policyStatementUsedByDecision(input.workspaceDb, statement, {
+        ...decision,
+        proposalDigest: policyDigest('another-call'),
+      })
+    ).toBe(false);
+    await expect(pipeline.decide(evaluation)).rejects.toThrow(/use limit is exhausted/);
+    expect(readPolicyStatementUseCount(input.workspaceDb, statement)).toBe(1);
+    expect(
+      listExportableWorkspacePermissionDecisions(input.workspaceDb, workspaceId).find(
+        (row) => row.decisionId === decision.decisionId
+      )?.mediation?.consumedStatements
+    ).toEqual([statement]);
+    input.workspaceDb.sqlite
+      .prepare('DELETE FROM audit_events WHERE permission_decision_id = ?')
+      .run(decision.decisionId);
+    expect(policyStatementUsedByDecision(input.workspaceDb, statement, decision)).toBe(false);
+  });
+
   it('refuses active advice before disclosure until its safe output can be retained', async () => {
     const input = fixture([binding('context', 'advise')]);
     const invoke = vi.fn(async () => ({ attributes: { risk: 'reviewed' } }));
