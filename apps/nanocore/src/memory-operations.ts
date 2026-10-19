@@ -55,7 +55,7 @@ import {
   publicOperationActor,
 } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
-import { admitUserMemoryRetrieval } from './retrieval-knowledge-adapter.js';
+import { admitUserMemoryCaller, admitUserMemoryRetrieval } from './retrieval-knowledge-adapter.js';
 import { IdempotencyKeyConflictError, runIdempotentCommand } from './runtime/idempotent-command.js';
 import { PendingRequestCommandError } from './runtime/pending-requests.js';
 import { openUserDb } from './storage/db.js';
@@ -289,7 +289,7 @@ export function createMemoryOperationImplementations(
         if (context.queryContext) {
           const access = queryAccess(writer, context, input.workspaceId);
           // An existing shared caller cannot substitute a private Timeline for User-scoped effects.
-          admitUserMemoryRetrieval({
+          admitUserMemoryCaller({
             dataRoot: writer.coreDb.dataRoot,
             workspaceId: input.workspaceId,
             access,

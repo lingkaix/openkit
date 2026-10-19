@@ -152,12 +152,7 @@ describe('notebook publication admission in the existing Audit owners', () => {
       count: previousCount + 1,
     });
     const after = sqlite.prepare(`SELECT * FROM ${table}`).all() as Record<string, unknown>[];
-    if (scope === 'user') expect(after[0]?.schema_version).toBe(1);
-    expect(
-      after.map(
-        ({ notebook_admission_json: _newField, schema_version: _formatVersion, ...row }) => row
-      )
-    ).toEqual(before);
+    expect(after.map(({ notebook_admission_json: _newField, ...row }) => row)).toEqual(before);
     expect(
       (sqlite.pragma('table_info(audit_events)') as Array<{ name: string }>).map(({ name }) => name)
     ).toContain('notebook_admission_json');

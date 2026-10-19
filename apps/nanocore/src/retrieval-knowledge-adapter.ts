@@ -298,8 +298,8 @@ interface Target {
   pageIds?: readonly string[] | undefined;
 }
 
-/** Current User/private Timeline admission precedes all Memory inventory, Kernel and trace access. */
-export function admitUserMemoryRetrieval(input: Target): void {
+/** Checks current self and private output authority without requiring an existing User notebook. */
+export function admitUserMemoryCaller(input: Target): void {
   const { access } = input;
   try {
     if (
@@ -324,9 +324,6 @@ export function admitUserMemoryRetrieval(input: Target): void {
         actor: access.requestActor,
         userDb: access.userDb,
       });
-    ReferenceScopeIdSchema.parse(
-      `page/user/${access.requestActor.userId}/${readDefaultKnowledgeBaseId({ dataRoot: input.dataRoot, scope: { kind: 'user', userId: access.requestActor.userId } })}`
-    );
     const timeline = findAssistantTimeline(
       access.store,
       input.workspaceId,
@@ -336,6 +333,18 @@ export function admitUserMemoryRetrieval(input: Target): void {
       throw new Error('Private Timeline unavailable.');
     admitKnowledgeRetrieval(input);
     resolveKnowledgeQueryContext(input);
+  } catch {
+    throw new OperationError('memory_access_denied', 'Memory retrieval access denied.', 403);
+  }
+}
+
+/** Read admission also requires the established User KB; reads never create a notebook or identity. */
+export function admitUserMemoryRetrieval(input: Target): void {
+  admitUserMemoryCaller(input);
+  try {
+    ReferenceScopeIdSchema.parse(
+      `page/user/${input.access.requestActor!.userId}/${readDefaultKnowledgeBaseId({ dataRoot: input.dataRoot, scope: { kind: 'user', userId: input.access.requestActor!.userId } })}`
+    );
   } catch {
     throw new OperationError('memory_access_denied', 'Memory retrieval access denied.', 403);
   }
