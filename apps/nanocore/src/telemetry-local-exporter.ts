@@ -70,8 +70,7 @@ class LocalTraceExporter implements SpanExporter {
     private readonly maximumAgeMs: number
   ) {
     this.directory = join(resolve(options.logDirectory), 'telemetry');
-    this.tail = this.prepare()
-      .then(() => this.prune(0))
+    this.tail = this.prune(0)
       .catch(() => this.warn())
       .finally(() => {
         this.maintenancePending = false;
@@ -158,8 +157,9 @@ class LocalTraceExporter implements SpanExporter {
     }
   }
 
-  /** Reads actual file sizes; unexpected links/special files fail closed inside this subtree. */
+  /** Revalidates confinement before every inventory, including idle cleanup after startup refusal. */
   private async segments(): Promise<Segment[]> {
+    await this.prepare();
     const entries = await fs.readdir(this.directory, { withFileTypes: true });
     const files: Segment[] = [];
     for (const entry of entries) {
@@ -222,7 +222,6 @@ class LocalTraceExporter implements SpanExporter {
 
   /** Serializes rotation, admission and one append; a partial write abandons this segment. */
   private async append(bytes: Uint8Array): Promise<void> {
-    await this.prepare();
     if (bytes.byteLength > this.maximumBytes) return;
     await this.prune(bytes.byteLength);
     if (this.active) {
