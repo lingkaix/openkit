@@ -283,9 +283,13 @@ describe('scoped storage databases', () => {
     expect(readdirSync(workspaceRoot)).toEqual([]);
   });
 
-  it('fails boot closed without recreating a registered Workspace database that was lost', () => {
+  it.each([
+    'missing',
+    'corrupt',
+  ] as const)('contains a %s registered Workspace database without replacing authority or blocking its sibling', (fault) => {
     const dataRoot = createDataRoot();
     const workspaceId = 'ws_00000000-0000-7490-845b-dcfa3ee49925';
+    const siblingId = 'ws_00000000-0000-7a13-853c-5d52c0c5884f';
     const coreDb = openCoreDb(dataRoot);
     try {
       applyMigrations(coreDb);
@@ -294,17 +298,39 @@ describe('scoped storage databases', () => {
       applyScopedMigrations(workspaceDb);
       workspaceDb.sqlite.close();
       recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId });
+      const sibling = openWorkspaceDb(dataRoot, siblingId);
+      sibling.sqlite.close();
+      recordWorkspaceOwnerMembership({ coreDb, workspaceId: siblingId, ownerUserId });
+      const registrations = coreDb.sqlite
+        .prepare('SELECT * FROM workspace_registry ORDER BY workspace_id')
+        .all();
       const databasePath = workspaceDbPath(dataRoot, workspaceId);
       const retainedPath = join(dataRoot, 'workspaces', workspaceId, 'retained-evidence.txt');
       const retained = Buffer.from('Keep the existing Workspace evidence.');
       writeFileSync(retainedPath, retained);
-      rmSync(databasePath);
+      const corruptBytes = Buffer.from('Not a SQLite database; preserve the damaged authority.');
+      if (fault === 'missing') rmSync(databasePath);
+      else writeFileSync(databasePath, corruptBytes);
 
-      expect(() => verifyAndMigrateExistingScopedDatabases(dataRoot)).toThrow(
-        `Workspace database is missing: ${workspaceId}`
-      );
-      expect(existsSync(databasePath)).toBe(false);
-      expect(readdirSync(dirname(databasePath))).toEqual([]);
+      // A local integrity failure must not abort verification of a healthy sibling.
+      expect(() => verifyAndMigrateExistingScopedDatabases(dataRoot)).not.toThrow();
+      if (fault === 'missing') {
+        expect(existsSync(databasePath)).toBe(false);
+        expect(readdirSync(dirname(databasePath))).toEqual([]);
+      } else {
+        expect(readFileSync(databasePath)).toEqual(corruptBytes);
+        expect(readdirSync(dirname(databasePath))).toEqual([basename(databasePath)]);
+      }
+      const reopened = openBootVerifiedWorkspaceDb(dataRoot, siblingId);
+      try {
+        expect(listTables(reopened.sqlite)).toContain('idempotency_requests');
+        expect(reopened.sqlite.prepare('PRAGMA quick_check').pluck().get()).toBe('ok');
+      } finally {
+        reopened.sqlite.close();
+      }
+      expect(
+        coreDb.sqlite.prepare('SELECT * FROM workspace_registry ORDER BY workspace_id').all()
+      ).toEqual(registrations);
       expect(readFileSync(retainedPath)).toEqual(retained);
       expect(
         coreDb.sqlite
@@ -587,14 +613,6 @@ describe('scoped storage databases', () => {
       path: (dataRoot: string) => userDbPath(dataRoot, 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b'),
       quarantine: (dataRoot: string) =>
         join(dataRoot, 'users', 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b', 'quarantine'),
-      verify: (dataRoot: string) => verifyAndMigrateExistingScopedDatabases(dataRoot),
-    },
-    {
-      scope: 'Workspace',
-      path: (dataRoot: string) =>
-        workspaceDbPath(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201'),
-      quarantine: (dataRoot: string) =>
-        join(dataRoot, 'workspaces', 'ws_00000000-0000-73c3-900f-8d310e4ba201', 'quarantine'),
       verify: (dataRoot: string) => verifyAndMigrateExistingScopedDatabases(dataRoot),
     },
   ])('fails boot closed when the $scope database is corrupt', ({ path, quarantine, verify }) => {

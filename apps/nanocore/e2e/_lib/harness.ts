@@ -78,7 +78,14 @@ export async function startNanoCoreHarness(
   const output = captureProcessOutput(child);
   const baseUrl = `http://127.0.0.1:${port}`;
 
-  await waitForHealth(baseUrl, child, output);
+  try {
+    await waitForHealth(baseUrl, child, output);
+  } catch (error) {
+    // Failed-start tests retain caller-owned evidence but must never leak a writer.
+    await killProcess(child);
+    if (!options.dataRoot) await removeDataRoot(dataRoot);
+    throw error;
+  }
 
   return {
     baseUrl,
@@ -269,29 +276,24 @@ async function waitForHealth(
  * Terminates a spawned NanoCore process.
  */
 async function stopProcess(process: ChildProcessWithoutNullStreams): Promise<void> {
-  if (process.exitCode !== null || process.killed) {
-    return;
-  }
+  if (process.exitCode !== null || process.signalCode !== null) return;
 
+  const exited = new Promise<void>((resolve) => process.once('exit', () => resolve()));
+  const timeout = setTimeout(() => process.kill('SIGKILL'), 2_000);
   process.kill('SIGTERM');
-
-  await Promise.race([
-    new Promise<void>((resolve) => process.once('exit', () => resolve())),
-    sleep(2_000).then(() => {
-      if (process.exitCode === null && !process.killed) {
-        process.kill('SIGKILL');
-      }
-    }),
-  ]);
+  try {
+    await exited;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 /** Immediately kills a spawned NanoCore process and waits for exit. */
 async function killProcess(process: ChildProcessWithoutNullStreams): Promise<void> {
-  if (process.exitCode !== null) {
-    return;
-  }
+  if (process.exitCode !== null || process.signalCode !== null) return;
+  const exited = new Promise<void>((resolve) => process.once('exit', () => resolve()));
   process.kill('SIGKILL');
-  await new Promise<void>((resolve) => process.once('exit', () => resolve()));
+  await exited;
 }
 
 /**
