@@ -658,6 +658,7 @@ export class ProviderSubscriptionAccountManager {
       )
         throw providerUnavailableError();
       const record = inspection.record;
+      // Valid slot IDs contain underscores; use literal SQL prefix/suffix comparisons, not LIKE.
       const prefix = codexResetResourcePrefix(exactPair);
       const prior = this.coreDb.sqlite
         .prepare(`SELECT rowid AS sequence, request_id AS requestId, resource, action, outcome, error_code AS errorCode FROM audit_events
