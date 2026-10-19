@@ -22,7 +22,7 @@ import { sealEncryptedFileVaultEntry } from './vault-encrypted-file-store.js';
 const STALE_WRITER_PID = process.pid === 1_234_567 ? 1_234_568 : 1_234_567;
 
 describe('encrypted-file vault backend', () => {
-  it('initializes an empty store header and reopens existing entries with the same key', () => {
+  it('uses retained v1 markers and reopens existing entries with the same key', () => {
     const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-backend-'));
     const masterKey = Buffer.alloc(32, 9);
     const headerPath = join(storeDir, 'header.json');
@@ -35,11 +35,12 @@ describe('encrypted-file vault backend', () => {
     const headerText = readFileSync(headerPath, 'utf8');
     const header = JSON.parse(headerText) as Record<string, unknown>;
 
-    expect(header).toMatchObject({
+    expect.soft(header).toMatchObject({
       createdAt: expect.any(String),
-      formatVersion: 1,
+      schemaVersion: 1,
       masterKeyVerification: { algorithm: 'aes-256-gcm' },
     });
+    expect.soft(header).not.toHaveProperty('formatVersion');
     expect(Number.isFinite(Date.parse(header.createdAt as string))).toBe(true);
     expect(header.kdf).toEqual({ kind: 'raw-key-file' });
     expect(Object.keys(header.masterKeyVerification as Record<string, unknown>).sort()).toEqual([
@@ -57,6 +58,18 @@ describe('encrypted-file vault backend', () => {
       referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
     });
 
+    const entryPath = join(
+      storeDir,
+      'entries',
+      'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
+      '1.enc'
+    );
+    const entryText = readFileSync(entryPath, 'utf8');
+    const entry = JSON.parse(entryText) as Record<string, unknown>;
+
+    expect.soft(entry).toHaveProperty('schemaVersion', 1);
+    expect.soft(entry).not.toHaveProperty('formatVersion');
+
     const reopenedBackend = createEncryptedFileVaultBackend({ masterKey, storeDir });
 
     expect(
@@ -64,6 +77,49 @@ describe('encrypted-file vault backend', () => {
         reopenedBackend.resolve({ referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70' })
       ).toString('utf8')
     ).toBe('ghp_live_secret');
+    expect(readFileSync(headerPath, 'utf8')).toBe(headerText);
+    expect(readFileSync(entryPath, 'utf8')).toBe(entryText);
+
+    for (const [path, envelope, originalText] of [
+      [headerPath, header, headerText],
+      [entryPath, entry, entryText],
+    ] as const) {
+      for (const marker of ['unknown', 'missing', 'legacy-only'] as const) {
+        const corrupted = { ...envelope };
+        delete corrupted.schemaVersion;
+        delete corrupted.formatVersion;
+        if (marker === 'unknown') {
+          corrupted.schemaVersion = 2;
+        } else if (marker === 'legacy-only') {
+          corrupted.formatVersion = 1;
+        }
+        const corruptedText = `${JSON.stringify(corrupted, null, 2)}\n`;
+        writeFileSync(path, corruptedText, { mode: 0o600 });
+
+        let failure: unknown;
+        try {
+          if (path === headerPath) {
+            // Failed initialization clears its owned key, so each attempt gets a copy.
+            createEncryptedFileVaultBackend({ masterKey: Buffer.from(masterKey), storeDir });
+          } else {
+            reopenedBackend.resolve({ referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70' });
+          }
+        } catch (error) {
+          failure = error;
+        }
+
+        expect
+          .soft(failure, `${marker} marker in ${path === headerPath ? 'header' : 'entry'}`)
+          .toBeInstanceOf(VaultBackendError);
+        expect.soft(failure).toMatchObject({ code: 'backend-unavailable' });
+        expect.soft(String(failure)).not.toContain(storeDir);
+        expect.soft(String(failure)).not.toContain(masterKey.toString('base64'));
+        expect.soft(String(failure)).not.toContain(masterKey.toString('hex'));
+        expect.soft(String(failure)).not.toContain('ghp_live_secret');
+        expect(readFileSync(path, 'utf8')).toBe(corruptedText);
+        writeFileSync(path, originalText, { mode: 0o600 });
+      }
+    }
   });
 
   it('rejects a wrong key before replacing or mutating an existing store', () => {
