@@ -38,7 +38,7 @@ describe('App Diagnostics process sample', () => {
     expect(sample).not.toHaveProperty('buildId');
   });
 
-  it('keeps exportConfigured when unsupported exporter headers disable telemetry', () => {
+  it('keeps local capture enabled when unsupported headers disable external export', () => {
     const sample = createProcessDiagnosticsSample({
       env: {
         OTEL_EXPORTER_OTLP_ENDPOINT: VALID_ENDPOINT,
@@ -55,6 +55,7 @@ describe('App Diagnostics process sample', () => {
       now: new Date('2026-09-09T12:00:00.000Z'),
       uptimeSeconds: 1,
     });
-    expect(sample.telemetry).toEqual({ enabled: false, exportConfigured: true });
+    expect(JSON.stringify(sample)).not.toContain('secret-token');
+    expect(sample.telemetry).toEqual({ enabled: true, exportConfigured: true });
   });
 });
