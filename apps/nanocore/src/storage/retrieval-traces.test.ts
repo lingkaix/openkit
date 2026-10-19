@@ -2,7 +2,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import type { ConversationRetrievalTrace } from '@openkit/app-api-schemas';
+import type { ConversationRetrievalTrace, KnowledgeRetrievalTrace } from '@openkit/app-api-schemas';
 import { describe, expect, it, vi } from 'vitest';
 import { testEntityId } from '../test-support/entity-ids.js';
 
@@ -48,6 +48,83 @@ import {
 } from './workspace-portable-file-state.js';
 
 describe('retrieval trace publication', () => {
+  it('retains supplied normalized typed selectors and exact selection evidence across read boundaries', () => {
+    const workspaceId = testEntityId('ws', 'typed-trace-retention');
+    const threadId = testEntityId('th', 'typed-trace-retention');
+    const turnId = testEntityId('tu', 'typed-trace-retention');
+    const reference = {
+      scopeId: `retrieval-trace/turn/${workspaceId}/${threadId}/${turnId}`,
+      objectId: testEntityId('krt', 'typed-trace-retention'),
+    };
+    const sourceScope = `page/workspace/${workspaceId}/${testEntityId('kb', 'typed-trace-retention')}`;
+    const pageReference = { scopeId: sourceScope, objectId: 'invoice-rule' };
+    const trace: KnowledgeRetrievalTrace = {
+      traceId: reference.objectId,
+      queryContext: {
+        serverId: testEntityId('dep', 'typed-trace-retention'),
+        workspaceId,
+        threadId,
+        turnId,
+        actor: { kind: 'user', id: testEntityId('usr', 'typed-trace-retention') },
+      },
+      sourceScope,
+      notebookRevision: 'published-notebook-commit',
+      caller: 'app-api',
+      requestDigest: `sha256:${'a'.repeat(64)}`,
+      retrievalParameters: {
+        limit: 3,
+        pinnedReferences: [pageReference],
+        states: ['active'],
+        sourceScope: 'workspace',
+        types: ['Objective', 'Rule'],
+        appliesTo: ['step:invoice-review', 'tool:invoice.check'],
+      },
+      selected: [
+        {
+          reference: pageReference,
+          revision: 'published-notebook-commit',
+          contentDigest: `sha256:${'b'.repeat(64)}`,
+          sourceReferences: ['source:invoice-evidence'],
+        },
+      ],
+      excluded: [
+        {
+          reference: { scopeId: sourceScope, objectId: 'invoice-effect' },
+          revision: 'published-notebook-commit',
+          contentDigest: `sha256:${'c'.repeat(64)}`,
+          sourceReferences: ['source:invoice-evidence'],
+          reason: 'policy_excluded',
+        },
+      ],
+      createdAt: '2026-10-19T00:00:00.000Z',
+    };
+    const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-typed-trace-'));
+    try {
+      publishRetrievalTrace(workspaceRoot, reference, trace);
+      const relativePath = retrievalTraceRelativePath(reference);
+      const path = join(workspaceRoot, relativePath);
+      const published = readFileSync(path, 'utf8');
+      expect(JSON.parse(published)).toEqual({ ...trace, schemaVersion: 1 });
+
+      // Retained evidence keeps the query's selectors and digest; current access is caller-owned.
+      expect.soft(readRetrievalTrace(workspaceRoot, reference)).toEqual(trace);
+      expect
+        .soft(readTurnRetrievalTraces(workspaceRoot, workspaceId, threadId, turnId))
+        .toEqual([{ reference, trace }]);
+      expect
+        .soft(parseWorkspaceRetrievalTraceFile(relativePath, published, workspaceId))
+        .toEqual({ reference, trace });
+      const portable = serializeWorkspaceRetrievalTrace(trace);
+      expect.soft(JSON.parse(portable)).toEqual({ ...trace, schemaVersion: 1 });
+      expect
+        .soft(parseWorkspaceRetrievalTraceFile(relativePath, portable, workspaceId))
+        .toEqual({ reference, trace });
+      expect(readFileSync(path, 'utf8')).toBe(published);
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
   it('refuses missing or unknown trace versions before decoding the source family', () => {
     const workspaceId = testEntityId('ws', 'trace-version');
     const threadId = testEntityId('th', 'trace-version');

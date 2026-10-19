@@ -61,6 +61,7 @@ const excludedPage = z.object({
     'source_unavailable',
   ]),
 });
+const selectionValues = z.array(z.string().min(1).regex(/\S/)).min(1);
 const knowledge = z.object({
   sourceKind: z.never().optional(),
   traceId: RetrievalTraceIdSchema,
@@ -74,6 +75,8 @@ const knowledge = z.object({
     pinnedReferences: z.array(pageReference),
     states: z.array(z.enum(['active', 'draft', 'archived', 'superseded'])).min(1),
     sourceScope: z.enum(['workspace', 'server', 'user']),
+    types: selectionValues.optional(),
+    appliesTo: selectionValues.optional(),
   }),
   selected: z.array(selectedPage),
   excluded: z.array(excludedPage),

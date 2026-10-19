@@ -2472,7 +2472,7 @@ export function publishArtifactFileRecord(input: {
 }): void {
   const record = ArtifactVersionRecordSchema.parse(input.record);
   const artifact = record.artifact;
-  if (artifact.version !== 1 || record.version.parentVersion !== null)
+  if (artifact.version !== 1)
     throw new Error('Initial Artifact publication requires its exact admitted v1 record.');
   if (artifact.content.format !== 'file') throw new Error('A file descriptor is required.');
   const destination = artifactFilePayloadPath(input.workspaceRoot, artifact.id, artifact.version);
@@ -2776,7 +2776,6 @@ function writeArtifacts(
     const record = ArtifactVersionRecordSchema.parse(initialArtifact.record);
     if (
       record.artifact.version !== 1 ||
-      record.version.parentVersion !== null ||
       record.artifact.workspaceId !== records.workspace.id ||
       !records.artifacts.some((artifact) => isDeepStrictEqual(artifact, record.artifact))
     )

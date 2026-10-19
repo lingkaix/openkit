@@ -10,7 +10,7 @@ import {
   JudgementRecordSchema,
   type SelectCandidateSetRequest,
 } from '@openkit/app-api-schemas';
-import { UserActorRefSchema } from '@openkit/protocol';
+import { UserActorRefSchema, writeRetainedV1 } from '@openkit/protocol';
 import type { Actor } from './auth/identity.js';
 import {
   isCurrentDeploymentAdministrator,
@@ -188,16 +188,17 @@ export async function createCandidateSet(
     execute: () => {
       admit(access, 'evaluation.candidate-set-create');
       admitCandidates(access, input.candidates);
-      const parsed = CandidateSetRecordSchema.safeParse({
-        formatVersion: 1,
-        workspaceId: input.workspaceId,
-        candidateSetId: input.requestId,
-        createdBy: actor,
-        createdAt: new Date().toISOString(),
-        candidates: input.candidates,
-        judgements: [],
-        extensions: {},
-      });
+      const parsed = CandidateSetRecordSchema.safeParse(
+        writeRetainedV1({
+          workspaceId: input.workspaceId,
+          candidateSetId: input.requestId,
+          createdBy: actor,
+          createdAt: new Date().toISOString(),
+          candidates: input.candidates,
+          judgements: [],
+          extensions: {},
+        })
+      );
       if (!parsed.success)
         throw new OperationError(
           'invalid_request',
@@ -251,18 +252,19 @@ export function appendCandidateSetJudgement(
   if (!access.workspaceDb.sqlite.inTransaction)
     throw new Error('Candidate judgement requires the existing Workspace transaction.');
   const record = readCandidateSet(access, input.candidateSetId);
-  const judgement = JudgementRecordSchema.parse({
-    formatVersion: 1,
-    workspaceId: access.workspaceDb.workspaceId,
-    requestId: input.requestId,
-    actor,
-    recordedAt: new Date().toISOString(),
-    kind: input.kind,
-    target: { kind: 'candidate-set', candidateSetId: input.candidateSetId },
-    choice: input.choice,
-    note: input.note ?? null,
-    extensions: input.extensions ?? {},
-  });
+  const judgement = JudgementRecordSchema.parse(
+    writeRetainedV1({
+      workspaceId: access.workspaceDb.workspaceId,
+      requestId: input.requestId,
+      actor,
+      recordedAt: new Date().toISOString(),
+      kind: input.kind,
+      target: { kind: 'candidate-set', candidateSetId: input.candidateSetId },
+      choice: input.choice,
+      note: input.note ?? null,
+      extensions: input.extensions ?? {},
+    })
+  );
   if (
     input.kind === 'select' &&
     !record.candidates.some((candidate) => isDeepStrictEqual(candidate, input.choice))
