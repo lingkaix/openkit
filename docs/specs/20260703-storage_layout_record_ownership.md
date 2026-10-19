@@ -8,9 +8,11 @@ updated: "2026-10-02"
 
 ## Summary
 
-This spec closes the storage design gap beneath the file-system-first principle.
+This spec owns storage placement by scope and the existing retained record graph. [Storage](../core/storage.md) now requires one transaction per mutable control transition over already durable immutable content.
 
-The clean target is scope-owned storage: server records live under server ownership, user records live under user ownership, and workspace records live under workspace ownership. File-backed records remain the default for inspectable history; SQLite may own an explicitly named transactional record graph when its owning specification requires atomic compare-and-set and command-receipt publication. It must not become an unnamed product model that competes with another authority.
+The [2026-10-19 decision](../decisions/20261019-durable_execution_and_control_store.md) supersedes this document's file-first control authority, server-global Workspace execution tables, and split-file/database publication mechanisms. [Durable Execution And Control Store](20261019-durable_execution_and_control_store.md#commit-rule-and-scope-layout) is the Draft replacement mechanism. The detailed file layouts and cross-store repair rules below describe the pre-cutover realization for those concerns, not an alternative target. Product meanings, exact lineage, audience, retention, content verification and independent business-store rules remain binding unless explicitly replaced.
+
+Server records remain server-owned, user records user-owned, and Workspace records Workspace-owned. The replacement consolidates mutable control heads and request receipts in each scope database; it does not add a journal beside file authority. The [Workspace authority inventory](20261019-durable_execution_and_control_store.md#workspace-authorities-outside-the-control-database) classifies Notebook heads, app databases, authored configuration, catalogs and opaque MCP process data, including their snapshot boundaries.
 
 The important call is to stop organizing persistence by feature module. Storage should be organized by ownership, recovery boundary, backup boundary, and export boundary.
 

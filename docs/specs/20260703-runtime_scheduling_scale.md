@@ -6,6 +6,12 @@ updated: 2026-10-15
 ---
 # Runtime Scheduling And Scale
 
+## Control-Store Replacement
+
+The [2026-10-19 decision](../decisions/20261019-durable_execution_and_control_store.md) replaces server-global Workspace queue/attempt persistence and separate restart scheduling with scope-owned durable execution. The Draft [global scheduling seam](20261019-durable_execution_and_control_store.md#global-dispatch-and-physical-capacity) owns the proposed rebuilt ready index, bounded database handles, server capacity reservations and both commit-gap dispositions. This is a replacement, not a second scheduler or a new placement policy.
+
+The deployment profile, distinct Sandbox/Harness/session/Turn identities, fresh authority and release barriers below remain binding. Independent nested acceptance allowances give way to the existing Core end-to-end deadline rule; liveness, pacing and fences remain until their individual fault-based ablation permits removal. Descriptions of old queue and recovery mechanisms are the pre-cutover implementation baseline, not a compatibility obligation. Goal structures remain frozen.
+
 ## Owns
 
 - The separation between Core mode and worker backend deployment.
