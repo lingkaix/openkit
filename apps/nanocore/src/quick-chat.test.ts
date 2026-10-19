@@ -18,7 +18,10 @@ import { FsStore } from './lib/store.js';
 import { GatewayAttemptFailure } from './llm/gateway-execution.js';
 import { PiAiGatewayClient } from './llm/pi-ai-client.js';
 import type { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
-import type { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
+import type {
+  ProviderSubscriptionAccountManager,
+  ProviderSubscriptionPairHandle,
+} from './llm/provider-subscription-accounts.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
 import { pendingRequestItemId, readPendingRequest } from './runtime/pending-requests.js';
@@ -3201,7 +3204,12 @@ describe('quick chat app API', () => {
     pairModels.setProvider({ ...faux.provider, baseUrl: openaiCodexProvider().baseUrl });
     vi.spyOn(pairModels, 'checkAuth').mockResolvedValue({ source: 'OAuth', type: 'oauth' });
     faux.setResponses([fauxAssistantMessage('Stock adapter answer')]);
-    const getPairHandle = vi.fn(async () => ({ credentials: {} as never, models: pairModels }));
+    const getPairHandle = vi.fn(async () => ({
+      credentials: {} as never,
+      models: pairModels,
+      getCredentialVersion: (async () =>
+        'synthetic-default:1') satisfies ProviderSubscriptionPairHandle['getCredentialVersion'],
+    }));
     const piAiClient = new PiAiGatewayClient();
     const createResponses = vi.spyOn(piAiClient, 'createResponses');
     const fixture = await createTimelineFixture({
@@ -3240,6 +3248,9 @@ describe('quick chat app API', () => {
       llmPiAiClient: piAiClient,
       providerSubscriptionAccountManager: {
         gatewayUnavailableReason: () => null,
+        // This stock metadata/capture fixture explicitly admits quota, not default policy.
+        codexInferenceAllowed: (async () =>
+          true) satisfies ProviderSubscriptionAccountManager['codexInferenceAllowed'],
         getPairHandle,
       } as unknown as ProviderSubscriptionAccountManager,
     });
