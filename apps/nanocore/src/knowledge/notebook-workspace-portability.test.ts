@@ -363,8 +363,8 @@ describe('canonical Notebook Workspace portability', () => {
     expect(edited.files['notes/portable.md']).not.toBe(f.content);
     expect(edited.files[assessmentPath]).toBe(assessed.files[assessmentPath]);
     expect(
-      parseOkfDocument({ path: assessmentPath, content: edited.files[assessmentPath]! })
-        .document?.frontmatter.subject_refs
+      parseOkfDocument({ path: assessmentPath, content: edited.files[assessmentPath]! }).document
+        ?.frontmatter.subject_refs
     ).toEqual([targetPin]);
     expect(unresolvedNotebookSubjects(edited.files, scopeId)).toEqual(new Set());
     expect(f.notebook.readRevision(assessedRevision).files['notes/portable.md']).toBe(f.content);
