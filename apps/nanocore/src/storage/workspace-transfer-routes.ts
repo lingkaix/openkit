@@ -749,7 +749,6 @@ function importWorkspaceDatabaseRows({
               ...review,
               schemaVersion: writeRetainedV1({}).schemaVersion,
               rangeFeedback: review.rangeFeedback ?? null,
-              candidateSelections: review.candidateSelections,
               proposalMaterialId: materialProposal?.materialId ?? null,
               proposalBaseRevisionId: materialProposal?.baseRevisionId ?? null,
               proposalBaseContentDigest: materialProposal?.baseContentDigest ?? null,

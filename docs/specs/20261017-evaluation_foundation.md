@@ -40,9 +40,9 @@ The target has exactly one of these closed forms:
 
 Material range offsets use UTF-16 code units, with an inclusive start and exclusive end. This version defines one unit, so the record has no offset-unit field. The original text and digest remain in the record. Range validation and correction effects follow the Material owner; this record does not define another locator or patch format.
 
-An `accept` or `reject` choice is empty. A `correct` choice identifies the proposed replacement and, when applied, the resulting exact Material revision. A `select` choice identifies one candidate in the target set. A `rate` choice contains the numeric value and the explicit lower and upper bounds of its scale. The value must lie within those bounds. Ratings from different scales have no implied equivalence.
+An `accept` or `reject` choice is empty. A `correct` choice identifies the proposed replacement and, when applied, the resulting exact Material revision. A `select` choice identifies one exact candidate: a member of the target set, or the exact version and digest named by an Artifact-version target. A different Artifact-version choice is refused. A `rate` choice contains the numeric value and the explicit lower and upper bounds of its scale. The value must lie within those bounds. Ratings from different scales have no implied equivalence.
 
-A selection targets a candidate set. A correction targets an exact Material range. Other judgements can assess any target form. A note does not grant authority, alter a target or replace the typed choice.
+A selection targets a candidate set or one exact Artifact version. A correction targets an exact Material range. Other judgements can assess any target form. A note does not grant authority, alter a target or replace the typed choice.
 
 Artifact judgements extend the existing version-keyed Review rather than creating a second Artifact decision store. Existing Review decisions retain their own effect and conflict rules. A judgement does not independently accept a proposal, change content or authorize an effect. Material correction results remain with the existing Material revision and Review owners.
 
@@ -52,7 +52,7 @@ A candidate set retains an ordered collection of at least two distinct exact Art
 
 Candidates can come from repeated runs of one configuration or from different existing Skill versions, models or prompts. Producing work and strategy references use existing outcome lineage. An AEP snapshot, Skill version or model reference is descriptive provenance; it creates neither a strategy record nor present authority.
 
-`ArtifactReview.candidateSelections` records the existing independent choice of one exact Artifact version for a later input; it does not assert membership in a comparison set. A candidate-set selection records a choice among that set's immutable members only in its `select` judgement history. The candidate-set command does not append a Review candidate selection, and the Review command does not append a candidate-set judgement. One human choice is never written to both owners.
+A single-version choice is a `select` judgement on that exact version in the existing Artifact Review. Its `candidateSelections` read view derives actor, request, reason and time from those judgements; no separate selection array or column is retained or transferred. It does not assert comparison-set membership. A candidate-set choice remains only in that set's `select` judgement history. The Review and set commands each append to their existing target owner and never dual-write. The Review decision tuple remains the first-writer owner of apply and follow-up effects; descriptive judgements do not replace it.
 
 A human selects one member through an attributable `select` judgement. The selected reference must be a member of the retained set. A later explicit selection appends a judgement; the most recently committed selection is the current projection. Earlier selections remain inspectable. A set without a selection has no selected candidate.
 

@@ -1362,20 +1362,28 @@ function createWorkResourceLineageExportInput(
         end: 15,
         originalText: 'Portable base',
       },
-      candidateSelections: [
-        {
-          actorId: 'usr_00000000-0000-7000-8000-000000000001',
-          requestId: 'choose-first',
-          reason: 'Keep the first reason.',
-          selectedAt: timestamp,
-        },
-        {
-          actorId: 'usr_00000000-0000-7000-8000-000000000001',
-          requestId: 'choose-second',
-          reason: 'Keep the second reason.',
-          selectedAt: timestamp,
-        },
-      ],
+      judgements: ['first', 'second'].map((ordinal) =>
+        writeRetainedV1({
+          workspaceId: source.workspaceId,
+          requestId: `choose-${ordinal}`,
+          actor: { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' },
+          recordedAt: timestamp,
+          note: `Keep the ${ordinal} reason.`,
+          extensions: {},
+          kind: 'select' as const,
+          target: {
+            kind: 'artifact-version' as const,
+            artifactId: source.artifactId,
+            artifactVersion: 1,
+            contentDigest: appliedContentDigest,
+          },
+          choice: {
+            artifactId: source.artifactId,
+            artifactVersion: 1,
+            contentDigest: appliedContentDigest,
+          },
+        })
+      ),
       followUpTurnId: null,
       materialProposal: { materialId, baseRevisionId, baseContentDigest },
       reviewId: deriveArtifactReviewId(source.workspaceId, source.artifactId, 1),
@@ -2862,14 +2870,15 @@ describe('workspace auxiliary lineage reminting', () => {
       end: 15,
       originalText: 'Portable base',
     });
-    expect(review?.candidateSelections.map((choice) => choice.reason)).toEqual([
-      'Keep the first reason.',
-      'Keep the second reason.',
-    ]);
     expect(
-      review?.candidateSelections.every((choice) =>
-        choice.requestId.startsWith('import-lineage:sha256:')
-      )
+      review?.judgements
+        .filter((judgement) => judgement.kind === 'select')
+        .map((choice) => choice.note)
+    ).toEqual(['Keep the first reason.', 'Keep the second reason.']);
+    expect(
+      review?.judgements
+        .filter((judgement) => judgement.kind === 'select')
+        .every((choice) => choice.requestId.startsWith('import-lineage:sha256:'))
     ).toBe(true);
     expect(material?.lastMutationRequestId).toBe(review?.decisionRequestId);
     expect(revisions[1]?.createdByRequestId).toBe(review?.decisionRequestId);
