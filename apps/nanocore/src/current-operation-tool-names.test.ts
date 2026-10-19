@@ -111,7 +111,10 @@ function goalTools(): readonly AgentTool[] {
     goalId: 'goal_00000000-0000-7000-8000-000000000001',
     turnId: lineage.turnId,
     store: effectDependency(),
-    services: effectDependency(),
+    services: {
+      coreDb: effectDependency(),
+      goalDomain: effectDependency(),
+    } as Input['services'],
     invoke: unused,
   });
 }
