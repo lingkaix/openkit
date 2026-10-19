@@ -29,6 +29,7 @@ import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook, NotebookError } from './notebook.js';
 import { createNotebookAgentEditing, NOTEBOOK_EDITING_LIMITS } from './notebook-agent-editing.js';
+import { notebookAuthoringGuidance } from './notebook-authoring-guidance.js';
 import { boundedNotebookDiff } from './notebook-history.js';
 import {
   type NotebookPublicationAdmission,
@@ -453,7 +454,10 @@ export function prepareKnowledgeMaintenance(
         baseRevision = notebook.publishedRevision();
         target.notebookRevision = baseRevision;
         empty.baseRevision = baseRevision;
-        admission(empty);
+        const authoringGuidance = notebookAuthoringGuidance(admission(empty).scopeSchemaText, {
+          kind: 'workspace',
+          workspaceId: input.workspaceId,
+        });
         const selectedPages = input.pageIds ? new Set([...input.pageIds, 'index']) : undefined;
         for (const path of Object.keys(notebook.inspectRevision(baseRevision).entries).sort()) {
           const id = path.slice(0, -3);
@@ -788,6 +792,7 @@ export function prepareKnowledgeMaintenance(
                   text: JSON.stringify({
                     instructions,
                     notebookRevision: baseRevision,
+                    authoringGuidance,
                     files: Object.keys(files),
                     selectedPageIds: input.pageIds ?? [],
                     humanEdits,
