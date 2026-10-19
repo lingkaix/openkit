@@ -5,6 +5,7 @@ import { asCommandError, asInvalidRequestError, publishedErrorMessage } from './
 import type { AuthVariables } from './auth/middleware.js';
 import { StoreRecordNotFoundError } from './lib/store.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
+import { CanonicalPublicationError } from './storage/canonical-publication-error.js';
 import { createAppWithWorkspaceAuthority } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { operationRequest } from './test-support/operation-request.js';
@@ -128,5 +129,17 @@ it('preserves safe declared-field validation detail before entering the real ope
   if (parsed.success) throw new Error('Expected invalid request.');
   expect(await asInvalidRequestError(parsed.error).json()).toMatchObject({
     message: z.prettifyError(parsed.error),
+  });
+});
+
+it('keeps the named publication refusal and existing recovery code at the API boundary', async () => {
+  const failure = new CanonicalPublicationError(
+    'FsStore: directory synchronization failed after rename during publication acknowledgement. Ordinary Store reopen is required.'
+  );
+  const response = asCommandError(failure, 'command_missing', 404);
+  expect(response.status).toBe(409);
+  expect(await response.json()).toMatchObject({
+    code: 'recovery_required',
+    message: failure.message,
   });
 });

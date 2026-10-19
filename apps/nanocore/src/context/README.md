@@ -11,7 +11,7 @@ This directory owns deterministic projection of durable OpenKit items into provi
 - `llm-projection.ts` creates provider messages, deterministic context-package digests, and attachment records.
 - `worker-context-package.ts` builds, publishes, and verifies the immutable S39 worker-Turn package and delivery trace without owning a lifecycle. Knowledge selections carry the exact retained Knowledge Base identity for deduplication and source cursors while default Worker paths stay unchanged. They carry the supplying Notebook commit separately from their exact page digest, matching the digest-addressed source snapshot projection.
 - `worker-context-authorities.ts` maps the existing Core, Workspace, and product-store owners into the shared S39 verifier without retaining state.
-- `worker-context-projection.ts` fully verifies present traces before deriving S16 Material, Goal steering, and exact Worker request objective read fields without storing them.
+- `worker-context-projection.ts` fully verifies present traces before deriving S16 Material, Goal steering, and exact Worker request objective read fields without storing them. Material read refusals identify the fixed reporting owner, observed native verification boundary and read stage while withholding underlying exception text.
 - Projection must not dispatch providers, mutate thread history, or become a second persistence owner.
 - Every excluded item keeps a stable policy reason; provider-visible content must follow the selected projection policy.
 
@@ -22,6 +22,8 @@ The S39 authority reader locates the trace's exact AEP snapshot filename under r
 ## Verification
 
 Run `pnpm --filter @openkit/nanocore exec vitest run src/context` and the workflows that materialize context packages.
+
+Context traces use the shared durable no-clobber file writer. Exact replay synchronizes the accepted file and parent directory before acknowledgement. Package members remain unpublished until the final `package.json` marker is atomically published; a retry discards unfinished derived files only when both that marker and the trace are absent. A committed package keeps its exact verification and is never rebuilt from current sources. `worker-context-publication-durability.test.ts` covers syscall failures, immutable racing winners and abrupt child-process death before the marker.
 
 See [Work Model](../../../../docs/core/work-model.md).
 
