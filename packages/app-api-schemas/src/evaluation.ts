@@ -1,7 +1,7 @@
 import {
   MaterialIdSchema,
-  RETAINED_FORMAT_VERSION,
   MaterialRevisionIdSchema,
+  RETAINED_FORMAT_VERSION,
   TimestampSchema,
   UserActorRefSchema,
   WorkspaceIdSchema,
