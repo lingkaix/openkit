@@ -99,8 +99,8 @@ export function readGoalTaskPolicyContext(input: {
   )
     throw unavailable();
   // Card edits do not steer a running Task. Cancellation and active Plan replacement do end use.
-  // Later outcome Turns have their own Worker/package and can have a different human trigger.
-  // Their native Pending cause permits checkpoint-free preparation; it supplies no Task scope.
+  // Later Turns have their own Worker/package and can have a different human trigger.
+  // Native Pending cause identifies system-authored frozen input; it supplies no Task scope.
   const pending = listThreadPendingRequests(db.sqlite, lineage.workspaceId, lineage.threadId);
   const readWorkerSource = (scope: SchedulerExecutionLineage) => {
     const admission = findSchedulerAdmissionForWorkerLineage(coreDb, scope);
@@ -157,9 +157,8 @@ export function readGoalTaskPolicyContext(input: {
           checkpoint.requestInputHash !== commandInputHash({ input: admission.turnInput }) ||
           (checkpoint.workerSessionId !== null &&
             checkpoint.workerSessionId !== scope.agentSessionId)
-        : isSealedTurnTerminal(turn.status)
-          ? attempt.phase !== 'closed' || attempt.disposition !== 'accepted' || !attempt.fenceRef
-          : !outcomeInitiated)
+        : isSealedTurnTerminal(turn.status) &&
+          (attempt.phase !== 'closed' || attempt.disposition !== 'accepted' || !attempt.fenceRef))
     )
       throw unavailable();
     return { admission, turn, checkpoint };
@@ -212,6 +211,7 @@ export function readGoalTaskPolicyContext(input: {
   const request = StructuredWorkerDelegationRequestSchema.parse(
     JSON.parse(source.admission.turnInput)
   );
+  // Only the original Task preparation owns this required checkpoint and structured digest.
   if (
     serializeStructuredWorkerDelegationRequest(request) !== source.admission.turnInput ||
     (source.checkpoint
