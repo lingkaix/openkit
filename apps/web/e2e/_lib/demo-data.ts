@@ -35,6 +35,7 @@ async function seedSimulatorInferenceConfig(dataRoot: string): Promise<void> {
     join(providersRoot, 'agent-openrouter.provider.jsonc'),
     `${JSON.stringify(
       {
+        schemaVersion: 1,
         id: 'agent-openrouter',
         displayName: 'Agent OpenRouter test local',
         kind: 'local',
