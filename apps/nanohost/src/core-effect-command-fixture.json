@@ -54,9 +54,7 @@
           {
             "access": "read-only",
             "allowEncodedSlash": true,
-            "binaries": [
-              "/usr/local/bin/node"
-            ],
+            "binaries": ["/usr/local/bin/node"],
             "host": "packages.example.com",
             "name": "scoped_package_read",
             "port": 443,
@@ -107,9 +105,7 @@
           {
             "access": "read-only",
             "allowEncodedSlash": true,
-            "binaries": [
-              "/usr/local/bin/node"
-            ],
+            "binaries": ["/usr/local/bin/node"],
             "host": "packages.example.com",
             "name": "scoped_package_read",
             "port": 443,

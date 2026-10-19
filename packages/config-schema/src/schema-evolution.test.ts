@@ -93,6 +93,19 @@ describe('schema evolution record envelope', () => {
     ).toEqual([feature]);
   });
 
+  it.each([
+    'runtime.evidence.v1',
+    'worker.runtime-provenance.v1',
+    'evidence.bundle.v1',
+  ])('registers the evidence writer feature %s and requires explicit reader support', (feature) => {
+    expect(() => assertRegisteredRequiredFeatures([feature])).not.toThrow();
+    const envelope = { ...envelopeFixture(), requiredFeatures: [feature] };
+    expect(() => parseRecordEnvelope(envelope)).toThrow(`Unsupported required feature: ${feature}`);
+    expect(
+      parseRecordEnvelope(envelope, { supportedFeatures: [feature] }).requiredFeatures
+    ).toEqual([feature]);
+  });
+
   it('keeps the required-feature registry aligned with the accepted spec table', () => {
     const spec = readFileSync(
       new URL('../../../docs/specs/20260703-schema_evolution_record_envelope.md', import.meta.url),
