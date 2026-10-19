@@ -43,6 +43,20 @@ async function main() {
 
   try {
     await seedFixture(dataRoot, fixtureRoot, callFile, nanoHostPort);
+    const { loadProviderProfiles } = await import(
+      '../../apps/nanocore/dist/config/providers-loader.js'
+    );
+    const providerProfiles = loadProviderProfiles(dataRoot);
+    assert.deepEqual(
+      providerProfiles.diagnostics.map(({ code, profileId }) => ({ code, profileId })),
+      [],
+      'Smoke provider fixture must pass the production configuration loader.'
+    );
+    assert.equal(
+      providerProfiles.profiles.filter(({ id }) => id === 'agent-openrouter').length,
+      1,
+      'Smoke provider fixture must load exactly one configured Task provider.'
+    );
     const nanoHostSecret = await issueNanoHostToken(dataRoot);
     const env = {
       ...process.env,
@@ -594,7 +608,7 @@ function expectedSmokeObservation() {
       call: { itemIdValid: true, schemaSnapshotIdValid: true, status: 'succeeded' },
       item: { server: 'echo', status: 'completed', tool: 'echo', type: 'tool-call' },
       attempt: { phase: 'closed' },
-      permission: [{ enforcementPoint: 'worker_capability.mcp.call_tool', result: 'allow' }],
+      permission: [{ operation: 'mcp.call-tool', stage: 'decide', result: 'allow' }],
       schema: { catalogEntryId: 'echo', source: 'live', toolNames: ['echo'] },
       usage: [{ quantity: 1, unit: 'tool_calls' }],
     },
@@ -735,6 +749,7 @@ async function seedFixture(dataRoot, fixtureRoot, callFile, nanoHostPort) {
     schemaVersion: 1,
   });
   await writeJson(join(dataRoot, 'config', 'providers', 'agent-openrouter.provider.jsonc'), {
+    schemaVersion: 1,
     displayName: 'Agent OpenRouter',
     id: 'agent-openrouter',
     kind: 'local',
@@ -876,10 +891,16 @@ async function issueNanoHostToken(dataRoot) {
 
 /** Reads the normalized durable call, policy, schema, audit, usage, Item, backend, and attempt facts. */
 async function readDurableOutcome(dataRoot, turnId) {
-  const [{ FsStore }, { openCoreDb, openWorkspaceDb }, { ItemIdSchema }] = await Promise.all([
+  const [
+    { FsStore },
+    { openCoreDb, openWorkspaceDb },
+    { ItemIdSchema },
+    { listExportableWorkspacePermissionDecisions },
+  ] = await Promise.all([
     import('../../apps/nanocore/dist/lib/store.js'),
     import('../../apps/nanocore/dist/storage/db.js'),
     import('../../packages/protocol/dist/index.js'),
+    import('../../apps/nanocore/dist/policy/permission-decisions.js'),
   ]);
   const coreDb = openCoreDb(dataRoot);
   let backend;
@@ -944,12 +965,16 @@ async function readDurableOutcome(dataRoot, turnId) {
         )
         .all(call.callId);
     }
-    permission = workspaceDb.sqlite
-      .prepare(
-        `SELECT enforcement_point AS enforcementPoint, result
-         FROM permission_decisions WHERE action = 'tool.use'`
-      )
-      .all();
+    permission = listExportableWorkspacePermissionDecisions(
+      workspaceDb,
+      'ws_00000000-0000-7000-8000-000000000001'
+    )
+      .filter((decision) => decision.action === 'tool.use')
+      .map((decision) => ({
+        operation: decision.mediation?.operation,
+        stage: decision.mediation?.stage,
+        result: decision.result,
+      }));
   } finally {
     workspaceDb.sqlite.close();
   }

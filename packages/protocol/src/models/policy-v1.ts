@@ -162,16 +162,8 @@ export const PolicyBindingV1Schema = z
         message: 'Decisive modes cannot continue after failure.',
       });
   });
-/** Native grant payloads remain in Policy; a lease does not create a Storage-owned record. */
-export const PolicyGrantV1Schema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('ordinary') }).strict(),
-  z
-    .object({
-      kind: z.literal('gateway-tool-rule'),
-      toolNames: z.array(z.string().min(1)).min(1),
-    })
-    .strict(),
-]);
+/** Ordinary permissions select targets only through their statement scope. */
+export const PolicyGrantV1Schema = z.object({ kind: z.literal('ordinary') }).strict();
 /** Permission conditions include the existing approval-required Tool rule. */
 export const PolicyPermissionV1Schema = z
   .object({

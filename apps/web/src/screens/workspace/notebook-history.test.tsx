@@ -12,6 +12,7 @@ import { KnowledgeScreen } from './KnowledgeScreen';
 
 const WORKSPACE = 'ws_00000000-0000-7000-8000-000000000001';
 const OTHER = 'ws_00000000-0000-7000-8000-000000000003';
+const KNOWLEDGE_BASE_ID = 'kb_0190f4c8-0000-7000-8000-000000000001';
 const USER = 'usr_00000000-0000-7000-8000-000000000002';
 const BASE = 'a'.repeat(40);
 const FROM = 'b'.repeat(40);
@@ -60,7 +61,11 @@ function renderNotebook({
           })),
         });
       case operationHttpPath('knowledge.list'):
-        return Response.json({ notebookRevision: currentRevision, items: [] });
+        return Response.json({
+          knowledgeBaseId: KNOWLEDGE_BASE_ID,
+          notebookRevision: currentRevision,
+          items: [],
+        });
       case operationHttpPath('knowledge.indexes'):
         return Response.json({
           linkGraph: {

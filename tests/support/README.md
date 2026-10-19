@@ -17,3 +17,5 @@ Preparation retains story-owned browser preflight under `--purpose browser-story
 Demo seeding uses explicit canonical fixture identities. The authority helper records its fixture User through NanoCore test support and then records Workspace membership; it never imports a production default User constant.
 
 The authority helper initializes each fresh demo Notebook through the native Git initializer under its explicit fixture User. It uses the current governed page serializer and initializes the service's personal Notebook with an empty index. It never writes or converts a predecessor knowledge/pages tree.
+
+The fresh demo Workspace records use the current retained marker. Each fixture scope retains a distinct canonical Knowledge Base ID in its configuration before the initial Notebook publication, and publication validation uses that exact page scope. Seed retries retain those IDs and Git publications without repairing invalid retained records.

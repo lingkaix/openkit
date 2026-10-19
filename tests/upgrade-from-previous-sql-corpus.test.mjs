@@ -241,6 +241,29 @@ test('reopens every SQL family and its linked file owners with exact readback', 
     original['Light App metadata, business data, Audit and receipts'].values[1].data.note,
     'Synthetic retained business record.'
   );
+  const lightAppReceipts =
+    original['Light App metadata, business data, Audit and receipts'].values[3];
+  assert.deepEqual(
+    lightAppReceipts
+      .toSorted((left, right) => left.command.localeCompare(right.command))
+      .map(({ command, requestId, response }) => ({ command, requestId, response })),
+    [
+      {
+        command: 'kernel.apps.create',
+        requestId: '00000000-0000-4000-8000-000000000903',
+        response: { kind: 'light_app', id: input.selectors.sql.lightAppId },
+      },
+      {
+        command: 'kernel.records.create',
+        requestId: '00000000-0000-4000-8000-000000000904',
+        response: { kind: 'light_app_record', id: input.selectors.sql.lightAppRecordId },
+      },
+    ]
+  );
+  for (const receipt of lightAppReceipts) {
+    assert.equal(receipt.scope.workspaceId, input.selectors.workspaceId);
+    assert.equal(receipt.scope.appId, input.selectors.sql.lightAppId);
+  }
   const { openCoreDb } = await input.load('storage/db');
   const db = openCoreDb(input.dataRoot);
   try {
