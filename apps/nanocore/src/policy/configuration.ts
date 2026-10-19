@@ -18,7 +18,10 @@ import {
   requireCurrentDeploymentAdmin,
 } from '../auth/operation-authorizer.js';
 import { parseJsoncObject } from '../config/jsonc.js';
-import type { RuntimeConfigFileService } from '../config/runtime-config-files.js';
+import {
+  type RuntimeConfigFileService,
+  RuntimeConfigFileServiceError,
+} from '../config/runtime-config-files.js';
 import type { FsStore } from '../lib/store.js';
 import { readCurrentMcpToolSchemaSnapshot } from '../runtime/mcp-tool-schema-snapshots.js';
 import {
@@ -65,7 +68,11 @@ export function preparePolicyConfiguration(input: {
   requireCurrentDeploymentAdmin(input.coreDb, input.actor);
   const read = input.files.readFile('server.jsonc');
   if (read.file.revision !== input.request.expectedRevision)
-    throw new Error('Policy configuration base changed.');
+    throw new RuntimeConfigFileServiceError(
+      'config_revision_conflict',
+      'Policy configuration base revision changed.',
+      409
+    );
   const raw = parseJsoncObject(read.content, 'server.jsonc');
   const config = OpenKitConfigSchema.parse(raw);
   const currentDocument = validatePolicyDocument(config.policy?.mediation ?? EMPTY_POLICY_DOCUMENT);
@@ -73,7 +80,11 @@ export function preparePolicyConfiguration(input: {
     policyDigest(currentDocument) !==
     policyDigest(validatePolicyDocument(input.loadedPolicy ?? EMPTY_POLICY_DOCUMENT))
   )
-    throw new Error('Policy file and loaded revision differ; inspect and reload first.');
+    throw new RuntimeConfigFileServiceError(
+      'policy_reload_required',
+      'Policy file and loaded revision differ.',
+      409
+    );
   const proposed = PolicyDocumentV1Schema.parse(input.request.changes.proposed);
   const changed = proposed.statements.find((statement) => {
     const previous = currentDocument.statements.find(({ id }) => id === statement.id);
@@ -88,7 +99,12 @@ export function preparePolicyConfiguration(input: {
     userId: input.actor.userId,
     now: authoredAt,
   });
-  if (prepared.classification === 'unchanged') throw new Error('Policy changes are required.');
+  if (prepared.classification === 'unchanged')
+    throw new RuntimeConfigFileServiceError(
+      'configuration_changes_required',
+      'Policy changes are required.',
+      409
+    );
   // Tool name validity follows the current admitted observation; no schema version is pinned.
   const changedToolConditions = new Set([...prepared.diff.added, ...prepared.diff.changed]);
   for (const statement of prepared.document.statements) {
@@ -114,7 +130,11 @@ export function preparePolicyConfiguration(input: {
                 workspaceId: resource.workspaceId,
               })?.tools;
       if (!tools?.some((tool) => tool.name === resource.toolName))
-        throw new Error('MCP Tool name has no current admitted schema observation.');
+        throw new RuntimeConfigFileServiceError(
+          'policy_mcp_tool_unobserved',
+          'MCP Tool has no admitted schema observation.',
+          409
+        );
     }
   }
 
@@ -136,7 +156,11 @@ export function preparePolicyConfiguration(input: {
         )
     )
   )
-    throw new Error('Goal-domain changes require their jointly approved Goal owner.');
+    throw new RuntimeConfigFileServiceError(
+      'policy_goal_owner_required',
+      'Goal-domain changes require their Goal owner.',
+      409
+    );
 
   // Activation is a distinct human decision over previously observed exact shadow bytes.
   for (const binding of prepared.document.statements) {
@@ -157,10 +181,18 @@ export function preparePolicyConfiguration(input: {
       previous.state !== 'shadow' ||
       policyDigest(content(previous)) !== policyDigest(content(binding))
     )
-      throw new Error('Agent activation requires the exact prior shadow binding.');
+      throw new RuntimeConfigFileServiceError(
+        'policy_shadow_evidence_required',
+        'Agent activation requires exact prior shadow evidence.',
+        409
+      );
     const anchor = binding.lifetime.anchor;
     if (anchor.owner.kind !== 'workspace')
-      throw new Error('Agent shadow evidence has no Workspace.');
+      throw new RuntimeConfigFileServiceError(
+        'policy_shadow_evidence_required',
+        'Agent activation requires exact prior shadow evidence.',
+        409
+      );
     const workspaceId = anchor.owner.workspaceId;
     const db = input.repositoryWorkspaceDb(workspaceId);
     const events = listWorkspaceAuditEvents(db, workspaceId);
@@ -179,7 +211,11 @@ export function preparePolicyConfiguration(input: {
         )
     );
     if (!completed)
-      throw new Error('Agent activation requires completed exact shadow gate evidence.');
+      throw new RuntimeConfigFileServiceError(
+        'policy_shadow_evidence_required',
+        'Agent activation requires exact prior shadow evidence.',
+        409
+      );
   }
 
   const proposal = PolicyWriteProposalV1Schema.parse({
@@ -191,7 +227,11 @@ export function preparePolicyConfiguration(input: {
     validation: 'valid',
   });
   if (input.candidate && policyDigest(input.candidate) !== policyDigest(proposal))
-    throw new Error('Policy candidate changed during revalidation.');
+    throw new RuntimeConfigFileServiceError(
+      'configuration_candidate_conflict',
+      'Policy candidate changed during revalidation.',
+      409
+    );
   const nextPolicy = {
     ...(raw.policy as Record<string, unknown> | undefined),
     mediation: prepared.document,
@@ -201,7 +241,12 @@ export function preparePolicyConfiguration(input: {
     files: [{ id: 'server.jsonc', content }],
     mode: 'safe',
   });
-  if (!validation.valid) throw new Error('Policy configuration validation failed.');
+  if (!validation.valid)
+    throw new RuntimeConfigFileServiceError(
+      'configuration_validation_failed',
+      'Policy configuration validation failed.',
+      409
+    );
   return {
     current: { read, value: currentDocument },
     changes: { proposed: prepared.document, rationale: input.request.changes.rationale },
