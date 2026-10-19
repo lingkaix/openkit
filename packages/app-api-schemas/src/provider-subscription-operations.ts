@@ -74,7 +74,7 @@ export const PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS = {
     returnsOneTimeSecret: false,
     successStatus: 200,
   },
-  'provider-subscription.account-update-codex-settings': {
+  'provider-subscription.codex-settings': {
     description: 'Update one Codex subscription account’s reset and credit settings.',
     inputSchema: UpdateProviderSubscriptionCodexSettingsRequestSchema.extend(codexPairSelector),
     outputSchema: ProviderSubscriptionAccountSchema,

@@ -2720,7 +2720,26 @@ export async function dispatchLogicalModel<T>(input: {
           const manager = input.providerSubscriptionAccountManager;
           const handle = await manager.getPairHandle(pair);
           subscriptionVersions.set(route.id, await handle.getCredentialVersion());
-          if (!(await manager.codexInferenceAllowed(pair, execution.signal)))
+          const remaining = execution.deadline - (input.clock?.now() ?? Date.now());
+          if (remaining <= 0)
+            throw new GatewayAttemptFailure(
+              { kind: 'provider_unavailable', settled: true },
+              undefined,
+              true
+            );
+          const admissionSignal = AbortSignal.any([
+            execution.signal,
+            AbortSignal.timeout(Math.ceil(remaining)),
+          ]);
+          const allowed = await manager.codexInferenceAllowed(pair, admissionSignal);
+          execution.signal.throwIfAborted();
+          if ((input.clock?.now() ?? Date.now()) >= execution.deadline)
+            throw new GatewayAttemptFailure(
+              { kind: 'provider_unavailable', settled: true },
+              undefined,
+              true
+            );
+          if (!allowed)
             throw new GatewayAttemptFailure(
               { kind: 'quota_exhausted', settled: true },
               undefined,
@@ -2763,7 +2782,9 @@ export async function dispatchLogicalModel<T>(input: {
                   ? 'invalid_request'
                   : 'unknown'),
           unavailableReason: preflightFailure
-            ? 'subscription_credits_disabled'
+            ? preflightFailure.kind === 'quota_exhausted'
+              ? 'subscription_credits_disabled'
+              : 'subscription_admission_deadline'
             : unavailable || authentication || code === 'model_not_configured'
               ? code
               : 'provider_unavailable',

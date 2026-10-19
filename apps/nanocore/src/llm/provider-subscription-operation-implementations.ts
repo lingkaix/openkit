@@ -122,7 +122,7 @@ export function createProviderSubscriptionOperationImplementations(
           )
         )
       ),
-    'provider-subscription.account-update-codex-settings': (input, context) =>
+    'provider-subscription.codex-settings': (input, context) =>
       runAccountOperation(manager(), context, async () =>
         project(await manager().updateCodexSettings(requirePair(input), input.settings))
       ),
