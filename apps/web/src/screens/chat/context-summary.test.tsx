@@ -8,7 +8,7 @@ it('shows the continuation seen by the model and its inspectable exact history r
   const lastItemId = allocateEntityId('it');
   const item = ItemSchema.parse({
     id: allocateEntityId('it'),
-    workspaceId: allocateEntityId('ws'),
+    owner: { kind: 'workspace', workspaceId: allocateEntityId('ws') },
     threadId: allocateEntityId('th'),
     turnId: allocateEntityId('tu'),
     type: 'context-summary',

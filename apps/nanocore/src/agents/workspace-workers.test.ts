@@ -198,7 +198,7 @@ function recordWorkerPackage(
         status: 'running',
         threadId: input.threadId,
         triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       },
       turnInput: 'Run the Worker',
       workspaceCwd: '/secret/host/path',

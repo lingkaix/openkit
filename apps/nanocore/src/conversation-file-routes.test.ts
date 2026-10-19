@@ -521,7 +521,7 @@ describe('Turn-owned conversation originals', () => {
       for (const type of ['user-message', 'assistant-message'] as const)
         state.store.createItem({
           id: testEntityId('it', `private-file-handoff-${type}`),
-          workspaceId: state.workspaceId,
+          owner: { kind: 'workspace', workspaceId: state.workspaceId },
           threadId: source.id,
           turnId: prior.id,
           type,

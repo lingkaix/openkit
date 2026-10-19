@@ -18,6 +18,7 @@ import {
   StoredAgentSessionPayloadV1Shape,
   StoredArtifactPayloadV1Shape,
   StoredTurnPayloadV1Shape,
+  StoredWorkOwnerV1Schema,
   StoredWorkspacePayloadV1Shape,
 } from './retained-work-metadata-v1.js';
 
@@ -56,23 +57,48 @@ export const StoredWorkspaceSnapshotV1Schema = z.object({
 });
 
 /** Event snapshots include full Items under their existing attributable Turn. */
-export const StoredTurnSnapshotV1Schema = z
+const StoredTurnWithItemsV1Schema = z
   .object(StoredTurnPayloadV1Shape)
-  .omit({ captureCoverage: true, requiredFeatures: true })
-  .extend({ items: z.array(StoredItemPayloadV1Schema) })
-  .superRefine(refineStoredTurnItemsV1);
+  .extend({ items: z.array(StoredItemPayloadV1Schema) });
+
+/** Canonical metadata plus reconstructed Items, shared by both owners. */
+export const StoredTurnPayloadV1Schema =
+  StoredTurnWithItemsV1Schema.superRefine(refineStoredTurnItemsV1);
+
+/** Transcript snapshots omit capture declarations, which belong to canonical Turn metadata. */
+export const StoredTurnSnapshotV1Schema = StoredTurnWithItemsV1Schema.omit({
+  captureCoverage: true,
+  requiredFeatures: true,
+}).superRefine(refineStoredTurnItemsV1);
 
 /** Preserves the fixed responsible User relationship for both Workspace and Server Turn snapshots. */
 export function refineStoredTurnItemsV1(
   turn: {
     triggerActor: z.infer<typeof StoredTurnPayloadV1Shape.triggerActor>;
-    items: readonly { type: string; responsibleUserId?: string | undefined }[];
+    owner: z.infer<typeof StoredWorkOwnerV1Schema>;
+    items: readonly {
+      type: string;
+      owner: z.infer<typeof StoredWorkOwnerV1Schema>;
+      responsibleUserId?: string | undefined;
+    }[];
   },
   context: z.RefinementCtx
 ): void {
   const responsible =
     turn.triggerActor.kind === 'user' ? turn.triggerActor.id : turn.triggerActor.responsibleUserId;
   for (const [index, item] of turn.items.entries()) {
+    if (
+      item.owner.kind !== turn.owner.kind ||
+      (item.owner.kind === 'workspace' &&
+        turn.owner.kind === 'workspace' &&
+        item.owner.workspaceId !== turn.owner.workspaceId)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['items', index, 'owner'],
+        message: 'An Item must inherit its Turn owner.',
+      });
+    }
     if (item.type === 'user-input-request' && item.responsibleUserId !== responsible) {
       context.addIssue({
         code: 'custom',
@@ -142,7 +168,8 @@ const ThreadEntryPathSchema = z.enum(['conversation', 'administration', 'knowled
 const ThreadSnapshotV1Schema = z
   .object({
     id: ThreadIdSchema,
-    workspaceId: WorkspaceIdSchema,
+    owner: StoredWorkOwnerV1Schema,
+    workspaceId: z.never().optional(),
     /** Immutable originating Thread of a separate receiving-Thread handoff. */
     parentThreadId: ThreadIdSchema.optional(),
     name: z.string().min(1).nullable(),
@@ -151,7 +178,7 @@ const ThreadSnapshotV1Schema = z
     entryPath: ThreadEntryPathSchema,
     /** Missing on retained records whose inception owner did not record classification. */
     threadSource: z.enum(['conversation', 'worker']).optional(),
-    visibility: z.enum(['private', 'workspace']),
+    visibility: z.enum(['private', 'workspace', 'server']),
     privateOwnerUserId: UserIdSchema.optional(),
     createdAt: TimestampSchema,
     updatedAt: TimestampSchema,
@@ -171,7 +198,18 @@ const ThreadSnapshotV1Schema = z
         message: 'Private ownership is required exactly for private Threads.',
       });
     }
-    if (thread.entryPath === 'administration' && thread.visibility !== 'private') {
+    if ((thread.owner.kind === 'server') !== (thread.visibility === 'server')) {
+      context.addIssue({
+        code: 'custom',
+        path: ['visibility'],
+        message: 'Visibility must agree with the immutable Thread owner.',
+      });
+    }
+    if (
+      thread.entryPath === 'administration' &&
+      thread.owner.kind === 'workspace' &&
+      thread.visibility !== 'private'
+    ) {
       context.addIssue({
         code: 'custom',
         path: ['visibility'],
@@ -598,5 +636,5 @@ export const StoredEventV1Schema = StoredEventPayloadV1Schema.extend({
 export {
   ItemDeltaEventSchema as StoredItemDeltaEventV1Schema,
   StopReasonSchema as StoredStopReasonV1Schema,
-  ThreadSnapshotV1Schema as StoredWorkspaceThreadSnapshotV1Schema,
+  ThreadSnapshotV1Schema as StoredThreadSnapshotV1Schema,
 };

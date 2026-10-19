@@ -1,3 +1,4 @@
+import { workspaceIdForOwner } from '@openkit/protocol';
 import { auditAuthenticationFromActor } from '../auth/audit-attribution.js';
 import type { Actor } from '../auth/identity.js';
 import { authorizeWorkspace } from '../auth/operation-authorizer.js';
@@ -147,10 +148,10 @@ export async function runAssistantCommand(
   const assertCurrent = () => {
     if (
       input.coreDb.dataRoot !== input.store.getDataRoot() ||
-      input.gateway.promptCacheScope.workspaceId !== turn.workspaceId ||
+      input.gateway.promptCacheScope.workspaceId !== workspaceIdForOwner(turn.owner) ||
       turn.triggerActor.kind !== 'user' ||
       turn.triggerActor.id !== actor.userId ||
-      !authorizeWorkspace(input.coreDb, actor, turn.workspaceId, {
+      !authorizeWorkspace(input.coreDb, actor, workspaceIdForOwner(turn.owner), {
         mutating: false,
         policyOperation: 'llm.gateway.use',
       })
@@ -158,7 +159,7 @@ export async function runAssistantCommand(
       throw new AssistantSkillResourceError('resource_access_denied');
     assembly.assertCurrent({
       actor,
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
       threadId: turn.threadId,
       turnId: turn.id,
     });
@@ -184,7 +185,7 @@ export async function runAssistantCommand(
         knowledge: {
           store: input.store,
           coreDb: input.coreDb,
-          workspaceId: turn.workspaceId,
+          workspaceId: workspaceIdForOwner(turn.owner),
           threadId: turn.threadId,
           turnId: turn.id,
           actor: turn.triggerActor,
@@ -211,7 +212,7 @@ export async function runAssistantCommand(
           capture,
           auditLineage: { commandRequestId },
           callContext: {
-            workspaceId: turn.workspaceId,
+            workspaceId: workspaceIdForOwner(turn.owner),
             authorityActor: { kind: 'user', id: actor.userId },
             authentication: auditAuthenticationFromActor(actor),
             agentId: turn.agentId ?? 'quick-chat',

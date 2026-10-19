@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
-import type { ServerTurn } from '@openkit/protocol';
+import type { Turn } from '@openkit/protocol';
+import { workspaceIdForOwner } from '@openkit/protocol';
 import { readReleaseIdentity } from '../diagnostics/release-identity.js';
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
 import type { FsStore } from '../lib/store.js';
@@ -66,30 +67,30 @@ interface TurnModelCaptureOptions {
  */
 export function withTurnModelCapture<T>(
   input: TurnModelCaptureOptions & {
-    readonly turn: ReturnType<FsStore['createTurn']>;
-    readonly workspaceDb?: WorkspaceDb;
+    readonly turn: Turn;
+    readonly workspaceDb: WorkspaceDb;
   },
   run: (capture: Omit<ModelCaptureContext<WorkspaceDb>, 'corr'>) => Promise<T>
 ): Promise<T>;
 /** Runs a Server model effect with its Core database and no Workspace anchor. */
 export function withTurnModelCapture<T>(
-  input: TurnModelCaptureOptions & { readonly turn: ServerTurn; readonly coreDb?: CoreDb },
+  input: TurnModelCaptureOptions & { readonly turn: Turn; readonly coreDb: CoreDb },
   run: (capture: Omit<ModelCaptureContext<CoreDb>, 'corr'>) => Promise<T>
 ): Promise<T>;
-/** Accepts a role owner's already-discriminated Workspace or Server run. */
+/** Without a borrowed handle, the callback must inspect the database selected by the Turn owner. */
 export function withTurnModelCapture<T>(
   input: TurnModelCaptureOptions &
     (
-      | { readonly turn: ReturnType<FsStore['createTurn']>; readonly workspaceDb?: WorkspaceDb }
-      | { readonly turn: ServerTurn; readonly coreDb?: CoreDb }
+      | { readonly turn: Turn; readonly workspaceDb?: WorkspaceDb }
+      | { readonly turn: Turn; readonly coreDb?: CoreDb }
     ),
   run: (capture: Omit<ModelCaptureContext, 'corr'>) => Promise<T>
 ): Promise<T>;
 export async function withTurnModelCapture<T>(
   input: TurnModelCaptureOptions &
     (
-      | { readonly turn: ReturnType<FsStore['createTurn']>; readonly workspaceDb?: WorkspaceDb }
-      | { readonly turn: ServerTurn; readonly coreDb?: CoreDb }
+      | { readonly turn: Turn; readonly workspaceDb?: WorkspaceDb }
+      | { readonly turn: Turn; readonly coreDb?: CoreDb }
     ),
   run:
     | ((capture: Omit<ModelCaptureContext<WorkspaceDb>, 'corr'>) => Promise<T>)
@@ -98,7 +99,7 @@ export async function withTurnModelCapture<T>(
   const { store, turn } = input;
   const borrowedDb =
     'coreDb' in input ? input.coreDb : 'workspaceDb' in input ? input.workspaceDb : undefined;
-  const server = turn.workspaceId === undefined;
+  const server = turn.owner.kind === 'server';
   const dataRoot = store.getDataRoot();
   if (
     !dataRoot ||
@@ -106,12 +107,13 @@ export async function withTurnModelCapture<T>(
       (borrowedDb.dataRoot !== dataRoot ||
         (server
           ? borrowedDb.scope !== 'core'
-          : borrowedDb.scope !== 'workspace' || borrowedDb.workspaceId !== turn.workspaceId)))
+          : borrowedDb.scope !== 'workspace' ||
+            borrowedDb.workspaceId !== workspaceIdForOwner(turn.owner))))
   )
     throw new ModelCaptureError();
   try {
-    if (turn.workspaceId === undefined) store.getServerTurn(turn.threadId, turn.id);
-    else store.getTurn(turn.workspaceId, turn.threadId, turn.id);
+    if (turn.owner.kind === 'server') store.getServerTurn(turn.threadId, turn.id);
+    else store.getTurn(workspaceIdForOwner(turn.owner), turn.threadId, turn.id);
   } catch {
     throw new ModelCaptureError();
   }
@@ -119,9 +121,9 @@ export async function withTurnModelCapture<T>(
   try {
     captureDb =
       borrowedDb ??
-      (turn.workspaceId === undefined
+      (turn.owner.kind === 'server'
         ? openCoreDb(dataRoot)
-        : openWorkspaceDb(dataRoot, turn.workspaceId));
+        : openWorkspaceDb(dataRoot, workspaceIdForOwner(turn.owner)));
   } catch {
     throw new ModelCaptureError();
   }

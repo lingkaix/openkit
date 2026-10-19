@@ -41,7 +41,7 @@ describe('User-owned Thread read receipts', () => {
       id: localUserId,
     });
     const base = {
-      workspaceId: workspace.id,
+      owner: turn.owner,
       threadId: thread.id,
       turnId: turn.id,
       status: 'completed' as const,

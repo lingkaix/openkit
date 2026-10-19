@@ -3,7 +3,6 @@
   "schema": "turn",
   "data": {
     "id": "tu_00000000-0000-7a7e-8dd5-ad6ea5188a9c",
-    "workspaceId": "ws_00000000-0000-7667-bedb-3b13951da31a",
     "threadId": "th_00000000-0000-7162-9ddb-378c8b96b0a3",
     "triggerActor": {
       "kind": "user",
@@ -15,6 +14,10 @@
     "configVersion": null,
     "startedAt": "2026-05-15T10:02:00Z",
     "completedAt": null,
-    "durationMs": null
+    "durationMs": null,
+    "owner": {
+      "kind": "workspace",
+      "workspaceId": "ws_00000000-0000-7667-bedb-3b13951da31a"
+    }
   }
 }

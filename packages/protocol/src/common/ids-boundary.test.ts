@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ActorRefSchema } from '../models/actor.js';
 import { ThreadSchema } from '../models/thread.js';
+import { workspaceIdForOwner } from '../models/work-owner.js';
 import {
   AccessTokenIdSchema,
   ArtifactIdSchema,
@@ -108,7 +109,7 @@ describe('owned identifier admission boundaries', () => {
   it('retains the separate receiving Thread parent and refuses wrong-kind ownership', () => {
     const thread = {
       id: `th_${uuid7}`,
-      workspaceId: `ws_${uuid7}`,
+      owner: { kind: 'workspace', workspaceId: `ws_${uuid7}` },
       parentThreadId: `th_${uuid5}`,
       name: 'Receiving work',
       preview: 'Handoff',
@@ -119,9 +120,10 @@ describe('owned identifier admission boundaries', () => {
       updatedAt: '2026-10-16T00:00:00.000Z',
     };
     expect(ThreadSchema.parse(thread).parentThreadId).toBe(thread.parentThreadId);
-    expect(ThreadSchema.safeParse({ ...thread, parentThreadId: thread.workspaceId }).success).toBe(
-      false
-    );
+    expect(
+      ThreadSchema.safeParse({ ...thread, parentThreadId: workspaceIdForOwner(thread.owner) })
+        .success
+    ).toBe(false);
     expect(ThreadSchema.safeParse({ ...thread, parentThreadId: thread.id }).success).toBe(false);
   });
 });

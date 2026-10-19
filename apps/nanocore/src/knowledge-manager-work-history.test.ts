@@ -35,7 +35,7 @@ function importedHistoryFixture() {
     getTurnById: () => ({
       id: TURN_ID,
       threadId: THREAD_ID,
-      workspaceId: WORKSPACE_ID,
+      owner: { kind: 'workspace', workspaceId: WORKSPACE_ID },
       status: 'completed',
     }),
     listThreadItems: () => [

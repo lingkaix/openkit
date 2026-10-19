@@ -365,7 +365,7 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
     const text = 'External source observation: 3 matches.';
     const source = store.createItem({
       id: 'it_00000000-0000-7000-8000-000000000059',
-      workspaceId,
+      owner: { kind: 'workspace', workspaceId: workspaceId },
       threadId,
       turnId: turn.id,
       type: 'tool-call',

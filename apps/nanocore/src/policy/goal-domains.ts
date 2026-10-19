@@ -9,6 +9,7 @@ import {
   PolicyPermissionV1Schema,
   type PolicySubjectV1Schema,
   PolicyWriteProposalV1Schema,
+  workspaceIdForOwner,
 } from '@openkit/protocol';
 import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
@@ -231,7 +232,7 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
             (() => {
               const turn = deps.store.getTurnById(container.id);
               return (
-                turn.workspaceId === workspaceId &&
+                workspaceIdForOwner(turn.owner) === workspaceId &&
                 isThreadIdVisible(
                   deps.store,
                   workspaceId,

@@ -1098,7 +1098,7 @@ function overviewConversation(input: {
   return {
     thread: {
       id: input.id,
-      workspaceId: WORKSPACE_A.id,
+      owner: { kind: 'workspace', workspaceId: WORKSPACE_A.id },
       name: input.name,
       preview: input.preview,
       status: 'active' as const,
@@ -1466,7 +1466,12 @@ describe('Overview / Action Center (board 07)', () => {
 
         operations: {
           'conversation.navigation': vi.fn().mockResolvedValue({
-            items: [{ ...item, thread: { ...item.thread, workspaceId } }],
+            items: [
+              {
+                ...item,
+                thread: { ...item.thread, owner: { kind: 'workspace', workspaceId: workspaceId } },
+              },
+            ],
           }),
 
           'workspace.list': vi.fn().mockResolvedValue({
@@ -5994,7 +5999,7 @@ describe('Archived threads', () => {
     const user = userEvent.setup();
     const archivedThread = {
       id: 'th_00000000-0000-70d8-aa77-6b797e35dbcf',
-      workspaceId: WORKSPACE_A.id,
+      owner: { kind: 'workspace', workspaceId: WORKSPACE_A.id },
       name: 'Past conversation',
       preview: 'Archived conversation',
       status: 'archived' as const,
@@ -6003,7 +6008,7 @@ describe('Archived threads', () => {
     };
     const previewOnlyThread = {
       id: 'th_00000000-0000-7784-9997-974e92b22f7c',
-      workspaceId: WORKSPACE_A.id,
+      owner: { kind: 'workspace', workspaceId: WORKSPACE_A.id },
       name: null,
       preview: 'Preview-only conversation',
       status: 'archived' as const,

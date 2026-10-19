@@ -459,7 +459,7 @@ const CAPABILITY_USAGE = {
   capabilityCalls: [
     {
       id: 'cap_00000000-0000-7d4f-884e-ab4fdf8dc968',
-      workspaceId: WORKSPACE.id,
+      owner: { kind: 'workspace', workspaceId: WORKSPACE.id },
       threadId: 'th_019a0000-0000-7000-8000-000000000021',
       turnId: 'tu_00000000-0000-7b5c-9add-c4bfc5a04575',
       itemId: null,

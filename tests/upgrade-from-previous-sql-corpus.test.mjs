@@ -65,7 +65,7 @@ async function fixture(t, existingRuntimeTarget = false) {
   });
   store.createItem({
     id: 'it_00000000-0000-7000-8000-000000000901',
-    workspaceId: workspace.id,
+    owner: turn.owner,
     threadId: thread.id,
     turnId: turn.id,
     type: 'user-message',
@@ -362,7 +362,7 @@ test('idle native corpus preserves historical AEP bytes and requires fenced reti
   const requestItemId = 'it_00000000-0000-7000-8000-000000000902';
   store.createItem({
     id: requestItemId,
-    workspaceId: turn.workspaceId,
+    owner: turn.owner,
     threadId: turn.threadId,
     turnId: turn.id,
     type: 'user-message',
@@ -374,7 +374,7 @@ test('idle native corpus preserves historical AEP bytes and requires fenced reti
   });
   const session = store.createAgentSession({
     id: 'as_00000000-0000-7000-8000-000000000902',
-    workspaceId: turn.workspaceId,
+    workspaceId: turn.owner.workspaceId,
     threadId: turn.threadId,
     agentId: predecessor.agentId,
     status: 'busy',

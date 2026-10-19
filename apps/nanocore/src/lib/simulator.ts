@@ -12,6 +12,7 @@ import {
   ItemDeltaEventSchema,
   isSealedTurnTerminal,
   responsibleUserIdForActor,
+  workspaceIdForOwner,
 } from '@openkit/protocol';
 import type { z } from 'zod';
 import { createArtifactReview } from '../artifact-reviews.js';
@@ -291,7 +292,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
     input: PrepareAgentSessionForTurnInput
   ): Promise<PreparedAgentSessionForTurn> {
     const currentSessions = store
-      .listThreadAgentSessions(input.turn.workspaceId, input.turn.threadId)
+      .listThreadAgentSessions(workspaceIdForOwner(input.turn.owner), input.turn.threadId)
       .filter((candidate) => isCurrentAgentSessionStatus(candidate.status));
     if (currentSessions.length > 1) {
       throw new TurnStartValidationError(
@@ -332,7 +333,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
     const currentCompatibilityKey = compatibilityKeyFor(current.id);
     const currentTurns = current
       ? store
-          .listThreadTurns(input.turn.workspaceId, input.turn.threadId)
+          .listThreadTurns(workspaceIdForOwner(input.turn.owner), input.turn.threadId)
           .filter((turn) => turn.agentSessionId === current.id)
       : [];
     const hasActiveTurn = currentTurns.some((turn) => !isSealedTurnTerminal(turn.status));
@@ -390,7 +391,10 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
   ): Promise<SchedulerWorkerStorageChoice | undefined> {
     const { prepared, preparation } = input;
     const currentSessions = store
-      .listThreadAgentSessions(preparation.turn.workspaceId, preparation.turn.threadId)
+      .listThreadAgentSessions(
+        workspaceIdForOwner(preparation.turn.owner),
+        preparation.turn.threadId
+      )
       .filter((candidate) => isCurrentAgentSessionStatus(candidate.status));
     const compatibilityKeyFor = (agentSessionId: string) =>
       resolveAgentSessionCompatibilityKey({
@@ -439,7 +443,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
         | undefined;
       if (
         !lease ||
-        lease.workspaceId !== preparation.turn.workspaceId ||
+        lease.workspaceId !== workspaceIdForOwner(preparation.turn.owner) ||
         lease.threadId !== preparation.turn.threadId ||
         lease.agentSessionId !== prepared.agentSessionId
       ) {
@@ -483,7 +487,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       );
     }
     const hasActiveTurn = store
-      .listThreadTurns(preparation.turn.workspaceId, preparation.turn.threadId)
+      .listThreadTurns(workspaceIdForOwner(preparation.turn.owner), preparation.turn.threadId)
       .some((turn) => turn.agentSessionId === current.id && !isSealedTurnTerminal(turn.status));
     const hasConflictingLease = this.coreDb
       ? Boolean(
@@ -627,7 +631,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
     }
     const timestamp = turn.startedAt ?? new Date().toISOString();
     const workspaceDb = this.coreDb
-      ? openWorkspaceDb(this.coreDb.dataRoot, turn.workspaceId)
+      ? openWorkspaceDb(this.coreDb.dataRoot, workspaceIdForOwner(turn.owner))
       : null;
 
     try {
@@ -639,7 +643,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
           coreDb: this.coreDb,
           workspaceDb,
           store,
-          workspaceId: turn.workspaceId,
+          workspaceId: workspaceIdForOwner(turn.owner),
           threadId: turn.threadId,
           turnId,
           requestId: context.requestId ?? null,
@@ -647,7 +651,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
           attemptId: context.attemptId,
         });
       const checkpoint = workspaceDb
-        ? getWorkerCheckpoint(workspaceDb, turn.workspaceId, turn.threadId, turn.id)
+        ? getWorkerCheckpoint(workspaceDb, workspaceIdForOwner(turn.owner), turn.threadId, turn.id)
         : null;
       if (checkpoint && !context.sandboxBindingRef) {
         throw new TurnStartValidationError(
@@ -674,7 +678,11 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
         : input;
       // Delivery cause owns initiating-request identity; carried outcomes do not replace it.
       const outcomeInitiated = workspaceDb
-        ? listThreadPendingRequests(workspaceDb.sqlite, turn.workspaceId, turn.threadId).some(
+        ? listThreadPendingRequests(
+            workspaceDb.sqlite,
+            workspaceIdForOwner(turn.owner),
+            turn.threadId
+          ).some(
             (record) => record.deliveryTurnId === turn.id && record.deliveryCause === 'outcome'
           )
         : false;
@@ -705,7 +713,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
                 threadId: turn.threadId,
                 turnId: turn.id,
                 workerRequest: contextRequest,
-                workspaceId: turn.workspaceId,
+                workspaceId: workspaceIdForOwner(turn.owner),
               },
               this.fileAdmission!
             )
@@ -773,7 +781,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
         existingAgentSession = undefined;
       }
       const conflictingCurrentAgentSession = store
-        .listThreadAgentSessions(turn.workspaceId, turn.threadId)
+        .listThreadAgentSessions(workspaceIdForOwner(turn.owner), turn.threadId)
         .find(
           (candidate) =>
             candidate.id !== agentSessionId && isCurrentAgentSessionStatus(candidate.status)
@@ -788,7 +796,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       if (
         existingAgentSession &&
         (!environmentPackage ||
-          existingAgentSession.workspaceId !== turn.workspaceId ||
+          existingAgentSession.workspaceId !== workspaceIdForOwner(turn.owner) ||
           existingAgentSession.threadId !== turn.threadId ||
           existingAgentSession.agentId !== manifest.id ||
           existingAgentSession.status !== 'idle' ||
@@ -814,7 +822,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
         : store.createAgentSession({
             id: agentSessionId,
             agentId: manifest.id,
-            workspaceId: turn.workspaceId,
+            workspaceId: workspaceIdForOwner(turn.owner),
             threadId: turn.threadId,
             status: 'created',
             message: null,
@@ -841,7 +849,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
         agentSessionId: agentSession.id,
       });
       const state: SimulatedTurnState = {
-        workspaceId: turn.workspaceId,
+        workspaceId: workspaceIdForOwner(turn.owner),
         threadId: turn.threadId,
         turnId,
         agentSessionId: agentSession.id,
@@ -890,7 +898,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
           lineage: {
             threadId: turn.threadId,
             turnId: turn.id,
-            workspaceId: turn.workspaceId,
+            workspaceId: workspaceIdForOwner(turn.owner),
           },
           now: () => timestamp,
           sandboxBindingRef: context.sandboxBindingRef,
@@ -980,7 +988,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
             requestId: environmentPackage.scope.requestId,
             threadId: turn.threadId,
             turnId: turn.id,
-            workspaceId: turn.workspaceId,
+            workspaceId: workspaceIdForOwner(turn.owner),
           },
           operation: 'final_status',
           record: { sequence: 1, status: 'completed', stopReason: 'completed' },
@@ -1018,7 +1026,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
           turnId: turn.id,
           workerImage: workerBackendImageIdentity(backendLineage),
           workspaceHandoffState: 'complete',
-          workspaceId: turn.workspaceId,
+          workspaceId: workspaceIdForOwner(turn.owner),
         });
         transitionWorkerBackendSessionState(this.coreDb, {
           fromState: 'physical-cleaned',
@@ -1122,7 +1130,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       );
     }
     const state = {
-      workspaceId: turnRecord.workspaceId,
+      workspaceId: workspaceIdForOwner(turnRecord.owner),
       threadId: turnRecord.threadId,
       turnId,
       agentSessionId: turnRecord.agentSessionId,
@@ -1248,7 +1256,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
     const timestamp = turn.startedAt ?? new Date().toISOString();
     const userItem = store.createItem({
       id: deriveEntityId('it', ['task-user', state.turnId]),
-      workspaceId: state.workspaceId,
+      owner: { kind: 'workspace', workspaceId: state.workspaceId },
       threadId: state.threadId,
       turnId: state.turnId,
       type: 'user-message',
@@ -1279,7 +1287,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
     const timestamp = new Date().toISOString();
     const assistantItem = store.createItem({
       id: deriveEntityId('it', ['assistant', state.turnId]),
-      workspaceId: state.workspaceId,
+      owner: { kind: 'workspace', workspaceId: state.workspaceId },
       threadId: state.threadId,
       turnId: state.turnId,
       type: 'assistant-message',
@@ -1321,7 +1329,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
     const timestamp = new Date().toISOString();
     const reasoningItem = store.createItem({
       id: deriveEntityId('it', ['reasoning', state.turnId]),
-      workspaceId: state.workspaceId,
+      owner: { kind: 'workspace', workspaceId: state.workspaceId },
       threadId: state.threadId,
       turnId: state.turnId,
       type: 'reasoning',
@@ -1357,7 +1365,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
     const timestamp = new Date().toISOString();
     const commandItem = store.createItem({
       id: deriveEntityId('it', ['command', state.turnId]),
-      workspaceId: state.workspaceId,
+      owner: { kind: 'workspace', workspaceId: state.workspaceId },
       threadId: state.threadId,
       turnId: state.turnId,
       type: 'command-execution',
@@ -1553,7 +1561,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       // Standalone protocol fixtures have no durable product owner or answer command.
       requestItem = store.createItem({
         id: deriveEntityId('it', [state.userInputRequestId, 'request']),
-        workspaceId: state.workspaceId,
+        owner: { kind: 'workspace', workspaceId: state.workspaceId },
         threadId: state.threadId,
         turnId: state.turnId,
         type: 'user-input-request',

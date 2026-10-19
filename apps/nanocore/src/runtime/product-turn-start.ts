@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { ActorRef, SubmitTurnInputRequestSchema, TurnSchema } from '@openkit/protocol';
-import { deriveEntityId } from '@openkit/protocol';
+import { deriveEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import type { z } from 'zod';
 import { computeReadiness } from '../agents/readiness.js';
 import { selectAgent } from '../agents/selector.js';
@@ -322,7 +322,7 @@ export async function startProductTurn(input: StartProductTurnInput) {
       // A restarted or cancelled invocation has no live owner to join. Its canonical
       // terminal event and closed attempt must already establish the lifecycle result.
       const attempts = listSchedulerExecutionAttemptsForTurn(input.coreDb!, {
-        workspaceId: turn.workspaceId,
+        workspaceId: workspaceIdForOwner(turn.owner),
         threadId: turn.threadId,
         turnId,
       });
@@ -532,7 +532,7 @@ export function validateLiveProductTurnAdmission(input: {
       initiatingItem &&
       (initiatingItem.type !== 'user-message' ||
         initiatingItem.status !== 'completed' ||
-        initiatingItem.workspaceId !== input.workspaceId ||
+        workspaceIdForOwner(initiatingItem.owner) !== input.workspaceId ||
         initiatingItem.threadId !== input.threadId ||
         initiatingItem.turnId !== input.turnId ||
         initiatingItem.text !== admission.turnInput)

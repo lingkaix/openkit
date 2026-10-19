@@ -21,6 +21,7 @@ import {
   RequestIdSchema,
   responsibleUserIdForActor,
   UserInputQuestionSchema,
+  workspaceIdForOwner,
 } from '@openkit/protocol';
 import { z } from 'zod';
 import { createArtifactReview } from '../artifact-reviews.js';
@@ -330,7 +331,7 @@ export async function dispatchOpenkitWorkTool(
   const turn = input.store.getTurnById(scope.turnId);
   if (
     !responsibleUserId ||
-    turn.workspaceId !== scope.workspaceId ||
+    workspaceIdForOwner(turn.owner) !== scope.workspaceId ||
     turn.threadId !== scope.threadId ||
     turn.status !== 'running'
   ) {
@@ -598,7 +599,7 @@ export async function dispatchOpenkitWorkTool(
   if (!input.store.listAllItems().some((item) => item.id === raised.requestItemId)) {
     input.store.createItem({
       id: raised.requestItemId,
-      workspaceId: raised.workspaceId,
+      owner: { kind: 'workspace', workspaceId: raised.workspaceId },
       threadId: raised.threadId,
       turnId: raised.raisingTurnId,
       type: 'user-input-request',

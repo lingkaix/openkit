@@ -471,7 +471,7 @@ describe('action center app API', () => {
     });
     const approvalItem = store.createItem({
       id: 'it_00000000-0000-7a4e-a3f7-f8716b2eab5f',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
       turnId: approvalTurn.id,
       type: 'approval-request',
@@ -503,7 +503,7 @@ describe('action center app API', () => {
     }
     const questionItem = store.createItem({
       id: 'it_00000000-0000-786f-8510-7bf50e243b95',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
       turnId: questionTurn.id,
       type: 'user-input-request',
@@ -565,7 +565,7 @@ describe('action center app API', () => {
     });
     store.createItem({
       id: 'it_00000000-0000-7889-8a7a-bcb2cd747522',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
       turnId: toolUseTurn.id,
       type: 'approval-request',
@@ -705,7 +705,7 @@ describe('action center app API', () => {
     });
     const approvalItem = store.createItem({
       id: 'it_00000000-0000-785a-bff3-9cad41a613f3',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
       turnId: approvalTurn.id,
       type: 'approval-request',
@@ -737,7 +737,7 @@ describe('action center app API', () => {
     }
     const questionItem = store.createItem({
       id: 'it_00000000-0000-7474-b15d-84d3b876c505',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
       turnId: questionTurn.id,
       type: 'user-input-request',
@@ -1144,7 +1144,7 @@ describe('action center app API', () => {
     });
     store.createItem({
       id: 'it_00000000-0000-7dc5-a15f-0a5300c223d5',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
       turnId: approvalTurn.id,
       type: 'approval-request',
@@ -1158,7 +1158,7 @@ describe('action center app API', () => {
     });
     store.createItem({
       id: 'it_00000000-0000-7c05-8065-c7352ae9fde5',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
       turnId: questionTurn.id,
       type: 'user-input-request',
@@ -1221,7 +1221,7 @@ describe('action center app API', () => {
     });
     store.createItem({
       id: 'it_00000000-0000-7153-98b7-1cf814bed058',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
       turnId: turn.id,
       type: 'approval-request',
@@ -1235,7 +1235,7 @@ describe('action center app API', () => {
     });
     store.createItem({
       id: 'it_00000000-0000-7938-bfa8-78284423ae95',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
       turnId: turn.id,
       type: 'approval-decision',
@@ -1250,7 +1250,7 @@ describe('action center app API', () => {
     });
     store.createItem({
       id: 'it_00000000-0000-7d73-bda8-038e78a5a544',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
       turnId: turn.id,
       type: 'user-input-request',
@@ -1273,7 +1273,7 @@ describe('action center app API', () => {
     });
     store.createItem({
       id: 'it_00000000-0000-7cbf-a902-22191d1cc0d9',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
       turnId: turn.id,
       type: 'user-input-response',
@@ -1583,7 +1583,7 @@ describe('action center app API', () => {
     );
     const questionItem = store.createItem({
       id: 'it_00000000-0000-73c4-a45a-aa883a62b5d1',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
       turnId: turn.id,
       type: 'user-input-request',

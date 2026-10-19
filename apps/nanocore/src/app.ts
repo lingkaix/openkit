@@ -13,7 +13,12 @@ import {
   type SubscriptionProviderId,
 } from '@openkit/config-schema';
 import type { ActorRef, TurnSchema } from '@openkit/protocol';
-import { allocateEntityId, isEntityId, isSealedTurnTerminal } from '@openkit/protocol';
+import {
+  allocateEntityId,
+  isEntityId,
+  isSealedTurnTerminal,
+  workspaceIdForOwner,
+} from '@openkit/protocol';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { z } from 'zod';
@@ -1057,8 +1062,9 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
                     (contributor) =>
                       contributor.workspaceId === replaceNow.workspaceId &&
                       contributor.responsibleUserId === actor.userId &&
-                      sharedStore.getThread(contributor.workspaceId, contributor.threadId)
-                        .workspaceId === replaceNow.workspaceId
+                      workspaceIdForOwner(
+                        sharedStore.getThread(contributor.workspaceId, contributor.threadId).owner
+                      ) === replaceNow.workspaceId
                   )
                 )
                   throw new Error('Worker source audience changed.');
@@ -1746,7 +1752,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           );
           sharedStore.createItem({
             id: allocateEntityId('it'),
-            workspaceId,
+            owner: { kind: 'workspace', workspaceId: workspaceId },
             threadId: thread.id,
             turnId: turn.id,
             type: 'status',
@@ -2131,7 +2137,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         inflightCommands,
         coreDb: options.coreDb,
         turnExecutor,
-        workspaceId: turn.workspaceId,
+        workspaceId: workspaceIdForOwner(turn.owner),
         threadId: turn.threadId,
         turnId: turn.id,
         requestId: randomUUID(),
@@ -2287,7 +2293,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       )
         return;
       const identity = createHash('sha256')
-        .update(JSON.stringify([turn.workspaceId, turn.threadId, turn.id]))
+        .update(JSON.stringify([workspaceIdForOwner(turn.owner), turn.threadId, turn.id]))
         .digest('hex');
       const requestId = `${identity.slice(0, 8)}-${identity.slice(8, 12)}-4${identity.slice(13, 16)}-8${identity.slice(17, 20)}-${identity.slice(20, 32)}`;
 
@@ -2296,7 +2302,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         input: {
           input: 'Receive pending request outcomes.',
           requestId,
-          workspaceId: turn.workspaceId,
+          workspaceId: workspaceIdForOwner(turn.owner),
           threadId: turn.threadId,
         },
         requestedAgentId: turn.agentId,
@@ -2312,13 +2318,13 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         // Only this refused outcome attempt retires its still-queued scheduler ownership.
         if (options.coreDb && error instanceof TurnStartValidationError) {
           const entry = listSchedulerAdmissionEntriesForWorkspace(options.coreDb, {
-            workspaceId: turn.workspaceId,
+            workspaceId: workspaceIdForOwner(turn.owner),
             statuses: ['queued'],
           }).find((candidate) => candidate.turnId === turn.id && candidate.requestId === requestId);
           if (entry)
             cancelOwnedQueuedAdmission(options.coreDb, {
               queueEntryId: entry.queueEntryId,
-              workspaceId: turn.workspaceId,
+              workspaceId: workspaceIdForOwner(turn.owner),
             });
         }
         throw error;

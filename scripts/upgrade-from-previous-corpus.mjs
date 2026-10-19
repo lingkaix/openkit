@@ -278,7 +278,9 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
       },
     ])
       ctx.store.createItem({
-        ...lineage,
+        owner: turn.owner,
+        threadId: thread.id,
+        turnId: turn.id,
         id: o.protocol.allocateEntityId('it'),
         ...item,
         status: 'completed',

@@ -186,7 +186,7 @@ export function recordTestAgentEnvironmentPackage(
       requestId: `request_${input.suffix}`,
       turn: {
         id: testEntityId('tu', `turn_${input.suffix}`),
-        workspaceId: workspaceDb.workspaceId,
+        owner: { kind: 'workspace', workspaceId: workspaceDb.workspaceId },
         threadId: input.threadId ?? testEntityId('th', `thread_${input.suffix}`),
         triggerActor: input.triggerActor,
         items: [],

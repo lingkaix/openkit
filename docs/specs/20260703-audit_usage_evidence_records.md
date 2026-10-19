@@ -2,7 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: concept
-updated: "2026-10-02"
+updated: "2026-10-19"
 ---
 # Audit, Usage, And Evidence Records
 
@@ -85,6 +85,8 @@ Agent-capability-mediated usage semantics belong to `docs/core/agent-capability.
 - Do not require every internal diagnostic event to be item-visible.
 
 ## Record Families
+
+CapabilityCall uses the [Protocol owner union](../core/protocol.md#thread-semantics). Workspace calls remain in their Workspace database; Server calls remain in Core. The admitted database scope supplies storage authority. A nullable SQL Workspace column alone supplies none. Wire and portable records retain the explicit owner. Usage measurements keep their existing attribution contract.
 
 Use these record families:
 

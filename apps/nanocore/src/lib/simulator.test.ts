@@ -10,7 +10,7 @@ import {
   StartTaskModeResponseSchema,
 } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage, WorkspaceDataSourceCatalog } from '@openkit/config-schema';
-import { AgentSessionIdSchema, deriveEntityId } from '@openkit/protocol';
+import { AgentSessionIdSchema, deriveEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import type { WorkerContextPackageTrace } from '@openkit/worker-protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as artifactReviews from '../artifact-reviews.js';
@@ -343,7 +343,7 @@ describe('SimulatedTurnExecutor', () => {
           .listAllItems()
           .filter(
             (item) =>
-              item.workspaceId === 'ws_00000000-0000-7000-8000-000000000001' &&
+              workspaceIdForOwner(item.owner) === 'ws_00000000-0000-7000-8000-000000000001' &&
               (item.type === 'approval-request' || item.type === 'approval-decision')
           )
       ).toEqual([]);

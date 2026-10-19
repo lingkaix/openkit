@@ -24,6 +24,7 @@ import {
   isSealedTurnTerminal,
   readRetainedV1,
   responsibleUserIdForActor,
+  workspaceIdForOwner,
   writeRetainedV1,
 } from '@openkit/protocol';
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
@@ -205,7 +206,7 @@ export async function publishGenerativePresentation(
       if (answer && source.kind === 'item') {
         context.store.createItem({
           id: source.itemId,
-          workspaceId: context.workspaceId,
+          owner: { kind: 'workspace', workspaceId: context.workspaceId },
           threadId: input.threadId,
           turnId: input.turnId,
           type: 'assistant-message',
@@ -699,7 +700,7 @@ function appendPresentationItem(store: FsStore, row: PresentationRow): void {
   }
   const item: Item = {
     id: row.item_id,
-    workspaceId: row.workspace_id,
+    owner: { kind: 'workspace', workspaceId: row.workspace_id },
     threadId: row.thread_id,
     turnId: row.turn_id,
     type: 'generative-ui-reference',
@@ -951,13 +952,15 @@ function requireVisibleItemSource(
   const item = context.store
     .listAllItems()
     .find(
-      (candidate) => candidate.id === source.itemId && candidate.workspaceId === context.workspaceId
+      (candidate) =>
+        candidate.id === source.itemId &&
+        workspaceIdForOwner(candidate.owner) === context.workspaceId
     );
   if (
     !item ||
     !isThreadIdVisible(
       context.store,
-      item.workspaceId,
+      workspaceIdForOwner(item.owner),
       item.threadId,
       responsibleUserIdForActor(context.actor) ?? undefined,
       context.administratorEligible
@@ -996,7 +999,7 @@ function assertItemSourcePublishable(
   } catch {
     throw new KernelCommandError('not_found', 'Thread not found.');
   }
-  const sourceThread = context.store.getThread(item.workspaceId, item.threadId);
+  const sourceThread = context.store.getThread(workspaceIdForOwner(item.owner), item.threadId);
   // Administrator read eligibility does not authorize disclosure into a different audience.
   if (!canDiscloseThreadToAudience(context.store, sourceThread, destThread)) {
     throw new KernelCommandError('not_found', 'Thread not found.');

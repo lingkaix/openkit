@@ -5,6 +5,7 @@ import {
   isSealedTurnTerminal,
   type PolicyResourceV1Schema,
   responsibleUserIdForActor,
+  workspaceIdForOwner,
 } from '@openkit/protocol';
 import type { z } from 'zod';
 import {
@@ -65,7 +66,7 @@ export function readGoalTaskPolicyContext(input: {
   if (db.workspaceId !== lineage.workspaceId) throw unavailable();
   const addressedTurn = store.getTurnById(lineage.turnId);
   if (
-    addressedTurn.workspaceId !== lineage.workspaceId ||
+    workspaceIdForOwner(addressedTurn.owner) !== lineage.workspaceId ||
     addressedTurn.threadId !== lineage.threadId
   )
     throw unavailable();
@@ -142,7 +143,7 @@ export function readGoalTaskPolicyContext(input: {
       !initiatingItem ||
       initiatingItem.type !== 'user-message' ||
       initiatingItem.status !== 'completed' ||
-      initiatingItem.workspaceId !== scope.workspaceId ||
+      workspaceIdForOwner(initiatingItem.owner) !== scope.workspaceId ||
       initiatingItem.threadId !== scope.threadId ||
       initiatingItem.turnId !== scope.turnId ||
       !isDeepStrictEqual(

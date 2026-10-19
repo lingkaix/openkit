@@ -104,7 +104,7 @@ function fixture(scope: Scope) {
     input: Pick<MaintenanceRun, 'turn'>,
     patch: Parameters<FsStore['updateTurn']>[1]
   ) =>
-    'owner' in input.turn
+    input.turn.owner.kind === 'server'
       ? store.updateServerTurn(input.turn.id, patch)
       : store.updateTurn(input.turn.id, patch);
   const dependencies = {
@@ -325,7 +325,7 @@ it('returns the owned timeout code in the maintenance summary and retained Turn 
     current: () => snapshot,
   } as unknown as RuntimeConfigManager;
   f.dependencies.pin = (input) => {
-    if ('owner' in input.turn) throw new Error('Expected a Workspace run.');
+    if (input.turn.owner.kind === 'server') throw new Error('Expected a Workspace run.');
     pinKnowledgeManagerExecution(roleDependencies, input);
   };
   f.dependencies.run = (input) => {
@@ -445,7 +445,7 @@ it('returns the owned timeout code in the Server maintenance summary without pub
     current: () => snapshot,
   } as unknown as RuntimeConfigManager;
   f.dependencies.pin = (input) => {
-    if (!('owner' in input.turn)) throw new Error('Expected a Server run.');
+    if (input.turn.owner.kind !== 'server') throw new Error('Expected a Server run.');
     pinKnowledgeManagerExecution(roleDependencies, input);
   };
   f.dependencies.run = (input) => {

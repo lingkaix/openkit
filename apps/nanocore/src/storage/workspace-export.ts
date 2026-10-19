@@ -19,6 +19,7 @@ import {
   readRetainedV1,
   ThreadSchema,
   type TurnSchema,
+  workspaceIdForOwner,
   writeRetainedV1,
 } from '@openkit/protocol';
 import { z } from 'zod';
@@ -922,7 +923,7 @@ export function assertPortableArtifactHistory(
         const turn = turns.find((candidate) => candidate.id === publication.turnId);
         if (
           !turn ||
-          turn.workspaceId !== artifact.workspaceId ||
+          workspaceIdForOwner(turn.owner) !== artifact.workspaceId ||
           turn.threadId !== publication.threadId ||
           !isDeepStrictEqual(turn.triggerActor, publication.actor) ||
           !items.some(
@@ -930,7 +931,7 @@ export function assertPortableArtifactHistory(
               item.type === 'artifact-reference' &&
               item.id === artifactReferenceItemId(artifact.id, publication.turnId!) &&
               item.status === 'completed' &&
-              item.workspaceId === artifact.workspaceId &&
+              workspaceIdForOwner(item.owner) === artifact.workspaceId &&
               item.threadId === publication.threadId &&
               item.turnId === publication.turnId &&
               item.artifactId === artifact.id &&
@@ -1231,13 +1232,18 @@ function verifyPortableRetrievalTraceFiles(
   const traceFiles = [...files].filter(([path]) => path.includes('/retrieval-traces/'));
   if (traceFiles.length === 0) return;
   const threadOwnerSchema = z
-    .object({ id: ThreadSchema.shape.id, workspaceId: ThreadSchema.shape.workspaceId })
+    .object({
+      id: ThreadSchema.shape.id,
+      owner: ThreadSchema.shape.owner,
+      workspaceId: z.never().optional(),
+    })
     .strip();
   const turnOwnerSchema = z
     .object({
       id: StoredTurnSnapshotV1Schema.shape.id,
       threadId: StoredTurnSnapshotV1Schema.shape.threadId,
-      workspaceId: StoredTurnSnapshotV1Schema.shape.workspaceId,
+      owner: StoredTurnSnapshotV1Schema.shape.owner,
+      workspaceId: z.never().optional(),
     })
     .strip();
   const threads = readJsonlForVerification(files, 'records/threads.jsonl').map((value) =>
@@ -1246,6 +1252,11 @@ function verifyPortableRetrievalTraceFiles(
   const turns = readJsonlForVerification(files, 'records/turns.jsonl').map((value) =>
     readRetainedV1(value, turnOwnerSchema.parse)
   );
+  if (
+    threads.some((thread) => workspaceIdForOwner(thread.owner) !== workspaceId) ||
+    turns.some((turn) => workspaceIdForOwner(turn.owner) !== workspaceId)
+  )
+    throw new Error('Portable retrieval trace has contradictory work ownership.');
   const threadIds = new Set(threads.map((thread) => thread.id));
   const turnsById = new Map(turns.map((turn) => [turn.id, turn] as const));
   for (const [exportPath, text] of traceFiles) {
@@ -1263,7 +1274,7 @@ function verifyPortableRetrievalTraceFiles(
     }
     if (parts[2] === 'turns') {
       const turn = turnsById.get(parts[3]!);
-      if (!turn || turn.threadId !== threadId || turn.workspaceId !== workspaceId) {
+      if (!turn || turn.threadId !== threadId || workspaceIdForOwner(turn.owner) !== workspaceId) {
         throw new Error('Portable retrieval trace has no exported Turn owner.');
       }
     }

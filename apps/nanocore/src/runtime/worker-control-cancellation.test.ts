@@ -2,6 +2,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
+import { workspaceIdForOwner } from '@openkit/protocol';
 import type { WorkerCanonicalEventRecord } from '@openkit/worker-protocol';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -104,7 +105,7 @@ function createFixture() {
   store.createAgentSession({
     id: environmentPackage.scope.agentSessionId,
     agentId: environmentPackage.agent.agentId,
-    workspaceId: turn.workspaceId,
+    workspaceId: workspaceIdForOwner(turn.owner),
     threadId: turn.threadId,
     status: 'busy',
     message: null,
@@ -112,7 +113,7 @@ function createFixture() {
     updatedAt: NOW,
   });
   store.updateTurn(turn.id, { agentSessionId: environmentPackage.scope.agentSessionId });
-  const workspaceDb = openWorkspaceDb(dataRoot, turn.workspaceId);
+  const workspaceDb = openWorkspaceDb(dataRoot, workspaceIdForOwner(turn.owner));
   applyScopedMigrations(workspaceDb);
   recordAgentEnvironmentPackageSnapshot(workspaceDb, { createdAt: NOW, environmentPackage });
   workspaceDb.sqlite.close();
@@ -127,7 +128,7 @@ function createFixture() {
     triggerActor: environmentPackage.scope.triggerActor,
     turnId: turn.id,
     turnInput: 'Cancel one exact worker Turn',
-    workspaceId: turn.workspaceId,
+    workspaceId: workspaceIdForOwner(turn.owner),
   });
   recordTestExecutionAttempt(coreDb, {
     entry,
@@ -153,7 +154,7 @@ function createFixture() {
     requestId: environmentPackage.scope.requestId,
     threadId: turn.threadId,
     turnId: turn.id,
-    workspaceId: turn.workspaceId,
+    workspaceId: workspaceIdForOwner(turn.owner),
   };
   let gateway = createDefaultWorkerControlGateway(coreDb);
   return {
@@ -202,7 +203,7 @@ function createFixture() {
     },
     /** Reads canonical files and cleanup records afresh rather than using cached projections. */
     productState() {
-      const currentWorkspaceDb = openWorkspaceDb(dataRoot, turn.workspaceId);
+      const currentWorkspaceDb = openWorkspaceDb(dataRoot, workspaceIdForOwner(turn.owner));
       try {
         return {
           canonical: loadWorkspaceFileRecords(dataRoot),

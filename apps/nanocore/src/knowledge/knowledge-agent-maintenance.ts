@@ -205,7 +205,7 @@ export function prepareKnowledgeMaintenance(
     const timestamp = new Date().toISOString();
     store.createItem({
       id: allocateEntityId('it'),
-      workspaceId: input.workspaceId,
+      owner: { kind: 'workspace', workspaceId: input.workspaceId },
       threadId: thread.id,
       turnId: turn.id,
       type: 'status',

@@ -2,6 +2,7 @@ import {
   type GitFailureExplanation,
   GitFailureExplanationSchema,
   isSealedTurnTerminal,
+  workspaceIdForOwner,
 } from '@openkit/protocol';
 
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION, type FsStore } from '../lib/store.js';
@@ -165,7 +166,7 @@ export function terminalizeGovernedWorkerTurn(
           requestId: input.requestId,
           threadId: terminalTurn.threadId,
           turnId: terminalTurn.id,
-          workspaceId: terminalTurn.workspaceId,
+          workspaceId: workspaceIdForOwner(terminalTurn.owner),
         },
         ALREADY_DECIDED_PUBLICATION_ADMISSION
       );
@@ -191,7 +192,7 @@ export function terminalizeGovernedWorkerTurn(
           requestId: input.requestId,
           threadId: terminalTurn.threadId,
           turnId: terminalTurn.id,
-          workspaceId: terminalTurn.workspaceId,
+          workspaceId: workspaceIdForOwner(terminalTurn.owner),
         },
         ALREADY_DECIDED_PUBLICATION_ADMISSION
       );
@@ -282,7 +283,7 @@ function reconcileCompletedTurn(
           requestId: input.requestId,
           threadId: completedTurn.threadId,
           turnId: completedTurn.id,
-          workspaceId: completedTurn.workspaceId,
+          workspaceId: workspaceIdForOwner(completedTurn.owner),
         },
         ALREADY_DECIDED_PUBLICATION_ADMISSION
       );
@@ -309,7 +310,7 @@ function reconcileCompletedTurn(
           requestId: input.requestId,
           threadId: completedTurn.threadId,
           turnId: completedTurn.id,
-          workspaceId: completedTurn.workspaceId,
+          workspaceId: workspaceIdForOwner(completedTurn.owner),
         },
         ALREADY_DECIDED_PUBLICATION_ADMISSION
       );

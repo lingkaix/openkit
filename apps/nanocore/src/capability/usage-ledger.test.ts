@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
@@ -1151,7 +1152,7 @@ describe('retained call digest round-trip', () => {
         workspaceDb: target,
         capabilityCalls: exported.map((call: Record<string, unknown>) => ({
           ...call,
-          workspaceId: 'ws_00000000-0000-7b16-81e5-c0b623c0c636',
+          owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7b16-81e5-c0b623c0c636' },
         })),
         usageRecords: [],
       });
@@ -1298,4 +1299,64 @@ describe('slice 1d round 2 canonical extension rewrite', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
+});
+
+it.each([
+  'server',
+  'foreign-workspace',
+] as const)('refuses %s call ownership before Workspace ledger import effects', (kind) => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-call-owner-import-'));
+  const source = openWorkspaceDb(dataRoot, allocateEntityId('ws'));
+  const target = openWorkspaceDb(dataRoot, allocateEntityId('ws'));
+  try {
+    applyScopedMigrations(source);
+    applyScopedMigrations(target);
+    startCapabilityCall({
+      workspaceDb: source,
+      workspaceId: source.workspaceId,
+      authorityActor: { kind: 'user', id: allocateEntityId('usr') },
+      capabilityId: 'llm.responses',
+      family: 'llm',
+      operation: 'responses.create',
+      redactionClass: 'metadata-only',
+      requestId: null,
+    });
+    const [produced] = listWorkspaceCapabilityCalls(source, source.workspaceId);
+    expect(produced?.owner).toEqual({ kind: 'workspace', workspaceId: source.workspaceId });
+    const accepted = {
+      ...produced!,
+      id: allocateEntityId('cap'),
+      owner: { kind: 'workspace' as const, workspaceId: target.workspaceId },
+    };
+    const foreign = {
+      ...produced!,
+      id: allocateEntityId('cap'),
+      owner:
+        kind === 'server'
+          ? { kind: 'server' as const }
+          : { kind: 'workspace' as const, workspaceId: source.workspaceId },
+    };
+    expect(() =>
+      importWorkspaceCapabilityUsageLedger({
+        workspaceDb: target,
+        capabilityCalls: [accepted, foreign],
+        usageRecords: [],
+      })
+    ).toThrow();
+    expect(target.sqlite.prepare('SELECT count(*) AS count FROM capability_calls').get()).toEqual({
+      count: 0,
+    });
+    importWorkspaceCapabilityUsageLedger({
+      workspaceDb: target,
+      capabilityCalls: [accepted],
+      usageRecords: [],
+    });
+    expect(listWorkspaceCapabilityCalls(target, target.workspaceId)).toMatchObject([
+      { id: accepted.id, owner: accepted.owner },
+    ]);
+  } finally {
+    source.sqlite.close();
+    target.sqlite.close();
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
 });

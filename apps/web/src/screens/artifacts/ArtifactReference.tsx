@@ -40,7 +40,8 @@ export function ArtifactReference({ item }: { item: ArtifactReferenceItem }) {
 
 /** Loads only while the dialog is mounted; a different current version cannot replace historical evidence. */
 function ArtifactContent({ item }: { item: ArtifactReferenceItem }) {
-  const artifact = useArtifact(item.workspaceId, item.artifactId);
+  const itemWorkspaceId = item.owner.kind === 'workspace' ? item.owner.workspaceId : null;
+  const artifact = useArtifact(itemWorkspaceId, item.artifactId);
   if (artifact.isLoading) return <Skeleton lines={4} />;
   if (artifact.isError || !artifact.data) {
     return (
@@ -65,8 +66,9 @@ function ArtifactContent({ item }: { item: ArtifactReferenceItem }) {
       });
       if (
         parsed.success &&
-        parsed.data.changeSet.workspaceId === item.workspaceId &&
-        parsed.data.review.workspaceId === item.workspaceId
+        itemWorkspaceId !== null &&
+        parsed.data.changeSet.workspaceId === itemWorkspaceId &&
+        parsed.data.review.workspaceId === itemWorkspaceId
       )
         review = parsed.data;
     } catch {

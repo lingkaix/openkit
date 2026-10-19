@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
+import { workspaceIdForOwner } from '@openkit/protocol';
 import {
   type WorkerLineage,
   type WorkerRuntimeNativeOriginIndexEntry,
@@ -102,7 +103,7 @@ function createCheckpointCloseoutFixture(
   store.createAgentSession({
     id: agentSessionId,
     agentId: 'agent_codex_host',
-    workspaceId: turn.workspaceId,
+    workspaceId: workspaceIdForOwner(turn.owner),
     threadId: turn.threadId,
     status: 'busy',
     message: null,
@@ -116,7 +117,7 @@ function createCheckpointCloseoutFixture(
     requestId,
     triggerActor: turn.triggerActor,
     requestedAgentId: 'agent_codex_host',
-    workspaceId: turn.workspaceId,
+    workspaceId: workspaceIdForOwner(turn.owner),
     threadId: turn.threadId,
     turnId: turn.id,
     turnInput: 'Recover exact worker closeout',
@@ -159,7 +160,7 @@ function createCheckpointCloseoutFixture(
         event: 'agent.session.updated',
         data: { type: 'agent-session-updated', agentSession: executionSession },
         requestId,
-        workspaceId: turn.workspaceId,
+        workspaceId: workspaceIdForOwner(turn.owner),
         threadId: turn.threadId,
         turnId: turn.id,
       },
@@ -237,7 +238,7 @@ function createCheckpointCloseoutFixture(
     },
   });
   const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
-    workspaceId: turn.workspaceId,
+    workspaceId: workspaceIdForOwner(turn.owner),
     threadId: turn.threadId,
     turnId: turn.id,
     workerSessionId: agentSessionId,
@@ -1116,7 +1117,7 @@ describe('worker recovery materialization', () => {
       threadId: turn.threadId,
       title: 'Approve push',
       turnId: turn.id,
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
     });
     store.createItem({
       approvalRequestId: policyApproval.id,
@@ -1130,7 +1131,7 @@ describe('worker recovery materialization', () => {
       title: policyApproval.title,
       turnId: turn.id,
       type: 'approval-request',
-      workspaceId: turn.workspaceId,
+      owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
     });
     store.createItem({
       actor: { id: 'nanocore-repo-push-policy', kind: 'system', responsibleUserId: null },
@@ -1145,7 +1146,7 @@ describe('worker recovery materialization', () => {
       threadId: turn.threadId,
       turnId: turn.id,
       type: 'approval-decision',
-      workspaceId: turn.workspaceId,
+      owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
     });
     const approval = store.createApproval({
       createdAt: '2026-09-04T00:00:00.000Z',
@@ -1157,7 +1158,7 @@ describe('worker recovery materialization', () => {
       threadId: turn.threadId,
       title: 'Approve worker effect',
       turnId: turn.id,
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
     });
     const request = store.createItem({
       approvalRequestId: approval.id,
@@ -1171,7 +1172,7 @@ describe('worker recovery materialization', () => {
       title: approval.title,
       turnId: turn.id,
       type: 'approval-request',
-      workspaceId: turn.workspaceId,
+      owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
     });
     const response = store.createItem({
       actor: { id: 'usr_00000000-0000-7000-8000-000000000001', kind: 'user' },
@@ -1186,7 +1187,7 @@ describe('worker recovery materialization', () => {
       threadId: turn.threadId,
       turnId: turn.id,
       type: 'approval-decision',
-      workspaceId: turn.workspaceId,
+      owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
     });
     store.updateApproval(approval.id, {
       resolvedAt: '2026-09-04T00:01:00.000Z',
@@ -1202,7 +1203,7 @@ describe('worker recovery materialization', () => {
       requestId: '00000000-0000-4000-8000-000000000401',
       threadId: turn.threadId,
       turnId: turn.id,
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
     });
 
     expect(classifyClosedWorkerApprovalGate(store, closedTurn)).toEqual({

@@ -5,6 +5,7 @@ import {
   MAX_ARTIFACT_FILE_BYTES,
   parseReferenceScope,
   responsibleUserIdForActor,
+  workspaceIdForOwner,
 } from '@openkit/protocol';
 import { currentSchedulerAdmissionWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import {
@@ -87,7 +88,7 @@ export async function resolveCurrentWorkerSource(
     if (
       !admission ||
       turn.status !== 'running' ||
-      turn.workspaceId !== scope.workspaceId ||
+      workspaceIdForOwner(turn.owner) !== scope.workspaceId ||
       turn.threadId !== scope.threadId ||
       turn.agentSessionId !== scope.agentSessionId ||
       turn.agentId !== input.environmentPackage.agent.agentId ||

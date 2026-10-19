@@ -1,5 +1,5 @@
 import type { Item } from '@openkit/protocol';
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import { createCompactingInternalAgentProvider } from './compacting-context.js';
@@ -33,7 +33,7 @@ function fixture(previous?: { store: FsStore; turn: ReturnType<FsStore['getTurnB
   vi.stubEnv('OPENKIT_DATA_ROOT', '');
   const store = previous?.store ?? new FsStore();
   const workspace = previous
-    ? { id: previous.turn.workspaceId }
+    ? { id: workspaceIdForOwner(previous.turn.owner) }
     : store.createWorkspace('Compaction');
   const thread = previous
     ? { id: previous.turn.threadId }
@@ -61,7 +61,7 @@ function fixture(previous?: { store: FsStore; turn: ReturnType<FsStore['getTurnB
             key,
             store.createItem({
               id: allocateEntityId('it'),
-              workspaceId: workspace.id,
+              owner: { kind: 'workspace', workspaceId: workspace.id },
               threadId: thread.id,
               turnId: turn.id,
               type: message.role === 'user' ? 'user-message' : 'assistant-message',
@@ -89,7 +89,7 @@ function fixture(previous?: { store: FsStore; turn: ReturnType<FsStore['getTurnB
             part.callId,
             store.createItem({
               id: allocateEntityId('it'),
-              workspaceId: workspace.id,
+              owner: { kind: 'workspace', workspaceId: workspace.id },
               threadId: thread.id,
               turnId: turn.id,
               type: 'tool-call',

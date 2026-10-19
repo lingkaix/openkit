@@ -38,7 +38,9 @@ import {
   ThreadIdSchema,
   TurnIdSchema,
   TurnInputReferenceSchema,
+  type WorkOwner,
   WorkspaceIdSchema,
+  workspaceIdForOwner,
 } from '@openkit/protocol';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import { z } from 'zod';
@@ -579,7 +581,7 @@ export interface WorkerContextPackageAuthorityReader {
     threadId: string
   ) => readonly {
     readonly id: string;
-    readonly workspaceId: string;
+    readonly owner: WorkOwner;
     readonly threadId: string;
     readonly turnId: string;
     readonly type: string;
@@ -594,7 +596,7 @@ export interface WorkerContextPackageAuthorityReader {
   ) => {
     readonly agentSessionId: string | null;
     readonly id: string;
-    readonly workspaceId: string;
+    readonly owner: WorkOwner;
     readonly threadId: string;
     readonly startedAt: string | null;
     readonly triggerActor: ActorRef;
@@ -677,7 +679,7 @@ export function isChatSubordinateTaskTurn(input: {
   readonly requestId: string;
   readonly turn: {
     readonly id: string;
-    readonly workspaceId: string;
+    readonly owner: WorkOwner;
     readonly threadId: string;
     readonly triggerActor: ActorRef;
   };
@@ -689,14 +691,14 @@ export function isChatSubordinateTaskTurn(input: {
     turn.threadId ===
       conversationTaskThreadId(
         turn.triggerActor,
-        turn.workspaceId,
+        workspaceIdForOwner(turn.owner),
         originatingThreadId,
         input.requestId
       ) &&
     turn.id ===
       conversationTaskTurnId(
         turn.triggerActor,
-        turn.workspaceId,
+        workspaceIdForOwner(turn.owner),
         originatingThreadId,
         turn.threadId,
         input.requestId
@@ -1626,7 +1628,8 @@ function verifyWorkerContextPackagePortableOwners(
   if (
     !turn ||
     turn.id !== trace.turnId ||
-    turn.workspaceId !== trace.workspaceId ||
+    turn.owner.kind !== 'workspace' ||
+    turn.owner.workspaceId !== trace.workspaceId ||
     turn.threadId !== trace.threadId ||
     turn.agentSessionId !== trace.agentSessionId ||
     !turn.startedAt
@@ -1668,7 +1671,8 @@ function verifyWorkerContextPackagePortableOwners(
   const requestItem = itemsById.get(trace.workerRequestItemId);
   if (
     !requestItem ||
-    requestItem.workspaceId !== trace.workspaceId ||
+    requestItem.owner.kind !== 'workspace' ||
+    requestItem.owner.workspaceId !== trace.workspaceId ||
     requestItem.threadId !== trace.threadId ||
     requestItem.turnId !== trace.turnId ||
     requestItem.type !== 'user-message' ||
@@ -1723,7 +1727,12 @@ function verifyWorkerContextPackagePortableOwners(
     ...trace.excludedItems.map((item) => item.itemId),
   ]) {
     const item = itemsById.get(itemId);
-    if (!item || item.workspaceId !== trace.workspaceId || item.threadId !== trace.threadId) {
+    if (
+      !item ||
+      item.owner.kind !== 'workspace' ||
+      item.owner.workspaceId !== trace.workspaceId ||
+      item.threadId !== trace.threadId
+    ) {
       throw new Error(`Worker Context Package Item authority mismatch: ${itemId}.`);
     }
   }

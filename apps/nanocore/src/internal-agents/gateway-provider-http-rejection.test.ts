@@ -10,6 +10,7 @@ import {
   type StreamOptions,
 } from '@earendil-works/pi-ai';
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
+import { workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { FsStore } from '../lib/store.js';
@@ -124,10 +125,13 @@ function bindProvider(
     resolveLogicalModel: () => logicalModel,
     dispatcher: new LLMGatewayProviderDispatcher({ piAiClient: new PiAiGatewayClient({ models }) }),
     resolveGatewayProvider: resolve,
-    promptCacheScope: { sessionId: 'private-cache-canary', workspaceId: capture.turn.workspaceId },
+    promptCacheScope: {
+      sessionId: 'private-cache-canary',
+      workspaceId: workspaceIdForOwner(capture.turn.owner),
+    },
     usageEndpoint: 'responses',
     callContext: {
-      workspaceId: capture.turn.workspaceId,
+      workspaceId: workspaceIdForOwner(capture.turn.owner),
       authorityActor: capture.turn.triggerActor,
       family: 'llm',
       operation: 'administration',
@@ -201,7 +205,10 @@ function expectDiagnostic(
   f: Fixture,
   expected: { phase: string; failureKind: string; httpStatus?: number; attempt?: number }
 ) {
-  const calls = listWorkspaceCapabilityCalls(f.capture.workspaceDb, f.capture.turn.workspaceId);
+  const calls = listWorkspaceCapabilityCalls(
+    f.capture.workspaceDb,
+    workspaceIdForOwner(f.capture.turn.owner)
+  );
   expect(calls).toHaveLength(1);
   expect(calls[0]?.status).toBe('failed');
   expect(f.warn).toHaveBeenCalledTimes(1);
@@ -213,7 +220,7 @@ function expectDiagnostic(
     failureKind: expected.failureKind,
     ...(expected.httpStatus === undefined ? {} : { httpStatus: expected.httpStatus }),
     requestId,
-    workspaceId: f.capture.turn.workspaceId,
+    workspaceId: workspaceIdForOwner(f.capture.turn.owner),
     threadId: f.capture.threadId,
     turnId: f.capture.turnId,
     capabilityCallId: calls[0]!.id,
@@ -269,7 +276,10 @@ describe('internal Gateway HTTP rejection diagnostic consumer', () => {
     expect(error).toHaveProperty('cause.message', opaqueMessage);
     expect(fetch).toHaveBeenCalledTimes(1);
     expect(
-      listWorkspaceCapabilityCalls(f.capture.workspaceDb, f.capture.turn.workspaceId)[0]?.errorCode
+      listWorkspaceCapabilityCalls(
+        f.capture.workspaceDb,
+        workspaceIdForOwner(f.capture.turn.owner)
+      )[0]?.errorCode
     ).toBe('internal_inference_failed');
     expectDiagnostic(f, { phase: 'provider-response', failureKind: 'unknown', httpStatus: 401 });
   });
@@ -412,7 +422,7 @@ describe('internal Gateway HTTP rejection diagnostic consumer', () => {
     expect(semantic.calls.callCount).toBe(1);
     expect(f.warn).not.toHaveBeenCalled();
     expect(
-      listWorkspaceCapabilityCalls(f.capture.workspaceDb, f.capture.turn.workspaceId)
+      listWorkspaceCapabilityCalls(f.capture.workspaceDb, workspaceIdForOwner(f.capture.turn.owner))
     ).toMatchObject([{ status: 'succeeded' }]);
   });
 });

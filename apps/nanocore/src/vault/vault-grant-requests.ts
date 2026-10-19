@@ -15,6 +15,7 @@ import {
   TurnIdSchema,
   UserIdSchema,
   WorkspaceIdSchema,
+  workspaceIdForOwner,
 } from '@openkit/protocol';
 import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
@@ -388,7 +389,7 @@ function currentRequester(dependencies: Dependencies, record: PendingRequestReco
   if (origin.kind === 'worker') {
     if (
       !turn ||
-      turn.workspaceId !== record.workspaceId ||
+      workspaceIdForOwner(turn.owner) !== record.workspaceId ||
       turn.threadId !== record.threadId ||
       turn.agentId !== record.agentId ||
       turn.agentSessionId !== record.agentSessionId ||
@@ -661,7 +662,7 @@ export function createVaultGrantRequestImplementations(dependencies: Dependencie
         if (
           worker &&
           (!turn ||
-            turn.workspaceId !== input.workspaceId ||
+            workspaceIdForOwner(turn.owner) !== input.workspaceId ||
             turn.threadId !== input.threadId ||
             turn.agentSessionId !== context.lineage.agentSessionId ||
             !turn.agentId ||
@@ -723,7 +724,7 @@ export function createVaultGrantRequestImplementations(dependencies: Dependencie
           const record = raiseRecordedPendingRequest(store!, db.sqlite, raisedInput);
           store!.createItem({
             id: requestItemId,
-            workspaceId: input.workspaceId,
+            owner: { kind: 'workspace', workspaceId: input.workspaceId },
             threadId: input.threadId,
             turnId: raisingTurnId,
             type: 'approval-request',

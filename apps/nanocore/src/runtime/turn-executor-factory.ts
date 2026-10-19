@@ -10,7 +10,7 @@ import {
   validateAgentEnvironmentPackageForBackend,
   type WorkerGovernanceBackendCapabilities,
 } from '@openkit/config-schema';
-import { readRetainedV1, responsibleUserIdForActor } from '@openkit/protocol';
+import { readRetainedV1, responsibleUserIdForActor, workspaceIdForOwner } from '@openkit/protocol';
 import {
   HARNESS_DEFAULT_MAX_ACTIVE_TURNS,
   WorkerRuntimeRawStreamManifestSchema,
@@ -5413,7 +5413,8 @@ function currentWorkerStorageAudienceAuthorizer(
       (records) => records.workspace.id === scope.workspaceId
     );
     const thread = records?.threads.find((thread) => thread.id === contributor.threadId);
-    if (!records || !thread || thread.workspaceId !== scope.workspaceId) return false;
+    if (!records || !thread || workspaceIdForOwner(thread.owner) !== scope.workspaceId)
+      return false;
     const audienceOwner = {
       getWorkspace: () => records.workspace,
       getWorkspaceResourceAccess: (workspaceId: string) => {

@@ -9,7 +9,7 @@ import {
   type SseEventEnvelope,
   type Thread,
 } from '@openkit/core-client';
-import { ItemSchema, type ReasoningEffort } from '@openkit/protocol';
+import { ItemSchema, type ReasoningEffort, workspaceIdForOwner } from '@openkit/protocol';
 import {
   skipToken,
   useMutation,
@@ -815,11 +815,12 @@ export function useRenameThread() {
     mutationFn: (input: { workspaceId: string; threadId: string; name: string }) =>
       client.operations['thread.update'](input),
     onSuccess: (thread) => {
-      queryClient.setQueryData(chatKeys.thread(thread.workspaceId, thread.id), thread);
-      queryClient.setQueryData<Thread[]>(chatKeys.threads(thread.workspaceId), (threads) =>
+      const workspaceId = workspaceIdForOwner(thread.owner);
+      queryClient.setQueryData(chatKeys.thread(workspaceId, thread.id), thread);
+      queryClient.setQueryData<Thread[]>(chatKeys.threads(workspaceId), (threads) =>
         threads?.map((candidate) => (candidate.id === thread.id ? thread : candidate))
       );
-      void queryClient.invalidateQueries({ queryKey: chatKeys.navigation(thread.workspaceId) });
+      void queryClient.invalidateQueries({ queryKey: chatKeys.navigation(workspaceId) });
     },
   });
 }
@@ -837,11 +838,12 @@ export function useArchiveThread() {
     mutationFn: (input: { workspaceId: string; threadId: string }) =>
       client.operations['thread.archive'](input),
     onSuccess: (thread) => {
-      queryClient.setQueryData(chatKeys.thread(thread.workspaceId, thread.id), thread);
-      queryClient.setQueryData<Thread[]>(chatKeys.threads(thread.workspaceId), (threads) =>
+      const workspaceId = workspaceIdForOwner(thread.owner);
+      queryClient.setQueryData(chatKeys.thread(workspaceId, thread.id), thread);
+      queryClient.setQueryData<Thread[]>(chatKeys.threads(workspaceId), (threads) =>
         threads?.map((candidate) => (candidate.id === thread.id ? thread : candidate))
       );
-      void queryClient.invalidateQueries({ queryKey: chatKeys.navigation(thread.workspaceId) });
+      void queryClient.invalidateQueries({ queryKey: chatKeys.navigation(workspaceId) });
     },
   });
 }
@@ -858,11 +860,12 @@ export function useRestoreThread() {
     mutationFn: (input: { workspaceId: string; threadId: string }) =>
       client.operations['thread.update']({ ...input, status: 'active' }),
     onSuccess: (thread) => {
-      queryClient.setQueryData(chatKeys.thread(thread.workspaceId, thread.id), thread);
-      queryClient.setQueryData<Thread[]>(chatKeys.threads(thread.workspaceId), (threads) =>
+      const workspaceId = workspaceIdForOwner(thread.owner);
+      queryClient.setQueryData(chatKeys.thread(workspaceId, thread.id), thread);
+      queryClient.setQueryData<Thread[]>(chatKeys.threads(workspaceId), (threads) =>
         threads?.map((candidate) => (candidate.id === thread.id ? thread : candidate))
       );
-      void queryClient.invalidateQueries({ queryKey: chatKeys.navigation(thread.workspaceId) });
+      void queryClient.invalidateQueries({ queryKey: chatKeys.navigation(workspaceId) });
     },
   });
 }
@@ -880,8 +883,9 @@ export function useInterruptTurn() {
     mutationFn: (input: { workspaceId: string; threadId: string; turnId: string }) =>
       client.operations['turn.interrupt'](input),
     onSuccess: (turn) => {
+      const workspaceId = workspaceIdForOwner(turn.owner);
       queryClient.setQueryData<Awaited<ReturnType<CoreClient['operations']['thread.dashboard']>>>(
-        chatKeys.dashboard(turn.workspaceId, turn.threadId),
+        chatKeys.dashboard(workspaceId, turn.threadId),
         (dashboard) =>
           dashboard
             ? {

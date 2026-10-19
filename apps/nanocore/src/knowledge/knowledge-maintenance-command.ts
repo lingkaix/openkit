@@ -1,4 +1,5 @@
 import { KnowledgeMaintenanceResponseSchema } from '@openkit/app-api-schemas';
+import { workspaceIdForOwner } from '@openkit/protocol';
 import { OperationError } from '../operation-error.js';
 import { commandInputHash, runIdempotentCommand } from '../runtime/idempotent-command.js';
 import {
@@ -55,7 +56,10 @@ export async function runKnowledgeMaintenanceCommand(
       },
       replay: (receipt) => {
         const turn = dependencies.store.getTurnById(receipt.response.id);
-        if (turn.workspaceId !== input.workspaceId || turn.agentId !== 'knowledge-manager')
+        if (
+          workspaceIdForOwner(turn.owner) !== input.workspaceId ||
+          turn.agentId !== 'knowledge-manager'
+        )
           throw new OperationError(
             'recovery_required',
             'Knowledge maintenance requires inspection.',

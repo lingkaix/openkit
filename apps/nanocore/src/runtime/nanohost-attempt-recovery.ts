@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
-import { isSealedTurnTerminal } from '@openkit/protocol';
+import { isSealedTurnTerminal, workspaceIdForOwner } from '@openkit/protocol';
 import { recordServerAuditEvent } from '../audit-events.js';
 import {
   DISPLAY_PROJECTION_REFRESH_FIELDS,
@@ -667,7 +667,7 @@ function hasRecoveredTerminalHandoff(
   const turn = store.getTurnById(backend.turnId);
   const session = store.getAgentSession(backend.agentSessionId);
   if (
-    turn.workspaceId !== backend.workspaceId ||
+    workspaceIdForOwner(turn.owner) !== backend.workspaceId ||
     turn.threadId !== backend.threadId ||
     turn.agentSessionId !== backend.agentSessionId ||
     session.workspaceId !== backend.workspaceId ||
@@ -840,7 +840,7 @@ async function settleTerminalFailedStart(
       throw new Error('Failed-start preparation has contradictory no-effect lineage.');
     const admission = requireSchedulerAdmissionEntry(coreDb, attempt.queueEntryId);
     if (
-      turn.workspaceId !== attempt.workspaceId ||
+      workspaceIdForOwner(turn.owner) !== attempt.workspaceId ||
       turn.threadId !== attempt.threadId ||
       admission.turnId !== turn.id ||
       admission.status !== 'admitted' ||
@@ -913,9 +913,12 @@ async function settleTerminalFailedStart(
         ? requireAgentEnvironmentPackageSnapshot(workspaceDb, attempt.workspaceId, attempt.inputRef)
             .snapshot
         : null;
-    const sameLineage = [turn, admission, ...(session ? [session] : [])].every(
-      (owner) => owner.workspaceId === attempt.workspaceId && owner.threadId === attempt.threadId
-    );
+    const sameLineage =
+      workspaceIdForOwner(turn.owner) === attempt.workspaceId &&
+      turn.threadId === attempt.threadId &&
+      [admission, ...(session ? [session] : [])].every(
+        (owner) => owner.workspaceId === attempt.workspaceId && owner.threadId === attempt.threadId
+      );
     if (
       !sameLineage ||
       (!unassigned && turn.agentSessionId !== attempt.agentSessionId) ||
@@ -1109,7 +1112,7 @@ async function settleTerminalFailedStart(
     if (
       terminalEvents.some(
         (event) =>
-          event.workspaceId !== turn.workspaceId ||
+          event.workspaceId !== workspaceIdForOwner(turn.owner) ||
           event.threadId !== turn.threadId ||
           event.turnId !== turn.id ||
           event.data.type !== 'turn-completed' ||

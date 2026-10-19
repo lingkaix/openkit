@@ -185,7 +185,7 @@ describe('dashboard and search Thread audiences', () => {
       });
       store.createItem({
         id: testEntityId('it', `it_${label}`),
-        workspaceId: workspace.id,
+        owner: { kind: 'workspace', workspaceId: workspace.id },
         threadId: thread.id,
         turnId: turn.id,
         type: 'assistant-message',
@@ -223,7 +223,7 @@ describe('dashboard and search Thread audiences', () => {
     for (const label of ['local-private', 'other-private'])
       store.createItem({
         id: testEntityId('it', `it_link_${label}`),
-        workspaceId: workspace.id,
+        owner: { kind: 'workspace', workspaceId: workspace.id },
         threadId: threads[2]!.id,
         turnId: sharedTurn.id,
         type: 'artifact-reference',

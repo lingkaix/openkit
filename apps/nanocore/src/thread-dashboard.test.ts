@@ -77,7 +77,7 @@ describe('thread dashboard app API', () => {
     ]) {
       store.createItem({
         id: testEntityId('it', `message_${candidate.id}`),
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: candidate.threadId,
         turnId: candidate.id,
         type: 'user-message',
@@ -236,7 +236,7 @@ describe('thread dashboard app API', () => {
       });
       store.createItem({
         id: 'it_00000000-0000-74cd-8ec9-23e9d64367b4',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: thread.id,
         turnId: turn.id,
         type: 'approval-request',
@@ -697,7 +697,7 @@ describe('thread dashboard app API', () => {
     });
     store.createItem({
       id: 'it_00000000-0000-7f72-83a7-ba302bd2b905',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
       turnId: approvalTurn.id,
       type: 'approval-request',
@@ -725,7 +725,7 @@ describe('thread dashboard app API', () => {
     );
     store.createItem({
       id: 'it_00000000-0000-7f92-b6e6-35cd138b85b4',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
       turnId: questionTurn.id,
       type: 'user-input-request',
@@ -884,7 +884,7 @@ describe('thread dashboard app API', () => {
 
     store.createItem({
       id: 'it_00000000-0000-7bf5-b660-d0ccc86e0d44',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
       turnId: approvalTurn.id,
       type: 'approval-request',
@@ -908,7 +908,7 @@ describe('thread dashboard app API', () => {
     );
     store.createItem({
       id: 'it_00000000-0000-75a6-828f-8513af34689a',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
       turnId: questionTurn.id,
       type: 'user-input-request',
@@ -1032,7 +1032,7 @@ describe('thread dashboard app API', () => {
     });
     store.createItem({
       id: 'it_00000000-0000-7c2d-912e-4ee20b9b582b',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
       turnId: approvalTurn.id,
       type: 'approval-request',
@@ -1055,7 +1055,7 @@ describe('thread dashboard app API', () => {
     );
     store.createItem({
       id: 'it_00000000-0000-72bf-96f3-cd99b62271df',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
       turnId: duplicateTurn.id,
       type: 'user-input-request',

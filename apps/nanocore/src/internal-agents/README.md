@@ -57,6 +57,8 @@ Internal Tool definitions retain canonical dotted IDs. The Gateway validates the
 
 Server Knowledge maintenance uses the same role resolver, Gateway, captured capability/usage records, loop and compaction. Gateway capture and call attribution must share the admitted Server or Workspace owner. Shared inert Item, source-digest and summary projections accept Server Items; rolling selection remains Workspace-only. Server summaries identify their actual owner, and exact history stays bound to the current Server run.
 
+Shared narrative records now carry the explicit Protocol owner union. Knowledge Manager and compaction dispatch select the existing Store path by owner.kind. Workspace rolling-context selection still requires a Workspace owner. Transcript content, source digests and summaries use the same Item variants for both owners.
+
 Knowledge Manager defaults to a 300-second run and editor deadline, with existing explicitly authored profile limits unchanged. Its own deadline retains `knowledge_manager_timeout` on the failed Turn; caller cancellation remains separate. The timeout adds no retry or alternate Provider path.
 
 Rolling context reports unavailable required source evidence as `internal_agent_context_source_unavailable`, separately from physical capacity. Internal diagnostics name only the fixed native check; Turn errors keep a safe summary. Empty retrieval traces keep current owner, audience, KB and identity admission and carry no selected-page byte dependency; their age grants no exception. Source failure stops the affected Provider dispatch.

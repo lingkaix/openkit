@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { workspaceIdForOwner } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
@@ -562,7 +563,7 @@ function admittedWorker(
           coreDb,
           workspaceDb: db,
           store,
-          workspaceId: turn.workspaceId,
+          workspaceId: workspaceIdForOwner(turn.owner),
           threadId: turn.threadId,
           turnId: id,
           requestId,
@@ -606,13 +607,13 @@ function admittedWorker(
           throw error;
         }
         const existing = store
-          .listThreadAgentSessions(turn.workspaceId, turn.threadId)
+          .listThreadAgentSessions(workspaceIdForOwner(turn.owner), turn.threadId)
           .find((session) => session.id === agentSessionId);
         if (!existing)
           store.createAgentSession({
             id: agentSessionId,
             agentId: manifest.id,
-            workspaceId: turn.workspaceId,
+            workspaceId: workspaceIdForOwner(turn.owner),
             threadId: turn.threadId,
             status: 'idle',
             message: null,
@@ -631,7 +632,7 @@ function admittedWorker(
           {
             event: 'turn.completed',
             requestId,
-            workspaceId: turn.workspaceId,
+            workspaceId: workspaceIdForOwner(turn.owner),
             threadId: turn.threadId,
             turnId: id,
             data: { type: 'turn-completed', stopReason: 'completed', turn: terminal },
@@ -699,7 +700,11 @@ function admittedWorker(
             command: 'turn.start',
             requestId,
             inputHash: `fixture:${requestId}`,
-            scope: { actorId, workspaceId: created.workspaceId, threadId: created.threadId },
+            scope: {
+              actorId,
+              workspaceId: workspaceIdForOwner(created.owner),
+              threadId: created.threadId,
+            },
             response: { kind: 'turn', id: created.id },
           });
         },

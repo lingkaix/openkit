@@ -133,7 +133,7 @@ describe('workspace dashboard app API', () => {
     });
     store.createItem({
       id: 'it_00000000-0000-7820-915a-25ba0ed16670',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: attentionThread.id,
       turnId: attentionTurn.id,
       type: 'approval-request',
@@ -365,7 +365,7 @@ describe('workspace dashboard app API', () => {
     );
     store.createItem({
       id: 'it_00000000-0000-7aa3-b54b-e32a25a56598',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
       turnId: secretTurn.id,
       type: 'user-input-request',
@@ -437,7 +437,7 @@ describe('workspace dashboard app API', () => {
     });
     store.createItem({
       id: 'it_00000000-0000-73b2-97a8-ad8ddcd0adb2',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
       turnId: approvalTurn.id,
       type: 'approval-request',
