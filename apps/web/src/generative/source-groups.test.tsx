@@ -1,3 +1,4 @@
+/// <reference types="node" />
 import { createHash, webcrypto } from 'node:crypto';
 import type { GenerativePresentation } from '@openkit/app-api-schemas';
 import type { CoreClient } from '@openkit/core-client';

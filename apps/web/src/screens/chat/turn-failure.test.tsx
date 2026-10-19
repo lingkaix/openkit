@@ -15,7 +15,7 @@ const FAILURE_MESSAGE =
 
 const THREAD = {
   id: 'th_00000000-0000-7b47-b9e3-5a516884858f',
-  owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' },
+  owner: { kind: 'workspace' as const, workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' },
   name: 'Failed worker task',
   preview: 'Failed worker task',
   status: 'active' as const,
