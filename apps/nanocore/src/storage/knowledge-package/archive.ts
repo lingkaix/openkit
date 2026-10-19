@@ -157,6 +157,7 @@ export function knowledgePackageArchive(
     let length = 0;
     try {
       for await (const chunk of archive) {
+        if (!(chunk instanceof Uint8Array)) throw new Error('Invalid package byte chunk.');
         let offset = 0;
         while (offset < chunk.byteLength) {
           const copied = Math.min(buffer.byteLength - length, chunk.byteLength - offset);

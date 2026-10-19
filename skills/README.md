@@ -12,6 +12,8 @@ The authoring sources remain openkit-cli.mjs, openkit-operations.mjs and openkit
 
 Artifact import and download use the same public operation identities through `client.artifactFiles`. Import accepts an explicit `sourcePath` plus exact declared size and SHA-256; NanoCore verifies the streamed original before publication. Download accepts an explicit `destinationPath`, creates it exclusively, and verifies streamed size and SHA-256. A failed download can leave a partial destination for explicit inspection; retry requires a new destination or explicit local cleanup. No automatic overwrite, arbitrary HTTP route or whole-file buffering is introduced.
 
+Knowledge package export and import currently use their native HTTP streaming bindings. The catalog explicitly excludes them because the CLI has no Knowledge package file input or sink.
+
 For `catalog.skill-import`, a local `source` path is read only in the caller process through the shared bounded Skill staging helper. Optional `sourceSubpath` and `sourceSkillName` select one Skill. The CLI sends its exact staged tree through one public import call and removes the source path and selectors. Git and download sources pass to Core unchanged. Local selection or read failure sends no import request. The installed bundle needs no source checkout, package execution or runtime download. Its shared Skill helpers retain the pinned Vercel MIT notice in [THIRD-PARTY-NOTICES.md](openkit-ops/THIRD-PARTY-NOTICES.md).
 
 The generator embeds the root `package.json` metadata imported by the CLI. Rebuild the bundle after root manifest changes, including repository command changes.
