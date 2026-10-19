@@ -132,6 +132,20 @@ Readers MAY ignore unknown derived indexes, cached read models, generated runtim
 
 Readers MUST NOT infer permission, vault, sandbox, provider, mount, write, retention, audit, or billing semantics from unknown optional fields.
 
+### Current Boot Envelope Family Registry
+
+The data-root boot verifier in `apps/nanocore/src/storage/fs-layout.ts` checks common envelopes in `.json` files against these supported families. Retained Source registry records remain accepted even though current Source writers use Notebook pointers. Registration does not migrate or rewrite retained records.
+
+| Record family | Stored surface |
+| --- | --- |
+| `data-root-backup` | Cold data-root backup manifest. |
+| `source` | Retained Knowledge Source registry envelope. |
+| `thread` | Workspace or Server Thread envelope. |
+| `workspace-deletion-closure` | Sealed Workspace deletion manifest. |
+| `workspace-export` | Workspace export manifest. |
+
+Memory suppression envelopes use `.jsonl`, so this boot verifier does not read them. Runtime evidence and evidence bundles use versioned SQLite rows and portable JSONL records, not common `.json` envelopes. Light App and Generative UI portable rows and migration reports lack the common envelope fields and are not boot envelope candidates. Their owning readers retain responsibility for schema-version and required-feature checks.
+
 ## Writer Contract
 
 Writers SHOULD prefer additive fields over changing the meaning of existing fields.
@@ -226,6 +240,9 @@ The implementation includes package tests for unknown optional field tolerance, 
 
 | Feature | Status | Description |
 | --- | --- | --- |
+| `runtime.evidence.v1` | active | Runtime evidence retains execution outcomes, backend summaries, and evidence bundle linkage. |
+| `worker.runtime-provenance.v1` | active | Worker runtime provenance links admitted Agent Environment Packages to retained transcript evidence. |
+| `evidence.bundle.v1` | active | Evidence bundles retain exact lineage, content digests, retention, sensitivity, and import disposition. |
 | `openkit.workspace-resource-policy.v1` | active | Workspace configuration carries managed resource boundaries and exact associations and prohibitions across export and import. |
 | `openkit.memory-suppression.v1` | active | User Memory suppression reserves forgotten page identities and requires current and historical disclosure suppression. |
 | `agent.resource-catalog.v1` | active | Workspace export includes the Skill, MCP, and Agent Plugin portable catalog projection. |

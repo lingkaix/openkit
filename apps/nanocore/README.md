@@ -58,6 +58,8 @@ The exhaustive MCP discovery and dispatch regressions use real bearer verificati
 
 The same-Sandbox peer route regression seeds history in memory and publishes complete Workspace snapshots once before using the real file-backed Store and exact retained-byte comparisons. Post-refresh subscription attribution uses a controlled clock with the unchanged request deadline, so real Vault I/O duration cannot turn a same-credential proof into an expired proof.
 
+Boot envelope verification accepts retained Knowledge Source registry records as well as current Thread, export, backup, and deletion-closure envelopes. The [schema evolution spec](../../docs/specs/20260703-schema_evolution_record_envelope.md#current-boot-envelope-family-registry) lists the exact families and excluded storage surfaces. Run `src/storage/fs-layout.test.ts` and `src/storage/canonical-envelope-writers.test.ts` for retained Source boot compatibility and static writer registration checks.
+
 - local-mode implicit single-user operation
 - server-mode registered-user small-team operation with HTTP-only session auth and bounded Workspace sharing
 - optional file-backed state through `OPENKIT_DATA_ROOT`
