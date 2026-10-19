@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import type { Server as HttpServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -50,6 +50,7 @@ import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
 import { createMcpHttpStub } from './test-support/mcp-http-stub.js';
+import { admitTestMcpApproval } from './test-support/mcp-tool-policy.js';
 import { admitTestNativeEnvironment } from './test-support/native-environment.js';
 import { advanceActiveVaultReferenceVersion } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
@@ -827,6 +828,25 @@ describe('Server-shared MCP through governed Worker routes', () => {
     });
     const worker = await f.worker(f.workspaces[0]!.id);
     expect((await worker.list()).body).toMatchObject({ result: { tools: expect.any(Array) } });
+    const policy = admitTestMcpApproval({
+      coreDb: f.coreDb,
+      document: f.manager.current().openKitConfig.policy?.mediation,
+      workspaceId: worker.workspaceId,
+      serverId,
+      toolName: 'echo',
+      userId: FIXTURE_LOCAL_USER_ID,
+      threadId: worker.pkg.scope.threadId,
+      turnId: worker.pkg.scope.turnId,
+    });
+    mkdirSync(join(f.dataRoot, 'config'), { recursive: true });
+    writeFileSync(
+      join(f.dataRoot, 'config/server.jsonc'),
+      JSON.stringify({
+        ...f.manager.current().openKitConfig,
+        policy: { ...f.manager.current().openKitConfig.policy, mediation: policy },
+      })
+    );
+    expect(f.manager.reload({ mode: 'safe', dryRun: false }).status).toBe('applied');
     expect((await worker.call('approved-shared-message')).body).toMatchObject({
       result: { structuredContent: { status: 'pending-approval' } },
     });
