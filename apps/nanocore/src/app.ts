@@ -1880,6 +1880,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   const workerMcpRouteInput: RegisterWorkerMcpRoutesInput = {
     interception: policyInterception,
     goalTaskPolicy,
+    goalWake: (workspaceId, goalId) => goalServices().wake?.(workspaceId, goalId),
     ...(automationStore ? { automationStore } : {}),
     turnStartServices: {
       ...setupProviderSupply,

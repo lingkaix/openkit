@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import {
   GOAL_OPERATION_DEFINITIONS,
+  GoalTaskPolicyWriteInputSchema,
+  GoalTaskPolicyWriteOutputSchema,
   OPERATION_DEFINITIONS,
   operationModelInput,
 } from '@openkit/app-api-schemas';
@@ -42,6 +44,7 @@ import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import type { ProviderCredentialConfigured } from '../providers/registry.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
+import { listSchedulerExecutionAttemptsForTurn } from './execution-attempt-records.js';
 import {
   type GoalOperationId,
   type GoalOwnerServices,
@@ -464,7 +467,96 @@ export function createGoalTools(input: {
       },
     };
   });
-  return [...goalTools, ...evidenceTools, discovery, ...knowledgeTools];
+  const policyTools: AgentTool[] = [];
+  if (input.services.coreDb && input.services.goalDomain) {
+    const { $schema: _schema, ...schema } = z.toJSONSchema(GoalTaskPolicyWriteInputSchema);
+    policyTools.push({
+      name: 'policy.write',
+      description:
+        'Grant one current Task Worker a bounded permission inside this Goal domain. Use the current Policy revision and typed domain from native context. This neither changes the Goal envelope nor approves an external effect.',
+      inputSchema: schema,
+      async execute(value) {
+        try {
+          const parsed = GoalTaskPolicyWriteInputSchema.safeParse(value);
+          if (!parsed.success)
+            throw new OperationError('invalid_request', 'Invalid bounded Policy input.', 400);
+          requireCoordinatorGoal(input.store, input.db, {
+            actor: input.actor,
+            workspaceId: goal.workspaceId,
+            threadId: goal.threadId,
+            goalId: goal.goalId,
+            turnId: input.turnId,
+          });
+          const current = readGoalView(input.store, input.db, goal.goalId);
+          if (!current.tasks.some((task) => task.threadId === parsed.data.taskThreadId))
+            throw new OperationError('not_found', 'Goal Task not found.', 404);
+          const attempts = input.store
+            .listThreadTurns(goal.workspaceId, parsed.data.taskThreadId)
+            .filter((turn) => !isSealedTurnTerminal(turn.status))
+            .flatMap((turn) =>
+              listSchedulerExecutionAttemptsForTurn(input.services.coreDb!, {
+                workspaceId: goal.workspaceId,
+                threadId: parsed.data.taskThreadId,
+                turnId: turn.id,
+              })
+            )
+            .filter(
+              (attempt) =>
+                attempt.phase !== 'closed' &&
+                attempt.agentSessionId !== null &&
+                attempt.inputRef !== null
+            );
+          if (attempts.length !== 1)
+            throw new OperationError(
+              'task_authority_unavailable',
+              'The selected Task has no unique current Worker lineage.',
+              409
+            );
+          const attempt = attempts[0]!;
+          const result = input.services.goalDomain!.forActor(input.actor, input.db).administer({
+            workspaceDb: input.db,
+            goalId: goal.goalId,
+            coordinatorTurnId: input.turnId,
+            taskLineage: {
+              workspaceId: goal.workspaceId,
+              threadId: attempt.threadId,
+              turnId: attempt.turnId,
+              agentSessionId: attempt.agentSessionId!,
+              packageSnapshotId: attempt.inputRef!,
+            },
+            expectedPolicyRevision: parsed.data.expectedPolicyRevision,
+            grant: parsed.data.grant,
+          });
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: JSON.stringify(GoalTaskPolicyWriteOutputSchema.parse(result)),
+              },
+            ],
+          };
+        } catch (error) {
+          return {
+            isError: true,
+            content: [
+              {
+                type: 'text' as const,
+                text: JSON.stringify(
+                  projectOperationError(error) ?? {
+                    code: 'goal_policy_administration_failed',
+                    message:
+                      'Goal Policy administration did not complete; inspect current Policy before retry.',
+                    status: 409,
+                  }
+                ),
+              },
+            ],
+          };
+        }
+      },
+    });
+  }
+  return [...goalTools, ...evidenceTools, discovery, ...knowledgeTools, ...policyTools];
 }
 /** Runs ordinary internal-agent Turns and owns their terminal closeout and wake opportunities. */
 export function createGoalCoordinator(options: GoalCoordinatorOptions) {
@@ -593,6 +685,18 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
             capabilities: selection.logicalModel.capabilities,
             modelFamilyId: selection.logicalModel.modelFamilyId,
           };
+          const domainServices = options.services().goalDomain;
+          // Native projection supplies the typed envelope and CAS revision, never Plan prose.
+          // Publication still rereads both; this prompt snapshot grants no authority.
+          const policyAdministration = domainServices
+            ? {
+                policyRevision: domainServices.currentRevision(),
+                domain: domainServices.forActor(actor, db).read({
+                  workspaceId: goal.workspaceId,
+                  goalId: goal.goalId,
+                }),
+              }
+            : null;
           const window = await prepareInternalAgentContext({
             store,
             turn,
@@ -604,7 +708,12 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
               output: selection.logicalModel.contract?.output,
             },
             requiredMessages: [
-              { role: 'user', content: [{ type: 'text', text: JSON.stringify(view) }] },
+              {
+                role: 'user',
+                content: [
+                  { type: 'text', text: JSON.stringify({ ...view, policyAdministration }) },
+                ],
+              },
             ],
             profileId: selection.profile?.id ?? null,
             limits: selection.profile?.limits ?? {
