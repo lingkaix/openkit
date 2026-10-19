@@ -128,13 +128,12 @@ import { createOperationInvocation } from './operation-composition.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import { createGoalDomainPolicyService } from './policy/goal-domains.js';
 import { type DeterministicPolicyParticipant, PolicyInterception } from './policy/interception.js';
-import { EMPTY_POLICY_DOCUMENT, policyDigest } from './policy/statements.js';
-
 import {
   checkResourcePolicyCommandIntent,
   isResourcePolicyRequest,
   isResourcePolicyRequesterCurrent,
 } from './policy/resource-policy-requests.js';
+import { EMPTY_POLICY_DOCUMENT, policyDigest } from './policy/statements.js';
 import type { ProviderDiagnosticsSnapshot } from './providers/diagnostics.js';
 import {
   isProviderProfileDispatchable,
