@@ -608,7 +608,7 @@ function expectedSmokeObservation() {
       call: { itemIdValid: true, schemaSnapshotIdValid: true, status: 'succeeded' },
       item: { server: 'echo', status: 'completed', tool: 'echo', type: 'tool-call' },
       attempt: { phase: 'closed' },
-      permission: [{ enforcementPoint: 'worker_capability.mcp.call_tool', result: 'allow' }],
+      permission: [{ operation: 'mcp.call-tool', stage: 'decide', result: 'allow' }],
       schema: { catalogEntryId: 'echo', source: 'live', toolNames: ['echo'] },
       usage: [{ quantity: 1, unit: 'tool_calls' }],
     },
