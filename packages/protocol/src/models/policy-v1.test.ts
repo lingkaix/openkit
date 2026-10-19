@@ -44,6 +44,101 @@ const binding = {
 };
 
 describe('retained Policy version-one contracts', () => {
+  it('retains scope-owned non-grant Thread boundaries and exact Agent-process permissions', () => {
+    const owner = { kind: 'workspace', workspaceId };
+    const resource = { kind: 'container', container: { owner, kind: 'thread', id: threadId } };
+    const envelope = {
+      author: principal,
+      authority: { kind: 'human', userId },
+      authoredAt: binding.authoredAt,
+      state: 'active',
+      lifetime: { anchor: { owner, kind: 'workspace', id: workspaceId } },
+    };
+    const boundary = {
+      ...envelope,
+      kind: 'managed-boundary',
+      id: 'managed-thread',
+      scope: { subjects: [], actions: [], resources: [resource] },
+    };
+    const permission = {
+      ...envelope,
+      kind: 'permission',
+      id: 'exact-worker',
+      scope: { subjects: [principal], actions: ['thread.read'], resources: [resource] },
+      effect: 'allow',
+      grant: { kind: 'agent-process', agentId: 'registered-worker' },
+    };
+    for (const effect of ['allow', 'prohibit']) {
+      const statements = [boundary, { ...permission, effect }];
+      expect(PolicyDocumentV1Schema.parse({ schemaVersion: 1, statements }).statements).toEqual(
+        statements
+      );
+    }
+    for (const change of [{ grant: { kind: 'ordinary' } }, { scope: permission.scope }])
+      expect(
+        PolicyDocumentV1Schema.safeParse({
+          schemaVersion: 1,
+          statements: [{ ...boundary, ...change }],
+        }).success
+      ).toBe(false);
+    expect(PolicyGrantV1Schema.safeParse({ kind: 'agent-process', agentId: '' }).success).toBe(
+      false
+    );
+    expect(
+      PolicyGrantV1Schema.safeParse({ kind: 'agent-process', agentId: 'registered-worker', userId })
+        .success
+    ).toBe(false);
+  });
+
+  it('retains scope-owned finite Git constraints with sole statement expiry and Agent identity', () => {
+    const container = { owner: { kind: 'server' }, kind: 'agent', id: 'registered-worker' };
+    const statement = {
+      kind: 'permission',
+      id: 'finite-git-read',
+      author: principal,
+      authority: { kind: 'human', userId },
+      authoredAt: binding.authoredAt,
+      state: 'active',
+      scope: {
+        subjects: [principal],
+        actions: ['administration.configuration.apply'],
+        resources: [{ kind: 'container', container }],
+      },
+      lifetime: { anchor: container, notAfter: '2026-10-20T00:00:00.000Z' },
+      effect: 'allow',
+      grant: {
+        kind: 'worker-git-read-maintenance',
+        networkGrantId: 'repository-read',
+        host: 'git.example.test',
+        port: 443,
+        protocol: 'rest',
+        repositoryPaths: ['/team/project.git'],
+        binaries: ['/usr/bin/git'],
+        validFrom: '2026-10-19T00:00:00.000Z',
+      },
+    };
+    expect(
+      PolicyDocumentV1Schema.parse({ schemaVersion: 1, statements: [statement] }).statements
+    ).toEqual([statement]);
+    for (const lifetime of [
+      { anchor: container },
+      { anchor: container, notAfter: statement.grant.validFrom },
+    ])
+      expect(
+        PolicyDocumentV1Schema.safeParse({
+          schemaVersion: 1,
+          statements: [{ ...statement, lifetime }],
+        }).success
+      ).toBe(false);
+    for (const extra of [
+      { agentId: container.id },
+      { responsibleUserId: userId },
+      { expiresAt: statement.lifetime.notAfter },
+      { enabled: true },
+    ])
+      expect(PolicyGrantV1Schema.safeParse({ ...statement.grant, ...extra }).success).toBe(false);
+  });
+
   it('separates scope from lifetime and defaults participant failure to human escalation', () => {
     const document = PolicyDocumentV1Schema.parse({ schemaVersion: 1, statements: [binding] });
     expect(document.statements[0]).toMatchObject({

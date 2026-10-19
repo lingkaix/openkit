@@ -25,7 +25,10 @@ import {
   readNanoHostPhysicalConnectionContext,
 } from '../auth/nanohost-transport-session.js';
 import { importWorkspaceSkill, skillSnapshotPath } from '../catalog/resource-catalog.js';
-import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
+import {
+  createInMemoryRuntimeConfigSnapshot,
+  loadRuntimeConfig,
+} from '../config/runtime-config.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
@@ -51,6 +54,7 @@ import {
 } from '../test-support/native-environment.js';
 import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { managedThreadPolicy } from '../test-support/resource-policy.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
@@ -925,7 +929,10 @@ function prepareNonmemberAdminWorkerStorage(label: string) {
     sandboxBindingRef: `lease-binding:${label}`,
     serverAdminTokenId: tokenId,
   });
-  const currentConfiguration = createInMemoryRuntimeConfigSnapshot({ dataRoot: coreDb.dataRoot });
+  const currentConfiguration = createInMemoryRuntimeConfigSnapshot({
+    dataRoot: coreDb.dataRoot,
+    workspaceConfigs: loadRuntimeConfig(coreDb.dataRoot).workspaceConfigs,
+  });
   const runtime = createConfiguredWorkerLifecycleRuntime({
     readRuntimeConfig: () => currentConfiguration,
     coreDb,
@@ -967,16 +974,18 @@ function observeExecutionAttempts(
     : [];
 }
 
-/** Supplies the explicit current Policy input required by real retained-storage admission. */
+/** Reads current authored Policy after each fixture creates its owned Workspace. */
 function createConfiguredWorkerLifecycleRuntime(
   options: Parameters<typeof createWorkerLifecycleOwner>[0] = {}
 ) {
-  const current = createInMemoryRuntimeConfigSnapshot({
-    dataRoot: options.coreDb?.dataRoot ?? null,
-  });
   return createWorkerLifecycleOwner({
     ...options,
-    readRuntimeConfig: options.readRuntimeConfig ?? (() => current),
+    readRuntimeConfig:
+      options.readRuntimeConfig ??
+      (() =>
+        options.coreDb
+          ? loadRuntimeConfig(options.coreDb.dataRoot)
+          : createInMemoryRuntimeConfigSnapshot({ dataRoot: null })),
   });
 }
 
@@ -2210,8 +2219,9 @@ describe('createConfiguredTurnExecutor', () => {
         : {
             readRuntimeConfig: () =>
               createInMemoryRuntimeConfigSnapshot({
-                dataRoot: null,
+                dataRoot: coreDb.dataRoot,
                 openKitConfig: { nanohost: { maxActiveTurnsPerSandbox: options.capacity! } },
+                workspaceConfigs: loadRuntimeConfig(coreDb.dataRoot).workspaceConfigs,
               }),
           }),
       env: {},
@@ -15002,37 +15012,24 @@ describe('createConfiguredTurnExecutor', () => {
       workspace: {
         name: 'Managed retained storage',
         policy: {
-          resourceAccess: [
-            {
-              resource: { family: 'thread', id: fixture.environmentPackage.scope.threadId },
-              grants: [
-                {
-                  subject: {
-                    kind: 'agent',
-                    userId: fixture.adminUserId,
-                    agentId: fixture.environmentPackage.agent.agentId,
-                  },
-                  operations: ['thread.read'],
-                },
-              ],
-              prohibitions: [],
-            },
-          ],
+          mediation: managedThreadPolicy({
+            workspaceId: fixture.workspaceId,
+            threadId: fixture.environmentPackage.scope.threadId,
+            userId: fixture.adminUserId,
+            agentId: fixture.environmentPackage.agent.agentId,
+            operations: ['thread.read'],
+          }),
         },
       },
     });
-    fixture.currentConfiguration.workspaceConfigs.push({
-      workspaceId: fixture.workspaceId,
-      path: join(
-        fixture.coreDb.dataRoot,
-        'workspaces',
-        fixture.workspaceId,
-        'config/workspace.jsonc'
-      ),
-      config: boundary,
-    });
+    fixture.currentConfiguration.workspaceConfigs.find(
+      (entry) => entry.workspaceId === fixture.workspaceId
+    )!.config = boundary;
     fixture.hooks.onInspect = () => {
-      boundary.workspace.policy!.resourceAccess[0]!.grants = [];
+      const policy = boundary.workspace.policy!.mediation;
+      policy.statements = policy.statements.filter(
+        (statement) => statement.kind === 'managed-boundary'
+      );
     };
     try {
       await expect(

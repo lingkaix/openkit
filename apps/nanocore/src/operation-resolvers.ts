@@ -516,11 +516,12 @@ function requireThreadAudience(
     }
     if (
       evaluateWorkspaceResourceAccess({
+        workspaceId,
         actor,
         eligible: true,
         resource: { family: 'thread', id: threadId },
         operation,
-        resourceAccess: store.getWorkspaceResourceAccess(workspaceId),
+        policy: store.getWorkspaceResourceAccess(workspaceId),
       }).effect !== 'allow'
     )
       throw denied();

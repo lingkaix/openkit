@@ -163,9 +163,79 @@ export const PolicyBindingV1Schema = z
         message: 'Decisive modes cannot continue after failure.',
       });
   });
-/** Storage adds byte bounds; subject and expiry remain in the owning statement. */
+/** Exact native endpoint spelling; URL normalization cannot widen a maintenance target. */
+const PolicyMaintenanceHostV1Schema = z.string().refine((value) => {
+  try {
+    if (
+      !value.split('.').every((label) => /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label)) &&
+      !(value.startsWith('[') && value.endsWith(']'))
+    )
+      return false;
+    const url = new URL(`https://${value}`);
+    return (
+      url.hostname === value &&
+      url.host === value &&
+      url.pathname === '/' &&
+      !url.username &&
+      !url.password &&
+      !url.search &&
+      !url.hash
+    );
+  } catch {
+    return false;
+  }
+}, 'Expected an exact canonical host.');
+
+/** Finite Git targets retain their native paths without glob or normalization aliases. */
+const PolicyMaintenanceRepositoryV1Schema = z
+  .string()
+  .refine(
+    (value) =>
+      /^\/(?:[A-Za-z0-9_~.-]+\/)*[A-Za-z0-9_~.-]+$/.test(value) &&
+      value.split('/').every((segment) => segment !== '.' && segment !== '..'),
+    'Expected a canonical exact repository path.'
+  );
+
+/** Binary bounds describe native absolute paths, never a caller-selected command name. */
+const PolicyMaintenanceBinaryV1Schema = z
+  .string()
+  .refine(
+    (value) =>
+      value.startsWith('/') &&
+      [...value].every(
+        (character) => character.charCodeAt(0) >= 32 && character.charCodeAt(0) !== 127
+      ) &&
+      !value.split('/').some((segment) => segment === '.' || segment === '..') &&
+      !value.includes('//') &&
+      !value.endsWith('/'),
+    'Expected a canonical absolute binary path.'
+  );
+
+/** Native grant constraints extend the shared scope without another subject or expiry. */
 export const PolicyGrantV1Schema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('ordinary') }).strict(),
+  z.object({ kind: z.literal('agent-process'), agentId: AgentIdSchema }).strict(),
+  z
+    .object({
+      kind: z.literal('worker-git-read-maintenance'),
+      networkGrantId: z.string().min(1),
+      host: PolicyMaintenanceHostV1Schema,
+      port: z.number().int().min(1).max(65_535),
+      protocol: z.literal('rest'),
+      repositoryPaths: z
+        .array(PolicyMaintenanceRepositoryV1Schema)
+        .min(1)
+        .refine(
+          (values) => new Set(values).size === values.length,
+          'Repository paths must be unique.'
+        ),
+      binaries: z
+        .array(PolicyMaintenanceBinaryV1Schema)
+        .min(1)
+        .refine((values) => new Set(values).size === values.length, 'Binaries must be unique.'),
+      validFrom: z.iso.datetime({ precision: 3 }),
+    })
+    .strict(),
   z
     .object({
       kind: z.literal('storage-lease'),
@@ -200,16 +270,44 @@ export const PolicyPermissionV1Schema = z
   })
   .strict()
   .superRefine((statement, context) => {
-    if (statement.grant.kind === 'storage-lease' && !statement.lifetime.notAfter)
+    if (
+      ['storage-lease', 'worker-git-read-maintenance'].includes(statement.grant.kind) &&
+      !statement.lifetime.notAfter
+    )
       context.addIssue({
         code: 'custom',
         path: ['lifetime', 'notAfter'],
-        message: 'Storage leases require their statement expiry.',
+        message: 'Finite native grants require their statement expiry.',
+      });
+    if (
+      statement.grant.kind === 'worker-git-read-maintenance' &&
+      statement.lifetime.notAfter &&
+      Date.parse(statement.grant.validFrom) >= Date.parse(statement.lifetime.notAfter)
+    )
+      context.addIssue({
+        code: 'custom',
+        path: ['lifetime', 'notAfter'],
+        message: 'Maintenance validity must be a nonempty finite interval.',
       });
   })
   .describe(
-    'Storage-lease permissions require lifetime.notAfter; validate this cross-field rule with the canonical Zod schema.'
+    'Storage-lease and finite maintenance permissions require lifetime.notAfter; maintenance validFrom precedes it. Use canonical Zod validation for cross-field rules.'
   );
+/** A managed boundary adds a required Policy class without granting any subject a right. */
+export const PolicyManagedBoundaryV1Schema = z
+  .object({
+    ...statementFields,
+    kind: z.literal('managed-boundary'),
+    state: z.enum(['inactive', 'active']),
+    scope: z
+      .object({
+        subjects: z.array(PolicyPrincipalV1Schema).length(0),
+        actions: z.array(z.string().min(1)).length(0),
+        resources: z.array(PolicyResourceV1Schema).min(1),
+      })
+      .strict(),
+  })
+  .strict();
 /** Exact Goal delegation approved with its Plan in one existing Pending Request. */
 export const PolicyDelegationV1Schema = z
   .object({
@@ -234,7 +332,12 @@ export const PolicyDocumentV1Schema = z
   .object({
     schemaVersion: z.literal(1),
     statements: z.array(
-      z.union([PolicyBindingV1Schema, PolicyPermissionV1Schema, PolicyDelegationV1Schema])
+      z.union([
+        PolicyBindingV1Schema,
+        PolicyPermissionV1Schema,
+        PolicyDelegationV1Schema,
+        PolicyManagedBoundaryV1Schema,
+      ])
     ),
   })
   .strict()
@@ -245,6 +348,22 @@ export const PolicyDocumentV1Schema = z
         path: ['statements'],
         message: 'Statement selectors must be unique.',
       });
+    const maintenanceTuples = new Set<string>();
+    for (const [index, statement] of document.statements.entries()) {
+      if (statement.kind !== 'permission' || statement.grant.kind !== 'worker-git-read-maintenance')
+        continue;
+      const subject = statement.scope.subjects[0];
+      const resource = statement.scope.resources[0];
+      const key = JSON.stringify([subject, resource, statement.grant.networkGrantId]);
+      if (maintenanceTuples.has(key))
+        context.addIssue({
+          code: 'custom',
+          path: ['statements', index],
+          message:
+            'Maintenance statements must have unique responsible-human, Agent and grant tuples.',
+        });
+      maintenanceTuples.add(key);
+    }
   });
 /** Exact admitted process; direct human requests explicitly have no Turn. */
 export const PolicySubjectV1Schema = z
