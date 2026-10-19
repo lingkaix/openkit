@@ -241,3 +241,5 @@ The existing operation registry also includes native Policy points for `mcp.call
 Knowledge retrieval accepts optional nonempty `types` and `appliesTo` identifier lists. They narrow existing scope-derived retrieval without changing Page reference fields or authority. Existing retrieval parameters retain supplied normalized lists and omit both keys when absent. The [Notebook owner](../../docs/specs/20260909-knowledge_notebook_editing.md#typed-domain-pages) defines matching; NanoCore owns eligibility and execution.
 
 `material.ts` keeps the existing Artifact version list, detail and commit response fields as derived projections of the retained snapshot and producing facts. `material-range.ts` owns the unchanged exact Material-base UTF-16 range schema, which `material.ts` imports and re-exports.
+
+Evaluation sets and judgements use the shared retained-v1 `schemaVersion` marker. Retained readers reject absent or unknown markers before decoding the family; current writers use `writeRetainedV1`.

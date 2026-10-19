@@ -37,13 +37,14 @@ const judgementReader = z.discriminatedUnion('kind', [
   rate.safeExtend({ actor, target }),
 ]);
 
+/** Checks the shared marker before interpreting any retained judgement. */
 export const JudgementRecordReaderSchema = z.preprocess(retainedV1Input, judgementReader);
 
 /** Retained membership reads use the same coherence predicates without applying strict command admission to descriptions. */
 const candidateSetReader = CandidateSetRecordSchema.safeExtend({
   createdBy: actor,
   candidates: z.array(candidate).min(2),
-  judgements: z.array(JudgementRecordReaderSchema),
+  judgements: z.array(judgementReader),
 });
 
 /** Checks the shared marker before reading immutable membership and nested judgements. */
