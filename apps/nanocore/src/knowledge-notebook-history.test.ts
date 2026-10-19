@@ -116,6 +116,7 @@ afterEach(() => {
 
 /** Seed through current native source admission and fixed-base publication. */
 async function seed(f: ReturnType<typeof fixture>) {
+  const rootRevision = git(f, 'rev-parse', 'refs/heads/published');
   const source = await call(f, 'knowledge.source.register', {
     requestId: randomUUID(),
     kind: 'document',
@@ -154,7 +155,14 @@ async function seed(f: ReturnType<typeof fixture>) {
     proposalDigest,
   });
   expect(first.status, JSON.stringify(first.body)).toBe(200);
-  return { original, reference, initial, revision: saved.candidateRevision };
+  return {
+    original,
+    reference,
+    rootRevision,
+    sourceId: source.body.source.id,
+    initial,
+    revision: saved.candidateRevision,
+  };
 }
 
 describe('native Workspace Notebook history and restore', () => {
@@ -192,13 +200,26 @@ describe('native Workspace Notebook history and restore', () => {
       },
     ]);
     expect(history.body.nextRevision).toBe(s.initial);
-    const rootHistory = await call(f, 'knowledge.notebook.history', {
+    // Native capture publishes a Source pointer between initialization and the page proposal.
+    const sourceHistory = await call(f, 'knowledge.notebook.history', {
       revision: s.initial,
+      limit: 1,
+    });
+    expect(sourceHistory.status, JSON.stringify(sourceHistory.body)).toBe(200);
+    expect(sourceHistory.body.revisions[0]).toMatchObject({
+      revision: s.initial,
+      parentRevision: s.rootRevision,
+      availability: 'available',
+      changedPaths: [`sources/${s.sourceId}.md`],
+    });
+    expect(sourceHistory.body.nextRevision).toBe(s.rootRevision);
+    const rootHistory = await call(f, 'knowledge.notebook.history', {
+      revision: s.rootRevision,
       limit: 1,
     });
     expect(rootHistory.status, JSON.stringify(rootHistory.body)).toBe(200);
     expect(rootHistory.body.revisions[0]).toMatchObject({
-      revision: s.initial,
+      revision: s.rootRevision,
       parentRevision: null,
       availability: 'available',
       changedPaths: ['index.md', 'mem_project.md'],
