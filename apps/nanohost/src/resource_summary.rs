@@ -1,22 +1,89 @@
 //! Bounded projection of exact-container backend observations into resource diagnostics.
 //!
 //! The transport specification's Host-Observed Sandbox Resource Summary owns the fields.
-//! This input seam initially preserves unavailable output so independent producer tests can
-//! expose missing parsing before implementation. Replace that temporary empty projection
-//! before landing; it must never imply measured zero values or affect Sandbox deletion.
+//! Missing or invalid observations remain unknown and cannot affect Sandbox deletion.
+//! Collection and result carriage remain blocked until the Native delete path receives
+//! an actual enclosing operation deadline; a fresh local allowance cannot replace it.
 
 /// Projects raw Docker inspect JSON and optional cgroup-v2 files into the closed summary.
 ///
 /// Missing files remain unknown. Container identity, read bounds and collection lifetime
 /// belong to the caller; this function performs no I/O and grants no lifecycle authority.
 pub(crate) fn summary_from_observation(
-    _docker_inspect_json: &[u8],
-    _memory_peak: Option<&str>,
-    _memory_events: Option<&str>,
-    _cpu_stat: Option<&str>,
-    _pids_peak: Option<&str>,
+    docker_inspect_json: &[u8],
+    memory_peak: Option<&str>,
+    memory_events: Option<&str>,
+    cpu_stat: Option<&str>,
+    pids_peak: Option<&str>,
 ) -> serde_json::Value {
-    serde_json::json!({})
+    let mut summary = serde_json::Map::new();
+    for (name, value) in [
+        ("memoryPeakBytes", memory_peak.and_then(counter)),
+        (
+            "oomKillCount",
+            keyed_counter(memory_events, "oom_kill")
+                .filter(|value| *value <= 9_007_199_254_740_991),
+        ),
+        ("pidsPeak", pids_peak.and_then(counter)),
+    ] {
+        if let Some(value) = value {
+            summary.insert(name.into(), value.into());
+        }
+    }
+    for (name, key) in [
+        ("cpuUsageSeconds", "usage_usec"),
+        ("cpuThrottledSeconds", "throttled_usec"),
+    ] {
+        if let Some(value) = keyed_counter(cpu_stat, key) {
+            summary.insert(name.into(), serde_json::json!(value as f64 / 1_000_000.0));
+        }
+    }
+    if let Ok(inspect) = serde_json::from_slice::<serde_json::Value>(docker_inspect_json)
+        && let Some(containers) = inspect.as_array()
+        && containers.len() == 1
+    {
+        let state = &containers[0]["State"];
+        if let Some(value) = state["OOMKilled"].as_bool() {
+            summary.insert("backendOomKilled".into(), value.into());
+        }
+        if let Some(value) = state["Status"].as_str()
+            && matches!(
+                value,
+                "created" | "running" | "paused" | "restarting" | "removing" | "exited" | "dead"
+            )
+        {
+            summary.insert("exitState".into(), value.into());
+        }
+    }
+    serde_json::Value::Object(summary)
+}
+
+/// Reads a measured nonnegative integer within the interoperable JSON range.
+fn counter(raw: &str) -> Option<u64> {
+    let raw = raw.trim();
+    if raw.is_empty() || !raw.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    raw.parse::<u64>()
+        .ok()
+        .filter(|value| *value <= 9_007_199_254_740_991)
+}
+
+/// Selects one unambiguous cgroup counter; duplicates and extra tokens are invalid.
+fn keyed_counter(raw: Option<&str>, key: &str) -> Option<u64> {
+    let mut matching = raw?.lines().filter_map(|line| {
+        let mut words = line.split_whitespace();
+        (words.next() == Some(key)).then(|| (words.next(), words.next()))
+    });
+    let (value, extra) = matching.next()?;
+    if extra.is_some() || matching.next().is_some() {
+        return None;
+    }
+    let value = value?;
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    value.parse().ok()
 }
 
 #[cfg(test)]
