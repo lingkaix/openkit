@@ -72,7 +72,7 @@ The operation attached to each field follows its natural owner: a scalar prefere
 
 ### Thread
 
-`Thread` is one durable narrative for related work with exactly one immutable owner: a Workspace or the CoreServer. Workspace ownership remains the default. The general Server owner kind is `server`; it is not specific to an internal role. A Server-owned Thread has no Workspace anchor. Its Turns and Items inherit the Server owner. Both owners use one record family; an explicit owner discriminator supplies authority.
+`Thread` is one durable narrative for related work with exactly one immutable owner: a Workspace or the CoreServer. Workspace ownership remains the default. The general Server owner kind is `server`; it is not specific to an internal role. A Server-owned Thread has no Workspace anchor. Its Turns and Items inherit the Server owner. Both owners use one record family; an explicit discriminator identifies the immutable owner.
 
 A conversational Thread is addressed to exactly one conversational counterpart. In Chat Mode that counterpart is the Core Assistant. Its private Timeline and later Workspace-shared conversations retain distinct audiences ([decision](../decisions/20261015-shared_conversation_and_single_agent_threads.md)). A worker-execution Thread has no conversational counterpart: it is classified by its execution purpose and remains reachable through lineage and reference Items rather than being presented as an addressed conversation.
 

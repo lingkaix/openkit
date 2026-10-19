@@ -21,3 +21,5 @@ The authority helper initializes each fresh demo Notebook through the native Git
 The fresh demo Workspace records use the current retained marker. Each fixture scope retains a distinct canonical Knowledge Base ID in its configuration before the initial Notebook publication, and publication validation uses that exact page scope. Seed retries retain those IDs and Git publications without repairing invalid retained records.
 
 The demo Thread fixture carries the canonical explicit Workspace owner. Its existing envelope lineage stays an address, and its digest covers the same admitted Thread payload as the native reader. No retired record shape is emitted.
+
+Qualification public-record checks require an explicit Workspace owner on each attributed Turn. Plan and operation Workspace selectors remain addressing inputs. Synthetic Turn and Item fixtures use the same current owner shape.

@@ -2332,7 +2332,7 @@ describe('pending requests', () => {
     }
     store.updateTurn(otherTurn.id, { status: 'completed', completedAt: NOW });
     const decision = {
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001' as const,
+      owner: otherTurn.owner,
       threadId: other.id,
       turnId: otherTurn.id,
       type: 'approval-decision' as const,

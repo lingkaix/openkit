@@ -1,3 +1,5 @@
+// openkit-test-platform: posix
+
 import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import {
@@ -1529,7 +1531,7 @@ describe('worker MCP routes', () => {
     });
     const peer = turns[1]!;
     const itemFields = {
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: peer.owner,
       threadId: peer.threadId,
       turnId: peer.id,
       status: 'completed' as const,

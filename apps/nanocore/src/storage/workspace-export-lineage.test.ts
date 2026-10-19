@@ -186,7 +186,7 @@ function createLineageExportInput(
   const agentSetup = createTestAgentSetup();
   const item = {
     id: source.itemId,
-    workspaceId: source.workspaceId,
+    owner: { kind: 'workspace', workspaceId: source.workspaceId },
     threadId: source.threadId,
     turnId: source.turnId,
     type: 'assistant-message',
@@ -197,7 +197,7 @@ function createLineageExportInput(
   };
   const approvalItem = {
     id: source.approvalItemId,
-    workspaceId: source.workspaceId,
+    owner: { kind: 'workspace', workspaceId: source.workspaceId },
     threadId: source.threadId,
     turnId: source.turnId,
     type: 'approval-request',
@@ -212,7 +212,7 @@ function createLineageExportInput(
   };
   const intentItem = {
     id: source.intentItemId,
-    workspaceId: source.workspaceId,
+    owner: { kind: 'workspace', workspaceId: source.workspaceId },
     threadId: source.threadId,
     turnId: source.turnId,
     type: 'user-message',
@@ -246,7 +246,7 @@ function createLineageExportInput(
   };
   const artifactReferenceItem = {
     id: artifactReferenceItemId(source.artifactId, source.turnId),
-    workspaceId: source.workspaceId,
+    owner: { kind: 'workspace', workspaceId: source.workspaceId },
     threadId: source.threadId,
     turnId: source.turnId,
     type: 'artifact-reference',
@@ -261,7 +261,7 @@ function createLineageExportInput(
   };
   const planItem = {
     id: source.planItemId,
-    workspaceId: source.workspaceId,
+    owner: { kind: 'workspace', workspaceId: source.workspaceId },
     threadId: source.threadId,
     turnId: source.turnId,
     type: 'plan',
@@ -274,7 +274,7 @@ function createLineageExportInput(
   };
   const turn = {
     id: source.turnId,
-    workspaceId: source.workspaceId,
+    owner: { kind: 'workspace', workspaceId: source.workspaceId },
     threadId: source.threadId,
     triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const,
     items: [item, planItem, artifactReferenceItem, approvalItem, intentItem],
@@ -399,7 +399,7 @@ function createLineageExportInput(
     threads: [
       {
         id: source.threadId,
-        workspaceId: source.workspaceId,
+        owner: { kind: 'workspace', workspaceId: source.workspaceId },
         name: 'Lineage thread',
         preview: 'Lineage thread',
         entryPath: 'conversation',
@@ -496,7 +496,7 @@ function createLineageExportInput(
     capabilityCalls: [
       {
         id: 'cap_00000000-0000-711a-9c64-db220d6b90dc',
-        workspaceId: source.workspaceId,
+        owner: { kind: 'workspace', workspaceId: source.workspaceId },
         threadId:
           missing === 'capability-thread'
             ? 'th_00000000-0000-70ca-938d-c2a0530f9882'
@@ -1516,7 +1516,7 @@ function createWorkResourceLineageExportInput(
     });
     const followUpItem = {
       id: followUpItemId,
-      workspaceId: source.workspaceId,
+      owner: { kind: 'workspace', workspaceId: source.workspaceId },
       threadId: source.threadId,
       turnId: followUpTurnId,
       type: 'user-message',
@@ -1531,7 +1531,7 @@ function createWorkResourceLineageExportInput(
       ...input.turns,
       {
         id: followUpTurnId,
-        workspaceId: source.workspaceId,
+        owner: { kind: 'workspace', workspaceId: source.workspaceId },
         threadId: source.threadId,
         triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         items: [followUpItem],

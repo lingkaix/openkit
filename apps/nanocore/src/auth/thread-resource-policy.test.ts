@@ -56,16 +56,24 @@ it('does not copy a managed source into an unmanaged or different audience', () 
   expect(canDiscloseThreadToAudience(store, destination, source)).toBe(true);
 });
 
-
 it('never interprets a Server Thread as Workspace audience authority', () => {
   const store = new FsStore();
   const timestamp = '2026-10-19T00:00:00.000Z';
   const thread = ThreadSchema.parse({
-    id: allocateEntityId('th'), owner: { kind: 'server' }, name: 'Server work', preview: 'Server work',
-    status: 'active', entryPath: 'knowledge-manager', visibility: 'server', createdAt: timestamp, updatedAt: timestamp,
+    id: allocateEntityId('th'),
+    owner: { kind: 'server' },
+    name: 'Server work',
+    preview: 'Server work',
+    status: 'active',
+    entryPath: 'knowledge-manager',
+    visibility: 'server',
+    createdAt: timestamp,
+    updatedAt: timestamp,
   });
   for (const administratorEligible of [false, true]) {
-    expect(isThreadVisible(store, thread, allocateEntityId('usr'), administratorEligible)).toBe(false);
+    expect(isThreadVisible(store, thread, allocateEntityId('usr'), administratorEligible)).toBe(
+      false
+    );
   }
   expect(canDiscloseThreadToAudience(store, thread, thread)).toBe(false);
   expect(canDiscloseThreadToAudience(store, thread, null)).toBe(false);

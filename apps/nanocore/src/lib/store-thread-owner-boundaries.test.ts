@@ -65,6 +65,19 @@ function message(
 }
 
 describe('canonical work owner and retained storage boundaries', () => {
+  it('rejects a Server owner supplied through Workspace Thread audience fields without polluting the Workspace cache', () => {
+    const store = new FsStore();
+    const workspace = store.createWorkspace('Workspace');
+    expect(() =>
+      store.createThread(workspace.id, 'Wrong owner', undefined, 'conversation', {
+        owner: { kind: 'server' },
+        visibility: 'server',
+      } as never)
+    ).toThrow();
+    expect(store.listThreads(workspace.id)).toEqual([]);
+    expect(store.listServerThreads()).toEqual([]);
+  });
+
   it('publishes explicit owners and reloads both families through the same schema', () => {
     const f = fixture();
     for (const [schema, record, owner] of [

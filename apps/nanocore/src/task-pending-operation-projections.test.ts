@@ -107,7 +107,9 @@ function fixture(
     ];
     store.createItem({
       id: testEntityId('it', `it_${requestId}`),
-      ...common,
+      owner: turn.owner,
+      threadId: thread.id,
+      responsibleUserId: common.responsibleUserId,
       turnId: turn.id,
       type: 'user-input-request',
       status: 'completed',

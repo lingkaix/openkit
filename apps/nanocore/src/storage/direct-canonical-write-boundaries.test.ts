@@ -1,3 +1,5 @@
+// openkit-test-platform: posix
+
 import {
   existsSync,
   mkdirSync,

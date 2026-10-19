@@ -1,4 +1,4 @@
-import { workspaceIdForOwner } from '@openkit/protocol';
+/** A contradictory ordinary Context Package projection remains inspect-only. */
 export class WorkerContextProjectionError extends Error {
   public readonly code = 'recovery_required';
   public readonly status = 409;
@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ThreadMaterialActiveDelivery, ThreadTaskInput } from '@openkit/app-api-schemas';
-import { isSealedTurnTerminal } from '@openkit/protocol';
+import { isSealedTurnTerminal, workspaceIdForOwner } from '@openkit/protocol';
 import { StructuredWorkerDelegationRequestSchema } from '../internal-agents/delegation.js';
 import type { FsStore } from '../lib/store.js';
 import { listSchedulerAdmissionEntriesForWorkspace } from '../scheduler-records.js';

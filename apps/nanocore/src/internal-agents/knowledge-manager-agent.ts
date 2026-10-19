@@ -173,6 +173,11 @@ export async function runKnowledgeManagerAgent(
   dependencies: KnowledgeManagerAgentDependencies,
   input: KnowledgeManagerAgentRun
 ): Promise<{ readonly turnId: string; readonly text: string }> {
+  if (
+    input.turn.owner.kind !== 'workspace' ||
+    input.turn.owner.workspaceId !== input.workspaceDb.workspaceId
+  )
+    throw new Error('Knowledge Manager Workspace owner mismatch.');
   return runBoundedKnowledgeManagerAgent(dependencies, input);
 }
 
@@ -181,6 +186,8 @@ export async function runServerKnowledgeManagerAgent(
   dependencies: KnowledgeManagerAgentDependencies,
   input: ServerKnowledgeManagerAgentRun
 ): Promise<{ readonly turnId: string; readonly text: string }> {
+  if (input.turn.owner.kind !== 'server')
+    throw new Error('Knowledge Manager Server owner mismatch.');
   return runBoundedKnowledgeManagerAgent(dependencies, input);
 }
 

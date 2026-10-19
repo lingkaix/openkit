@@ -13,6 +13,7 @@ import {
   openExistingCoreDbWithIntegrityCheck,
   type WorkspaceDb,
 } from '../storage/db.js';
+import { StoredThreadSnapshotV1Schema } from '../storage/retained-work-events-v1.js';
 import {
   type PublishedTurnIdentity,
   readPublishedAgentSessionIds,
@@ -676,14 +677,15 @@ function readWorkspaceThreadOwner(
   }
   try {
     const workspace = JSON.parse(readFileSync(workspacePath, 'utf8')) as { readonly id?: unknown };
-    const thread = JSON.parse(readFileSync(threadPath, 'utf8')) as {
-      readonly id?: unknown;
-      readonly workspaceId?: unknown;
-    };
+    const thread = StoredThreadSnapshotV1Schema.safeParse(
+      JSON.parse(readFileSync(threadPath, 'utf8'))
+    );
     if (
       workspace.id !== identity.workspaceId ||
-      thread.id !== identity.threadId ||
-      thread.workspaceId !== identity.workspaceId
+      !thread.success ||
+      thread.data.id !== identity.threadId ||
+      thread.data.owner.kind !== 'workspace' ||
+      thread.data.owner.workspaceId !== identity.workspaceId
     ) {
       return 'invalid-ownership';
     }

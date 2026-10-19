@@ -578,7 +578,9 @@ function replayConversationCommand(
       workspaceIdForOwner(userItem.owner) !== workspaceId ||
       userItem.threadId !== threadId ||
       userItem.turnId !== currentTurn.id ||
-      resultItem?.workspaceId !== workspaceId ||
+      !resultItem ||
+      resultItem.owner.kind !== 'workspace' ||
+      resultItem.owner.workspaceId !== workspaceId ||
       resultItem.threadId !== threadId ||
       resultItem.turnId !== currentTurn.id ||
       currentTurn.startedAt !== userItem.createdAt ||

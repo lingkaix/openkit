@@ -74,6 +74,7 @@ import {
   VaultReferenceIdSchema,
   WorkspaceIdSchema,
   WorkspaceRecordSchema,
+  workspaceIdForOwner,
 } from '@openkit/protocol';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import { applyEdits, modify } from 'jsonc-parser';
@@ -743,7 +744,7 @@ function createImportedWorkerContextPackageAuthorityReader(
     readAdmission: () => null,
     readThreadParent: (workspaceId, threadId) =>
       snapshot.threads.find(
-        (thread) => thread.workspaceId === workspaceId && thread.id === threadId
+        (thread) => workspaceIdForOwner(thread.owner) === workspaceId && thread.id === threadId
       )?.parentThreadId ?? null,
     readAgentEnvironmentPackage: (workspaceId, packageSnapshotId) =>
       snapshot.agentEnvironmentPackageSnapshots.find(
@@ -779,11 +780,13 @@ function createImportedWorkerContextPackageAuthorityReader(
       return material && revision ? { ...revision, sensitivity: material.sensitivity } : null;
     },
     readThreadItems: (workspaceId, threadId) =>
-      items.filter((item) => item.workspaceId === workspaceId && item.threadId === threadId),
+      items.filter(
+        (item) => workspaceIdForOwner(item.owner) === workspaceId && item.threadId === threadId
+      ),
     readTurn: (workspaceId, threadId, turnId) => {
       const turn = snapshot.turns.find(
         (candidate) =>
-          candidate.workspaceId === workspaceId &&
+          workspaceIdForOwner(candidate.owner) === workspaceId &&
           candidate.threadId === threadId &&
           candidate.id === turnId
       );
@@ -1361,7 +1364,7 @@ function readCanonicalImportState(context: ImportRemintContext) {
     ThreadSchema.parse({
       ...thread,
       id: requiredMapValue(threadIds, thread.id, 'Thread'),
-      workspaceId: context.targetWorkspaceId,
+      owner: { kind: 'workspace', workspaceId: context.targetWorkspaceId },
     })
   );
   remintAssistantThreadParents(threads, threadIds);
@@ -1593,7 +1596,7 @@ function readCanonicalImportState(context: ImportRemintContext) {
       id: requiredMapValue(itemIds, item.id, 'item'),
       threadId: requiredMapValue(threadIds, item.threadId, 'thread'),
       turnId: requiredMapValue(turnIds, item.turnId, 'turn'),
-      workspaceId: context.targetWorkspaceId,
+      owner: { kind: 'workspace', workspaceId: context.targetWorkspaceId },
       ...(item.parentItemId === undefined
         ? {}
         : {
@@ -1639,7 +1642,7 @@ function readCanonicalImportState(context: ImportRemintContext) {
       ...turn,
       id: requiredMapValue(turnIds, turn.id, 'turn'),
       threadId: requiredMapValue(threadIds, turn.threadId, 'thread'),
-      workspaceId: context.targetWorkspaceId,
+      owner: { kind: 'workspace', workspaceId: context.targetWorkspaceId },
       agentSessionId: turn.agentSessionId
         ? requiredMapValue(agentSessionIds, turn.agentSessionId, 'AgentSession')
         : turn.agentSessionId,
@@ -2204,6 +2207,8 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
     }
   }
   const capabilityCalls = exportedCapabilityCalls.map((parsed) => {
+    if (workspaceIdForOwner(parsed.owner) !== report.exportedWorkspaceId)
+      throw new Error('CapabilityCall has a foreign portable owner.');
     const packageSnapshotId = parsed.packageSnapshotId
       ? requiredMapValue(
           agentEnvironmentPackageSnapshotIds,
@@ -2238,7 +2243,7 @@ function readSecurityRuntimeLedgerState(context: ImportRemintContext) {
             .digest('hex')
             .slice(0, 24)}`
         : null,
-      workspaceId: context.targetWorkspaceId,
+      owner: { kind: 'workspace', workspaceId: context.targetWorkspaceId },
     });
   });
   const sourceProvenancePackages = new Map(
@@ -5431,7 +5436,7 @@ function remintWorkObservationReference(
         .find((record) => record.id === ref.locator);
       if (
         !call ||
-        call.workspaceId !== context.report.exportedWorkspaceId ||
+        workspaceIdForOwner(call.owner) !== context.report.exportedWorkspaceId ||
         call.threadId !== turn.threadId ||
         call.turnId !== turn.id
       )

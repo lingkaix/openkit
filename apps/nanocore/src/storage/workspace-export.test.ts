@@ -2623,7 +2623,7 @@ describe('workspace export verifier', () => {
       expect.objectContaining({
         capabilityId: 'assistant.repository.read',
         family: 'workspace',
-        workspaceId: 'ws_00000000-0000-7689-a3f6-ae0b906eb3a8',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7689-a3f6-ae0b906eb3a8' },
       }),
     ]);
   });

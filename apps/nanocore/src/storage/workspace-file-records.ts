@@ -47,6 +47,7 @@ import {
   WorkerStorageTargetIdSchema,
   WorkspaceIdSchema,
   WorkspaceRecordSchema,
+  workspaceIdForOwner,
   writeRetainedV1,
 } from '@openkit/protocol';
 import {
@@ -262,7 +263,7 @@ export function listUnresolvedUserInputRequestItemIds(itemRevisions: readonly It
       )
       .map((item) =>
         JSON.stringify([
-          item.workspaceId,
+          workspaceIdForOwner(item.owner),
           item.threadId,
           item.turnId,
           item.userInputRequestId,
@@ -277,7 +278,7 @@ export function listUnresolvedUserInputRequestItemIds(itemRevisions: readonly It
         item.type === 'user-input-request' &&
         !completedResponses.has(
           JSON.stringify([
-            item.workspaceId,
+            workspaceIdForOwner(item.owner),
             item.threadId,
             item.turnId,
             item.userInputRequestId,
@@ -294,12 +295,9 @@ export function listUnresolvedUserInputRequestItemIds(itemRevisions: readonly It
  *
  * @param previous Previous canonical Item revision.
  * @param next Proposed later revision for the same Item.
- * @throws Error when actor, responsible user, or command causation changes.
+ * @throws Error when owner, actor, responsible user, or command causation changes.
  */
-export function assertImmutableItemAttribution(
-  previous: Item | import('@openkit/protocol').ServerItem,
-  next: Item | import('@openkit/protocol').ServerItem
-): void {
+export function assertImmutableItemAttribution(previous: Item, next: Item): void {
   const actorChanged =
     ((previous.type === 'user-message' && next.type === 'user-message') ||
       (previous.type === 'approval-decision' && next.type === 'approval-decision') ||
@@ -314,7 +312,12 @@ export function assertImmutableItemAttribution(
       (previous.type === 'user-input-response' && next.type === 'user-input-response')) &&
     previous.causationId !== next.causationId;
 
-  if (actorChanged || responsibleUserChanged || causationChanged) {
+  const ownerChanged =
+    previous.owner.kind !== next.owner.kind ||
+    (previous.owner.kind === 'workspace' &&
+      next.owner.kind === 'workspace' &&
+      previous.owner.workspaceId !== next.owner.workspaceId);
+  if (ownerChanged || actorChanged || responsibleUserChanged || causationChanged) {
     throw new Error(`Item attribution cannot change: ${next.id}.`);
   }
 }
@@ -392,7 +395,7 @@ export function parseCanonicalWorkspaceHistory(input: {
 
   for (const thread of threads) {
     claimGlobalId(threadIds, thread.id, 'thread');
-    if (thread.workspaceId !== workspace.id) {
+    if (workspaceIdForOwner(thread.owner) !== workspace.id) {
       throw new Error(`Thread ${thread.id} has invalid lineage.`);
     }
     threadsById.set(thread.id, thread);
@@ -400,7 +403,11 @@ export function parseCanonicalWorkspaceHistory(input: {
   for (const turn of turns) {
     claimGlobalId(turnIds, turn.id, 'turn');
     const thread = threadsById.get(turn.threadId);
-    if (!thread || turn.workspaceId !== workspace.id || thread.workspaceId !== workspace.id) {
+    if (
+      !thread ||
+      workspaceIdForOwner(turn.owner) !== workspace.id ||
+      workspaceIdForOwner(thread.owner) !== workspace.id
+    ) {
       throw new Error(`Turn ${turn.id} has invalid lineage.`);
     }
     turnsById.set(turn.id, turn);
@@ -410,10 +417,10 @@ export function parseCanonicalWorkspaceHistory(input: {
     const previous = latestItems.get(item.id);
     if (
       !turn ||
-      item.workspaceId !== workspace.id ||
+      workspaceIdForOwner(item.owner) !== workspace.id ||
       item.threadId !== turn.threadId ||
       (previous &&
-        (previous.workspaceId !== item.workspaceId ||
+        (workspaceIdForOwner(previous.owner) !== workspaceIdForOwner(item.owner) ||
           previous.threadId !== item.threadId ||
           previous.turnId !== item.turnId ||
           previous.type !== item.type ||
@@ -502,7 +509,7 @@ export function parseCanonicalWorkspaceHistory(input: {
       (artifact.turnId !== null &&
         (!turn ||
           artifact.threadId !== turn.threadId ||
-          artifact.workspaceId !== turn.workspaceId)) ||
+          artifact.workspaceId !== workspaceIdForOwner(turn.owner))) ||
       (artifact.origin.kind === 'turn-output' && producingReferences.length !== 1) ||
       currentReferences.length > 1 ||
       (requiresCurrentReference && currentReferences.length !== 1)
@@ -525,9 +532,9 @@ export function parseCanonicalWorkspaceHistory(input: {
       }
       if (
         !artifact ||
-        reference.workspaceId !== artifact.workspaceId ||
+        workspaceIdForOwner(reference.owner) !== artifact.workspaceId ||
         !turn ||
-        turn.workspaceId !== artifact.workspaceId ||
+        workspaceIdForOwner(turn.owner) !== artifact.workspaceId ||
         reference.threadId !== turn.threadId ||
         reference.artifactVersion > artifact.version
       ) {
@@ -810,7 +817,7 @@ export function readPublishedTurnIdentities(dataRoot: string): PublishedTurnIden
             );
           }
         );
-        if (thread.id !== threadId || thread.workspaceId !== workspaceId) {
+        if (thread.id !== threadId || workspaceIdForOwner(thread.owner) !== workspaceId) {
           return { status: 'unreadable' };
         }
         const turnsRoot = join(threadsRoot, threadId, 'turns');
@@ -869,7 +876,7 @@ export function readPublishedTurnFileRecords(
   const turnWithoutItems = TurnFileMetadataSchema.parse({ ...rawTurn, items: [] });
   if (
     turnWithoutItems.id !== turnId ||
-    turnWithoutItems.workspaceId !== workspaceId ||
+    workspaceIdForOwner(turnWithoutItems.owner) !== workspaceId ||
     turnWithoutItems.threadId !== threadId
   ) {
     throw new Error(`Turn record ${turnWithoutItems.id} has invalid lineage.`);
@@ -909,7 +916,11 @@ function readPublishedItemRevisions(
   for (const value of readDurableCanonicalJsonLines(path)) {
     const item = readRetainedV1(value, ItemReaderSchema.parse);
     const previous = items.get(item.id);
-    if (item.workspaceId !== workspaceId || item.threadId !== threadId || item.turnId !== turnId) {
+    if (
+      workspaceIdForOwner(item.owner) !== workspaceId ||
+      item.threadId !== threadId ||
+      item.turnId !== turnId
+    ) {
       throw new Error(`Item record ${item.id} has invalid lineage.`);
     }
     if (previous && (item.type !== previous.type || item.createdAt !== previous.createdAt)) {
@@ -1199,7 +1210,7 @@ function loadWorkspace(
       writeJsonAtomic(threadPath, projectCanonicalThreadRecord(thread));
     }
 
-    if (thread.id !== threadId || thread.workspaceId !== workspaceId) {
+    if (thread.id !== threadId || workspaceIdForOwner(thread.owner) !== workspaceId) {
       throw new Error(`Thread record ${thread.id} has invalid workspace or directory lineage.`);
     }
 
@@ -1236,7 +1247,7 @@ function loadWorkspace(
 
       if (
         turnWithoutItems.id !== turnId ||
-        turnWithoutItems.workspaceId !== workspaceId ||
+        workspaceIdForOwner(turnWithoutItems.owner) !== workspaceId ||
         turnWithoutItems.threadId !== threadId
       ) {
         throw new Error(`Turn record ${turnWithoutItems.id} has invalid lineage.`);
@@ -1400,7 +1411,7 @@ export function readWorkspaceTurnEvents(workspaceRoot: string, turn: Turn): SseE
   assertSafeWorkspacePathSegment(turn.id, 'Event turn id');
   return loadTurnEvents(
     join(workspaceRoot, 'threads', turn.threadId, 'turns', turn.id, 'runtime', 'events.jsonl'),
-    turn.workspaceId,
+    workspaceIdForOwner(turn.owner),
     turn.threadId,
     turn.id,
     new Set(turn.items.map((item) => item.id))
@@ -1430,7 +1441,11 @@ function loadItemRevisions(
     const item = readRetainedV1(value, ItemReaderSchema.parse);
     const previous = items.get(item.id);
 
-    if (item.workspaceId !== workspaceId || item.threadId !== threadId || item.turnId !== turnId) {
+    if (
+      workspaceIdForOwner(item.owner) !== workspaceId ||
+      item.threadId !== threadId ||
+      item.turnId !== turnId
+    ) {
       throw new Error(`Item record ${item.id} has invalid lineage.`);
     }
     if (previous && (item.type !== previous.type || item.createdAt !== previous.createdAt)) {
@@ -1516,7 +1531,7 @@ export function assertTurnEventPayloadLineage(
       break;
     case 'thread-created':
     case 'thread-updated':
-      valid = data.thread.workspaceId === workspaceId && data.thread.id === threadId;
+      valid = workspaceIdForOwner(data.thread.owner) === workspaceId && data.thread.id === threadId;
       break;
     case 'turn-started':
       valid = data.turnId === turnId;
@@ -1524,20 +1539,20 @@ export function assertTurnEventPayloadLineage(
     case 'turn-updated':
     case 'turn-completed':
       valid =
-        data.turn.workspaceId === workspaceId &&
+        workspaceIdForOwner(data.turn.owner) === workspaceId &&
         data.turn.threadId === threadId &&
         data.turn.id === turnId;
       break;
     case 'item-created':
       valid =
-        data.item.workspaceId === workspaceId &&
+        workspaceIdForOwner(data.item.owner) === workspaceId &&
         data.item.threadId === threadId &&
         data.item.turnId === turnId &&
         itemIds.has(data.item.id);
       break;
     case 'item-completed':
       valid =
-        data.item.workspaceId === workspaceId &&
+        workspaceIdForOwner(data.item.owner) === workspaceId &&
         data.item.threadId === threadId &&
         data.item.turnId === turnId &&
         data.itemId === data.item.id &&
@@ -2267,7 +2282,7 @@ function projectCanonicalThreadRecord(
     schemaVersion: 1,
     recordType: 'thread',
     ownerScope: 'workspace',
-    lineage: { workspaceId: thread.workspaceId, threadId: thread.id },
+    lineage: { workspaceId: workspaceIdForOwner(thread.owner), threadId: thread.id },
     contentDigest: canonicalThreadContentDigest(thread),
     redactionLevel: 'none',
     sensitivity: thread.visibility,

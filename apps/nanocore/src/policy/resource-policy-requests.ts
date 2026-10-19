@@ -1,4 +1,5 @@
 import { WorkspaceResourcePolicyChangeSchema as ResourcePolicyChangeSchema } from '@openkit/app-api-schemas';
+import { workspaceIdForOwner } from '@openkit/protocol';
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
 
 export { WorkspaceResourcePolicyChangeSchema as ResourcePolicyChangeSchema } from '@openkit/app-api-schemas';
@@ -139,7 +140,7 @@ export function raiseResourcePolicyRequest(
   );
   dependencies.store.createItem({
     id: record.requestItemId,
-    workspaceId: record.workspaceId,
+    owner: { kind: 'workspace', workspaceId: record.workspaceId },
     threadId: record.threadId,
     turnId: record.raisingTurnId,
     type: 'approval-request',
@@ -197,7 +198,7 @@ export function isResourcePolicyRequesterCurrent(
     }
     const turn = dependencies.store.getTurnById(origin.lineage.turnId);
     return (
-      turn.workspaceId === record.workspaceId &&
+      workspaceIdForOwner(turn.owner) === record.workspaceId &&
       turn.threadId === record.threadId &&
       turn.id === record.raisingTurnId &&
       turn.agentId === record.agentId &&
@@ -276,7 +277,10 @@ export function checkResourcePolicyCommandIntent(
       403
     );
   }
-  if (thread.visibility !== 'workspace' || thread.workspaceId !== record.workspaceId) {
+  if (
+    thread.visibility !== 'workspace' ||
+    workspaceIdForOwner(thread.owner) !== record.workspaceId
+  ) {
     throw new PendingRequestCommandError(
       'workspace_access_denied',
       'The requested resource is unavailable.',

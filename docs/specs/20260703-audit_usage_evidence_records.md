@@ -2,7 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: concept
-updated: "2026-10-02"
+updated: "2026-10-19"
 ---
 # Audit, Usage, And Evidence Records
 

@@ -913,9 +913,12 @@ async function settleTerminalFailedStart(
         ? requireAgentEnvironmentPackageSnapshot(workspaceDb, attempt.workspaceId, attempt.inputRef)
             .snapshot
         : null;
-    const sameLineage = [turn, admission, ...(session ? [session] : [])].every(
-      (owner) => owner.workspaceId === attempt.workspaceId && owner.threadId === attempt.threadId
-    );
+    const sameLineage =
+      workspaceIdForOwner(turn.owner) === attempt.workspaceId &&
+      turn.threadId === attempt.threadId &&
+      [admission, ...(session ? [session] : [])].every(
+        (owner) => owner.workspaceId === attempt.workspaceId && owner.threadId === attempt.threadId
+      );
     if (
       !sameLineage ||
       (!unassigned && turn.agentSessionId !== attempt.agentSessionId) ||

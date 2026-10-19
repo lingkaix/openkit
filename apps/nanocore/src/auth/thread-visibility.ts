@@ -20,7 +20,8 @@ export function isThreadVisible(
   operation: string | null = 'thread.read',
   policyActor?: ResourcePolicyActor
 ): boolean {
-  if (!userId || !ThreadSchema.safeParse(thread).success || thread.owner.kind !== 'workspace') return false;
+  if (!userId || !ThreadSchema.safeParse(thread).success || thread.owner.kind !== 'workspace')
+    return false;
   const workspace = store.getWorkspace(workspaceIdForOwner(thread.owner));
   if (
     !administratorEligible &&
@@ -118,7 +119,8 @@ export function canDiscloseThreadToAudience(
   source: Thread,
   destination: Thread | null
 ): boolean {
-  if (source.owner.kind !== 'workspace' || (destination && destination.owner.kind !== 'workspace')) return false;
+  if (source.owner.kind !== 'workspace' || (destination && destination.owner.kind !== 'workspace'))
+    return false;
   if (destination && workspaceIdForOwner(source.owner) !== workspaceIdForOwner(destination.owner))
     return false;
   if (destination?.id === source.id) return true;

@@ -5,6 +5,7 @@ import {
   PolicyDelegationV1Schema,
   PolicyDigestV1Schema,
   type PolicyDocumentV1,
+  workspaceIdForOwner,
 } from '@openkit/protocol';
 import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
@@ -199,7 +200,7 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
             (() => {
               const turn = deps.store.getTurnById(container.id);
               return (
-                turn.workspaceId === workspaceId &&
+                workspaceIdForOwner(turn.owner) === workspaceId &&
                 isThreadIdVisible(
                   deps.store,
                   workspaceId,

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
+import { workspaceIdForOwner } from '@openkit/protocol';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { createWorkerContextPackageAuthorityReader } from './context/worker-context-authorities.js';
 import { readPortableWorkerContextPackageTrace } from './context/worker-context-package.js';
@@ -78,7 +79,7 @@ export function verifyKnowledgeProposalWorkHistory(input: {
       throw new Error('Completed-work reference lineage does not match.');
     }
     const turn = input.store.getTurnById(turnId);
-    if (turn.workspaceId !== input.workspaceId || turn.status !== 'completed') {
+    if (workspaceIdForOwner(turn.owner) !== input.workspaceId || turn.status !== 'completed') {
       throw new Error('Completed-work Turn is not eligible.');
     }
 

@@ -58,8 +58,8 @@ const StoredActorV1Schema = z.union([
 
 const StoredKnowledgeOwnerV1Schema = z.union([
   z.object({ kind: z.literal('user'), userId: UserIdSchema }).strict(),
-  z.object({ kind: z.literal('workspace'), workspaceId: WorkspaceIdSchema }),
-  z.object({ kind: z.literal('server'), workspaceId: z.never().optional() }),
+  z.object({ kind: z.literal('workspace'), workspaceId: WorkspaceIdSchema }).strict(),
+  z.object({ kind: z.literal('server') }).strict(),
 ]);
 
 /** Fixed header-free system fields; event snapshots add their editable and derived projections. */

@@ -1,3 +1,4 @@
+// openkit-test-platform: posix
 import { randomUUID } from 'node:crypto';
 import {
   closeSync,

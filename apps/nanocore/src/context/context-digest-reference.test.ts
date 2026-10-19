@@ -1,3 +1,4 @@
+// openkit-test-platform: posix
 import { createHash } from 'node:crypto';
 import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

@@ -1,3 +1,4 @@
+// openkit-test-platform: posix
 import { createHash } from 'node:crypto';
 import { linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import fsPromises from 'node:fs/promises';

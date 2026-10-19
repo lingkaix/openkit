@@ -38,6 +38,7 @@ import {
 } from '../evidence-bundles.js';
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
 import type { CoreDb, WorkspaceDb } from './db.js';
+import { StoredThreadSnapshotV1Schema } from './retained-work-events-v1.js';
 import { StoredTurnV1Schema } from './retained-work-metadata-v1.js';
 import { readServerTurnRecord } from './server-thread-records.js';
 import {
@@ -417,11 +418,10 @@ export function readWorkObservationTurnBinding(
     root = join(root, part);
     assertCanonicalDirectory(root);
   }
-  const thread = JSON.parse(readCanonicalTextFile(join(root, 'thread.json'))) as Record<
-    string,
-    unknown
-  >;
-  if (thread.id !== input.threadId || thread.workspaceId !== workspaceDb.workspaceId)
+  const thread = StoredThreadSnapshotV1Schema.parse(
+    JSON.parse(readCanonicalTextFile(join(root, 'thread.json')))
+  );
+  if (thread.id !== input.threadId || workspaceIdForOwner(thread.owner) !== workspaceDb.workspaceId)
     throw new Error('recovery_required: observation Thread lineage mismatch');
   for (const part of ['turns', input.turnId]) {
     root = join(root, part);
