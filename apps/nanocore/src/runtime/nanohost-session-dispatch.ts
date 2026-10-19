@@ -4,16 +4,13 @@ import { mkdtemp, open, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import {
-  type NanoHostResourceSummary,
-  NanoHostResourceSummarySchema,
-} from '@openkit/app-api-schemas';
-import {
   AgentEnvironmentDockerfileInputSchema,
   DOCKERFILE_INPUT_MAX_BYTES,
 } from '@openkit/config-schema';
 import type { Context as TelemetryContext } from '@opentelemetry/api';
 import type { Context, Hono } from 'hono';
 import { createScanner } from 'jsonc-parser';
+import { z } from 'zod';
 import { asApiError } from '../api-errors.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import {
@@ -32,7 +29,6 @@ import {
 } from '../telemetry.js';
 import {
   createNanoHostEffectRequest,
-  nanoHostSandboxId,
   nanoHostSandboxIdFromBackendSessionId,
 } from './nanohost-effect-identity.js';
 import {
@@ -306,11 +302,6 @@ interface NanoHostReadinessRuntimeTarget {
 
 /** Authoritative NanoHost route and effect dispatcher. */
 export interface NanoHostSessionDispatch {
-  /** Reads the latest process-local delete observation for this exact Sandbox and Epoch. */
-  readResourceSummary?(
-    sandboxCompatibilityKey: string,
-    physicalEpoch: string
-  ): NanoHostResourceSummary | undefined;
   /** Queues one fixed NanoHost effect for the authoritative client to poll. */
   effect(request: NanoHostSessionEffectRequest): Promise<unknown>;
   /** Dispatches one already-carried effect after checking the physical connection. */
@@ -401,12 +392,6 @@ interface NanoHostResultOnlyGroup {
 
 /** One bounded completed result retained for exact duplicate recognition. */
 interface CompletedNanoHostEffect {
-  /** Best-effort observation outside receipt identity, lost on overwrite or restart. */
-  readonly resourceObservation?: {
-    readonly sandboxId: string;
-    readonly physicalEpoch: string | undefined;
-    readonly summary: NanoHostResourceSummary;
-  };
   readonly requestId: string;
   readonly resultJson: string;
   readonly fileResult?: NanoHostFileResultIdentity;
@@ -547,16 +532,6 @@ export function createNanoHostSessionDispatch(
   };
 
   return {
-    readResourceSummary(sandboxCompatibilityKey, physicalEpoch) {
-      const observation = completedEffects.get('sandbox.delete')?.resourceObservation;
-      if (
-        !observation ||
-        observation.sandboxId !== nanoHostSandboxId(sandboxCompatibilityKey) ||
-        observation.physicalEpoch !== physicalEpoch
-      )
-        return undefined;
-      return { ...observation.summary };
-    },
     effect(
       requestOrConnection: object | NanoHostSessionEffectRequest,
       carriedRequest?: NanoHostSessionEffectRequest
@@ -921,7 +896,7 @@ export function createNanoHostSessionDispatch(
       }
       const requestId = readRequestId(result);
       result = readNanoHostEffectResult(operation, result);
-      const resourceSummary = result.resourceSummary as NanoHostResourceSummary | undefined;
+      const resourceSummary = result.resourceSummary;
       // Host observations do not participate in receipt identity or cleanup decisions.
       if (Object.hasOwn(result, 'resourceSummary')) {
         const { resourceSummary: _diagnostic, ...receipt } = result;
@@ -1095,17 +1070,6 @@ export function createNanoHostSessionDispatch(
       completedEffects.set(operation, {
         requestId,
         resultJson,
-        ...(operation === 'sandbox.delete' &&
-        resourceSummary !== undefined &&
-        typeof resultBody.sandboxId === 'string'
-          ? {
-              resourceObservation: {
-                sandboxId: resultBody.sandboxId,
-                physicalEpoch: pending.originPhysicalEpoch,
-                summary: { ...resourceSummary },
-              },
-            }
-          : {}),
         ...(operation === 'bridge.open' || isExactFileAbsence
           ? { redeliveredConnection: physicalConnection }
           : {}),
@@ -3127,6 +3091,22 @@ function settledImageResult(
     throw effectTransportError(500, 'NanoHost effect failed: effect_failed.');
   return { digest: known.outcome.imageDigest };
 }
+
+/** Closed Host lifetime facts; this diagnostic payload supplies no cleanup or outcome authority. */
+const NanoHostResourceSummarySchema = z
+  .object({
+    memoryPeakBytes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+    oomKillCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+    backendOomKilled: z.boolean().optional(),
+    cpuUsageSeconds: z.number().finite().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+    cpuThrottledSeconds: z.number().finite().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+    pidsPeak: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+    exitState: z
+      .enum(['created', 'running', 'paused', 'restarting', 'removing', 'exited', 'dead'])
+      .optional(),
+  })
+  .strict()
+  .refine((summary) => Buffer.byteLength(JSON.stringify(summary), 'utf8') <= 1024);
 
 /** Admits delete diagnostics separately from the known effect fields used for receipt identity. */
 function readNanoHostEffectResult(

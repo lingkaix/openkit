@@ -29,10 +29,7 @@ import { getWorkspaceRegistryLifecycleFact } from './workspace-sharing.js';
 
 /** Joins existing deletion and runtime observations without opening or changing a Workspace. */
 export function createAdministratorCleanupOperationImplementations(
-  dependencies: Pick<
-    OperationInvocationDependencies,
-    'coreDb' | 'dataRoot' | 'readNanoHostResourceSummary'
-  >
+  dependencies: Pick<OperationInvocationDependencies, 'coreDb' | 'dataRoot'>
 ) {
   return {
     'administration.cleanup-read': (_input, context) => {
@@ -101,7 +98,6 @@ export function createAdministratorCleanupOperationImplementations(
           coreDb,
           actor,
           now,
-          readResourceSummary: dependencies.readNanoHostResourceSummary,
           maxEntries: exhausted ? 0 : ADMINISTRATOR_CLEANUP_MAX_ENTRIES - items.length,
           maxBytes:
             ADMINISTRATOR_CLEANUP_MAX_BYTES -

@@ -6,8 +6,6 @@ import {
   AdministratorCleanupItemSchema,
   type AdministratorCleanupReadResponse,
   type AdministratorCleanupRuntimeItem,
-  AdministratorCleanupSandboxRuntimeItemSchema,
-  NanoHostResourceSummarySchema,
 } from '@openkit/app-api-schemas';
 import type { Actor } from '../auth/identity.js';
 import {
@@ -21,7 +19,6 @@ import {
   requireNanoHostPhysicalEpoch,
   requireStoredNanoHostPhysicalEpoch,
 } from './nanohost-runtime-target.js';
-import type { NanoHostSessionDispatch } from './nanohost-session-dispatch.js';
 
 /** Runtime sources in the public contract's stable order; deletion belongs to P12. */
 const runtimeSources = [
@@ -57,8 +54,6 @@ export interface ReadRuntimeCleanupViewInput {
   readonly maxEntries: number;
   /** Whole-fragment UTF-8 JSON ceiling, within the shared public maximum. */
   readonly maxBytes: number;
-  /** Latest process-local Host delete observation; no live probe or retained record. */
-  readonly readResourceSummary?: NanoHostSessionDispatch['readResourceSummary'];
 }
 
 /** Only known state and opaque target columns enter the projection, never private payloads. */
@@ -72,7 +67,7 @@ const sourceSelects: Record<RuntimeSource, string> = {
   'agent-session-binding': `SELECT agent_session_runtime_binding_id, agent_session_id,
     workspace_id, thread_id, lifecycle_state, cleanup_state, updated_at
     FROM agent_session_runtime_bindings ORDER BY agent_session_runtime_binding_id LIMIT ?`,
-  'sandbox-runtime': `SELECT sandbox_runtime_id, sandbox_compatibility_key, runtime_target_id, lifecycle_state,
+  'sandbox-runtime': `SELECT sandbox_runtime_id, runtime_target_id, lifecycle_state,
     health_state, drain_state, cleanup_state, updated_at, origin_physical_epoch
     FROM sandbox_runtime_records ORDER BY sandbox_runtime_id LIMIT ?`,
   'worker-storage': `SELECT storage_ref, workspace_id, runtime_target_id, state, revision,
@@ -145,13 +140,7 @@ export function readRuntimeCleanupView(input: ReadRuntimeCleanupViewInput): Runt
               exhausted = 'count_limit';
               break;
             }
-            const item = projectRecord(
-              input.coreDb,
-              coverage.source,
-              row,
-              observedAt,
-              input.readResourceSummary
-            );
+            const item = projectRecord(input.coreDb, coverage.source, row, observedAt);
             const addedBytes = jsonBytes(item) + (result.items.length > 0 ? 1 : 0);
             if (metadataBytes(result) + itemBytes + addedBytes > input.maxBytes) {
               exhausted = 'byte_limit';
@@ -253,8 +242,7 @@ function projectRecord(
   coreDb: CoreDb,
   source: RuntimeSource,
   raw: unknown,
-  observedAt: string,
-  readResourceSummary?: NanoHostSessionDispatch['readResourceSummary']
+  observedAt: string
 ): RuntimeCleanupItem {
   const row = raw as Record<string, unknown>;
   if (source !== 'sandbox-runtime') {
@@ -270,27 +258,7 @@ function projectRecord(
     // Core rows alone cannot establish that audience; this read never opens Workspace content.
     throw new Error('Cleanup source audience is unavailable.');
   }
-  const item = projectKnownFields(coreDb, source, row, observedAt);
-  if (
-    source === 'sandbox-runtime' &&
-    typeof row.sandbox_compatibility_key === 'string' &&
-    typeof row.origin_physical_epoch === 'string'
-  ) {
-    try {
-      const summary = NanoHostResourceSummarySchema.safeParse(
-        readResourceSummary?.(row.sandbox_compatibility_key, row.origin_physical_epoch)
-      );
-      if (summary.success) {
-        return AdministratorCleanupSandboxRuntimeItemSchema.parse({
-          ...item,
-          resourceSummary: summary.data,
-        });
-      }
-    } catch {
-      // Optional Host diagnostics cannot change the record's existing cleanup observation.
-    }
-  }
-  return item;
+  return projectKnownFields(coreDb, source, row, observedAt);
 }
 
 /** Unknown evidence reasons are shared contract values, not new cleanup states. */

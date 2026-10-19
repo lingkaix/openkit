@@ -2569,7 +2569,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     ...(startupOpenKitConfig.nanohost ? { nanoHostConfig: startupOpenKitConfig.nanohost } : {}),
     dataRoot,
     nanoHostSessionAuthority: nanohostTransportSessionAuthority,
-    readNanoHostResourceSummary: nanoHostSessionDispatch.readResourceSummary,
   });
 
   registerRemoteMcpRoutes({
@@ -2634,7 +2633,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     ...(startupOpenKitConfig.nanohost ? { nanoHostConfig: startupOpenKitConfig.nanohost } : {}),
     dataRoot,
     nanoHostSessionAuthority: nanohostTransportSessionAuthority,
-    readNanoHostResourceSummary: nanoHostSessionDispatch.readResourceSummary,
   });
 
   registerTurnEventRoutes({
