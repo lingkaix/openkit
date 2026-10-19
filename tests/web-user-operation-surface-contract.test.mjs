@@ -9,10 +9,10 @@ import {
 import { PUBLIC_OPERATION_ACCESS } from '../apps/nanocore/src/auth/operation-access.ts';
 import { SURFACES } from '../apps/web/src/app/surfaces.ts';
 
-const EXPECTED_CATALOG_SIZE = 332;
+const EXPECTED_CATALOG_SIZE = 334;
 const EXPECTED_SERVER_SIZE = 83;
 const EXPECTED_GATEWAY_SIZE = 2;
-const EXPECTED_INCLUDED_SIZE = 246;
+const EXPECTED_INCLUDED_SIZE = 248;
 const EXPECTED_WORKER_ONLY = ['automation.event-admit'];
 
 /** Explicit separately authorized Server projection; not part of the ordinary-user inventory. */
@@ -29,6 +29,8 @@ const NON_RELEASE_READY_ROADMAP = new Map([
   ['knowledge.proposal.draft', 'R070'],
   ['workspace.archive-import-dry-run', 'R008'],
   ['workspace.archive-import', 'R008'],
+  ['knowledge.package.export', 'R008'],
+  ['knowledge.package.import', 'R008'],
   ['workspace.deleted-recover', 'R049'],
   ['knowledge.proposal.reverse', 'R072'],
   ['memory.ask', 'R069'],
@@ -204,6 +206,9 @@ const WEB_OPERATION_GROUPS = {
     'evidence.runtime-list': { disposition: 'live', surface: 'Debug' },
   },
   'Knowledge Manager': {
+    // Native package interchange has no Web workflow; portability controls remain deferred.
+    'knowledge.package.export': { disposition: 'roadmap', roadmap: 'R008' },
+    'knowledge.package.import': { disposition: 'roadmap', roadmap: 'R008' },
     'knowledge.notebook.history': { disposition: 'live', surface: 'Knowledge' },
     'knowledge.notebook.diff': { disposition: 'live', surface: 'Knowledge' },
     'knowledge.notebook.restore': { disposition: 'live', surface: 'Knowledge' },
