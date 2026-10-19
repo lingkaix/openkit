@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
 import { allocateEntityId, formatReferenceUri } from '@openkit/protocol';
+import { applyEdits, modify } from 'jsonc-parser';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { importWorkspaceSkill } from '../catalog/resource-catalog.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
@@ -13,10 +14,14 @@ import { FsStore } from '../lib/store.js';
 import { createOperationInvocation } from '../operation-composition.js';
 import type { OperationInvocationContext } from '../operation-contract.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
+import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { serializeUserAuthoredKnowledgePage } from '../storage/workspace-file-records.js';
+import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { createLightApp, createRecord, getLightApp, getRecord } from './commands.js';
@@ -300,5 +305,215 @@ describe('native Light App meaning discovery', () => {
         })
       )
       .toEqual({ ...app, meaning: [unavailable(reference)] });
+  });
+
+  it('keeps Worker Source reads under the exact Agent grant rather than its responsible User grant', async () => {
+    const f = fixture();
+    const thread = f.store.createThread(f.workspace.id, 'Managed Worker Source');
+    const turn = f.store.createTurn(f.workspace.id, thread.id, 'Interpret case state', f.actor);
+    const agentId = 'domain-reader';
+    const agentSessionId = allocateEntityId('as');
+    f.store.createAgentSession({
+      id: agentSessionId,
+      agentId,
+      workspaceId: f.workspace.id,
+      threadId: thread.id,
+      status: 'busy',
+      message: null,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    f.store.updateTurn(turn.id, { agentId, agentSessionId });
+    const environmentPackage = resolveAgentEnvironmentPackage({
+      captureCoverage: { scope: 'server', value: 'off' },
+      agentSessionId,
+      agentSetup: createTestAgentSetup({ agentId }),
+      backend: { kind: 'openshell' },
+      createdAt: NOW,
+      requestId: randomUUID(),
+      triggerActor: turn.triggerActor,
+      turn,
+      workspaceCwd: '/workspace',
+      workspaceRoots: [],
+    });
+    const entry = createSchedulerAdmissionEntry(f.coreDb, {
+      backendId: 'nanohost',
+      queueEntryId: randomUUID(),
+      requestId: randomUUID(),
+      triggerActor: turn.triggerActor,
+      workspaceId: f.workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      turnInput: 'Interpret case state',
+      requestedAgentId: agentId,
+    });
+    recordTestExecutionAttempt(f.coreDb, {
+      entry,
+      attemptId: allocateEntityId('attempt'),
+      agentSessionId,
+      inputRef: environmentPackage.snapshotId,
+      bindingRef: 'domain-reader-binding',
+      sessionCompatibilityKey: 'domain-reader-session',
+      now: () => NOW,
+      operationId: 'domain-reader-submit',
+    });
+    const context: OperationInvocationContext = {
+      kind: 'worker',
+      actor: turn.triggerActor,
+      requestId: randomUUID(),
+      bindings: { workspaceId: f.workspace.id },
+      lineage: {
+        workspaceId: f.workspace.id,
+        threadId: thread.id,
+        turnId: turn.id,
+        agentSessionId,
+        packageSnapshotId: environmentPackage.snapshotId,
+      },
+    };
+    const material = 'Domain evidence protected from this Agent.';
+    const source = f.store.createKnowledgeSource(
+      {
+        id: allocateEntityId('ks'),
+        workspaceId: f.workspace.id,
+        kind: 'document',
+        title: 'Managed domain source',
+        uri: null,
+        contentDigest: digest(material),
+        originatingThreadId: thread.id,
+        originatingTurnId: null,
+        originatingFileId: null,
+        capturedAt: NOW,
+        createdAt: NOW,
+        updatedAt: NOW,
+      },
+      material
+    );
+    const content = page(f, [`source:${source.id}@${digest(material)}`]);
+    const reference = publish(f, content);
+    const app = await createApp(f, [reference]);
+    const configDirectory = join(f.dataRoot, 'workspaces', f.workspace.id, 'config');
+    mkdirSync(configDirectory, { recursive: true });
+    const configPath = join(configDirectory, 'workspace.jsonc');
+    // Add only the managed policy; the Notebook's retained default-KB binding must stay exact.
+    const originalConfig = readFileSync(configPath, 'utf8');
+    const policyConfig = applyEdits(
+      originalConfig,
+      modify(originalConfig, ['requiredFeatures'], ['openkit.workspace-resource-policy.v1'], {})
+    );
+    const grant = (agentCanRead: boolean) =>
+      writeFileSync(
+        configPath,
+        applyEdits(
+          policyConfig,
+          modify(
+            policyConfig,
+            ['workspace', 'policy'],
+            {
+              resourceAccess: [
+                {
+                  resource: { family: 'thread', id: thread.id },
+                  grants: [
+                    { subject: { kind: 'user', userId: f.userId }, operations: ['thread.read'] },
+                    {
+                      subject: { kind: 'agent', userId: f.userId, agentId },
+                      operations: agentCanRead
+                        ? ['workspace.read', 'thread.read']
+                        : ['workspace.read'],
+                    },
+                  ],
+                  prohibitions: [],
+                },
+              ],
+            },
+            {}
+          )
+        )
+      );
+    const selector = { workspaceId: f.workspace.id, appId: app.appId };
+    grant(false);
+    expect.soft(await f.invoke('kernel.apps.get', selector, context)).toEqual({
+      ...app,
+      meaning: [unavailable(reference)],
+    });
+    grant(true);
+    expect(await f.invoke('kernel.apps.get', selector, context)).toEqual({
+      ...app,
+      meaning: [{ reference, status: 'available', content }],
+    });
+  });
+
+  it.each([
+    { label: 'one oversized Skill', count: 1, characters: 1024 * 1024 },
+    { label: 'aggregate Skills below the individual limit', count: 2, characters: 400 * 1024 },
+  ])('refuses $label when the complete UTF-8 JSON read exceeds 2 MiB', async ({
+    count,
+    characters,
+  }) => {
+    const f = fixture();
+    // The accepted read ceiling counts encoded bytes; each non-ASCII character uses three UTF-8 bytes.
+    const maximum = 2 * 1024 * 1024;
+    let revision = 0;
+    const contents: string[] = [];
+    const references: string[] = [];
+    for (let index = 0; index < count; index++) {
+      const content = `---\nname: domain-${index}\ndescription: Interpret domain state.\n---\n${'界'.repeat(characters)}\n`;
+      const imported = importWorkspaceSkill({
+        dataRoot: f.dataRoot,
+        workspaceId: f.workspace.id,
+        producer: f.actor,
+        createdAt: NOW,
+        activate: true,
+        displayName: `Domain ${index}`,
+        expectedRevision: revision,
+        tree: [
+          {
+            kind: 'file',
+            path: 'SKILL.md',
+            contentBase64: Buffer.from(content).toString('base64'),
+          },
+        ],
+      });
+      revision = imported.catalog.revision;
+      contents.push(content);
+      references.push(
+        formatReferenceUri(
+          { scopeId: `skill/workspace/${f.workspace.id}`, objectId: imported.version.entryId },
+          imported.version.digest
+        )
+      );
+    }
+    const app = await createApp(f, references);
+    if (count > 1) {
+      for (const content of contents) {
+        expect(Buffer.byteLength(JSON.stringify(content), 'utf8')).toBeLessThan(maximum);
+      }
+    }
+    expect(
+      Buffer.byteLength(
+        JSON.stringify({
+          ...app,
+          meaning: references.map((reference, index) => ({
+            reference,
+            status: 'available',
+            content: contents[index],
+          })),
+        }),
+        'utf8'
+      )
+    ).toBeGreaterThan(maximum);
+    const result = await f
+      .invoke('kernel.apps.get', { workspaceId: f.workspace.id, appId: app.appId }, f.context)
+      .then(
+        (response) => ({
+          outcome: 'returned',
+          bytes: Buffer.byteLength(JSON.stringify(response), 'utf8'),
+        }),
+        (error: unknown) => ({ outcome: 'refused', error })
+      );
+    expect(result).toMatchObject({
+      outcome: 'refused',
+      error: { code: 'limit_exceeded', details: { maximum } },
+    });
+    expect(getLightApp(f.dataRoot, f.workspace.id, app.appId)).toEqual(app);
   });
 });
