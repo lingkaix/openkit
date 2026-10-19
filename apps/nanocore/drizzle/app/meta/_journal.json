@@ -22,6 +22,20 @@
       "when": 1792227600000,
       "tag": "0002_light_app_versions",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1792227600001,
+      "tag": "0003_policy_audit_v1",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1792367635406,
+      "tag": "0004_audit_authentication",
+      "breakpoints": true
     }
   ]
 }

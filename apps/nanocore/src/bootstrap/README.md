@@ -16,3 +16,5 @@ This directory owns NanoCore process startup and shutdown checks around the data
 ## Verification
 
 Run the focused phase-order, lock, policy, Vault, readiness, shutdown, and audit tests affected by the change, followed by the package gates in the [NanoCore source guide](../README.md).
+
+All three boot lifecycle Audit publishers emit the shared retained SQL v1 marker for their native phase/readiness JSON. There is no product boot-Audit payload reader; inspection tests read raw SQLite rows. No historical reader or replay mechanism is added for this writer-only boundary. General Audit projection remains with its existing owner.

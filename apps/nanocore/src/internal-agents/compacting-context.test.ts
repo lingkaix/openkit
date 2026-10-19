@@ -364,3 +364,76 @@ describe('bounded current-run compaction', () => {
     expect(summaries(f)).toEqual([]);
   });
 });
+
+it('uses the shared summary Item and exact current-run retrieval for a Server-owned KM Turn', async () => {
+  vi.stubEnv('OPENKIT_DATA_ROOT', '');
+  const store = new FsStore();
+  const thread = store.createServerThread('Server Knowledge maintenance');
+  const turn = store.createServerTurn(
+    thread.id,
+    'Maintain Server notebook.',
+    { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+    null,
+    { agentId: 'knowledge-manager' }
+  );
+  const { createKnowledgeManagerTranscript } = await import('./knowledge-manager-agent.js');
+  const { createServerRunHistory } = await import('./server-history.js');
+  const commitMessages = createKnowledgeManagerTranscript(store, turn, turn.triggerActor);
+  let calls = 0;
+  const provider = vi.fn(async () =>
+    ++calls === 1 ? inspect('server-inspect') : answer(calls === 2 ? continuation : 'Done.')
+  );
+  const exit = await runInternalAgentLoop(
+    loopInput(),
+    createCompactingInternalAgentProvider({
+      store,
+      turn,
+      commitMessages,
+      compactThreshold: threshold,
+      limits,
+      assertCurrent: () => {},
+      readEvidence: () => internalContextDigest([]),
+      callProvider: provider,
+    })
+  );
+  expect(exit.kind).toBe('quiescent');
+  expect(provider).toHaveBeenCalledTimes(3);
+  const summary = store
+    .getServerTurnById(turn.id)
+    .items.find((item) => item.type === 'context-summary');
+  expect(summary).toMatchObject({
+    type: 'context-summary',
+    owner: { kind: 'server' },
+    strategy: 'compaction',
+    logicalModelId: 'knowledge-model',
+  });
+  expect(summary).not.toHaveProperty('workspaceId');
+  if (summary?.type !== 'context-summary') throw new Error('Missing summary.');
+  const history = createServerRunHistory({ store, turn, assertCurrent: () => {} });
+  const read = await history.execute(
+    {
+      range: {
+        threadId: thread.id,
+        firstItemId: summary.sourceRange.firstItemId,
+        lastItemId: summary.sourceRange.lastItemId,
+        sourceDigest: summary.sourceRange.sourceDigest,
+      },
+    },
+    { callId: 'exact-server-range', toolOccurrence: 1, signal: new AbortController().signal }
+  );
+  expect(read.isError).not.toBe(true);
+  expect(JSON.stringify(read)).toContain('Keep deployment paused.');
+  const other = store.createServerThread('Another Server purpose', undefined, 'administration');
+  const refused = await history.execute(
+    {
+      range: {
+        threadId: other.id,
+        firstItemId: summary.sourceRange.firstItemId,
+        lastItemId: summary.sourceRange.lastItemId,
+        sourceDigest: summary.sourceRange.sourceDigest,
+      },
+    },
+    { callId: 'foreign-server-range', toolOccurrence: 2, signal: new AbortController().signal }
+  );
+  expect(refused.isError).toBe(true);
+});

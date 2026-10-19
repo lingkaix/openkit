@@ -1055,7 +1055,12 @@ function renderProposal(
 ) {
   const client: CoreClient = {
     ...makeClient(),
-    artifactFiles: { download, import: vi.fn(), browserDownloadUrl: vi.fn() },
+    artifactFiles: {
+      download,
+      import: vi.fn(),
+      commitVersion: vi.fn(),
+      browserDownloadUrl: vi.fn(),
+    },
   };
   const queries = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = (fixture: ReturnType<typeof proposalFixture>) => (

@@ -1,5 +1,14 @@
+import { writeRetainedV1 } from '@openkit/protocol';
 import { sql } from 'drizzle-orm';
-import { check, index, real, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import {
+  check,
+  index,
+  integer,
+  real,
+  sqliteTable,
+  text,
+  uniqueIndex,
+} from 'drizzle-orm/sqlite-core';
 
 /** Durable capability call status stored by the shared usage ledger. */
 export type CapabilityCallLedgerStatus =
@@ -27,10 +36,12 @@ export type CapabilityCallFamily =
 export const capabilityCalls = sqliteTable(
   'capability_calls',
   {
+    /** Independent retained-record format marker. */
+    schemaVersion: integer('schema_version').notNull().default(writeRetainedV1({}).schemaVersion),
     /** Stable capability call id. */
     callId: text('call_id').primaryKey().notNull(),
-    /** Workspace that owns the call. */
-    workspaceId: text('workspace_id').notNull(),
+    /** Workspace owner, or null for a Server-owned row in Core. */
+    workspaceId: text('workspace_id'),
     /** Thread lineage when available. */
     threadId: text('thread_id'),
     /** Turn lineage when available. */
@@ -98,10 +109,12 @@ export const capabilityCalls = sqliteTable(
 export const usageRecords = sqliteTable(
   'usage_records',
   {
+    /** Independent retained-record format marker. */
+    schemaVersion: integer('schema_version').notNull().default(writeRetainedV1({}).schemaVersion),
     /** Stable usage record id. */
     usageId: text('usage_id').primaryKey().notNull(),
-    /** Workspace that owns the usage. */
-    workspaceId: text('workspace_id').notNull(),
+    /** Workspace owner, or null for a Server-owned row in Core. */
+    workspaceId: text('workspace_id'),
     /** Thread lineage when available. */
     threadId: text('thread_id'),
     /** Turn lineage when available. */

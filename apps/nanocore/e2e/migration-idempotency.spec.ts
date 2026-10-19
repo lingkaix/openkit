@@ -59,6 +59,10 @@ describe('nanocore e2e migration idempotency', () => {
       'core_0005_channel_notifications',
       'core_0006_external_trigger_admissions',
       'core_0007_discord_capture_origin',
+      'core_0008_server_capability_usage',
+      'core_0009_policy_audit_v1',
+      'core_0010_retained_record_formats',
+      'core_0011_audit_authentication',
     ]);
     expect(ledgerRows).toEqual(
       journal.entries.map((entry) => ({ createdAt: entry.when, count: 1 }))

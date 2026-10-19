@@ -222,6 +222,10 @@ export interface RetrieveWorkspaceKnowledgeInput extends ReadWorkspaceKnowledgeD
   limit?: number | undefined;
   /** Concepts that should be included when present and active. */
   pinnedReferences?: readonly PageReference[] | undefined;
+  /** Optional any-match governed type names; combined selectors intersect. */
+  types?: readonly string[] | undefined;
+  /** Exact declared tool/work-step identifiers on Rule, Effect or Objective pages. */
+  appliesTo?: readonly string[] | undefined;
   /** Narrowing-only base selection; the current Workspace is the default. */
   sourceScope?: 'workspace' | 'server' | undefined;
   /** Optional trace id for deterministic tests and route ownership. */
@@ -622,10 +626,20 @@ async function retrieveNotebookSelection(
     query: input.query,
     limit: input.limit,
     pinnedReferences: input.pinnedReferences,
+    types: input.types,
+    appliesTo: input.appliesTo,
     sourceScope: input.sourceScope,
     states: input.states,
   });
   const states = [...new Set(normalized.states)].sort(compareBytewise);
+  const filters = {
+    ...(normalized.types === undefined
+      ? {}
+      : { types: [...new Set(normalized.types)].sort(compareBytewise) }),
+    ...(normalized.appliesTo === undefined
+      ? {}
+      : { appliesTo: [...new Set(normalized.appliesTo)].sort(compareBytewise) }),
+  };
   if (input.caller !== 'app-api' && states.some((state) => state !== 'active'))
     throw new OperationError(
       'invalid_request',
@@ -766,6 +780,11 @@ async function retrieveNotebookSelection(
         pageScopeId: sourceScope,
         path,
         content,
+        resolvedReferences: verifiedKnowledgePageSourceReferences(
+          stringListFrontmatterField(document, 'source_refs') ?? [],
+          pinnedPages,
+          sourceScope
+        ),
         scopeSchemaText: scopeSchemaText!,
         expectedOwnerScope: expectedOwnerScope!,
         registeredSources,
@@ -845,6 +864,11 @@ async function retrieveNotebookSelection(
       pageScopeId: sourceScope,
       path: expectedPath,
       content,
+      resolvedReferences: verifiedKnowledgePageSourceReferences(
+        document ? (stringListFrontmatterField(document, 'source_refs') ?? []) : [],
+        pinnedPages,
+        sourceScope
+      ),
       ...(scopeSchemaText ? { scopeSchemaText } : {}),
       registeredSources,
       knowledgeIds,
@@ -869,7 +893,10 @@ async function retrieveNotebookSelection(
       registeredSources,
       knowledgeIds,
       ...(expectedOwnerScope ? { expectedOwnerScope } : {}),
-      ...(referenceProof ? { resolvedReferences: referenceProof.resolvedReferences } : {}),
+      resolvedReferences: new Set([
+        ...verifiedKnowledgePageSourceReferences(sourceReferences, pinnedPages, sourceScope),
+        ...(referenceProof?.resolvedReferences ?? []),
+      ]),
     });
     const projectedSourceReferences = [
       ...new Set(sourceReferencesByConcept.get(candidate.knowledgePageId) ?? []),
@@ -971,6 +998,23 @@ async function retrieveNotebookSelection(
       continue;
     }
 
+    // Metadata narrows already governed candidates, including pins, before the result budget.
+    const type = stringFrontmatterField(document, 'type');
+    const appliesTo = stringListFrontmatterField(document, 'applies_to') ?? [];
+    if (
+      (filters.types && !filters.types.includes(type ?? '')) ||
+      (filters.appliesTo &&
+        (!['Rule', 'Effect', 'Objective'].includes(type ?? '') ||
+          !filters.appliesTo.some((identifier) => appliesTo.includes(identifier))))
+    ) {
+      excluded.push({
+        knowledgePageId: candidate.knowledgePageId,
+        contentDigest,
+        reason: 'policy_excluded',
+      });
+      continue;
+    }
+
     if (selected.length >= limit) {
       excluded.push({
         knowledgePageId: candidate.knowledgePageId,
@@ -990,6 +1034,7 @@ async function retrieveNotebookSelection(
 
   const request = {
     query: input.query,
+    ...filters,
     limit,
     pinnedReferences: normalizedPinnedReferences,
     states,
@@ -1008,6 +1053,7 @@ async function retrieveNotebookSelection(
       canonicalJson({ queryContext, sourceScope, caller: input.caller, request })
     ),
     retrievalParameters: {
+      ...filters,
       limit,
       pinnedReferences: normalizedPinnedReferences,
       states,
@@ -1490,7 +1536,10 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
       ...(scopeSchemaText ? { scopeSchemaText } : {}),
       registeredSources,
       knowledgeIds,
-      ...(referenceProof ? { resolvedReferences: referenceProof.resolvedReferences } : {}),
+      resolvedReferences: new Set([
+        ...verifiedKnowledgePageSourceReferences(sourceRefs, pinnedPages, trace.sourceScope),
+        ...(referenceProof?.resolvedReferences ?? []),
+      ]),
     });
     const reviewState = document ? stringFrontmatterField(document, 'review_state') : null;
     const sensitivity = document ? stringFrontmatterField(document, 'sensitivity') : null;

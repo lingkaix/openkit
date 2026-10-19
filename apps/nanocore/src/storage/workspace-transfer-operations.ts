@@ -22,7 +22,7 @@ import {
 export function createWorkspaceTransferOperationImplementations(
   dependencies: Pick<
     OperationInvocationDependencies,
-    'coreDb' | 'store' | 'repositoryWorkspaceDb' | 'fileAdmission'
+    'coreDb' | 'store' | 'repositoryWorkspaceDb' | 'fileAdmission' | 'runtimeConfigManager'
   >
 ) {
   const { coreDb, repositoryWorkspaceDb, store, fileAdmission } = dependencies;
@@ -125,6 +125,9 @@ export function createWorkspaceTransferOperationImplementations(
         assertRequestedExportHandles(report, input.sourceWorkspaceId, input.exportId);
         return withCanonicalFileWriteAdmission(fileAdmission, () =>
           importVerifiedWorkspace({
+            reloadConfiguration: () => {
+              dependencies.runtimeConfigManager?.reload({ dryRun: false, mode: 'safe' });
+            },
             authorityUserId: actor.userId,
             coreDb,
             dataRoot,

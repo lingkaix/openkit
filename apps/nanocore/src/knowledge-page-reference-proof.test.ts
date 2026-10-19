@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { formatReferenceUri } from '@openkit/protocol';
+import { formatReferenceUri, writeRetainedV1 } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { readWorkspaceNotebookAdmission } from './knowledge/notebook-workspace-admission.js';
@@ -36,7 +36,9 @@ async function fixture(references: readonly string[]) {
   mkdirSync(join(workspaceRoot, 'config'), { recursive: true });
   writeFileSync(
     configPath,
-    JSON.stringify({ workspace: { name: 'Research', defaultKnowledgeBaseId: knowledgeBaseId } })
+    JSON.stringify(
+      writeRetainedV1({ workspace: { name: 'Research', defaultKnowledgeBaseId: knowledgeBaseId } })
+    )
   );
   mkdirSync(join(workspaceRoot, 'knowledge', 'schema'), { recursive: true });
   writeFileSync(
@@ -168,7 +170,7 @@ describe('Workspace canonical page source proof', () => {
 
   it('fails closed without allocating when the retained base binding is missing', async () => {
     const { proofs, admit, configPath } = await fixture([]);
-    const source = '{"workspace":{"name":"Research"}}';
+    const source = '{"schemaVersion":1,"workspace":{"name":"Research"}}';
     writeFileSync(configPath, source);
     expect(proofs).toThrowError(expect.objectContaining({ code: 'recovery_required' }));
     expect(admit).toThrowError(expect.objectContaining({ code: 'recovery_required' }));

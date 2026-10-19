@@ -1,5 +1,6 @@
+import { writeRetainedV1 } from '@openkit/protocol';
 import { sql } from 'drizzle-orm';
-import { index, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 /** Durable lifecycle states for one physical worker backend session. */
 export type WorkerBackendSessionState =
@@ -21,6 +22,8 @@ export type WorkerBackendWorkspaceHandoffState = 'pending' | 'complete';
 export const workerBackendSessions = sqliteTable(
   'worker_backend_sessions',
   {
+    /** Retained JSON payload format; native DDL versions scalar columns separately. */
+    schemaVersion: integer('schema_version').notNull().default(writeRetainedV1({}).schemaVersion),
     /** execution attempt that exclusively owns this physical session. */
     attemptId: text('attempt_id').primaryKey().notNull(),
     /** Workspace lineage id. */

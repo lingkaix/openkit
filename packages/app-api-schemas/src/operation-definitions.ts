@@ -1,4 +1,5 @@
-import type { z } from 'zod';
+import { PolicyWriteOutcomeV1Schema, PolicyWriteProposalV1Schema } from '@openkit/protocol';
+import { z } from 'zod';
 import { ACCESS_TOKEN_OPERATION_DEFINITIONS } from './access-token-operations.js';
 import { ADMINISTRATION_ENTRY_OPERATION_DEFINITIONS } from './administration-operations.js';
 import { ADMINISTRATOR_CLEANUP_OPERATION_DEFINITIONS } from './administrator-cleanup-operations.js';
@@ -34,13 +35,15 @@ import { LIGHT_APP_DEFINITION_OPERATION_DEFINITIONS } from './light-app-definiti
 import { MATERIAL_OPERATION_DEFINITIONS } from './material-operations.js';
 import { MEMORY_OPERATION_DEFINITIONS } from './memory.js';
 import { NANOHOST_OPERATION_DEFINITIONS } from './nanohost-operations.js';
-import { composeOperationTables } from './operation-contract.js';
+import { composeOperationTables, type NativeOperationDefinition } from './operation-contract.js';
 import { PENDING_REQUEST_OPERATION_DEFINITIONS } from './pending-request-operations.js';
 import { PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS } from './provider-subscription-operations.js';
 import { RECOVERY_OPERATION_DEFINITIONS } from './recovery-operations.js';
+import { RESOURCE_POLICY_OPERATION_DEFINITIONS } from './resource-policy-operations.js';
 import { RUNTIME_CONFIG_OPERATION_DEFINITIONS } from './runtime-config-operations.js';
 import { SCHEDULER_OPERATION_DEFINITIONS } from './scheduler-operations.js';
 import { SERVER_MCP_OPERATION_DEFINITIONS } from './server-mcp-operations.js';
+import { SERVER_THREAD_OPERATION_DEFINITIONS } from './server-threads.js';
 import { SYNC_OPERATION_DEFINITIONS } from './sync-operations.js';
 import { THREAD_OPERATION_DEFINITIONS } from './thread-operations.js';
 import { TURN_OPERATION_DEFINITIONS } from './turn-operations.js';
@@ -69,10 +72,14 @@ export {
   KNOWLEDGE_OPERATION_DEFINITIONS,
 } from './knowledge-operation-definitions.js';
 export type {
+  NativeOperationDefinition,
+  OperationCrossing,
   OperationDefinition,
   OperationMutationTarget,
+  OperationParticipationMode,
   OperationProjectionFacts,
   OperationScope,
+  OperationStage,
   OperationTarget,
 } from './operation-contract.js';
 export {
@@ -115,6 +122,7 @@ export const PRODUCT_OPERATION_DEFINITIONS = composeOperationTables(
   KERNEL_REMAINING_OPERATION_DEFINITIONS,
   GENERATIVE_UI_OPERATION_DEFINITIONS,
   WORKSPACE_OPERATION_DEFINITIONS,
+  RESOURCE_POLICY_OPERATION_DEFINITIONS,
   WORKSPACE_TRANSFER_OPERATION_DEFINITIONS,
   WORKSPACE_ARCHIVE_OPERATION_DEFINITIONS,
   WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS,
@@ -133,6 +141,7 @@ export const PRODUCT_OPERATION_DEFINITIONS = composeOperationTables(
   AGENT_OPERATION_DEFINITIONS,
   CATALOG_OPERATION_DEFINITIONS,
   SERVER_MCP_OPERATION_DEFINITIONS,
+  SERVER_THREAD_OPERATION_DEFINITIONS,
   LIGHT_APP_DEFINITION_OPERATION_DEFINITIONS,
   WORKER_OPERATION_DEFINITIONS,
   GOVERNANCE_OPERATION_DEFINITIONS,
@@ -140,11 +149,50 @@ export const PRODUCT_OPERATION_DEFINITIONS = composeOperationTables(
 );
 
 /** Static composition of the implemented families; this is not a registration surface. */
-export const OPERATION_DEFINITIONS = composeOperationTables(
+const API_OPERATION_DEFINITIONS = composeOperationTables(
   PRODUCT_OPERATION_DEFINITIONS,
   ADMINISTRATION_OPERATION_DEFINITIONS,
   ACCESS_TOKEN_OPERATION_DEFINITIONS
 );
+/** The shared registry includes native dispatch without publishing a transport projection. */
+export const OPERATION_REGISTRY = composeOperationTables(API_OPERATION_DEFINITIONS, {
+  'policy.write': {
+    binding: 'native',
+    description:
+      'Apply one exact human-confirmed Policy candidate through the configuration owner.',
+    inputSchema: PolicyWriteProposalV1Schema,
+    outputSchema: PolicyWriteOutcomeV1Schema,
+    policyOperation: 'workspace.configure',
+    crossings: ['administration'],
+    stages: ['propose', 'decide', 'commit', 'completed'],
+    modes: [],
+    participantKinds: [],
+  } satisfies NativeOperationDefinition,
+  'mcp.call-tool': {
+    binding: 'native',
+    description: 'Dispatch one admitted Worker MCP Tool call through its existing native owner.',
+    inputSchema: z
+      .object({
+        serverId: z.string().min(1),
+        toolName: z.string().min(1),
+        arguments: z.record(z.string(), z.json()),
+      })
+      .strict(),
+    // The MCP owner validates its vendor result; this boundary carries a JSON value.
+    outputSchema: z.json(),
+    policyOperation: 'tool.use',
+    crossings: ['dispatch'],
+    stages: ['propose', 'decide', 'commit', 'completed'],
+    modes: ['observe', 'advise', 'gate', 'transform'],
+    participantKinds: ['deterministic'],
+  } satisfies NativeOperationDefinition,
+});
+
+/** Existing API projections are selected from the single composed registry. */
+export const OPERATION_DEFINITIONS = Object.fromEntries(
+  Object.entries(OPERATION_REGISTRY).filter(([, definition]) => definition.binding !== 'native')
+) as typeof API_OPERATION_DEFINITIONS;
+
 /** JSON product ids inferred from the static public composition. */
 export type ProductOperationId = keyof typeof PRODUCT_OPERATION_DEFINITIONS;
 /** Exact implemented ids inferred from the definitions. */

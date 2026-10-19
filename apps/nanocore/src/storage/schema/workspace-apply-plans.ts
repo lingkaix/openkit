@@ -1,4 +1,5 @@
-import { index, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { writeRetainedV1 } from '@openkit/protocol';
+import { index, integer, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 /**
  * Durable workspace apply plans scoped by workspace.
@@ -6,6 +7,8 @@ import { index, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 export const workspaceApplyPlans = sqliteTable(
   'workspace_apply_plans',
   {
+    /** Retained JSON payload format; native DDL versions scalar columns separately. */
+    schemaVersion: integer('schema_version').notNull().default(writeRetainedV1({}).schemaVersion),
     /** Stable workspace apply plan id. */
     applyPlanId: text('apply_plan_id').notNull(),
     /** Workspace that owns the apply plan. */

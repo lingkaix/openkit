@@ -8,11 +8,16 @@ import {
 import { z } from 'zod';
 import {
   ArtifactFolderSnapshotResponseSchema,
+  CommitArtifactFileVersionRequestSchema,
+  CommitArtifactVersionRequestSchema,
+  CommitArtifactVersionResponseSchema,
   ImportWorkspaceArtifactRequestSchema,
   ImportWorkspaceArtifactResponseSchema,
   IntroduceWorkspaceArtifactRequestSchema,
   IntroduceWorkspaceArtifactResponseSchema,
   ListArtifactReviewsResponseSchema,
+  ListArtifactVersionsResponseSchema,
+  ReadArtifactVersionResponseSchema,
   SelectArtifactReviewCandidateRequestSchema,
   SelectArtifactReviewCandidateResponseSchema,
   SubmitArtifactReviewDecisionRequestSchema,
@@ -33,6 +38,70 @@ const threadSelector = { ...workspaceSelector, threadId: ThreadIdSchema };
 
 /** Sole public contracts for Artifact inventory, immutable content, import, introduction and version-owned Review decisions. */
 export const ARTIFACT_OPERATION_DEFINITIONS = {
+  'artifact.version-list': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    description: 'List retained immutable versions of one visible Artifact.',
+    inputSchema: z.object({ ...workspaceSelector, artifactId: ArtifactIdSchema }).strict(),
+    outputSchema: ListArtifactVersionsResponseSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'artifact.read',
+    mutating: false,
+  },
+  'artifact.version-read': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    description: 'Read the exact retained state and producing lineage of one Artifact version.',
+    inputSchema: z
+      .object({
+        ...workspaceSelector,
+        artifactId: ArtifactIdSchema,
+        artifactVersion: z.number().int().positive(),
+      })
+      .strict(),
+    outputSchema: ReadArtifactVersionResponseSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'workspace' },
+    policyOperation: 'artifact.read',
+    mutating: false,
+  },
+  'artifact.version-commit': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 201,
+    description: 'Commit one immutable inline Artifact version in an idle Thread.',
+    inputSchema: CommitArtifactVersionRequestSchema.extend({
+      ...threadSelector,
+      artifactId: ArtifactIdSchema,
+    }),
+    outputSchema: CommitArtifactVersionResponseSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'addressed-thread', threadField: 'threadId', missing: 'not-found' },
+    policyOperation: 'artifact.write',
+    mutating: true,
+  },
+  'artifact.version-file-commit': {
+    binding: 'streaming',
+    returnsOneTimeSecret: false,
+    successStatus: 201,
+    description: 'Commit one exact arbitrary-byte Artifact version in an idle Thread.',
+    inputSchema: CommitArtifactFileVersionRequestSchema.extend({
+      ...threadSelector,
+      artifactId: ArtifactIdSchema,
+    }),
+    outputSchema: CommitArtifactVersionResponseSchema,
+    credentials: publicCredentials,
+    scope: { kind: 'body-workspace', field: 'workspaceId' },
+    target: { kind: 'addressed-thread', threadField: 'threadId', missing: 'not-found' },
+    policyOperation: 'artifact.write',
+    mutating: true,
+  },
   'artifact.list': {
     binding: 'json',
     returnsOneTimeSecret: false,

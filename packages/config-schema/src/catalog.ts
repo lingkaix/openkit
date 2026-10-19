@@ -6,7 +6,7 @@ import { InternalRoleProfilesConfigSchema } from './internal-role.js';
 import { WorkspaceMcpServerCatalogSchema } from './mcp-catalog.js';
 import { ModelCatalogSchema } from './model-catalog.js';
 import type { ConfigCatalogKind } from './policy.js';
-import { ProviderProfileSchema } from './provider.js';
+import { AuthoredProviderProfileSchema } from './provider.js';
 import { OpenKitConfigSchema } from './server.js';
 import { WorkspaceDataSourceCatalogSchema } from './source-catalog.js';
 import { UserConfigSchema } from './user.js';
@@ -44,7 +44,7 @@ export function getConfigSchemaCatalog(): ConfigSchemaCatalogEntry[] {
     {
       kind: 'provider',
       title: 'OpenKit provider profile',
-      schema: z.toJSONSchema(ProviderProfileSchema) as Record<string, unknown>,
+      schema: z.toJSONSchema(AuthoredProviderProfileSchema) as Record<string, unknown>,
     },
     {
       kind: 'gateway',

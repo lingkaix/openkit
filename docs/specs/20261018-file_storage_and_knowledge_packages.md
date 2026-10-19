@@ -50,11 +50,9 @@ The shared citable `contentRef` carries `knowledgeBaseId`, `contentDigest`, `loc
 | `range: null` | Whole source. |
 | Byte range | `{kind: bytes, start, end}`; nonnegative integer half-open raw-byte offsets, end not before start. |
 | Page | `{kind: page, page}`; positive integer page number. |
-| Time range | `{kind: time, startSeconds, endSeconds}`; finite nonnegative seconds, end not before start. |
-| Frame | `{kind: frame, frame, numbering, coordinateSpace}`; integer frame, explicit zero/one-based numbering and source space. |
 | `availability` | `available` or `unavailable`; observed, not permission or a future guarantee. Preserve descriptive metadata, digest and captured locator. |
 
-Tagged values and coordinate-space names are strings; frame values respect their declared numbering. Ranges cannot silently change coordinate systems. Storage range reads accept byte coordinates, not an implicit media conversion.
+Time and frame coordinates are deferred until an active producer requires them. Tagged values and coordinate-space names are strings. Ranges cannot silently change coordinate systems. Storage range reads accept byte coordinates, not an implicit media conversion.
 
 Reuse existing qualified Source ID/digest and versioned Artifact references as attachment identities; allocate no parallel attachment ID. Source pointers bind logical mount paths only; backend locations belong to mount declarations. Other owners may retain verified `locations`. Reuse capture/publication timestamps. Digests and locators are citable facts, not authority.
 
@@ -205,7 +203,7 @@ Ablation: indexable media outputs need source coordinates and production identit
 
 Extend existing representation metadata. `sourceReference` is the existing qualified owner/version reference with a mandatory digest pin, encoded through the single Protocol URI codec. `sourceContentDigest` is a projection of that pin, not another retained fact. `recipe` carries string `id`, string `version` and JSON-object `parameters` for output-changing settings. `provider` and `model` identify model use together, or are both null for deterministic local tools. Vectors record exact `embeddingSpace` identity; other representations omit it.
 
-`sourceLocator` declares page, time, frame, byte or whole-source coordinates using the shared coordinate rules. Output `contentRef`, size and media facts identify derived bytes separately from the original. Explicit output unavailability preserves lineage without claiming byte retention. `coverage: complete | incomplete` preserves truncation and existing processing-failure evidence. Output offsets never claim original coordinates.
+`sourceLocator` declares page, byte or whole-source coordinates using the shared coordinate rules. Media coordinates can be added when an active producer requires them. Output `contentRef`, size and media facts identify derived bytes separately from the original. Explicit output unavailability preserves lineage without claiming byte retention. `coverage: complete | incomplete` preserves truncation and existing processing-failure evidence. Output offsets never claim original coordinates.
 
 Text layers, transcripts, keyframes, thumbnails, vectors and short summaries are derived data. Recipe selection comes from a media-handling Skill used by the Knowledge Manager, not a hard-coded file-extension pipeline. A derived summary is not accepted Knowledge. Equal vector dimensions do not establish model/space compatibility.
 
@@ -215,7 +213,7 @@ Ablation: digest references remove required historical copies while preserving t
 
 Context packages adopt exact owner/digest/location references rather than retaining another original solely for history. Keep original, representation and delivered digests distinct, with ranges, lineage and availability. Missing bytes remain unavailable; current sources cannot reconstruct historical delivery. Do not retain extra derivative fragments solely to guarantee replay. Existing Items and independently governed evidence keep their owners.
 
-A disposable read-only input snapshot may serve a running Turn under its current delivery contract. That execution requirement creates no post-settlement source-retention promise. Artifacts, Turn inputs and Context adopt Storage later; their owners coordinate retained format/readers and source admission before activation. Current copied-original inventories remain the implementation baseline until that transition.
+A disposable read-only input snapshot may serve a running Turn under its current delivery contract. That execution requirement creates no post-settlement source-retention promise. The Context digest-reference cutover removes mandatory extra original and complete representation copies from its retained inventory; its existing owner/version references and digest metadata identify content. Artifact and Turn input canonical storage remain with their owners until their separate Storage adoption.
 
 ## Backup And Workspace Export
 
@@ -243,7 +241,7 @@ Acceptance observes one-to-one published-tree/package paths and justified differ
 
 Ablation: accepted contracts must remain distinct from implementation status.
 
-The Knowledge package v1 directory format is prepared on an unlanded branch: one shared retained-v1 manifest marker, single-base mount declarations, exact-byte inventory, fresh private writer and bounded integrity validator. Derivative entries and payloads remain deferred. Knowledge package is a new interchange family; its final format and activating export/import round trip must land together, additively after the explicit pre-reset cut and the Source pointer cutover, before the format freeze. Full Source/page/schema admission, identity remapping and that round trip remain pending; the format does not land separately. Sources currently use an external registry and captured sibling text materials. Context packages still copy originals and require retained paths. Storage integration and the remaining format adoptions are separate increments. Existing Source/Artifact records, Notebook commits, Policy decisions, media evidence and retrieval representations remain the starting owners. The format module activates no backend, host mount or media/model capability.
+The Storage package implements asynchronous JSON control requests, bounded byte chunks, admitted local mount access, verified reads, metadata scan continuation and temporary staged owner handoff. Context packages retain owner/digest references with disposable live-Turn inputs instead of extra original copies. The Knowledge package v1 directory format is prepared on an unlanded branch: one shared retained-v1 manifest marker, single-base mount declarations, exact-byte inventory, fresh private writer and bounded integrity validator. Derivative entries and payloads remain deferred. Its activating export/import round trip waits for the Source pointer cutover; the format does not land separately. Sources still use their external registry and captured text. Existing Source, Artifact, Notebook, Policy, media and retrieval owners remain canonical. No host mount, remote backend, media/model capability or publication authority is activated by these packages.
 
 ## Derivation And Retrieval Interface
 

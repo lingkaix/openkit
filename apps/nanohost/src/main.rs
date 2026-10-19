@@ -874,6 +874,7 @@ async fn run() -> Result<(), NanoHostRunFailure> {
         &mut image_store,
         &mut image_backend,
         &mut persistent_volumes,
+        startup_deadline,
     )
     .map_err(|_| "nanohost epoch startup failed")?;
     run_sessions(session_inputs, coordinator, fence_started, startup_deadline).await

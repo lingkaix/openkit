@@ -2,9 +2,15 @@ import { createHash } from 'node:crypto';
 import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { type EvidenceBundleRecord, EvidenceBundleRecordSchema } from '@openkit/app-api-schemas';
+import {
+  type EvidenceBundleRecord,
+  EvidenceBundleRecordSchema,
+  type ServerEvidenceBundleRecord,
+  ServerEvidenceBundleRecordSchema,
+} from '@openkit/app-api-schemas';
+import { readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 
-import type { WorkspaceDb } from './storage/db.js';
+import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import {
   assertCanonicalDirectory,
   assertSafeWorkspacePathSegment,
@@ -15,8 +21,9 @@ import {
 } from './storage/workspace-file-records.js';
 
 interface EvidenceBundleRow {
+  readonly schema_version: number;
   readonly evidence_bundle_id: string;
-  readonly workspace_id: string;
+  readonly workspace_id: string | null;
   readonly thread_id: string | null;
   readonly goal_id: string | null;
   readonly turn_id: string | null;
@@ -115,17 +122,27 @@ export function compactWorkspaceEvidenceBundles(
   if (input.workspaceId !== input.workspaceDb.workspaceId) {
     throw new Error('Evidence bundle compaction has different Workspace lineage.');
   }
-  const restrictedRows = input.workspaceDb.sqlite
+  const compactedRows = input.workspaceDb.sqlite
     .prepare(
-      `SELECT evidence_bundle_id
+      `SELECT evidence_bundle_id, schema_version, retention_class
       FROM evidence_bundles
       WHERE workspace_id = ?
-        AND retention_class = 'restricted-raw'
-        AND source_kind IN ('worker-runtime-provenance-raw', 'work-observation-body')
+        AND (retention_class = 'ephemeral-diagnostic' OR (
+          retention_class = 'restricted-raw'
+          AND source_kind IN ('worker-runtime-provenance-raw', 'work-observation-body')
+        ))
         AND created_at < ?`
     )
-    .all(input.workspaceId, input.olderThan) as Array<{ evidence_bundle_id: string }>;
-  for (const row of restrictedRows) {
+    .all(input.workspaceId, input.olderThan) as Array<{
+    evidence_bundle_id: string;
+    schema_version: number;
+    retention_class: string;
+  }>;
+  for (const row of compactedRows) {
+    readRetainedV1({ schemaVersion: row.schema_version }, () => undefined);
+  }
+  for (const row of compactedRows) {
+    if (row.retention_class !== 'restricted-raw') continue;
     assertSafeWorkspacePathSegment(row.evidence_bundle_id, 'Evidence bundle id');
     rmSync(
       join(
@@ -162,13 +179,14 @@ export function compactWorkspaceEvidenceBundles(
   return { expiredCount: result.changes };
 }
 
-function insertEvidenceBundle(
-  workspaceDb: WorkspaceDb,
-  record: EvidenceBundleRecord
-): EvidenceBundleRecord {
+function insertEvidenceBundle<T extends EvidenceBundleRecord | ServerEvidenceBundleRecord>(
+  workspaceDb: WorkspaceDb | CoreDb,
+  record: T
+): T {
   const existingRow = workspaceDb.sqlite
     .prepare(
       `SELECT
+        schema_version,
         evidence_bundle_id,
         workspace_id,
         thread_id,
@@ -191,7 +209,7 @@ function insertEvidenceBundle(
     )
     .get(record.id) as EvidenceBundleRow | undefined;
   if (existingRow) {
-    const existing = evidenceBundleFromRow(existingRow);
+    const existing = evidenceBundleFromRow(existingRow, workspaceDb.scope === 'core') as T;
     if (JSON.stringify(existing) !== JSON.stringify(record)) {
       throw new Error(`Evidence bundle replay conflict: ${record.id}`);
     }
@@ -200,6 +218,7 @@ function insertEvidenceBundle(
   workspaceDb.sqlite
     .prepare(
       `INSERT INTO evidence_bundles (
+        schema_version,
         evidence_bundle_id,
         workspace_id,
         thread_id,
@@ -217,11 +236,12 @@ function insertEvidenceBundle(
         import_status,
         required_features_json,
         created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
+      writeRetainedV1(record).schemaVersion,
       record.id,
-      record.workspaceId,
+      record.workspaceId ?? null,
       record.threadId,
       record.goalId,
       record.turnId,
@@ -287,6 +307,7 @@ export function listStoredWorkspaceEvidenceBundles(
     workspaceDb.sqlite
       .prepare(
         `SELECT
+          schema_version,
           evidence_bundle_id,
           workspace_id,
           thread_id,
@@ -309,7 +330,7 @@ export function listStoredWorkspaceEvidenceBundles(
         ORDER BY created_at, evidence_bundle_id`
       )
       .all(workspaceId) as EvidenceBundleRow[]
-  ).map(evidenceBundleFromRow);
+  ).map((row) => evidenceBundleFromRow(row));
 }
 
 function projectEvidenceBundleForProduct(record: EvidenceBundleRecord): EvidenceBundleRecord {
@@ -320,7 +341,7 @@ function projectEvidenceBundleForProduct(record: EvidenceBundleRecord): Evidence
 
 /** Deterministic evidence identity scoped to one observation body, never a native identifier. */
 export function workObservationBodyBundleId(
-  workspaceId: string,
+  workspaceId: string | { readonly kind: 'server' },
   threadId: string,
   turnId: string,
   observationId: string,
@@ -342,16 +363,16 @@ export interface WorkObservationEvidenceInput {
 
 /** Checks existing evidence identity and prevents source expiry from being undone by replay. */
 function workBodyRecord(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: WorkspaceDb | CoreDb,
   input: WorkObservationEvidenceInput
-): EvidenceBundleRecord | undefined {
+): EvidenceBundleRecord | ServerEvidenceBundleRecord | undefined {
   const row = workspaceDb.sqlite
     .prepare('SELECT * FROM evidence_bundles WHERE evidence_bundle_id = ?')
     .get(input.bundleId) as EvidenceBundleRow | undefined;
   if (!row) return undefined;
-  const record = evidenceBundleFromRow(row);
+  const record = evidenceBundleFromRow(row, workspaceDb.scope === 'core');
   if (
-    record.workspaceId !== workspaceDb.workspaceId ||
+    record.workspaceId !== (workspaceDb.scope === 'core' ? undefined : workspaceDb.workspaceId) ||
     record.threadId !== input.threadId ||
     record.turnId !== input.turnId ||
     record.sourceKind !== 'work-observation-body' ||
@@ -364,13 +385,17 @@ function workBodyRecord(
 }
 
 /** Resolves the restricted owner path without following directory links. */
-function workBodyRoot(workspaceDb: WorkspaceDb, bundleId: string, create: boolean): string {
+function workBodyRoot(
+  workspaceDb: WorkspaceDb | CoreDb,
+  bundleId: string,
+  create: boolean
+): string {
   assertSafeWorkspacePathSegment(bundleId, 'Observation evidence bundle');
-  assertSafeWorkspacePathSegment(workspaceDb.workspaceId, 'Observation Workspace');
+  if (workspaceDb.scope === 'workspace')
+    assertSafeWorkspacePathSegment(workspaceDb.workspaceId, 'Observation Workspace');
   let path = workspaceDb.dataRoot;
   for (const part of [
-    'workspaces',
-    workspaceDb.workspaceId,
+    ...(workspaceDb.scope === 'core' ? ['server'] : ['workspaces', workspaceDb.workspaceId]),
     'evidence',
     'backend',
     bundleId,
@@ -385,7 +410,7 @@ function workBodyRoot(workspaceDb: WorkspaceDb, bundleId: string, create: boolea
 
 /** Publishes only evidence metadata after its file bytes have reached their durability boundary. */
 function recordWorkBody(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: WorkspaceDb | CoreDb,
   input: WorkObservationEvidenceInput,
   promoted: boolean
 ): void {
@@ -393,7 +418,7 @@ function recordWorkBody(
     workspaceDb.sqlite.inTransaction ||
     Number(workspaceDb.sqlite.pragma('synchronous', { simple: true })) < 2
   )
-    throw new Error('Observation evidence requires a durable independent Workspace commit');
+    throw new Error('Observation evidence requires a durable independent owner commit');
   const existing = workBodyRecord(workspaceDb, input);
   if (existing) {
     if (existing.importStatus === 'expired') throw new Error('Observation evidence is expired');
@@ -405,30 +430,38 @@ function recordWorkBody(
         .run(input.bundleId);
     return;
   }
-  recordWorkspaceEvidenceBundle(workspaceDb, {
-    id: input.bundleId,
-    workspaceId: workspaceDb.workspaceId,
-    threadId: input.threadId,
-    turnId: input.turnId,
-    goalId: null,
-    agentSessionId: null,
-    backendType: null,
-    sourceKind: 'work-observation-body',
-    summary: 'Restricted admitted work content.',
-    rawEvidenceRefs: [{ kind: 'work-observation-body', ref: 'raw/content' }],
-    redactedEvidenceRefs: [],
-    contentDigests: [input.sha256],
-    retentionClass: 'restricted-raw',
-    sensitivityClass: 'restricted',
-    importStatus: promoted ? 'promoted' : 'collected',
-    requiredFeatures: ['openkit.work-observations.v1'],
-    createdAt: input.createdAt,
-  });
+  insertEvidenceBundle(
+    workspaceDb,
+    (workspaceDb.scope === 'core'
+      ? ServerEvidenceBundleRecordSchema
+      : EvidenceBundleRecordSchema
+    ).parse({
+      id: input.bundleId,
+      ...(workspaceDb.scope === 'core'
+        ? { owner: { kind: 'server' } }
+        : { workspaceId: workspaceDb.workspaceId }),
+      threadId: input.threadId,
+      turnId: input.turnId,
+      goalId: null,
+      agentSessionId: null,
+      backendType: null,
+      sourceKind: 'work-observation-body',
+      summary: 'Restricted admitted work content.',
+      rawEvidenceRefs: [{ kind: 'work-observation-body', ref: 'raw/content' }],
+      redactedEvidenceRefs: [],
+      contentDigests: [input.sha256],
+      retentionClass: 'restricted-raw',
+      sensitivityClass: 'restricted',
+      importStatus: promoted ? 'promoted' : 'collected',
+      requiredFeatures: ['openkit.work-observations.v1'],
+      createdAt: input.createdAt,
+    })
+  );
 }
 
 /** Adopts exact complete bytes under existing evidence retention; never restores expired content. */
 export function retainWorkObservationBody(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: WorkspaceDb | CoreDb,
   input: WorkObservationEvidenceInput & { readonly bytes: Uint8Array }
 ): 'retained' | 'expired' {
   if (createHash('sha256').update(input.bytes).digest('hex') !== input.sha256)
@@ -448,7 +481,7 @@ export function retainWorkObservationBody(
 
 /** Reads exact currently available evidence after the caller's owning Thread audience check; expiry is not corruption. */
 export function readWorkObservationBody(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: WorkspaceDb | CoreDb,
   input: WorkObservationEvidenceInput
 ): Uint8Array | null {
   const record = workBodyRecord(workspaceDb, input);
@@ -562,10 +595,19 @@ export function stageWorkObservationChunk(
   return { state: 'complete', bytes };
 }
 
-function evidenceBundleFromRow(row: EvidenceBundleRow): EvidenceBundleRecord {
-  return EvidenceBundleRecordSchema.parse({
+function evidenceBundleFromRow(row: EvidenceBundleRow): EvidenceBundleRecord;
+function evidenceBundleFromRow(
+  row: EvidenceBundleRow,
+  server: boolean
+): EvidenceBundleRecord | ServerEvidenceBundleRecord;
+function evidenceBundleFromRow(
+  row: EvidenceBundleRow,
+  server = false
+): EvidenceBundleRecord | ServerEvidenceBundleRecord {
+  readRetainedV1({ schemaVersion: row.schema_version }, () => undefined);
+  return (server ? ServerEvidenceBundleRecordSchema : EvidenceBundleRecordSchema).parse({
     id: row.evidence_bundle_id,
-    workspaceId: row.workspace_id,
+    ...(server ? { owner: { kind: 'server' } } : { workspaceId: row.workspace_id }),
     threadId: row.thread_id,
     goalId: row.goal_id,
     turnId: row.turn_id,

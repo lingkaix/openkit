@@ -497,13 +497,55 @@ export async function runPhase(phase, input) {
         'utf8'
       )
     );
-    if (phase === 'worker')
+    if (phase === 'worker') {
       assert.deepEqual(baseline.candidate, input.candidate, 'Candidate artifact pins changed.');
-    return checkWorker({
+      assert.ok(baseline.idleNativeBinding, 'Previous Worker idle native binding is missing.');
+    }
+    const worker = await checkWorker({
       ...input,
       workspaceId: baseline.selectors.workspaceId,
       token: process.env.OPENKIT_UPGRADE_ADMIN_TOKEN,
     });
+    try {
+      const selections =
+        phase === 'worker-before'
+          ? baseline
+          : JSON.parse(await readFile(`${input.baseline}.selectors.json`, 'utf8'));
+      selections[phase === 'worker-before' ? 'previousWorker' : 'candidateWorker'] = {
+        workspaceId: worker.workspaceId,
+        threadId: worker.threadId,
+        turnId: worker.turnId,
+      };
+      await writeFile(
+        `${input.baseline}.selectors.json`,
+        `${JSON.stringify(selections, null, 2)}\n`,
+        { mode: 0o600 }
+      );
+      return worker;
+    } catch (error) {
+      // The successful submission remains inspectable if the subsequent corpus check fails.
+      if (error instanceof Error)
+        error.admittedTurn = {
+          workspaceId: worker.workspaceId,
+          threadId: worker.threadId,
+          turnId: worker.turnId,
+        };
+      throw error;
+    }
+  }
+  if (phase === 'retirement') {
+    const baseline = JSON.parse(await readFile(input.baseline, 'utf8'));
+    assert.deepEqual(baseline.candidate, input.candidate, 'Candidate artifact pins changed.');
+    const { candidateWorker } = JSON.parse(
+      await readFile(`${input.baseline}.selectors.json`, 'utf8')
+    );
+    assert.ok(candidateWorker, 'Successful candidate Worker selectors are missing.');
+    const { checkIdleNativeBinding } = await import('./upgrade-from-previous-sql-corpus.mjs');
+    return {
+      phase,
+      passed: true,
+      ...(await checkIdleNativeBinding(input, baseline.idleNativeBinding, candidateWorker)),
+    };
   }
   const required = retainedFamilies(await readFile(join(input.checkout, REGISTER), 'utf8'));
   if (phase === 'seed') {
@@ -520,7 +562,13 @@ export async function runPhase(phase, input) {
     return { phase, workspaceId: selectors.workspaceId, passed: true };
   }
   if (phase === 'snapshot') {
-    const { selectors } = JSON.parse(await readFile(`${input.baseline}.selectors.json`, 'utf8'));
+    const { selectors, previousWorker } = JSON.parse(
+      await readFile(`${input.baseline}.selectors.json`, 'utf8')
+    );
+    const { captureIdleNativeBinding } = await import('./upgrade-from-previous-sql-corpus.mjs');
+    const idleNativeBinding = previousWorker
+      ? await captureIdleNativeBinding(input, previousWorker)
+      : undefined;
     const observed = await collect(input, selectors);
     const families = summarizeFamilies(observed, required);
     const externalSelections = Object.fromEntries(
@@ -528,7 +576,7 @@ export async function runPhase(phase, input) {
     );
     await writeFile(
       input.baseline,
-      `${JSON.stringify({ previous: input.previous, candidate: input.candidate, selectors, externalSelections, families }, null, 2)}\n`,
+      `${JSON.stringify({ previous: input.previous, candidate: input.candidate, selectors, idleNativeBinding, externalSelections, families }, null, 2)}\n`,
       { mode: 0o600, flag: 'wx' }
     );
     return { phase, families: Object.keys(families).length, passed: true };
@@ -537,6 +585,10 @@ export async function runPhase(phase, input) {
   const baseline = JSON.parse(await readFile(input.baseline, 'utf8'));
   assert.deepEqual(baseline.previous, input.previous, 'Previous artifact pins changed.');
   assert.deepEqual(baseline.candidate, input.candidate, 'Candidate artifact pins changed.');
+  if (baseline.idleNativeBinding) {
+    const { checkIdleNativeBinding } = await import('./upgrade-from-previous-sql-corpus.mjs');
+    await checkIdleNativeBinding(input, baseline.idleNativeBinding);
+  }
   const families = compareFamilies(
     baseline.families,
     await collect(
@@ -554,7 +606,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     const [phase, inputPath, ...extra] = process.argv.slice(2);
     assert(
       inputPath && extra.length === 0,
-      'Usage: node scripts/upgrade-from-previous.mjs <fixtures|seed|activate-before|worker-before|operator-read-before|snapshot|operator-read|compare|activate|worker> <private-input.json>'
+      'Usage: node scripts/upgrade-from-previous.mjs <fixtures|seed|activate-before|worker-before|operator-read-before|snapshot|operator-read|compare|activate|worker|retirement> <private-input.json>'
     );
     const input = JSON.parse(await readFile(inputPath, 'utf8'));
     attemptedInput = input;

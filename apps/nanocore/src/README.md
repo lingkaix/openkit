@@ -40,6 +40,10 @@ The private administration entry provisions a current administrator bearer's own
 
 ## Supporting Directories
 
+Native Light App mutations preserve actual executing Worker, Coordinator or trusted Assistant Thread/Turn identity in the existing app-local Audit fields. Direct human calls leave execution unknown; a presentation Item links the viewed content and does not identify the executor of a later click. The Kernel command assembler reads only trusted invocation lineage and checks the retained Workspace/Thread/Turn before mutation; caller payloads cannot supply this evidence. Audit insertion omits unknown optional authentication so rollback can write its event in the captured native format without upgrading it; known credential facts still require their owned column.
+
+Light App definitions carry one explicit `references` list for reusable meaning in exact pinned Knowledge page/raw or Skill targets. The shared Protocol URI codec validates identity; Kernel admission preserves it without granting access or copying target bodies. Authored omission becomes an empty list in canonical writer output, while retained definitions require the list. Purpose and descriptions remain labels. Native record operations do not depend on target availability. Knowledge resolution stays in the Knowledge owner, separate from app storage and current record authority.
+
 - `capability/` owns capability-call and usage-ledger operations.
 - `context/` owns LLM context projection and its projection policy.
 - `diagnostics/` owns product-safe setup and runtime diagnostic projections.
@@ -136,6 +140,16 @@ Internal model roles share source-bound rolling assembly under `internal-agents/
 
 Light App catalog operation composition lives in light-app-definition-operations.ts. It joins the existing Resource Catalog and native app commands, including raw-selector receipt replay before mutable pin/default resolution. The existing openkit-generative MCP supply includes these declarative operations through the same canonical table and admission engine; catalog import supplies no executable code or credential authority.
 
+General Server Thread operations use immutable Server ownership and current administrator admission. They expose history and Stop without a Workspace anchor. Only Server Knowledge maintenance executes work now; publication and Review use their existing owners. Goal Coordinator ask/tell uses native Knowledge operations and the current shared Goal audience.
+
 Assistant native invocation receives the existing runtime configuration manager for both command and pending-outcome Turns. Private `memory.ask` and `memory.tell` resolve current User Memory through that owner, with the actual Timeline and authenticated actor bound by conversation admission. Shared entries retain the Tools and refuse private access.
 
 `external-trigger-operations.ts` joins the Worker-only `automation.event-admit` contract to existing recurring poll and ordinary Worker admission. App composition supplies the same AutomationStore, Turn-start services and Workspace mutation owner to the built-in Work Tool. Its model input contains only eventKey and the bounded handling brief; authenticated package lineage supplies the source scope. The runtime guide defines isolation and refusal, while the scheduler and storage owners define the retained join.
+
+Light App recovery-copy metadata has its own retained v1 marker and fixed decoder in `generative-kernel/snapshots.ts`. The reader checks the marker before payload decoding, ignores descriptive additions and leaves the copied SQLite bytes unchanged. Current API projections omit the retained header.
+
+Capability calls, usage records, evidence bundles, and generated presentations write format 1 with the shared retained-record helper and reject unsupported markers before retained JSON decoding or same-key replay. Their existing domain decoders, redaction, and lifecycle owners remain in place.
+
+The first explicit public Memory save initializes its admitted User default Knowledge Base before Notebook publication and validates against that exact page scope. Later reads use the retained binding and never allocate a replacement. The public create/read regression in `memory-operation-projections.test.ts` checks exact published bytes and a stable binding.
+
+Skill candidate Artifact admission reads the exact retained version and digest under current source and destination access. A later head does not invalidate the selection. Producer and publication lineage belong to the selected version: a manual correction does not inherit the original Agent identity. The native reader retains JSON/tree bounds and does not create a candidate or change a Skill pin. Run `src/skill-candidate-artifact.test.ts` and the complete `src/catalog/` suite for this consumer seam.

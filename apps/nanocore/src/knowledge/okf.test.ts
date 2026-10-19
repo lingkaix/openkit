@@ -342,6 +342,7 @@ describe('knowledgeReferenceErrors', () => {
   const local = formatReferenceUri({ scopeId: pageScopeId, objectId });
   const pin = `sha256:${'1'.repeat(64)}`;
 
+  /** Validates one exact page reference with independently supplied scope and pin evidence. */
   function errors(reference: string, verified = false, scopeId: string | undefined = pageScopeId) {
     const parsed = parseOkfDocument({
       path: 'a.md',

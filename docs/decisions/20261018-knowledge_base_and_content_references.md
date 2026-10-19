@@ -11,9 +11,11 @@ The engineer approved Knowledge Base-qualified references at 06:10Z and raw-cont
 
 Core Protocol owns the exact page/raw scope grammar and `openkit:` serialization. Original content digests, delivered representation digests and Notebook revisions remain separate evidence. A URI grants no access, can become unavailable and must never silently identify other content. Models and retained content-reference fields carry URIs rather than temporary fetch URLs. Relative raw paths remain the Knowledge-local short form.
 
+Captured-content references retain exact original-byte identity, captured owner/base/mount/path and observed availability. Current ranges use half-open byte offsets or one-based pages; null means the whole source. The coordinator accepted deferring unused time and frame variants after the retained-shape review. They can be added with an active producer without changing existing byte or page meanings.
+
 Default Knowledge Base Worker-delivered paths remain unchanged. Retained selection, deduplication, cursor and context-package identities carry the base ID. Additional bases can add delivered paths later. This avoids putting an otherwise unnecessary UUID into every model-visible default path.
 
-The pre-stable reset decision applies. This cutover adds no converter, dual write, alias or legacy reader. The coordinator sequences reset-dependent landings after the rc.10 cut and performs the single coordinated rc.11 reset; this decision performs no reset or host action.
+The pre-stable reset decision applies. This cutover adds no converter, dual write, alias or legacy reader. The coordinator sequences reset-dependent landings after the rc.9 pre-reset cut and performs the single coordinated rc.10 reset; this decision performs no reset or host action.
 
 ## Reason
 

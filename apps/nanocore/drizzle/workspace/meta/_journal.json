@@ -29,6 +29,27 @@
       "when": 1792196909047,
       "tag": "0003_exact_review_feedback",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1792196909048,
+      "tag": "0004_policy_audit_v1",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1792367088035,
+      "tag": "0005_retained_record_formats",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1792367634719,
+      "tag": "0006_audit_authentication",
+      "breakpoints": true
     }
   ]
 }

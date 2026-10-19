@@ -1,5 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type {
@@ -13,6 +21,7 @@ import type {
   KnowledgeProposalApplication,
   KnowledgeProposalReview,
   MaterializedWorkspaceRoot,
+  ReadArtifactVersionResponse,
   SubmitKnowledgeProposalDecisionRequest,
   SubmitKnowledgeProposalDecisionResponse,
 } from '@openkit/app-api-schemas';
@@ -22,6 +31,7 @@ import {
   SubmitKnowledgeProposalDecisionRequestSchema,
   SubmitKnowledgeProposalDecisionResponseSchema,
 } from '@openkit/app-api-schemas';
+import { WorkspaceConfigSchema, type WorkspaceResourceAccessEntry } from '@openkit/config-schema';
 import type {
   ActorRef,
   KnowledgeEntrySchema,
@@ -32,20 +42,38 @@ import {
   type AgentSessionSchema,
   type ApprovalRequestSchema,
   ArtifactSchema,
+  type ArtifactVersion,
+  type ArtifactVersionRecord,
+  ArtifactVersionRecordSchema,
   allocateEntityId,
   deriveEntityId,
+  formatReferenceUri,
   ItemSchema,
   isSealedTurnTerminal,
   PROTOCOL_VERSION,
+  parseReferenceScope,
+  parseReferenceUri,
   RequestIdSchema,
   responsibleUserIdForActor,
+  type ServerItem,
+  ServerItemSchema,
+  type ServerThread,
+  ServerThreadSchema,
+  type ServerTurn,
+  type ServerTurnEventEnvelope,
+  ServerTurnEventEnvelopeSchema,
+  ServerTurnSchema,
   SseEventEnvelopeSchema,
   ThreadSchema,
   TurnSchema,
   type TurnStatus,
 } from '@openkit/protocol';
+import { parse as parseJsonc } from 'jsonc-parser';
 import { resolveDataRoot } from '../config/data-root.js';
-import { initializeDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
+import {
+  initializeDefaultKnowledgeBaseId,
+  readDefaultKnowledgeBaseId,
+} from '../config/knowledge-base.js';
 import { loadOpenKitConfig } from '../config/openkit-config.js';
 import { captureCoverageBindingFromOpenKitConfig } from '../config/runtime-config.js';
 import { uuidv5 } from '../generative-kernel/uuid.js';
@@ -74,6 +102,12 @@ import { commandInputHash } from '../runtime/idempotent-command.js';
 import { loadApprovalProjections } from '../runtime/pending-requests.js';
 import type { RuntimeAgent } from '../runtime/types.js';
 import type { AppDb } from '../storage/app-db.js';
+import {
+  artifactVersionRecordPath,
+  publishArtifactVersionRecord,
+  readArtifactVersionRecord,
+  rollbackArtifactVersionRecord,
+} from '../storage/artifacts/artifact-version-records.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import type { StagedArtifactPayload } from '../storage/artifacts/file-payload.js';
 import { verifyArtifactFilePayload } from '../storage/artifacts/file-records.js';
@@ -99,6 +133,15 @@ import {
 } from '../storage/fs-layout.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import {
+  appendServerThreadRecord,
+  assertServerItemRevision,
+  assertServerTurnEventLineage,
+  loadServerThreadRecords,
+  readServerTurnEvents,
+  writeServerThreadRecord,
+  writeServerTurnRecord,
+} from '../storage/server-thread-records.js';
+import {
   AgentSessionRecordSchema,
   appendWorkspaceItemRevision,
   appendWorkspaceTurnEvent,
@@ -115,7 +158,6 @@ import {
   loadWorkspaceFileRecords,
   parseCanonicalWorkspaceHistory,
   parseOwnedKnowledgeEntry,
-  publishArtifactFileRecord,
   publishCanonicalPath,
   readCanonicalTextFile,
   readWorkspaceKnowledgeEntries,
@@ -143,6 +185,20 @@ import {
 type WorkspaceRecord = import('zod').infer<typeof WorkspaceRecordSchema>;
 type ProtocolWorkspaceResources = import('zod').infer<typeof WorkspaceResourcesSchema>;
 type WorkspaceResources = Omit<ProtocolWorkspaceResources, 'agents'> & { agents: RuntimeAgent[] };
+
+/** Derives public metadata from the single retained snapshot and its producing facts. */
+function projectArtifactVersion(record: ArtifactVersionRecord): ArtifactVersion {
+  const { artifact, version } = record;
+  return {
+    artifactId: artifact.id,
+    workspaceId: artifact.workspaceId,
+    artifactVersion: artifact.version,
+    title: artifact.title,
+    summary: artifact.summary,
+    contentDigest: artifact.contentDigest,
+    ...version,
+  };
+}
 
 /** Staged workspace root made available before an imported workspace is published. */
 export interface ImportWorkspaceStage {
@@ -226,6 +282,8 @@ const COMMAND_REQUEST_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 export type CommandRequestName =
   | 'knowledge.tell'
   | 'knowledge.maintain'
+  | 'knowledge.server.maintain'
+  | 'knowledge.server.tell'
   | 'administration.server-mcp-create'
   | 'administration.server-mcp-stage-version'
   | 'administration.server-mcp-select-version'
@@ -312,6 +370,8 @@ export type CommandRequestName =
   | 'administration.configuration.apply'
   | 'worker_environment.activate'
   | 'artifact.import'
+  | 'artifact.version-commit'
+  | 'artifact.version-file-commit'
   | 'artifact.introduce'
   | 'artifact.submit'
   | 'artifact.review.decide'
@@ -644,6 +704,55 @@ interface CreateTurnOptions {
   executorKind?: 'worker' | 'assistant' | 'coordinator' | 'person';
 }
 
+/** Server admission shares existing internal-role Turn choices without Workspace file or runtime hooks. */
+export type CreateServerTurnOptions = Pick<
+  CreateTurnOptions,
+  | 'turnId'
+  | 'startedAt'
+  | 'internalExecution'
+  | 'reasoningEffort'
+  | 'skillSelections'
+  | 'triggerSource'
+  | 'agentId'
+  | 'captureCoverage'
+> & { status?: ServerTurn['status']; completedAt?: string };
+
+const SERVER_TURN_UPDATE_FIELDS = [
+  'agentId',
+  'agentProfileId',
+  'agentSessionId',
+  'completedAt',
+  'configVersion',
+  'durationMs',
+  'error',
+  'status',
+  'triggerSource',
+  'internalExecution',
+];
+
+/** Existing mutable Turn lifecycle fields for Server-owned history. */
+export type ServerTurnUpdate = Partial<
+  Pick<
+    ServerTurn,
+    | 'agentId'
+    | 'agentProfileId'
+    | 'agentSessionId'
+    | 'completedAt'
+    | 'configVersion'
+    | 'durationMs'
+    | 'error'
+    | 'status'
+    | 'triggerSource'
+    | 'internalExecution'
+  >
+>;
+
+/** Transcript input without server-authored ordering and ownership. */
+export type ServerTurnEventInput = Omit<
+  ServerTurnEventEnvelope,
+  'owner' | 'protocolVersion' | 'requestId' | 'sequence' | 'timestamp'
+> & { requestId?: string | null };
+
 /** Hooks invoked when a Turn is admitted or first becomes terminal. */
 export interface TurnAdmissionHooks {
   /** Freezes matching ready outcomes into the admitted Turn. */
@@ -901,6 +1010,22 @@ export interface IntroduceArtifactInput {
   readonly triggerActor: ActorRef;
 }
 
+/** One admitted manual revision; its completed Core-local Turn supplies Item-backed publication. */
+export interface CommitArtifactVersionInput {
+  readonly workspaceId: string;
+  readonly artifactId: string;
+  readonly threadId: string;
+  readonly expectedArtifactVersion: number;
+  readonly actor: ActorRef;
+  readonly requestId: string;
+  readonly recordedAt: string;
+  readonly title: string;
+  readonly summary: string | null;
+  readonly content: Artifact['content'];
+  readonly contentDigest?: string;
+  readonly command?: 'artifact.version-commit' | 'artifact.version-file-commit';
+}
+
 /** Native absence of an addressed record, distinct from unexpected storage or implementation failure. */
 export class StoreRecordNotFoundError extends Error {}
 
@@ -1148,7 +1273,21 @@ function emptyWorkspaceFileRecords(workspace: WorkspaceRecord): WorkspaceFileRec
 export class FsStore {
   private workspaces = new Map<string, WorkspaceRecord>();
   private workspaceResources = new Map<string, WorkspaceResources>();
+  private workspaceResourcePolicyProjection:
+    | ((workspaceId: string) => readonly WorkspaceResourceAccessEntry[] | null)
+    | null = null;
   private workspaceAgentCatalogProjection: (() => RuntimeAgent[]) | null = null;
+  private serverThreads = new Map<string, ServerThread>();
+  private serverTurns = new Map<string, ServerTurn>();
+  private serverItems = new Map<string, ServerItem>();
+  private serverStreams = new Map<
+    string,
+    {
+      sequence: number;
+      events: ServerTurnEventEnvelope[];
+      listeners: Set<(event: ServerTurnEventEnvelope) => void>;
+    }
+  >();
   private threads = new Map<string, Thread>();
   private turns = new Map<string, Turn>();
   private items = new Map<string, Item>();
@@ -1156,6 +1295,7 @@ export class FsStore {
   private approvals = new Map<string, ApprovalRequest>();
   private agentSessions = new Map<string, AgentSession>();
   private artifacts = new Map<string, Artifact>();
+  private artifactVersions = new Map<string, ArtifactVersionRecord[]>();
   private knowledgeProposals = new Map<string, KnowledgeProposalRecord>();
   private knowledgeProposalReviews = new Map<string, KnowledgeProposalReviewRecord[]>();
   private knowledgeSources = new Map<string, KnowledgeSourceRecord>();
@@ -1176,6 +1316,20 @@ export class FsStore {
       this.liveCaptureCoverage = captureCoverageBindingFromOpenKitConfig(
         loadOpenKitConfig(this.dataRoot)
       );
+      const serverRecords = loadServerThreadRecords(this.dataRoot);
+      for (const thread of serverRecords.threads) this.serverThreads.set(thread.id, thread);
+      for (const turn of serverRecords.turns) {
+        this.serverTurns.set(turn.id, turn);
+        for (const item of turn.items) this.serverItems.set(item.id, item);
+        const events = serverRecords.turnEvents.get(turn.id) ?? [];
+        this.serverStreams.set(turn.id, {
+          sequence: events.at(-1)?.sequence ?? 0,
+          events: events.slice(-TURN_STREAM_EVENT_WINDOW_SIZE),
+          listeners: new Set(),
+        });
+      }
+      for (const [turnId, binding] of serverRecords.turnCaptureCoverage)
+        this.turnCaptureCoverage.set(turnId, binding);
       const workspaceRecords = loadWorkspaceFileRecords(this.dataRoot);
 
       if (workspaceRecords.length > 0) {
@@ -1203,6 +1357,8 @@ export class FsStore {
         createWorkspaceResources([...records.knowledge])
       );
       for (const thread of records.threads) {
+        if (this.serverThreads.has(thread.id))
+          throw new Error(`Thread has conflicting owners: ${thread.id}`);
         this.threads.set(thread.id, thread);
       }
       for (const turn of records.turns) {
@@ -1227,8 +1383,12 @@ export class FsStore {
             }
           }
         }
+        if (this.serverTurns.has(turn.id))
+          throw new Error(`Turn has conflicting owners: ${turn.id}`);
         this.turns.set(turn.id, turn);
         for (const item of turn.items) {
+          if (this.serverItems.has(item.id))
+            throw new Error(`Item has conflicting owners: ${item.id}`);
           this.items.set(item.id, item);
         }
       }
@@ -1241,9 +1401,20 @@ export class FsStore {
       for (const session of records.agentSessions) {
         this.agentSessions.set(session.id, session);
       }
+      const artifactTurns = new Map(records.turns.map((turn) => [turn.id, turn]));
       for (const artifact of records.artifacts) {
         this.artifacts.set(artifact.id, artifact);
+        this.artifactVersions.set(
+          artifact.id,
+          this.loadArtifactVersions(
+            this.workspaceRootPath(artifact.workspaceId),
+            artifact,
+            artifactTurns,
+            records.itemRevisions
+          )
+        );
       }
+
       for (const proposal of records.knowledgeProposals) {
         this.knowledgeProposals.set(proposal.id, proposal);
       }
@@ -1376,17 +1547,87 @@ export class FsStore {
     return record;
   }
 
+  /** Loads exact retained history with the same lineage and Item proof before restart or import admission. */
+  private loadArtifactVersions(
+    workspaceRoot: string,
+    artifact: Artifact,
+    turns: ReadonlyMap<string, Turn>,
+    itemRevisions: readonly Item[]
+  ): ArtifactVersionRecord[] {
+    try {
+      const versionRoot = dirname(
+        dirname(artifactVersionRecordPath(workspaceRoot, artifact.id, 1))
+      );
+      if (
+        readdirSync(versionRoot).some(
+          (name) =>
+            /^\d+$/.test(name) && (String(Number(name)) !== name || Number(name) > artifact.version)
+        )
+      )
+        throw new Error('The Artifact has an unacknowledged or contradictory version.');
+      const versions = Array.from({ length: artifact.version }, (_, index) =>
+        readArtifactVersionRecord(workspaceRoot, artifact.id, index + 1)
+      );
+      for (const record of versions) {
+        if (
+          record.artifact.workspaceId !== artifact.workspaceId ||
+          !isDeepStrictEqual(record.artifact.origin, artifact.origin)
+        )
+          throw new Error('Artifact version origin is contradictory.');
+        const lineage = record.version;
+        if (lineage.turnId !== null) {
+          const producingTurn = turns.get(lineage.turnId);
+          if (
+            !producingTurn ||
+            producingTurn.workspaceId !== artifact.workspaceId ||
+            producingTurn.threadId !== lineage.threadId ||
+            !isDeepStrictEqual(producingTurn.triggerActor, lineage.actor) ||
+            !itemRevisions.some(
+              (item) =>
+                item.type === 'artifact-reference' &&
+                item.workspaceId === artifact.workspaceId &&
+                item.threadId === lineage.threadId &&
+                item.turnId === lineage.turnId &&
+                item.artifactId === artifact.id &&
+                item.artifactVersion === record.artifact.version &&
+                item.lastMutationRequestId === lineage.requestId &&
+                item.title === record.artifact.title &&
+                item.summary === record.artifact.summary
+            )
+          )
+            throw new Error('The retained Artifact version lacks its exact producing Item.');
+        }
+      }
+      const retained = versions.at(-1)!.artifact;
+      if (
+        !isDeepStrictEqual(
+          { ...retained, status: artifact.status, updatedAt: artifact.updatedAt },
+          artifact
+        )
+      )
+        throw new Error('The Artifact current-head projection is contradictory.');
+      return versions;
+    } catch {
+      throw new ArtifactAuthorityError(
+        'recovery_required',
+        'The retained Artifact version history is unavailable.'
+      );
+    }
+  }
+
   /**
    * Projects one workspace's in-memory state into its canonical file records.
    *
    * @param workspaceId Workspace to persist.
    * @param updateWorkspaceConfigName Whether Core may refresh its owned config name.
    * @param turnFilePayloads Verified private originals consumed only by their first receiving Turn publication.
+   * @param initialArtifact Actual admitted initial version and optional original, consumed by its directory publication.
    */
   private persist(
     workspaceId: string,
     updateWorkspaceConfigName = false,
-    turnFilePayloads?: ReadonlyMap<string, readonly string[]>
+    turnFilePayloads?: ReadonlyMap<string, readonly string[]>,
+    initialArtifact?: { readonly record: ArtifactVersionRecord; readonly payloadPath?: string }
   ): void {
     if (!this.dataRoot) {
       return;
@@ -1397,7 +1638,8 @@ export class FsStore {
       workspaceId,
       workspaceRoot,
       updateWorkspaceConfigName,
-      turnFilePayloads
+      turnFilePayloads,
+      initialArtifact
     );
   }
 
@@ -1504,12 +1746,14 @@ export class FsStore {
    * @param workspaceRoot Resolved workspace root.
    * @param updateWorkspaceConfigName Whether Core may refresh its owned config name.
    * @param turnFilePayloads Verified private originals consumed only by their first receiving Turn publication.
+   * @param initialArtifact Actual admitted initial version and optional original, consumed by its directory publication.
    */
   private writeWorkspaceFileRecordsToRoot(
     workspaceId: string,
     workspaceRoot: string,
     updateWorkspaceConfigName = false,
-    turnFilePayloads?: ReadonlyMap<string, readonly string[]>
+    turnFilePayloads?: ReadonlyMap<string, readonly string[]>,
+    initialArtifact?: { readonly record: ArtifactVersionRecord; readonly payloadPath?: string }
   ): void {
     const workspace = this.getWorkspace(workspaceId);
     const turnIds = new Set(
@@ -1547,7 +1791,8 @@ export class FsStore {
           [...this.turnCaptureCoverage.entries()].filter(([turnId]) => turnIds.has(turnId))
         ),
       },
-      updateWorkspaceConfigName
+      updateWorkspaceConfigName,
+      initialArtifact
     );
   }
 
@@ -1564,6 +1809,21 @@ export class FsStore {
 
     assertSafeWorkspacePathSegment(workspaceId, 'Workspace id');
     return resolveDataRootPath(this.dataRoot, 'workspaces', workspaceId);
+  }
+
+  /**
+   * Returns the retained page scope used by Workspace citation admission.
+   *
+   * @param workspaceId Workspace whose default Knowledge Base owns the pages.
+   * @returns Exact retained scope, or undefined for a store without a data root.
+   */
+  private workspaceKnowledgePageScopeId(workspaceId: string): string | undefined {
+    if (!this.dataRoot) return undefined;
+    const knowledgeBaseId = readDefaultKnowledgeBaseId({
+      dataRoot: this.dataRoot,
+      scope: { kind: 'workspace', workspaceId },
+    });
+    return `page/workspace/${workspaceId}/${knowledgeBaseId}`;
   }
 
   /**
@@ -1586,8 +1846,10 @@ export class FsStore {
   ): void {
     let scopeSchemaText: string | undefined;
     let resolvedReferences: ReadonlySet<string> = new Set();
+    let pageScopeId: string | undefined;
 
     try {
+      pageScopeId = this.workspaceKnowledgePageScopeId(workspaceId);
       if (this.dataRoot) {
         const schemaPath = join(
           this.workspaceRootPath(workspaceId),
@@ -1600,8 +1862,9 @@ export class FsStore {
           scopeSchemaText = readCanonicalTextFile(schemaPath);
         }
       }
-      const qualifiedLocalReferences = (candidate.sourceReferences ?? []).filter((reference) =>
-        /^(?:source|knowledge):.+@sha256:[a-f0-9]{64}$/.test(reference)
+      const qualifiedLocalReferences = (candidate.sourceReferences ?? []).filter(
+        (reference) =>
+          /^source:.+@sha256:[a-f0-9]{64}$/.test(reference) || reference.startsWith('openkit:')
       );
       if (qualifiedLocalReferences.length > 0) {
         resolvedReferences = this.resolveKnowledgePageSourceReferences(
@@ -1617,6 +1880,7 @@ export class FsStore {
     const report = validateKnowledgePageCandidate({
       path: `knowledge/pages/${candidate.id}.md`,
       content: candidateContent,
+      ...(pageScopeId === undefined ? {} : { pageScopeId }),
       ...(scopeSchemaText === undefined ? {} : { scopeSchemaText }),
       registeredSources: new Map(
         [...this.knowledgeSources.values()]
@@ -1645,8 +1909,10 @@ export class FsStore {
     verifiedExternalReferences: readonly string[]
   ): KnowledgeEntry | undefined {
     let scopeSchemaText: string | undefined;
+    let pageScopeId: string | undefined;
     try {
       KnowledgeProposalRecordSchema.parse(proposal);
+      pageScopeId = this.workspaceKnowledgePageScopeId(proposal.workspaceId);
       if (this.dataRoot) {
         const schemaPath = join(
           this.workspaceRootPath(proposal.workspaceId),
@@ -1689,10 +1955,12 @@ export class FsStore {
       const resolved = this.resolveKnowledgePageSourceReferences(
         proposal.workspaceId,
         proposal.sourceReferences,
-        verifiedExternalReferences
+        verifiedExternalReferences,
+        proposal.baseRevision
       );
       const result = validateNotebookCandidate({
         ownerScope: proposal.ownerScope,
+        ...(pageScopeId === undefined ? {} : { pageScopeId }),
         base,
         candidate: { files },
         scopeSchemaText: scopeSchemaText ?? DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
@@ -1746,12 +2014,14 @@ export class FsStore {
     const resolvedReferences = this.resolveKnowledgePageSourceReferences(
       proposal.workspaceId,
       proposal.sourceReferences,
-      verifiedExternalReferences
+      verifiedExternalReferences,
+      proposal.baseRevision
     );
 
     const report = validateKnowledgePageCandidate({
       path: candidatePath,
       content: proposal.canonicalPageBytes,
+      ...(pageScopeId === undefined ? {} : { pageScopeId }),
       expectedOwnerScope: { kind: 'workspace', workspaceId: proposal.workspaceId },
       ...(scopeSchemaText === undefined ? {} : { scopeSchemaText }),
       registeredSources: new Map(
@@ -1783,13 +2053,15 @@ export class FsStore {
    * @param workspaceId Workspace that must own every local reference.
    * @param sourceReferences Complete source references carried by the page.
    * @param verifiedExternalReferences Exact work-history references verified outside the store.
+   * @param notebookRevision Immutable Proposal base, or the current published revision for direct edits.
    * @returns Complete reference set after every current owner is verified.
    * @throws KnowledgePageValidationError when any reference is missing or contradictory.
    */
   private resolveKnowledgePageSourceReferences(
     workspaceId: string,
     sourceReferences: readonly string[],
-    verifiedExternalReferences: readonly string[]
+    verifiedExternalReferences: readonly string[],
+    notebookRevision?: string
   ): ReadonlySet<string> {
     const externalReferences = new Set(verifiedExternalReferences);
     if (
@@ -1803,18 +2075,39 @@ export class FsStore {
       throw new KnowledgePageValidationError();
     }
 
-    const knowledge = this.getWorkspaceResources(workspaceId).knowledge;
     const resolvedReferences = new Set(externalReferences);
     for (const reference of sourceReferences) {
-      const qualifiedReference = /^(source|knowledge):(.+)@(sha256:[a-f0-9]{64})$/.exec(reference);
-      if (!qualifiedReference) {
-        if (!externalReferences.has(reference)) {
-          throw new KnowledgePageValidationError();
-        }
+      const qualifiedSource = /^source:(.+)@(sha256:[a-f0-9]{64})$/.exec(reference);
+      const pagePin = parseReferenceUri(reference);
+      const pageScope = pagePin && parseReferenceScope(pagePin.reference.scopeId);
+      if (!qualifiedSource && !pagePin) {
+        if (!externalReferences.has(reference)) throw new KnowledgePageValidationError();
         continue;
       }
-      const [, family, ownerId, expectedDigest] = qualifiedReference;
-      if (family === 'source') {
+      let ownerId: string;
+      let expectedDigest: string;
+      if (qualifiedSource) {
+        ownerId = qualifiedSource[1]!;
+        expectedDigest = qualifiedSource[2]!;
+      } else {
+        if (
+          !pagePin?.contentDigest ||
+          pageScope?.family !== 'page' ||
+          pageScope.kind !== 'workspace' ||
+          pageScope.workspaceId !== workspaceId ||
+          !this.dataRoot
+        )
+          throw new KnowledgePageValidationError();
+        try {
+          if (pagePin.reference.scopeId !== this.workspaceKnowledgePageScopeId(workspaceId))
+            throw new KnowledgePageValidationError();
+        } catch {
+          throw new KnowledgePageValidationError();
+        }
+        ownerId = pagePin.reference.objectId;
+        expectedDigest = pagePin.contentDigest;
+      }
+      if (qualifiedSource) {
         const source = this.knowledgeSources.get(ownerId!);
         if (
           !source ||
@@ -1838,14 +2131,11 @@ export class FsStore {
 
       let pageBytes: string | null;
       try {
-        pageBytes = this.dataRoot
-          ? readWorkspaceKnowledgePage(this.workspaceRootPath(workspaceId), ownerId!)
-          : (() => {
-              const entry = knowledge.find((candidate) => candidate.id === ownerId);
-              return entry
-                ? serializeUserAuthoredKnowledgePage(entry, { kind: 'workspace', workspaceId })
-                : null;
-            })();
+        pageBytes = readWorkspaceKnowledgePage(
+          this.workspaceRootPath(workspaceId),
+          ownerId,
+          notebookRevision
+        );
       } catch {
         throw new KnowledgePageValidationError();
       }
@@ -1864,7 +2154,8 @@ export class FsStore {
         parsed.document.frontmatter.openkit_status !== 'active' ||
         (parsed.document.frontmatter.status !== undefined &&
           parsed.document.frontmatter.status !== 'stable') ||
-        parsed.document.frontmatter.review_state !== 'user-authored'
+        parsed.document.frontmatter.review_state !== 'user-authored' ||
+        !isDeepStrictEqual(parsed.document.frontmatter.scope, { kind: 'workspace', workspaceId })
       ) {
         throw new KnowledgePageValidationError();
       }
@@ -1881,17 +2172,20 @@ export class FsStore {
    * @throws Knowledge Proposal conflict failure before any Review or Page mutation.
    */
   private assertNoUnresolvedKnowledgeProposalConflict(proposal: KnowledgeProposalRecord): void {
+    const scopeId = this.workspaceKnowledgePageScopeId(proposal.workspaceId);
+    if (scopeId === undefined) throw new KnowledgePageValidationError();
+    const targetIds = proposal.changes
+      ? proposal.changes.map(({ path }) => path.slice(0, -3))
+      : [proposal.knowledgePageId!];
     const relevantReferences = new Set<string>([
-      ...(proposal.changes
-        ? proposal.changes.map(({ path }) => `knowledge:${path.slice(0, -3)}`)
-        : [`knowledge:${proposal.knowledgePageId}`]),
+      ...targetIds.map((objectId) => formatReferenceUri({ scopeId, objectId })),
       ...proposal.sourceReferences,
     ]);
     for (const reference of proposal.sourceReferences) {
-      const qualifiedReference = /^(source|knowledge):(.+)@sha256:[a-f0-9]{64}$/.exec(reference);
-      if (qualifiedReference) {
-        relevantReferences.add(`${qualifiedReference[1]}:${qualifiedReference[2]}`);
-      }
+      const qualifiedSource = /^source:(.+)@sha256:[a-f0-9]{64}$/.exec(reference);
+      if (qualifiedSource) relevantReferences.add(`source:${qualifiedSource[1]}`);
+      const pagePin = parseReferenceUri(reference);
+      if (pagePin) relevantReferences.add(formatReferenceUri(pagePin.reference));
     }
 
     if (
@@ -2261,6 +2555,7 @@ export class FsStore {
       streamEvents: history.turnEvents,
     };
 
+    const importedArtifactVersions = new Map<string, ArtifactVersionRecord[]>();
     this.persistNewWorkspaceAtomically(
       records,
       input.defaultKnowledgeBaseId ?? allocateEntityId('kb'),
@@ -2271,6 +2566,13 @@ export class FsStore {
           history.knowledgeSources
         );
         input.stageWorkspace?.(stage);
+        const turns = new Map(history.turns.map((turn) => [turn.id, turn]));
+        for (const artifact of history.artifacts) {
+          importedArtifactVersions.set(
+            artifact.id,
+            this.loadArtifactVersions(stage.workspaceRoot, artifact, turns, history.itemRevisions)
+          );
+        }
       },
       input.notebookInitialization,
       input.initialNotebookFiles,
@@ -2293,6 +2595,8 @@ export class FsStore {
     this.itemRevisions.push(...history.itemRevisions);
     for (const artifact of history.artifacts) {
       this.artifacts.set(artifact.id, artifact);
+      const versions = importedArtifactVersions.get(artifact.id);
+      if (versions) this.artifactVersions.set(artifact.id, versions);
     }
     for (const session of history.agentSessions) {
       this.agentSessions.set(session.id, session);
@@ -2375,6 +2679,7 @@ export class FsStore {
     for (const [artifactId, artifact] of this.artifacts) {
       if (artifact.workspaceId === workspaceId) {
         this.artifacts.delete(artifactId);
+        this.artifactVersions.delete(artifactId);
       }
     }
     for (const [sessionId, session] of this.agentSessions) {
@@ -2419,6 +2724,29 @@ export class FsStore {
    */
   public setWorkspaceAgentCatalogProjection(projection: () => RuntimeAgent[]): void {
     this.workspaceAgentCatalogProjection = projection;
+  }
+
+  /** Binds current loaded Workspace Policy without copying its durable authority into the store. */
+  public setWorkspaceResourcePolicyProjection(
+    projection: (workspaceId: string) => readonly WorkspaceResourceAccessEntry[] | null
+  ): void {
+    this.workspaceResourcePolicyProjection = projection;
+  }
+
+  /** Reads current effective restrictions; an unpublished configuration cannot activate or remove them. */
+  public getWorkspaceResourceAccess(workspaceId: string): readonly WorkspaceResourceAccessEntry[] {
+    const effective = this.workspaceResourcePolicyProjection?.(workspaceId);
+    if (effective !== undefined && effective !== null) return effective;
+    if (!this.dataRoot) return [];
+    const path = join(this.dataRoot, 'workspaces', workspaceId, 'config', 'workspace.jsonc');
+    if (!existsSync(path)) return [];
+    const authored =
+      WorkspaceConfigSchema.parse(parseJsonc(readFileSync(path, 'utf8'))).workspace.policy
+        ?.resourceAccess ?? [];
+    // New imports stay closed until their validated configuration joins the runtime snapshot.
+    if (this.workspaceResourcePolicyProjection && authored.length)
+      throw new Error('Workspace resource Policy is not loaded.');
+    return authored;
   }
 
   /**
@@ -2705,6 +3033,285 @@ export class FsStore {
     return updated;
   }
 
+  /** Lists Server narratives for a caller already admitted by the Server authority owner. */
+  public listServerThreads(): ServerThread[] {
+    return [...this.serverThreads.values()];
+  }
+
+  /** Creates a Server narrative with no Workspace anchor or private User audience. */
+  public createServerThread(
+    title: string,
+    threadId?: string,
+    entryPath: ServerThread['entryPath'] = 'knowledge-manager'
+  ): ServerThread {
+    const thread = ServerThreadSchema.parse({
+      id: threadId ?? allocateEntityId('th'),
+      owner: { kind: 'server' },
+      visibility: 'server',
+      name: title,
+      preview: title,
+      status: 'active',
+      entryPath,
+      threadSource: 'conversation',
+      createdAt: now(),
+      updatedAt: now(),
+    });
+    if (this.serverThreads.has(thread.id) || this.threads.has(thread.id))
+      throw new Error(`Thread already exists: ${thread.id}`);
+    if (this.dataRoot) writeServerThreadRecord(this.dataRoot, thread);
+    this.serverThreads.set(thread.id, thread);
+    return thread;
+  }
+
+  /** Reads one canonical Server narrative after current Server authority admission. */
+  public getServerThread(threadId: string): ServerThread {
+    const thread = this.serverThreads.get(threadId);
+    if (!thread) throw new StoreRecordNotFoundError(`Server Thread not found: ${threadId}`);
+    return thread;
+  }
+
+  /** Changes only mutable narrative metadata; placement, entry and lineage remain fixed. */
+  public updateServerThread(
+    threadId: string,
+    input: Partial<Pick<ServerThread, 'name' | 'status'>>
+  ): ServerThread {
+    const thread = this.getServerThread(threadId);
+    for (const key of Object.keys(input))
+      if (!['name', 'status'].includes(key))
+        throw new Error(`Server Thread update cannot change field: ${key}`);
+    const updated = ServerThreadSchema.parse({ ...thread, ...input, updatedAt: now() });
+    if (this.dataRoot) writeServerThreadRecord(this.dataRoot, updated);
+    this.serverThreads.set(threadId, updated);
+    return updated;
+  }
+
+  /** Admits one sequential Server Turn; the runtime owner chooses the model and performs execution. */
+  public createServerTurn(
+    threadId: string,
+    input: string,
+    triggerActor: ActorRef,
+    configVersion: number | null = null,
+    options: CreateServerTurnOptions = {}
+  ): ServerTurn {
+    const thread = this.getServerThread(threadId);
+    if (thread.status === 'archived') throw new Error(`Server Thread is archived: ${threadId}`);
+    const terminal = isSealedTurnTerminal(options.status ?? 'running');
+    if (
+      !terminal &&
+      this.listServerThreadTurns(threadId).some(
+        (turn) => turn.status === 'pending' || turn.status === 'running'
+      )
+    )
+      throw new Error(`Server Thread has a Turn in flight: ${threadId}`);
+    const timestamp = options.startedAt ?? now();
+    const turn = ServerTurnSchema.parse({
+      ...options,
+      id: options.turnId ?? allocateEntityId('tu'),
+      owner: { kind: 'server' },
+      threadId,
+      triggerActor,
+      items: [],
+      status: options.status ?? 'running',
+      error: null,
+      configVersion,
+      startedAt: timestamp,
+      completedAt: terminal ? (options.completedAt ?? timestamp) : null,
+      durationMs: terminal
+        ? Math.max(
+            0,
+            new Date(options.completedAt ?? timestamp).getTime() - new Date(timestamp).getTime()
+          )
+        : null,
+    });
+    if (this.serverTurns.has(turn.id) || this.turns.has(turn.id))
+      throw new Error(`Turn already exists: ${turn.id}`);
+    const updatedThread = { ...thread, preview: input, updatedAt: timestamp };
+    if (this.dataRoot)
+      writeServerTurnRecord(this.dataRoot, {
+        ...turn,
+        captureCoverage: options.captureCoverage ?? this.liveCaptureCoverage,
+      });
+    this.serverTurns.set(turn.id, turn);
+    this.serverStreams.set(turn.id, { sequence: 0, events: [], listeners: new Set() });
+    this.turnCaptureCoverage.set(turn.id, options.captureCoverage ?? this.liveCaptureCoverage);
+    if (this.dataRoot) writeServerThreadRecord(this.dataRoot, updatedThread);
+    this.serverThreads.set(threadId, updatedThread);
+    return turn;
+  }
+
+  /** Reads one Turn only within its exact Server Thread. */
+  public getServerTurn(threadId: string, turnId: string): ServerTurn {
+    const turn = this.getServerTurnById(turnId);
+    if (turn.threadId !== threadId)
+      throw new StoreRecordNotFoundError(`Server Turn not found: ${turnId}`);
+    return turn;
+  }
+
+  /** Reads a Server Turn by its opaque identity after Server authority admission. */
+  public getServerTurnById(turnId: string): ServerTurn {
+    const turn = this.serverTurns.get(turnId);
+    if (!turn) throw new StoreRecordNotFoundError(`Server Turn not found: ${turnId}`);
+    return turn;
+  }
+
+  /** Lists Server Turns in their canonical chronological order. */
+  public listServerThreadTurns(threadId: string): ServerTurn[] {
+    this.getServerThread(threadId);
+    return [...this.serverTurns.values()]
+      .filter((turn) => turn.threadId === threadId)
+      .sort((a, b) => (a.startedAt ?? '').localeCompare(b.startedAt ?? ''));
+  }
+
+  /** Updates the existing closed lifecycle without changing immutable Server owner or admission facts. */
+  public updateServerTurn(turnId: string, input: ServerTurnUpdate): ServerTurn {
+    const turn = this.getServerTurnById(turnId);
+    for (const key of Object.keys(input))
+      if (!SERVER_TURN_UPDATE_FIELDS.includes(key))
+        throw new Error(`Server Turn update cannot change field: ${key}`);
+    const updated = ServerTurnSchema.parse({
+      ...turn,
+      ...input,
+      durationMs:
+        (input.completedAt ?? turn.completedAt) && turn.startedAt
+          ? Math.max(
+              0,
+              new Date(input.completedAt ?? turn.completedAt!).getTime() -
+                new Date(turn.startedAt).getTime()
+            )
+          : (input.durationMs ?? turn.durationMs),
+    });
+    if (isSealedTurnTerminal(turn.status)) {
+      if (alreadyDecidedPublicationBytesEqual(turn, updated)) return turn;
+      throw terminalTurnWriteRejected(turn.id);
+    }
+    if (this.dataRoot) writeServerTurnRecord(this.dataRoot, updated);
+    this.serverTurns.set(turn.id, updated);
+    return updated;
+  }
+
+  /** Appends a full Item revision to its Server Turn before publishing its in-memory projection. */
+  public createServerItem(
+    input: ServerItem,
+    admission?: AlreadyDecidedPublicationAdmission
+  ): ServerItem {
+    const item = ServerItemSchema.parse(input);
+    const turn = this.getServerTurn(item.threadId, item.turnId);
+    const existing = this.serverItems.get(item.id);
+    if (this.items.has(item.id)) throw new Error(`Item already exists: ${item.id}`);
+    if (existing) assertServerItemRevision(existing, item);
+    if (isSealedTurnTerminal(turn.status)) {
+      if (existing && alreadyDecidedPublicationBytesEqual(existing, item)) return existing;
+      if (admission?.category !== 'already-decided-publication' || existing)
+        throw terminalTurnWriteRejected(turn.id);
+    }
+    const updatedTurn = ServerTurnSchema.parse({
+      ...turn,
+      items: existing
+        ? turn.items.map((candidate) => (candidate.id === item.id ? item : candidate))
+        : [...turn.items, item],
+    });
+    if (this.dataRoot) appendServerThreadRecord(this.dataRoot, item);
+    this.serverItems.set(item.id, item);
+    this.serverTurns.set(turn.id, updatedTurn);
+    return item;
+  }
+
+  /** Reads an Item within Server history after Server authority admission. */
+  public getServerItemById(itemId: string): ServerItem {
+    const item = this.serverItems.get(itemId);
+    if (!item) throw new StoreRecordNotFoundError(`Server Item not found: ${itemId}`);
+    return item;
+  }
+
+  /** Updates a Server Item through the same immutable identity and append boundary as creation. */
+  public updateServerItem(itemId: string, input: Partial<ServerItem>): ServerItem {
+    const item = this.getServerItemById(itemId);
+    const updated = ServerItemSchema.parse({ ...item, ...input });
+    assertServerItemRevision(item, updated);
+    return this.createServerItem(updated);
+  }
+
+  /** Lists current Server Item projections in chronological order. */
+  public listServerThreadItems(threadId: string): ServerItem[] {
+    this.getServerThread(threadId);
+    return [...this.serverItems.values()]
+      .filter((item) => item.threadId === threadId)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  /** Publishes an existing transcript event family under a Server Turn without a Workspace selector. */
+  public emitServerTurnEvent(
+    turnId: string,
+    event: ServerTurnEventInput,
+    admission?: AlreadyDecidedPublicationAdmission
+  ): ServerTurnEventEnvelope {
+    const turn = this.getServerTurnById(turnId);
+    const stream = this.serverStreams.get(turnId)!;
+    const envelope = ServerTurnEventEnvelopeSchema.parse({
+      ...event,
+      owner: { kind: 'server' },
+      protocolVersion: PROTOCOL_VERSION,
+      requestId: event.requestId ?? null,
+      sequence: stream.sequence + 1,
+      timestamp: now(),
+    });
+    assertServerTurnEventLineage(envelope, turn);
+    if (isSealedTurnTerminal(turn.status)) {
+      const existing = stream.events.find(
+        (candidate) =>
+          candidate.event === envelope.event &&
+          candidate.requestId === envelope.requestId &&
+          alreadyDecidedPublicationBytesEqual(candidate.data, envelope.data)
+      );
+      if (existing) return existing;
+      const terminalSnapshot =
+        envelope.data.type === 'turn-completed' &&
+        stopReasonMatchesSealedStatus(envelope.data.stopReason, turn.status) &&
+        alreadyDecidedPublicationBytesEqual(envelope.data.turn, turn);
+      const decidedItemSnapshot =
+        admission?.category === 'already-decided-publication' &&
+        (envelope.data.type === 'item-created' || envelope.data.type === 'item-completed') &&
+        alreadyDecidedPublicationBytesEqual(
+          this.serverItems.get(envelope.data.item.id),
+          envelope.data.item
+        );
+      if (!terminalSnapshot && !decidedItemSnapshot) throw terminalTurnWriteRejected(turn.id);
+    }
+    if (this.dataRoot) appendServerThreadRecord(this.dataRoot, envelope);
+    stream.sequence = envelope.sequence;
+    stream.events.push(envelope);
+    if (stream.events.length > TURN_STREAM_EVENT_WINDOW_SIZE) stream.events.shift();
+    for (const listener of stream.listeners) listener(envelope);
+    return envelope;
+  }
+
+  /** Returns the bounded Server transcript window used for current streaming. */
+  public getServerTurnEvents(turnId: string): ServerTurnEventEnvelope[] {
+    this.getServerTurnById(turnId);
+    return this.serverStreams.get(turnId)!.events;
+  }
+
+  /** Returns the complete canonical Server transcript after current Server authority admission. */
+  public getServerTurnTranscript(turnId: string): ServerTurnEventEnvelope[] {
+    const turn = this.getServerTurnById(turnId);
+    return this.dataRoot
+      ? readServerTurnEvents(this.dataRoot, turn)
+      : this.getServerTurnEvents(turnId);
+  }
+
+  /** Subscribes to the existing in-process Server Turn stream after Server authority admission. */
+  public addServerTurnListener(
+    turnId: string,
+    listener: (event: ServerTurnEventEnvelope) => void
+  ): () => void {
+    this.getServerTurnById(turnId);
+    const listeners = this.serverStreams.get(turnId)!.listeners;
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+    };
+  }
+
   public listThreads(workspaceId: string): Thread[] {
     return [...this.threads.values()].filter((thread) => thread.workspaceId === workspaceId);
   }
@@ -2723,7 +3330,7 @@ export class FsStore {
     }
   ): Thread {
     const id = threadId ?? allocateEntityId('th');
-    if (this.threads.has(id)) {
+    if (this.threads.has(id) || this.serverThreads.has(id)) {
       throw new Error(`Thread already exists: ${id}`);
     }
     if (!audience && entryPath === 'administration')
@@ -2825,7 +3432,7 @@ export class FsStore {
     const timestamp = options.startedAt ?? now();
     const turnId = options.turnId ?? allocateEntityId('tu');
 
-    if (this.turns.has(turnId)) {
+    if (this.turns.has(turnId) || this.serverTurns.has(turnId)) {
       throw new Error(`Turn already exists: ${turnId}`);
     }
 
@@ -3122,6 +3729,7 @@ export class FsStore {
    */
   public createItem(input: Item, admission?: TerminalTurnWriteAdmission): Item {
     const item = ItemSchema.parse(input);
+    if (this.serverItems.has(item.id)) throw new Error(`Item already exists: ${item.id}`);
     const existing = this.items.get(item.id);
     const turn = this.getTurnById(item.turnId);
     if (turn.workspaceId !== item.workspaceId || turn.threadId !== item.threadId) {
@@ -3592,17 +4200,27 @@ export class FsStore {
       }) as Extract<Item, { type: 'artifact-reference' }>;
     }
 
+    const versionRecord = ArtifactVersionRecordSchema.parse({
+      artifact,
+      version: {
+        parentVersion: null,
+        actor:
+          artifact.origin.kind === 'imported' ? artifact.origin.actor : producingTurn!.triggerActor,
+        threadId: artifact.threadId,
+        turnId: artifact.turnId,
+        requestId: artifact.lastMutationRequestId,
+        recordedAt: artifact.updatedAt,
+      },
+    });
+
     this.artifacts.set(artifact.id, artifact);
     this.refreshWorkspaceCounts(artifact.workspaceId);
     try {
-      if (artifact.content.format === 'file' && filePayload) {
-        publishArtifactFileRecord({
-          workspaceRoot: this.workspaceRootPath(artifact.workspaceId),
-          artifact,
-          payloadPath: filePayload.path,
-        });
-      }
-      this.persist(artifact.workspaceId);
+      this.persist(artifact.workspaceId, false, undefined, {
+        record: versionRecord,
+        ...(filePayload ? { payloadPath: filePayload.path } : {}),
+      });
+      this.artifactVersions.set(artifact.id, [versionRecord]);
     } catch (error) {
       this.artifacts.delete(artifact.id);
       this.refreshWorkspaceCounts(artifact.workspaceId);
@@ -3651,6 +4269,7 @@ export class FsStore {
       if (retained !== before) writeFileAtomic(itemsPath, retained);
     }
     this.artifacts.delete(artifactId);
+    this.artifactVersions.delete(artifactId);
     this.itemRevisions = this.itemRevisions.filter(
       (item) => item.type !== 'artifact-reference' || item.artifactId !== artifactId
     );
@@ -3700,11 +4319,9 @@ export class FsStore {
       );
     }
     this.assertArtifactContent(artifact);
-    const contentDigest = artifact.contentDigest;
-    if (
-      contentDigest !== artifact.contentDigest ||
-      contentDigest !== artifact.origin.sourceDigest
-    ) {
+    const contentDigest = this.getArtifactVersion(input.workspaceId, input.artifactId, 1).artifact
+      .contentDigest;
+    if (contentDigest !== artifact.origin.sourceDigest) {
       throw new ArtifactAuthorityError(
         'recovery_required',
         'The imported Artifact has invalid durable content proof.'
@@ -3821,6 +4438,247 @@ export class FsStore {
     }
 
     return artifact;
+  }
+
+  /** Lists exact immutable version metadata without substituting the current Artifact. */
+  public listArtifactVersions(workspaceId: string, artifactId: string): ArtifactVersion[] {
+    this.getArtifact(workspaceId, artifactId);
+    const versions = this.artifactVersions.get(artifactId);
+    if (!versions)
+      throw new ArtifactAuthorityError(
+        'recovery_required',
+        'The Artifact version history is unavailable.'
+      );
+    return versions.map((record) => structuredClone(projectArtifactVersion(record)));
+  }
+
+  /** Resolves one exact immutable Artifact version and verifies its retained original. */
+  public getArtifactVersion(
+    workspaceId: string,
+    artifactId: string,
+    artifactVersion: number
+  ): ReadArtifactVersionResponse {
+    const current = this.getArtifact(workspaceId, artifactId);
+    if (
+      !Number.isSafeInteger(artifactVersion) ||
+      artifactVersion < 1 ||
+      artifactVersion > current.version
+    )
+      throw new StoreRecordNotFoundError('Artifact version not found.');
+    let record = this.artifactVersions.get(artifactId)?.[artifactVersion - 1];
+    const admitted = record;
+    if (this.dataRoot) {
+      try {
+        record = readArtifactVersionRecord(
+          this.workspaceRootPath(workspaceId),
+          artifactId,
+          artifactVersion
+        );
+      } catch {
+        throw new ArtifactAuthorityError(
+          'recovery_required',
+          'The retained Artifact version is unavailable.'
+        );
+      }
+    }
+    if (!record)
+      throw new ArtifactAuthorityError(
+        'recovery_required',
+        'The retained Artifact version is unavailable.'
+      );
+    if (
+      !isDeepStrictEqual(record, admitted) ||
+      record.artifact.workspaceId !== workspaceId ||
+      !isDeepStrictEqual(record.artifact.origin, current.origin)
+    )
+      throw new ArtifactAuthorityError(
+        'recovery_required',
+        'The retained Artifact version authority is contradictory.'
+      );
+    this.assertArtifactContent(record.artifact);
+    return structuredClone({ artifact: record.artifact, version: projectArtifactVersion(record) });
+  }
+
+  /** Checks current version and audience before staging or publishing a manual revision. */
+  public assertArtifactVersionCommit(
+    input: Pick<
+      CommitArtifactVersionInput,
+      'workspaceId' | 'artifactId' | 'threadId' | 'expectedArtifactVersion'
+    >
+  ): void {
+    const current = this.getArtifact(input.workspaceId, input.artifactId);
+    const thread = this.getThread(input.workspaceId, input.threadId);
+    this.getArtifactVersion(input.workspaceId, input.artifactId, current.version);
+    if (
+      this.dataRoot &&
+      lstatSync(
+        dirname(
+          artifactVersionRecordPath(
+            this.workspaceRootPath(input.workspaceId),
+            current.id,
+            current.version + 1
+          )
+        ),
+        { throwIfNoEntry: false }
+      )
+    )
+      throw new ArtifactAuthorityError(
+        'recovery_required',
+        'The Artifact has an unacknowledged next version.'
+      );
+    if (current.version !== input.expectedArtifactVersion)
+      throw new ArtifactAuthorityError(
+        'conflict',
+        'The Artifact version does not match the request.'
+      );
+    if (
+      (current.origin.kind === 'turn-output' && current.origin.threadId !== thread.id) ||
+      (current.origin.kind === 'imported' && thread.visibility !== 'workspace')
+    )
+      throw new ArtifactAuthorityError(
+        'invalid_request',
+        'The selected Thread does not preserve the Artifact audience.'
+      );
+    if (
+      this.listThreadTurns(input.workspaceId, input.threadId).some(
+        (turn) => !isSealedTurnTerminal(turn.status)
+      )
+    )
+      throw new ArtifactAuthorityError(
+        'thread_busy',
+        'The Thread already has a non-terminal Turn.'
+      );
+  }
+
+  /** Commits one immutable next version and its completed Item-backed Core-local Turn. */
+  public commitArtifactVersion(
+    input: CommitArtifactVersionInput,
+    payload?: StagedArtifactPayload
+  ): ReadArtifactVersionResponse {
+    this.assertArtifactVersionCommit(input);
+    const current = this.getArtifact(input.workspaceId, input.artifactId);
+    const command = input.command ?? 'artifact.version-commit';
+    const turnId = deriveEntityId('tu', [
+      input.actor,
+      input.workspaceId,
+      input.threadId,
+      command,
+      input.requestId,
+    ]);
+    const itemId = artifactReferenceItemId(current.id, turnId);
+    if (
+      this.turns.has(turnId) ||
+      this.items.has(itemId) ||
+      this.artifactVersions.get(current.id)?.some((record) => record.version.turnId === turnId)
+    )
+      throw new ArtifactAuthorityError(
+        'recovery_required',
+        'The request-owned Artifact version already exists without a receipt.'
+      );
+    const contentDigest =
+      input.content.format === 'file'
+        ? payload?.contentDigest
+        : `sha256:${createHash('sha256').update(input.content.body, 'utf8').digest('hex')}`;
+    if (
+      !contentDigest ||
+      (input.contentDigest !== undefined && input.contentDigest !== contentDigest) ||
+      (input.content.format === 'file' &&
+        (!this.dataRoot || !payload || payload.byteLength !== input.content.byteLength))
+    )
+      throw new ArtifactAuthorityError(
+        'source_digest_mismatch',
+        'The Artifact version does not match its exact original.'
+      );
+    const artifact = ArtifactSchema.parse({
+      ...current,
+      version: current.version + 1,
+      title: input.title,
+      summary: input.summary,
+      content: input.content,
+      contentDigest,
+      lastMutationRequestId: input.requestId,
+      updatedAt: input.recordedAt,
+    });
+    const record = ArtifactVersionRecordSchema.parse({
+      artifact,
+      version: {
+        parentVersion: current.version,
+        actor: input.actor,
+        threadId: input.threadId,
+        turnId,
+        requestId: input.requestId,
+        recordedAt: input.recordedAt,
+      },
+    });
+    const item = ItemSchema.parse({
+      id: itemId,
+      workspaceId: input.workspaceId,
+      threadId: input.threadId,
+      turnId,
+      type: 'artifact-reference',
+      status: 'completed',
+      artifactId: artifact.id,
+      artifactVersion: artifact.version,
+      title: artifact.title,
+      summary: artifact.summary,
+      lastMutationRequestId: input.requestId,
+      createdAt: input.recordedAt,
+      completedAt: input.recordedAt,
+    });
+    const turn = TurnSchema.parse({
+      id: turnId,
+      workspaceId: input.workspaceId,
+      threadId: input.threadId,
+      triggerActor: input.actor,
+      status: 'completed',
+      error: null,
+      configVersion: null,
+      startedAt: input.recordedAt,
+      completedAt: input.recordedAt,
+      durationMs: 0,
+      items: [item],
+    });
+    const versions = this.artifactVersions.get(current.id)!;
+    const revisionCount = this.itemRevisions.length;
+    let published = false;
+    try {
+      if (this.dataRoot) {
+        publishArtifactVersionRecord({
+          workspaceRoot: this.workspaceRootPath(input.workspaceId),
+          record,
+          ...(payload ? { payloadPath: payload.path } : {}),
+        });
+        published = true;
+      }
+      this.artifacts.set(current.id, artifact);
+      this.artifactVersions.set(current.id, [...versions, record]);
+      this.turns.set(turnId, turn);
+      this.items.set(itemId, item);
+      this.itemRevisions.push(item);
+      this.streams.set(turnId, {
+        sequence: 0,
+        events: [],
+        listeners: new Set(),
+        timers: new Set(),
+      });
+      this.persist(input.workspaceId);
+    } catch (error) {
+      this.artifacts.set(current.id, current);
+      this.artifactVersions.set(current.id, versions);
+      this.turns.delete(turnId);
+      this.items.delete(itemId);
+      this.streams.delete(turnId);
+      this.itemRevisions.length = revisionCount;
+      if (published && this.dataRoot)
+        rollbackArtifactVersionRecord(
+          this.workspaceRootPath(input.workspaceId),
+          current.id,
+          artifact.version
+        );
+      this.persist(input.workspaceId);
+      throw error;
+    }
+    return structuredClone({ artifact: record.artifact, version: projectArtifactVersion(record) });
   }
 
   /** Resolves this Workspace's existing single Git content owner. */
@@ -4203,7 +5061,9 @@ export class FsStore {
 
     let content: string | null;
     let scopeSchemaText: string | undefined;
+    let pageScopeId: string | undefined;
     try {
+      pageScopeId = this.workspaceKnowledgePageScopeId(workspaceId);
       const workspaceRoot = this.workspaceRootPath(workspaceId);
       content = readWorkspaceKnowledgePage(workspaceRoot, knowledgePageId);
       const schemaPath = join(workspaceRoot, 'knowledge', 'schema', 'workspace-schema.yaml');
@@ -4246,6 +5106,7 @@ export class FsStore {
     const report = validateKnowledgePageCandidate({
       path,
       content,
+      ...(pageScopeId === undefined ? {} : { pageScopeId }),
       ...(scopeSchemaText === undefined ? {} : { scopeSchemaText }),
       registeredSources: new Map(
         [...this.knowledgeSources.values()]

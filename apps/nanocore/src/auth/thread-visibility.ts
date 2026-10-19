@@ -1,23 +1,56 @@
+import { isDeepStrictEqual } from 'node:util';
 import { type ArtifactSchema, ThreadSchema } from '@openkit/protocol';
 
 import { type FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
+
+import {
+  evaluateWorkspaceResourceAccess,
+  type ResourcePolicyActor,
+} from '../policy/workspace-resource-access.js';
 
 type Artifact = import('zod').infer<typeof ArtifactSchema>;
 type Thread = import('zod').infer<typeof ThreadSchema>;
 
 /** Unique Thread audience predicate after Workspace eligibility; administrator eligibility must come from the current credential owner. */
 export function isThreadVisible(
-  store: Pick<FsStore, 'getWorkspace'>,
+  store: Pick<FsStore, 'getWorkspace' | 'getWorkspaceResourceAccess'>,
   thread: Thread,
   userId: string | undefined,
-  administratorEligible = false
+  administratorEligible = false,
+  operation: string | null = 'thread.read',
+  policyActor?: ResourcePolicyActor
 ): boolean {
   if (!userId || !ThreadSchema.safeParse(thread).success) return false;
   const workspace = store.getWorkspace(thread.workspaceId);
-  if (administratorEligible) return true;
-  if (workspace.kind === 'personal' && workspace.id !== quickChatWorkspaceIdForUser(userId))
+  if (
+    !administratorEligible &&
+    workspace.kind === 'personal' &&
+    workspace.id !== quickChatWorkspaceIdForUser(userId)
+  )
     return false;
-  return thread.visibility === 'workspace' || thread.privateOwnerUserId === userId;
+  if (
+    thread.visibility === 'private' &&
+    !administratorEligible &&
+    thread.privateOwnerUserId !== userId
+  )
+    return false;
+  if (operation === null) return true;
+  try {
+    return (
+      evaluateWorkspaceResourceAccess({
+        actor: policyActor ?? { kind: 'user', userId },
+        eligible: true,
+        resource: { family: 'thread', id: thread.id },
+        operation,
+        resourceAccess:
+          thread.visibility === 'workspace'
+            ? store.getWorkspaceResourceAccess(thread.workspaceId)
+            : [],
+      }).effect === 'allow'
+    );
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -37,14 +70,18 @@ export function isThreadIdVisible(
   workspaceId: string,
   threadId: string,
   userId: string | undefined,
-  administratorEligible = false
+  administratorEligible = false,
+  operation: string | null = 'thread.read',
+  policyActor?: ResourcePolicyActor
 ): boolean {
   try {
     return isThreadVisible(
       store,
       store.getThread(workspaceId, threadId),
       userId,
-      administratorEligible
+      administratorEligible,
+      operation,
+      policyActor
     );
   } catch {
     return false;
@@ -56,7 +93,8 @@ export function isArtifactVisible(
   store: FsStore,
   artifact: Artifact,
   userId: string | undefined,
-  administratorEligible = false
+  administratorEligible = false,
+  policyActor?: ResourcePolicyActor
 ): boolean {
   if (!userId) return false;
   if (artifact.origin.kind === 'imported')
@@ -68,6 +106,44 @@ export function isArtifactVisible(
     artifact.workspaceId,
     artifact.origin.threadId,
     userId,
-    administratorEligible
+    administratorEligible,
+    'thread.read',
+    policyActor
   );
+}
+
+/** Preserves the source audience on product-managed transfers; matching Policy facts never grant source read authority. */
+export function canDiscloseThreadToAudience(
+  store: Pick<FsStore, 'getWorkspaceResourceAccess'>,
+  source: Thread,
+  destination: Thread | null
+): boolean {
+  if (destination && source.workspaceId !== destination.workspaceId) return false;
+  if (destination?.id === source.id) return true;
+  if (source.visibility === 'private')
+    return (
+      destination?.visibility === 'private' &&
+      destination.privateOwnerUserId === source.privateOwnerUserId
+    );
+  try {
+    const entries = store.getWorkspaceResourceAccess(source.workspaceId);
+    const sourceBoundary = entries.find(
+      (entry) => entry.resource.family === 'thread' && entry.resource.id === source.id
+    );
+    if (!sourceBoundary) return true;
+    // A different or absent destination boundary cannot prove that the output retains these restrictions.
+    const destinationBoundary =
+      destination?.visibility === 'workspace'
+        ? entries.find(
+            (entry) => entry.resource.family === 'thread' && entry.resource.id === destination.id
+          )
+        : undefined;
+    return Boolean(
+      destinationBoundary &&
+        isDeepStrictEqual(sourceBoundary.grants, destinationBoundary.grants) &&
+        isDeepStrictEqual(sourceBoundary.prohibitions, destinationBoundary.prohibitions)
+    );
+  } catch {
+    return false;
+  }
 }

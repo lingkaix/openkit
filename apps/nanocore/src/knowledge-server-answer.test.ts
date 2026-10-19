@@ -73,6 +73,7 @@ Release after the shared gate passes.
     }
   );
   const serverScopeId = `page/server/${readDefaultKnowledgeBaseId({ dataRoot, scope: { kind: 'server' } })}`;
+  let citationScopeId = serverScopeId;
   const contentDigest = `sha256:${createHash('sha256').update(content).digest('hex')}`;
   const thread = store.createThread(
     workspace.id,
@@ -107,7 +108,7 @@ Release after the shared gate passes.
         citations: [
           {
             reference: formatReferenceUri(
-              { scopeId: serverScopeId, objectId: 'release-rule' },
+              { scopeId: citationScopeId, objectId: 'release-rule' },
               contentDigest
             ),
             revision: published.notebookRevision,
@@ -137,4 +138,13 @@ Release after the shared gate passes.
       },
     ],
   });
+  citationScopeId = 'page/server/kb_00000000-0000-7000-8000-000000000009';
+  expect(citationScopeId).not.toBe(serverScopeId);
+  await expect(
+    invoke(
+      'knowledge.answer',
+      { workspaceId: workspace.id, query: 'When can we release?' },
+      { kind: 'public', actor }
+    )
+  ).rejects.toMatchObject({ code: 'knowledge_manager_answer_failed' });
 });

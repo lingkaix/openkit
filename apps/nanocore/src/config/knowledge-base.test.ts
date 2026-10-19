@@ -9,7 +9,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { isEntityId, type KnowledgeOwnerScope } from '@openkit/protocol';
+import { isEntityId, type KnowledgeOwnerScope, RETAINED_FORMAT_VERSION } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { initializeDefaultKnowledgeBaseId, readDefaultKnowledgeBaseId } from './knowledge-base.js';
 import { createRuntimeConfigManager } from './runtime-config.js';
@@ -39,9 +39,9 @@ describe('retained default Knowledge Base identity', () => {
     {
       scope: { kind: 'workspace', workspaceId },
       path: `workspaces/${workspaceId}/config/workspace.jsonc`,
-      content: '{"workspace":{"name":"Research"}}',
+      content: '{"schemaVersion":1,"workspace":{"name":"Research"}}',
     },
-    { scope: { kind: 'server' }, path: 'config/server.jsonc', content: '{}' },
+    { scope: { kind: 'server' }, path: 'config/server.jsonc', content: '{"schemaVersion":1}' },
   ] as const)('allocates once for $scope.kind and preserves the retained binding across fresh readers', ({
     scope,
     path,
@@ -74,14 +74,14 @@ describe('retained default Knowledge Base identity', () => {
       path: `workspaces/${workspaceId}/config/workspace.jsonc`,
       id: `workspaces/${workspaceId}/workspace.jsonc`,
       kind: 'workspace',
-      content: '{"workspace":{"name":"Research"}}',
+      content: '{"schemaVersion":1,"workspace":{"name":"Research"}}',
     },
     {
       scope: { kind: 'server' },
       path: 'config/server.jsonc',
       id: 'server.jsonc',
       kind: 'server',
-      content: '{}',
+      content: '{"schemaVersion":1}',
     },
   ] as const)('refuses removal or replacement of the $kind binding through ordinary configuration editing', ({
     scope,
@@ -123,7 +123,7 @@ describe('retained default Knowledge Base identity', () => {
     mkdirSync(join(workspaceRoot, 'config'), { recursive: true });
     writeFileSync(
       join(workspaceRoot, 'config', 'workspace.jsonc'),
-      '{"workspace":{"name":"Imported"}}'
+      '{"schemaVersion":1,"workspace":{"name":"Imported"}}'
     );
     const knowledgeBaseId = 'kb_0190f4c8-0000-7000-8000-0000000000ff';
     expect(
@@ -168,7 +168,10 @@ describe('retained default Knowledge Base identity', () => {
     const dataRoot = temporaryDataRoot();
     mkdirSync(join(dataRoot, 'config'), { recursive: true });
     const target = join(dataRoot, 'config', 'server.jsonc');
-    const source = JSON.stringify({ defaultKnowledgeBaseId });
+    const source = JSON.stringify({
+      schemaVersion: RETAINED_FORMAT_VERSION,
+      defaultKnowledgeBaseId,
+    });
     writeFileSync(target, source);
     const input = { dataRoot, scope: { kind: 'server' } as KnowledgeOwnerScope };
     expect(() => readDefaultKnowledgeBaseId(input)).toThrow('recovery required');

@@ -708,6 +708,7 @@ describe('vault admin app API', () => {
       join(providersRoot, 'xai-api.provider.jsonc'),
       `${JSON.stringify(
         {
+          schemaVersion: 1,
           baseUrl: 'https://api.x.ai/v1',
           defaultModel: 'grok-4',
           displayName: 'xAI API',
@@ -902,6 +903,7 @@ describe('vault admin app API', () => {
     writeFileSync(
       join(providersRoot, 'failure.provider.jsonc'),
       `${JSON.stringify({
+        schemaVersion: 1,
         defaultModel: 'model-demo',
         displayName: 'Failure provider',
         id: 'provider-failure',
@@ -1571,6 +1573,7 @@ describe('vault admin app API', () => {
     writeFileSync(
       join(dataRoot, 'config', 'providers', 'provider-demo.provider.jsonc'),
       `${JSON.stringify({
+        schemaVersion: 1,
         defaultModel: 'model-demo',
         displayName: 'Provider demo',
         id: 'provider-demo',

@@ -1,6 +1,10 @@
 import { existsSync, mkdirSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
-import { KnowledgeBaseIdSchema, VaultGrantIdSchema } from '@openkit/protocol';
+import {
+  KnowledgeBaseIdSchema,
+  RETAINED_FORMAT_VERSION,
+  VaultGrantIdSchema,
+} from '@openkit/protocol';
 
 import { z } from 'zod';
 import {
@@ -9,7 +13,11 @@ import {
   AuthoredAgentSkillEntrySchema,
 } from './agent.js';
 import { KnowledgeMaintenanceSchema } from './knowledge-maintenance.js';
-import { AuthoredConfigRequiredFeaturesSchema } from './schema-evolution.js';
+import { authoredConfigRequiredFeaturesSchema } from './schema-evolution.js';
+import {
+  WORKSPACE_RESOURCE_POLICY_FEATURE,
+  WorkspaceResourceAccessSchema,
+} from './workspace-resource-policy.js';
 
 /** Workspace grant bound to one reusable Agent credential requirement. */
 export const WorkspaceCredentialBindingSchema = z
@@ -97,6 +105,8 @@ export const WorkspaceConfigWorkspaceSchema = z
     name: z.string().trim().min(1),
     /** Fixed scope binding after Knowledge Base creation; parsing never allocates an ID. */
     defaultKnowledgeBaseId: KnowledgeBaseIdSchema.optional(),
+
+    policy: z.object({ resourceAccess: WorkspaceResourceAccessSchema }).strict().optional(),
     knowledgeMaintenance: KnowledgeMaintenanceSchema.optional(),
     defaultAgentId: z.string().min(1).nullable().optional(),
     agents: z.array(WorkspaceAgentBindingSchema).default([]),
@@ -146,13 +156,25 @@ export const WorkspaceConfigWorkspaceSchema = z
  */
 export const WorkspaceConfigSchema = z
   .object({
-    schemaVersion: z.literal(1).optional(),
-    requiredFeatures: AuthoredConfigRequiredFeaturesSchema.optional(),
+    schemaVersion: z.literal(RETAINED_FORMAT_VERSION),
+    requiredFeatures: authoredConfigRequiredFeaturesSchema([
+      WORKSPACE_RESOURCE_POLICY_FEATURE,
+    ]).optional(),
     workspace: WorkspaceConfigWorkspaceSchema,
     extensions: z.record(z.string().min(1), z.unknown()).optional(),
   })
   .strip()
   .superRefine((value, ctx) => {
+    if (
+      value.workspace.policy?.resourceAccess.length &&
+      !value.requiredFeatures?.includes(WORKSPACE_RESOURCE_POLICY_FEATURE)
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['requiredFeatures'],
+        message: `Managed resources require ${WORKSPACE_RESOURCE_POLICY_FEATURE}.`,
+      });
+    }
     const ids = new Set<string>();
 
     for (const [index, root] of value.workspace.roots.entries()) {

@@ -51,6 +51,10 @@ describe('storage layout report', () => {
         'core_0005_channel_notifications',
         'core_0006_external_trigger_admissions',
         'core_0007_discord_capture_origin',
+        'core_0008_server_capability_usage',
+        'core_0009_policy_audit_v1',
+        'core_0010_retained_record_formats',
+        'core_0011_audit_authentication',
       ]);
       expect(report.users).toEqual(
         expect.arrayContaining([
@@ -62,6 +66,9 @@ describe('storage layout report', () => {
                 'user_0000_setup',
                 'user_0001_thread_read_receipts',
                 'user_0002_notebook_admission',
+                'user_0003_policy_audit_v1',
+                'user_0004_retained_record_formats',
+                'user_0005_audit_authentication',
               ],
             }),
           },
@@ -78,6 +85,9 @@ describe('storage layout report', () => {
               'workspace_0001_assistant_handoff',
               'workspace_0002_notebook_admission',
               'workspace_0003_exact_review_feedback',
+              'workspace_0004_policy_audit_v1',
+              'workspace_0005_retained_record_formats',
+              'workspace_0006_audit_authentication',
             ],
           }),
           indexesDir: expect.objectContaining({ exists: true, entryCount: 0 }),

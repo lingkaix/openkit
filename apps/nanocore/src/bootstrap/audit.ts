@@ -1,4 +1,4 @@
-import { deriveEntityId } from '@openkit/protocol';
+import { deriveEntityId, writeRetainedV1 } from '@openkit/protocol';
 import { recordServerAuditEvent } from '../audit-events.js';
 import type { CoreDb } from '../storage/db.js';
 import type { BootPhaseRunResult } from './phases.js';
@@ -60,6 +60,7 @@ export function recordBootStartAuditEvent(input: RecordBootStartAuditEventInput)
   input.coreDb.sqlite
     .prepare(
       `INSERT INTO boot_audit_events (
+        schema_version,
         boot_event_id,
         boot_id,
         event_type,
@@ -68,9 +69,10 @@ export function recordBootStartAuditEvent(input: RecordBootStartAuditEventInput)
         phase_outcomes_json,
         readiness_json,
         created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
+      writeRetainedV1({}).schemaVersion,
       `${input.bootId}_start`,
       input.bootId,
       'boot.start',
@@ -114,6 +116,7 @@ export function recordBootAuditEvent(input: RecordBootAuditEventInput): void {
   input.coreDb.sqlite
     .prepare(
       `INSERT INTO boot_audit_events (
+        schema_version,
         boot_event_id,
         boot_id,
         event_type,
@@ -122,9 +125,10 @@ export function recordBootAuditEvent(input: RecordBootAuditEventInput): void {
         phase_outcomes_json,
         readiness_json,
         created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
+      writeRetainedV1({}).schemaVersion,
       `${input.result.readiness.bootId}_outcome`,
       input.result.readiness.bootId,
       'boot.outcome',
@@ -163,6 +167,7 @@ export function recordShutdownAuditEvent(input: RecordShutdownAuditEventInput): 
   input.coreDb.sqlite
     .prepare(
       `INSERT INTO boot_audit_events (
+        schema_version,
         boot_event_id,
         boot_id,
         event_type,
@@ -171,9 +176,10 @@ export function recordShutdownAuditEvent(input: RecordShutdownAuditEventInput): 
         phase_outcomes_json,
         readiness_json,
         created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
+      writeRetainedV1({}).schemaVersion,
       `${input.bootId}_shutdown`,
       input.bootId,
       'boot.shutdown',

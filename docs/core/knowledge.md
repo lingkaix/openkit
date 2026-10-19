@@ -66,9 +66,11 @@ Artifacts may become Knowledge Sources, but artifacts are not required between o
 
 The Knowledge Manager only manages and queries its notebook scope. It has no network tools or effects outside that purpose. Claim confidence retains its numeric 0..1 meaning; a future Policy-bound assessor supplies evidence, never publication authority. Current authority and required human decisions still apply; the approved unified assessment mechanism is Not Started.
 
-Claim MUST be an OKF page managed and queried by the Knowledge Manager, without a separate canonical claims ledger. Solidified reusable procedures belong in Skills; all other reusable understanding belongs in the owner-scoped Knowledge Base. Operational history, raw Sources, candidates, app records and authority configuration retain their owners and MUST NOT become extra curated grounding stores. The [BWM support decision](../decisions/20261018-bwm_support_and_information_consolidation.md) records this consolidation.
+Claim MUST be an OKF page managed and queried by the Knowledge Manager, without a separate canonical claims ledger. Solidified reusable procedures belong in Skills; all other reusable understanding belongs in the owner-scoped Knowledge Base. Governed Knowledge publication refuses competing Procedure page authority; descriptive context and exact Skill references may remain. Operational history, raw Sources, candidates, app records and authority configuration retain their owners and MUST NOT become extra curated grounding stores. The [BWM support decision](../decisions/20261018-bwm_support_and_information_consolidation.md) records this consolidation.
 
 Rule, Effect and business Objective pages use governed Scope Schema types and applicability metadata for type-aware retrieval; an Objective page does not own Goal execution. An Effect states its basis and last check. Retrieved rules and confidence MUST NOT grant authority; safety-critical rules use a pinned Skill or a Policy-bound independent validator.
+
+The Server Knowledge maintenance Thread is Server-owned and visible under current Server administration authority. Workspace membership does not admit its history.
 
 The Knowledge Manager uses existing Thread, Turn and Item owners for conversation continuity. It owns no separate runtime, scheduler, retry queue or publication authority.
 
@@ -188,3 +190,5 @@ External domain systems own their raw source-of-truth records; OpenKit may cite,
 - Worker receipt of selected Knowledge requires its owning Context Package delivery trace or the exact answer bytes in its existing Knowledge Manager capability call.
 - Knowledge Pages MUST NOT store secret values.
 - Raw external records MUST remain owned by their external system unless explicitly captured as OpenKit source material.
+
+Server Knowledge maintenance records its work and approval on a Server-owned Thread. Current Server administration authority controls visibility; Workspace membership grants no access. A run uses explicit Server inputs and human notebook changes, with no automatic learning across Workspaces.

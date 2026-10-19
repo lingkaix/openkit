@@ -170,6 +170,8 @@ DATA_ROOT/
 
 ## Source Of Truth Rules
 
+General Server Threads, Turns, Items and events use the existing canonical record families under `server/threads/<threadId>/`. Their immutable Server owner has no Workspace anchor. Workspace listing, portability and deletion do not traverse this root. Current Server administration authority governs history and effects; placement grants no permission. Only Knowledge Manager work uses this general owner in the current increment.
+
 File-backed source-of-truth records:
 
 - system-owned Workspace identity, ownership, lifecycle, revision, and timestamp facts in `workspace-record.json`
@@ -365,7 +367,7 @@ The owner-independent V2 Workspace root and most scoped record-family ownership 
 
 The workspace physical `memory/` directory has been replaced by `knowledge/`. OpenKit-owned protocol, App API, NanoCore, core-client, remote MCP, administrator CLI, and Web surfaces now use `knowledge`; remaining `memory` mentions in active implementation are ordinary in-memory wording, resource-limit options, or fail-closed unsupported layout guards.
 
-The current file projection materializes turn items as file-backed JSONL under per-thread and per-turn storage paths, knowledge page Markdown under `knowledge/pages/<knowledgeEntryId>.md`, app-local knowledge proposal Markdown under `knowledge/proposals/<proposalId>.md`, app-local knowledge proposal review decisions under `knowledge/reviews/<proposalId>.json`, source identity records under `sources/registry/<sourceId>.json`, registered text source material under `sources/materials/<sourceId>/content.txt`, artifact metadata under `artifacts/<artifactId>/artifact.json` with content files under `artifacts/<artifactId>/files/content.{md,txt,json}`, and AgentSession records under `runtime/agent-sessions/<agentSessionId>/session.json`. The target layout keeps item logs, knowledge pages, proposal summaries and review decisions, source identity records, source material evidence, artifact metadata and content files, and AgentSession runtime records file-backed, but moves ownership and recovery rules into the workspace tree defined in this spec.
+The current file projection materializes turn items as file-backed JSONL under per-thread and per-turn storage paths, knowledge page Markdown under `knowledge/pages/<knowledgeEntryId>.md`, app-local knowledge proposal Markdown under `knowledge/proposals/<proposalId>.md`, app-local knowledge proposal review decisions under `knowledge/reviews/<proposalId>.json`, source identity records under `sources/registry/<sourceId>.json`, registered text source material under `sources/materials/<sourceId>/content.txt`, Artifact current-version metadata under `artifacts/<artifactId>/artifact.json` with immutable descriptors and original bytes under `artifacts/<artifactId>/versions/<version>/`, and AgentSession records under `runtime/agent-sessions/<agentSessionId>/session.json`. The target layout keeps item logs, knowledge pages, proposal summaries and review decisions, source identity records, source material evidence, Artifact metadata and immutable version originals, and AgentSession runtime records file-backed, but moves ownership and recovery rules into the workspace tree defined in this spec.
 
 The canonical Workspace record is `workspace-record.json` and carries no editable `name` or execution defaults. `name` and `defaultAgentId` live only in `config/workspace.jsonc`; `defaultModelId` and `defaultSkillIds` are absent. Direct readers, index rebuild, backup, export, import, protocol, API, Core Client, fixtures, and Web consume the split owners without a compatibility path.
 
@@ -407,7 +409,11 @@ threads/
 artifacts/
   <artifactId>/
     artifact.json
-    files/
+    versions/
+      <version>/
+        version-record.json
+        payload
+    files/  # disposable projection of selected inline content
 knowledge/
   pages/
   proposals/
@@ -463,7 +469,9 @@ Automatic pre-migration SQLite snapshots and their minimal inspection metadata l
 
 ## Artifact File Payloads And Derived Media
 
-The existing Artifact record owns each arbitrary-byte original by Artifact id and version. Store file-backed payloads at `artifacts/<artifactId>/versions/<version>/payload` within that Artifact's existing scope. This is a version-owned file, not a new object registry or cross-scope deduplication service. Retained inline text keeps its original bytes and digest; changing representation cannot lose retained data. Artifact/upload semantics follow [Work Resource Interaction](20260713-work_resource_interaction_model.md#file-admission-publication-and-download).
+The existing Artifact record owns every immutable version within `artifacts/<artifactId>/versions/<version>/`. Each version directory contains a `version-record.json` descriptor with `formatVersion: 1` and a sibling `payload` with the exact original bytes, including inline text. The descriptor stores the exact Artifact snapshot once and only its actual parent, producing actor, publication Thread/Turn, mutation request and accepted time beside it. Version identity, Workspace, title, summary and content digest are read from that snapshot; API summaries are derived. The descriptor binds the version, parent lineage and original digest under [Work Resource Interaction](20260713-work_resource_interaction_model.md#file-admission-publication-and-download), which owns Artifact version and upload semantics. This is version-owned storage, not a new object registry or cross-scope deduplication service.
+
+`artifact.json` owns the current version selection and Artifact lifecycle. Its inline body is read from the selected immutable version; `files/content.{md,txt,json}` is only a disposable projection and cannot establish or repair version authority. Initial Artifact publication stages the real version 1 descriptor and original within the first Artifact directory rename. Later publication adds one immutable version directory before exposing that version through the existing Artifact owner. Missing or contradictory referenced history fails explicitly; readers do not synthesize history or read a legacy layout. Changing the selected version or its representation cannot discard any retained original.
 
 Conversation file inputs remain owned by the receiving Turn at `threads/<threadId>/turns/<turnId>/inputs/<ordinal>/payload`. The zero-based ordinal follows the admitted ordered input inventory, whose metadata binds name, media type, size, and original digest. This is Turn-owned data, not a separate upload record. Publish verified inputs through existing Turn acceptance before model access; failed or uncertain acceptance follows the existing command recovery owner. Client drafts never enter this tree.
 

@@ -4,6 +4,7 @@ import { basename, join } from 'node:path';
 import { KnowledgeMaintenanceResponseSchema } from '@openkit/app-api-schemas';
 import { allocateEntityId, isSealedTurnTerminal } from '@openkit/protocol';
 import type { Actor } from '../auth/identity.js';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import { createAssistantHistory } from '../internal-agents/assistant-history.js';
 import type { AgentTool } from '../internal-agents/internal-agent-loop.js';
@@ -23,8 +24,13 @@ import { readMemorySuppressions } from './memory-maintenance.js';
 import { KnowledgeNotebook, NotebookError } from './notebook.js';
 import { createNotebookAgentEditing, NOTEBOOK_EDITING_LIMITS } from './notebook-agent-editing.js';
 import { boundedNotebookDiff } from './notebook-history.js';
-import { type NotebookPublicationAdmission, publishNotebook } from './notebook-publication.js';
 import {
+  attributedNotebookPageBytes,
+  type NotebookPublicationAdmission,
+  publishNotebook,
+} from './notebook-publication.js';
+import {
+  parseKnowledgePageSourceReference,
   parseOkfDocument,
   parseScopeKnowledgeSchema,
   resolveRegisteredKnowledgeSourceReference,
@@ -68,31 +74,60 @@ export interface UserMemoryMaintenanceDependencies {
   ) => Promise<{ readonly turnId: string; readonly text: string }>;
 }
 
-/** Reads the current generated-page admission through self, supported sensitivity and exact unsuppressed Source versions. */
+/** Rechecks self, page/Source closure, supported sensitivity and suppression against one exact candidate tree. */
 export function readUserMemoryNotebookAdmission(
   context: MemoryContext & { readonly runtimeConfigManager: RuntimeConfigManager },
   files: Readonly<Record<string, string>>,
   changedPaths: readonly string[] = []
 ): NotebookPublicationAdmission {
   const owner = admitMemoryContext(context);
+  const knowledgeBaseId = readDefaultKnowledgeBaseId({
+    dataRoot: context.coreDb.dataRoot,
+    scope: owner.ownerScope,
+  });
+  const pageScopeId = `page/user/${context.userDb.userId}/${knowledgeBaseId}`;
   const suppressions = readMemorySuppressions(owner.notebookRoot, context.userDb.userId);
   const suppressedPageIds = suppressions.map(({ payload }) => payload.pageId);
   if (changedPaths.some((path) => suppressedPageIds.includes(path.slice(0, -3))))
     throw new NotebookError('invalid_request');
+  let scopeSchemaText: string;
+  try {
+    scopeSchemaText = readFileSync(join(owner.notebookRoot, 'schema', 'scope-schema.yaml'), 'utf8');
+  } catch {
+    throw new NotebookError('recovery_required');
+  }
+  const scopeSchema = parseScopeKnowledgeSchema(scopeSchemaText);
+  if (!scopeSchema.ok) throw new NotebookError('recovery_required');
   const registeredSources = new Map<string, string | null>();
-  for (const [path, content] of Object.entries(files)) {
-    // A failed forget cleanup can leave bytes in Git; it must not expose them or fence unrelated edits.
-    if (suppressedPageIds.includes(path.slice(0, -3))) continue;
+  const resolvedReferences = new Map<string, ReadonlySet<string>>();
+  const visiting = new Set<string>();
+  const checkPage = (path: string): void => {
+    const pageId = path.slice(0, -3);
+    if (resolvedReferences.has(pageId)) return;
+    if (visiting.has(path)) throw new NotebookError('invalid_request');
+    // A failed forget cleanup must not disclose retained bytes or fence unrelated edits.
+    if (suppressedPageIds.includes(pageId)) return;
+    visiting.add(path);
+    const content = files[path];
+    if (content === undefined) throw new NotebookError('invalid_request');
     const parsed = parseOkfDocument({ path, content });
     if (!parsed.ok) throw new NotebookError('recovery_required');
     const refs = stringListFrontmatterField(parsed.document, 'source_refs');
+    if (
+      !parsed.document.reserved &&
+      validateScopeKnowledgeSchema(parsed.document, scopeSchema.schema, owner.ownerScope).errors
+        .length
+    )
+      throw new NotebookError('invalid_request');
     if (parsed.document.reserved) {
       if (
         refs?.length ||
         (refs === null && Object.hasOwn(parsed.document.frontmatter, 'source_refs'))
       )
         throw new NotebookError('invalid_request');
-      continue;
+      visiting.delete(path);
+      resolvedReferences.set(pageId, new Set());
+      return;
     }
     if (
       !['public', 'normal', 'internal', 'confidential'].includes(
@@ -101,7 +136,25 @@ export function readUserMemoryNotebookAdmission(
       !refs
     )
       throw new NotebookError('invalid_request');
+    const resolved = new Set<string>();
     for (const reference of refs) {
+      if (reference.startsWith('openkit:')) {
+        const selected = parseKnowledgePageSourceReference(reference, pageScopeId);
+        if (!selected || suppressedPageIds.includes(selected.reference.objectId))
+          throw new NotebookError('invalid_request');
+        const targetPath = `${selected.reference.objectId}.md`;
+        const target = files[targetPath];
+        if (
+          target === undefined ||
+          (selected.contentDigest !== undefined &&
+            selected.contentDigest !==
+              `sha256:${createHash('sha256').update(target).digest('hex')}`)
+        )
+          throw new NotebookError('invalid_request');
+        checkPage(targetPath);
+        resolved.add(reference);
+        continue;
+      }
       const { targetId } = resolveRegisteredKnowledgeSourceReference(reference, registeredSources);
       if (!targetId) throw new NotebookError('invalid_request');
       if (!registeredSources.has(targetId)) {
@@ -111,16 +164,15 @@ export function readUserMemoryNotebookAdmission(
       }
       if (!resolveRegisteredKnowledgeSourceReference(reference, registeredSources).resolved)
         throw new NotebookError('invalid_request');
+      resolved.add(reference);
     }
-  }
-  let scopeSchemaText: string;
-  try {
-    scopeSchemaText = readFileSync(join(owner.notebookRoot, 'schema', 'scope-schema.yaml'), 'utf8');
-  } catch {
-    throw new NotebookError('recovery_required');
-  }
+    visiting.delete(path);
+    resolvedReferences.set(pageId, resolved);
+  };
+  for (const path of Object.keys(files)) checkPage(path);
   admitMemoryContext(context);
   return {
+    pageScopeId,
     scopeSchemaText,
     reviewRequiredPageIds:
       context.runtimeConfigManager
@@ -128,7 +180,7 @@ export function readUserMemoryNotebookAdmission(
         .userConfigs.find(({ userId }) => userId === context.userDb.userId)?.config
         .knowledgeMaintenance?.reviewRequiredPageIds ?? [],
     registeredSources,
-    resolvedReferences: new Map(),
+    resolvedReferences,
     suppressedPageIds,
   };
 }
@@ -341,15 +393,30 @@ export function prepareUserMemoryMaintenance(
       admitMemoryContext(context);
       const content = notebook.readRevision(revision, [path]).files[path];
       if (content === undefined) throw new NotebookError('recovery_required');
-      const admission = readUserMemoryNotebookAdmission(context, { [path]: content });
-      const parsed = parseOkfDocument({ path, content });
-      const schema = parseScopeKnowledgeSchema(admission.scopeSchemaText);
-      if (!parsed.ok || !schema.ok) throw new NotebookError('recovery_required');
-      if (
-        !parsed.document.reserved &&
-        validateScopeKnowledgeSchema(parsed.document, schema.schema, owner.ownerScope).errors.length
-      )
-        throw new NotebookError('recovery_required');
+      // Load only this page's closure from the same immutable revision, not a later publication.
+      const references = { [path]: content };
+      const pending = [path];
+      const entries = notebook.inspectRevision(revision).entries;
+      const knowledgeBaseId = readDefaultKnowledgeBaseId({
+        dataRoot: coreDb.dataRoot,
+        scope: owner.ownerScope,
+      });
+      const pageScopeId = `page/user/${userDb.userId}/${knowledgeBaseId}`;
+      while (pending.length) {
+        const sourcePath = pending.pop()!;
+        const document = parseOkfDocument({ path: sourcePath, content: references[sourcePath]! });
+        if (!document.ok) throw new NotebookError('recovery_required');
+        for (const reference of stringListFrontmatterField(document.document, 'source_refs') ??
+          []) {
+          const selected = parseKnowledgePageSourceReference(reference, pageScopeId);
+          if (!selected || suppressed().has(selected.reference.objectId)) continue;
+          const targetPath = `${selected.reference.objectId}.md`;
+          if (Object.hasOwn(references, targetPath) || !entries[targetPath]) continue;
+          references[targetPath] = notebook.readRevision(revision, [targetPath]).files[targetPath]!;
+          pending.push(targetPath);
+        }
+      }
+      readUserMemoryNotebookAdmission(context, references);
       return content;
     };
     for (const path of Object.keys(notebook.inspectRevision(baseRevision).entries).sort()) {
@@ -436,12 +503,28 @@ export function prepareUserMemoryMaintenance(
               )
             ),
           ].sort();
-          if (refs.some((ref) => !admittedReferences.has(ref)))
-            throw new NotebookError('invalid_request');
-          const resultingFiles = { ...notebook.readRevision(baseRevision).files };
+          const baseFiles = notebook.readRevision(baseRevision).files;
+          const setting = settings();
+          const delegated =
+            setting.enabled &&
+            !edit.changes.some(
+              ({ path, content }) =>
+                setting.reviewRequiredPageIds.includes(path.slice(0, -3)) ||
+                (content === null && Object.hasOwn(baseFiles, path))
+            );
+          const resultingFiles = { ...baseFiles };
           for (const { path, content } of edit.changes) {
             if (content === null) delete resultingFiles[path];
-            else resultingFiles[path] = content;
+            else
+              resultingFiles[path] =
+                baseFiles[path] === content
+                  ? content
+                  : attributedNotebookPageBytes(
+                      path,
+                      content,
+                      owner.ownerScope,
+                      delegated ? 'delegated' : 'accepted'
+                    );
           }
           const revalidate = (candidateFiles = resultingFiles) => {
             assertCurrent();
@@ -451,8 +534,15 @@ export function prepareUserMemoryMaintenance(
               edit.changes.map(({ path }) => path)
             );
           };
-          const setting = settings();
           const admission = revalidate();
+          if (
+            refs.some(
+              (ref) =>
+                !admittedReferences.has(ref) &&
+                !parseKnowledgePageSourceReference(ref, admission.pageScopeId)
+            )
+          )
+            throw new NotebookError('invalid_request');
           if (
             setting.enabled &&
             !edit.changes.some(
