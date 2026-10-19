@@ -586,12 +586,13 @@ it('round trips target-owned judgements, exact range results and candidate choic
     },
     201
   );
+  const selectionRequestId = 'portable-version-selection';
   const versionSelection = await post(
     'artifact.review.select',
     {
       workspaceId: workspace.id,
       ...candidates[0],
-      requestId: 'portable-version-selection',
+      requestId: selectionRequestId,
       reason: 'Use this exact original.',
     },
     200
@@ -732,11 +733,18 @@ it('round trips target-owned judgements, exact range results and candidate choic
     kind: 'accept',
     target: { kind: 'artifact-version', artifactId: restoredArtifact!.id, artifactVersion: 1 },
   });
+  // Imported requests are historical lineage, so they cannot retain a live command identity.
+  const importedSelectionRequestId = `import-lineage:${digest(
+    Buffer.from(
+      [verified.manifest.sourceDeploymentId, workspace.id, selectionRequestId].join('\0'),
+      'utf8'
+    )
+  )}`;
   const retainedSelection = {
     schemaVersion: 1,
     workspaceId: restoredWorkspace,
     actor,
-    requestId: 'portable-version-selection',
+    requestId: importedSelectionRequestId,
     recordedAt: versionSelection.review.candidateSelections[0].selectedAt,
     kind: 'select',
     target: {
@@ -755,6 +763,7 @@ it('round trips target-owned judgements, exact range results and candidate choic
   };
   expect(reviews.reviews[0]!.judgements).toHaveLength(2);
   expect(reviews.reviews[0]!.judgements[1]).toEqual(retainedSelection);
+  expect(reviews.reviews[0]!.judgements[1]).not.toMatchObject({ requestId: selectionRequestId });
   expect(reviews.reviews[0]!.candidateSelections).toEqual([
     {
       actorId: userId,
