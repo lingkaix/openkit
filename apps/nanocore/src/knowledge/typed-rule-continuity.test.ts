@@ -124,7 +124,7 @@ function call(name: string, args: Record<string, unknown>) {
     output: [
       {
         type: 'function_call' as const,
-        call_id: name,
+        call_id: name === 'knowledge.page.read' ? `${name}:${randomUUID()}` : name,
         name: operationToolName(name),
         arguments: JSON.stringify(args),
       },
@@ -135,8 +135,12 @@ function call(name: string, args: Record<string, unknown>) {
 /** Inspect actual provider-visible native output rather than a declared Tool schema. */
 function toolOutput(request: TransportRequest, name: string) {
   const outputs = request.input as Array<{ type?: string; call_id?: string; output?: string }>;
-  const output = outputs.find(
-    (item) => item.type === 'function_call_output' && item.call_id === name
+  const output = outputs[name === 'knowledge.page.read' ? 'findLast' : 'find'](
+    (item) =>
+      item.type === 'function_call_output' &&
+      (name === 'knowledge.page.read'
+        ? item.call_id?.startsWith(`${name}:`)
+        : item.call_id === name)
   );
   expect(output, `Missing actual ${name} output`).toBeDefined();
   return JSON.parse(output!.output!);
