@@ -1,8 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { once } from 'node:events';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Worker } from 'node:worker_threads';
 import { allocateEntityId } from '@openkit/protocol';
+import Database from 'better-sqlite3';
 import { afterEach, expect, it } from 'vitest';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { FsStore } from '../lib/store.js';
@@ -10,11 +14,13 @@ import { createAppWithWorkspaceAuthority as createApp } from '../test-support/ap
 import { knowledgeOperationRequest } from '../test-support/knowledge-operation.js';
 import { knowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { withCanonicalFileWriteAdmission } from './canonical-write-capacity.js';
-import { openCoreDb } from './db.js';
-import { applyMigrations } from './migrate.js';
+import { openCoreDb, openWorkspaceDb } from './db.js';
+import { workspaceDbPath } from './fs-layout.js';
+import { applyMigrations, applyScopedMigrations } from './migrate.js';
 import {
   appendCanonicalTextFile,
   loadWorkspaceFileRecords,
@@ -31,6 +37,347 @@ function root() {
   roots.push(path);
   return path;
 }
+/** Frozen offered load; numeric acceptance limits require separate measured approval. */
+const writerProfile = { threadsPerWorkspace: 8, rounds: 2, concurrency: 8, readerHoldMs: 1000 };
+
+/** A real reader needs an independent event loop so a synchronous writer cannot block its release. */
+const heldReaderSource = `
+const { parentPort, workerData } = require('node:worker_threads');
+const { statSync } = require('node:fs');
+const Database = require(workerData.databaseModule);
+const clock = () => Number(process.hrtime.bigint()) / 1e6;
+const reader = new Database(workerData.paths[0], { readonly: true, fileMustExist: true });
+const journalMode = reader.pragma('journal_mode', { simple: true });
+reader.exec('BEGIN');
+const count = () => reader.prepare('SELECT count(*) FROM idempotency_requests').pluck().get();
+const initialCount = count();
+const samples = workerData.paths.map(() => ({ peakBytes: 0, maxNonemptyObservedMs: 0, firstSeen: null }));
+const sample = () => workerData.paths.forEach((path, i) => {
+  let size = 0;
+  try { size = statSync(path + '-wal').size; } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  const row = samples[i], now = clock();
+  row.peakBytes = Math.max(row.peakBytes, size);
+  if (size > 0) {
+    row.firstSeen ??= now;
+    row.maxNonemptyObservedMs = Math.max(row.maxNonemptyObservedMs, now - row.firstSeen);
+  } else row.firstSeen = null;
+});
+const checkpoint = (mode) => {
+  if (journalMode !== 'wal') return null;
+  const db = new Database(workerData.paths[0], { fileMustExist: true, timeout: 0 });
+  try { return db.pragma('wal_checkpoint(' + mode + ')')[0]; }
+  catch (error) { if (error.code === 'SQLITE_BUSY') return { busy: 1 }; throw error; }
+  finally { db.close(); }
+};
+let timer, releasedAt = null, startedAt, pinnedCount, checkpointHeld, finishRequested = false;
+const finish = () => {
+  if (releasedAt === null) { finishRequested = true; return; }
+  sample(); clearInterval(timer);
+  const checkpointReleased = checkpoint('TRUNCATE');
+  parentPort.postMessage({ journalMode, initialCount, pinnedCount, startedAt, releasedAt,
+    checkpointHeld, checkpointReleased, wal: samples.map(({ firstSeen, ...row }) => row) });
+  parentPort.close();
+};
+parentPort.on('message', (message) => {
+  if (message === 'start') {
+    startedAt = clock(); sample(); timer = setInterval(sample, 10);
+    setTimeout(() => {
+      pinnedCount = count(); checkpointHeld = checkpoint('PASSIVE');
+      reader.exec('ROLLBACK'); reader.close(); releasedAt = clock();
+      if (finishRequested) finish();
+    }, workerData.holdMs);
+  } else if (message === 'finish') finish();
+});
+parentPort.postMessage({ held: true, journalMode, initialCount });
+`;
+
+it('qualifies the held-reader WAL instrument without claiming a Core checkpoint policy', async () => {
+  const path = join(root(), 'reader-control.sqlite');
+  const writer = new Database(path);
+  writer.pragma('journal_mode = WAL');
+  writer.pragma('synchronous = FULL');
+  writer.exec(
+    'CREATE TABLE idempotency_requests (id INTEGER); INSERT INTO idempotency_requests VALUES (1)'
+  );
+  const worker = new Worker(heldReaderSource, {
+    eval: true,
+    workerData: {
+      databaseModule: createRequire(import.meta.url).resolve('better-sqlite3'),
+      paths: [path],
+      holdMs: writerProfile.readerHoldMs,
+    },
+  });
+  try {
+    const [held] = await once(worker, 'message', { signal: AbortSignal.timeout(60_000) });
+    expect(held).toMatchObject({ held: true, journalMode: 'wal', initialCount: 1 });
+    const finished = once(worker, 'message', { signal: AbortSignal.timeout(60_000) });
+    worker.postMessage('start');
+    writer.exec('INSERT INTO idempotency_requests VALUES (2)');
+    worker.postMessage('finish');
+    const [result] = await finished;
+    expect(result.pinnedCount).toBe(1);
+    expect(result.checkpointHeld.log).toBeGreaterThan(result.checkpointHeld.checkpointed);
+    expect(result.checkpointReleased).toEqual({ busy: 0, log: 0, checkpointed: 0 });
+    expect(result.wal[0].peakBytes).toBeGreaterThan(0);
+    expect(result.wal[0].maxNonemptyObservedMs).toBeGreaterThan(0);
+    expect(writer.prepare('SELECT count(*) FROM idempotency_requests').pluck().get()).toBe(2);
+  } finally {
+    await worker.terminate();
+    writer.close();
+  }
+}, 90_000);
+
+it.each([
+  1, 3,
+])('isolates concurrent local commit failures across %i Workspace(s) under the frozen writer load', async (workspaceCount) => {
+  const dataRoot = root();
+  const coreDb = openCoreDb(dataRoot);
+  const statementPrototype = Object.getPrototypeOf(
+    coreDb.sqlite.prepare('SELECT 1')
+  ) as Database.Statement;
+  const run = statementPrototype.run,
+    exec = Database.prototype.exec;
+  let worker: Worker | undefined;
+  try {
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = new FsStore({ dataRoot });
+    const workspaces = Array.from({ length: workspaceCount }, (_, i) =>
+      store.createWorkspace(`Writer scope ${i}`)
+    );
+    for (const workspace of workspaces) {
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: workspace.id,
+      });
+      const db = openWorkspaceDb(dataRoot, workspace.id);
+      try {
+        applyScopedMigrations(db);
+      } finally {
+        db.sqlite.close();
+      }
+    }
+    const threads = Array.from({ length: writerProfile.threadsPerWorkspace }, (_, i) =>
+      workspaces.map((workspace) => ({
+        ...store.createThread(workspace.id, `Initial ${i}`),
+        workspaceId: workspace.id,
+      }))
+    ).flat();
+    const app = createApp({ coreDb, dataRoot, store });
+    const paths = workspaces.map((workspace) => workspaceDbPath(dataRoot, workspace.id));
+    const selectedPaths = new Set(paths);
+    const requestId = (round: number, index: number) =>
+      `10000000-0000-4000-8000-${String(round * 1000 + index + 201).padStart(12, '0')}`;
+    const failedRequest = requestId(1, 0);
+    const offeredIds = new Set(
+      Array.from({ length: writerProfile.rounds }, (_, round) =>
+        threads.map((_, i) => requestId(round, i))
+      ).flat()
+    );
+    const expectedNames = new Map(
+      workspaces
+        .flatMap((workspace) => store.listThreads(workspace.id))
+        .map((thread) => [thread.id, thread.name])
+    );
+    const expectedReceipts: { request_id: string; response_id: string }[] = [];
+    const pending = new Set<Database.Database>();
+    const synchronousModes = new Set<unknown>();
+    let receiptCommits = 0,
+      faultHits = 0,
+      inFlight = 0,
+      maximumOffered = 0;
+    const latencies: number[] = [];
+    const acknowledgeTimes: number[] = [];
+    /** Counts receipt-bearing commits, not transactions in unrelated owners or physical flushes. */
+    const transactionEnded = (db: Database.Database, source: string) => {
+      if (/^\s*(COMMIT|END)\b/i.test(source) && pending.delete(db)) receiptCommits++;
+      if (/^\s*ROLLBACK\b/i.test(source) && !/\bTO\b/i.test(source)) pending.delete(db);
+    };
+    statementPrototype.run = function (...parameters) {
+      const receipt =
+        selectedPaths.has(this.database.name) &&
+        /^\s*INSERT\b/i.test(this.source) &&
+        this.source.includes('idempotency_requests') &&
+        parameters.some((value) => typeof value === 'string' && offeredIds.has(value));
+      if (receipt) {
+        synchronousModes.add(this.database.pragma('synchronous', { simple: true }));
+        if (parameters.includes(failedRequest)) {
+          faultHits++;
+          throw new Error('Injected concurrent receipt failure.');
+        }
+      }
+      const result = run.apply(this, parameters);
+      if (receipt) {
+        if (this.database.inTransaction) pending.add(this.database);
+        else receiptCommits++;
+      }
+      transactionEnded(this.database, this.source);
+      return result;
+    };
+    Database.prototype.exec = function (source) {
+      const result = exec.call(this, source);
+      transactionEnded(this, source);
+      return result;
+    };
+    worker = new Worker(heldReaderSource, {
+      eval: true,
+      workerData: {
+        databaseModule: createRequire(import.meta.url).resolve('better-sqlite3'),
+        paths,
+        holdMs: writerProfile.readerHoldMs,
+      },
+    });
+    let workerFailure: Error | undefined;
+    worker.on('error', (error) => {
+      workerFailure = error;
+    });
+    const [held] = await once(worker, 'message', { signal: AbortSignal.timeout(60_000) });
+    expect(held.held).toBe(true);
+    worker.postMessage('start');
+    for (let round = 0; round < writerProfile.rounds; round++) {
+      const jobs = threads.map((thread, i) => ({
+        thread,
+        requestId: requestId(round, i),
+        name: `load-${round}-${String(i).padStart(2, '0')}`,
+        kind: requestId(round, i) === failedRequest ? 'failure' : 'success',
+      }));
+      if (round === 1)
+        jobs.splice(1, 0, {
+          thread: threads[0]!,
+          requestId: requestId(0, 0),
+          name: 'different-input',
+          kind: 'conflict',
+        });
+      for (let offset = 0; offset < jobs.length; offset += writerProfile.concurrency) {
+        const outcomes = await Promise.allSettled(
+          jobs.slice(offset, offset + writerProfile.concurrency).map(async (job) => {
+            const workspaceId = job.thread.workspaceId;
+            const started = performance.now();
+            maximumOffered = Math.max(maximumOffered, ++inFlight);
+            try {
+              const response = await app.request(
+                ...operationRequest(
+                  'thread.update',
+                  { workspaceId, threadId: job.thread.id },
+                  {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    body: JSON.stringify({
+                      workspaceId,
+                      threadId: job.thread.id,
+                      requestId: job.requestId,
+                      name: job.name,
+                    }),
+                  }
+                )
+              );
+              latencies.push(performance.now() - started);
+              if (job.kind === 'conflict') {
+                expect.soft(response.status).toBe(409);
+                return;
+              }
+              if (job.kind === 'failure') {
+                expect.soft(response.status).toBeGreaterThanOrEqual(400);
+                return;
+              }
+              expect.soft(response.status, await response.clone().text()).toBe(200);
+              expectedNames.set(job.thread.id, job.name);
+              expectedReceipts.push({ request_id: job.requestId, response_id: job.thread.id });
+              acknowledgeTimes.push(Number(process.hrtime.bigint()) / 1e6);
+              const independent = new Database(workspaceDbPath(dataRoot, workspaceId), {
+                readonly: true,
+                fileMustExist: true,
+              });
+              try {
+                expect
+                  .soft(
+                    independent
+                      .prepare('SELECT response_id FROM idempotency_requests WHERE request_id = ?')
+                      .pluck()
+                      .all(job.requestId)
+                  )
+                  .toEqual([job.thread.id]);
+                expect
+                  .soft(new FsStore({ dataRoot }).getThread(workspaceId, job.thread.id).name)
+                  .toBe(job.name);
+              } finally {
+                independent.close();
+              }
+            } finally {
+              inFlight--;
+            }
+          })
+        );
+        // Drain every offered command before cleanup even if one observer unexpectedly throws.
+        for (const outcome of outcomes) if (outcome.status === 'rejected') throw outcome.reason;
+      }
+    }
+    if (workerFailure) throw workerFailure;
+    const finished = once(worker, 'message', { signal: AbortSignal.timeout(60_000) });
+    worker.postMessage('finish');
+    const [reader] = await finished;
+    const ordered = [...latencies].sort((a, b) => a - b);
+    console.info(
+      'writer-load',
+      JSON.stringify({
+        profile: 'thread-update-v1',
+        workspaceCount,
+        ...writerProfile,
+        offered: latencies.length,
+        maximumOffered,
+        p99Ms: ordered[Math.ceil(ordered.length * 0.99) - 1],
+        receiptCommits,
+        synchronousModes: [...synchronousModes],
+        faultHits,
+        acknowledgedWhileReaderHeld: acknowledgeTimes.filter((time) => time < reader.releasedAt)
+          .length,
+        reader,
+      })
+    );
+    expect(faultHits).toBeGreaterThan(0);
+    expect(maximumOffered).toBe(writerProfile.concurrency);
+    expect(latencies).toHaveLength(
+      writerProfile.threadsPerWorkspace * workspaceCount * writerProfile.rounds + 1
+    );
+    expect([...synchronousModes]).toEqual([2]);
+    expect(receiptCommits).toBeGreaterThan(0);
+    expect(reader.pinnedCount).toBe(reader.initialCount);
+    const cold = new FsStore({ dataRoot });
+    const expected = [...expectedNames]
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.id.localeCompare(b.id));
+    for (const reader of [store, cold]) {
+      const actual = workspaces
+        .flatMap((workspace) => reader.listThreads(workspace.id))
+        .map(({ id, name }) => ({ id, name }))
+        .sort((a, b) => a.id.localeCompare(b.id));
+      expect.soft(actual).toEqual(expected);
+    }
+    const receipts = paths.flatMap((path) => {
+      const db = new Database(path, { readonly: true, fileMustExist: true });
+      try {
+        return (
+          db.prepare('SELECT request_id, response_id FROM idempotency_requests').all() as {
+            request_id: string;
+            response_id: string;
+          }[]
+        ).filter((row) => offeredIds.has(row.request_id));
+      } finally {
+        db.close();
+      }
+    });
+    const order = (a: { request_id: string }, b: { request_id: string }) =>
+      a.request_id.localeCompare(b.request_id);
+    expect(receipts.sort(order)).toEqual(expectedReceipts.sort(order));
+  } finally {
+    statementPrototype.run = run;
+    Database.prototype.exec = exec;
+    await worker?.terminate();
+    coreDb.sqlite.close();
+  }
+}, 90_000);
+
 /** Retained inline records exercise the existing writer; new uploads use file descriptors. */
 function fixture(content = 'prior original') {
   const dataRoot = root(),
