@@ -86,7 +86,7 @@ function fixture(enabled: boolean) {
     );
     expect(input.inputs).toMatchObject({
       ownerScope: { kind: 'server' },
-      baseRevision: human,
+      baseRevision: notebook.publishedRevision(),
       trigger: 'request',
       sourceRange: [],
     });
@@ -178,8 +178,9 @@ it.each([
     },
     { kind: 'server' }
   );
+  const sourceBaseRevision = f.notebook.publishedRevision();
   const baseRevision = f.notebook.prepare({
-    baseRevision: f.human,
+    baseRevision: sourceBaseRevision,
     changes: { 'target.md': target },
     metadata: {
       summary: 'Retain source-backed target',
@@ -189,7 +190,7 @@ it.each([
       changeRequest: { requestId: randomUUID(), inputDigest: commandInputHash(target) },
     },
   });
-  f.notebook.publish({ baseRevision: f.human, candidateRevision: baseRevision });
+  f.notebook.publish({ baseRevision: sourceBaseRevision, candidateRevision: baseRevision });
   const pin = pinScopedNotebook({ ...context, target: { kind: 'server' } });
   const changesTarget = kind === 'candidate-pinned' || kind === 'reviewed-candidate';
   const authoredTarget = target.replace('Server evidence.', 'Updated Server evidence.');
@@ -370,18 +371,21 @@ it.each([
   expect(await runServerKnowledgeMaintenanceCommand(f.dependencies, f.input)).toEqual(result);
   expect(f.run).toHaveBeenCalledTimes(1);
   const turn = f.store.getServerTurnById(result.turnId);
+  const sourceBaseRevision = turn.internalExecution!.knowledge!.baseRevision!;
+  expect(f.notebook.inspectRevision(sourceBaseRevision).parentRevision).toBe(f.human);
+  expect(Object.keys(f.notebook.readSourcePointers(sourceBaseRevision))).toHaveLength(1);
   expect(turn).toMatchObject({
     owner: { kind: 'server' },
     internalExecution: {
       roleId: 'knowledge-manager',
       logicalModelId: 'server-model',
       contextStrategy: 'compaction',
-      knowledge: { baseRevision: f.human, ownerScope: { kind: 'server' } },
+      knowledge: { baseRevision: sourceBaseRevision, ownerScope: { kind: 'server' } },
     },
   });
   expect(f.store.listWorkspaces()).toEqual([]);
   if (!enabled) {
-    expect(f.notebook.publishedRevision()).toBe(f.human);
+    expect(f.notebook.publishedRevision()).toBe(sourceBaseRevision);
     const context = {
       ...f.dependencies,
       actor: f.requestActor,
@@ -437,18 +441,19 @@ it('recalls the exact Server candidate only after its human Review publishes the
     id: 'knowledge-manager',
     responsibleUserId: f.requestActor.userId,
   };
+  const sourceBaseRevision = f.notebook.publishedRevision();
   const proposal = createServerNotebookProposal(
     context,
     {
       requestId: randomUUID(),
-      baseRevision: f.human,
+      baseRevision: sourceBaseRevision,
       summary: 'Save the explicit Server release rule.',
       changes: [{ path: 'release-rule.md', content }],
     },
     producer,
     [sourceReference]
   );
-  expect(f.notebook.publishedRevision()).toBe(f.human);
+  expect(f.notebook.publishedRevision()).toBe(sourceBaseRevision);
   const selected = readServerNotebookProposal(context, proposal.id);
   const preview = readServerNotebookProposalPreview(context, {
     proposalId: proposal.id,
@@ -475,7 +480,7 @@ it('recalls the exact Server candidate only after its human Review publishes the
       delivery: 'model',
     })
   ).rejects.toMatchObject({ code: 'human_review_required', status: 403 });
-  expect(f.notebook.publishedRevision()).toBe(f.human);
+  expect(f.notebook.publishedRevision()).toBe(sourceBaseRevision);
   const afterRefusal = readServerNotebookProposal(context, proposal.id);
   expect(afterRefusal.reviews).toEqual([]);
   expect(afterRefusal.proposalDigest).toBe(selected.proposalDigest);
