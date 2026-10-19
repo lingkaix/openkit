@@ -1,8 +1,10 @@
-import {
-  composeUserAuthoredKnowledgePage,
-  knowledgePageContentDigest,
-  patchKnowledgePageTitleBody,
-} from './knowledge-okf';
+import { createHash } from 'node:crypto';
+import { composeUserAuthoredKnowledgePage, patchKnowledgePageTitleBody } from './knowledge-okf';
+
+/** Computes the canonical page digest for fixtures and assertions. */
+export function knowledgePageContentDigest(content: string): string {
+  return `sha256:${createHash('sha256').update(content).digest('hex')}`;
+}
 
 /** Builds one list-compatible Notebook page fixture with optional display fields for UI tests. */
 export function knowledgeNotebookPageFixture(input: {

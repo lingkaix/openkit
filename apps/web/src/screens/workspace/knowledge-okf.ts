@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { Document, parseDocument } from 'yaml';
 
 const DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION = 'openkit-scope-knowledge-schema-v4';
@@ -109,9 +108,4 @@ export function composeUserAuthoredKnowledgePage(input: {
   });
   const frontmatter = document.toString({ lineWidth: 0 });
   return `---\n${frontmatter}---\n${serializeBody(input.body)}`;
-}
-
-/** Computes the canonical page digest for fixtures and assertions. */
-export function knowledgePageContentDigest(content: string): string {
-  return `sha256:${createHash('sha256').update(content).digest('hex')}`;
 }
