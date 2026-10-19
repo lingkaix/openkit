@@ -1,4 +1,9 @@
-import { PolicyWriteOutcomeV1Schema, PolicyWriteProposalV1Schema } from '@openkit/protocol';
+import {
+  PolicyPermissionV1Schema,
+  PolicyWriteOutcomeV1Schema,
+  PolicyWriteProposalV1Schema,
+  ThreadIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 import { ACCESS_TOKEN_OPERATION_DEFINITIONS } from './access-token-operations.js';
 import { ADMINISTRATION_ENTRY_OPERATION_DEFINITIONS } from './administration-operations.js';
@@ -160,14 +165,38 @@ const API_OPERATION_DEFINITIONS = composeOperationTables(
   ADMINISTRATION_OPERATION_DEFINITIONS,
   ACCESS_TOKEN_OPERATION_DEFINITIONS
 );
+/** Native selection names a Task; the Goal owner restores all current authority and lineage. */
+export const GoalTaskPolicyWriteInputSchema = z
+  .object({
+    taskThreadId: ThreadIdSchema,
+    expectedPolicyRevision: PolicyWriteProposalV1Schema.shape.baseRevision,
+    grant: z
+      .object({
+        id: PolicyPermissionV1Schema.shape.id,
+        scope: PolicyPermissionV1Schema.shape.scope,
+        lifetime: PolicyPermissionV1Schema.shape.lifetime,
+        rationale: PolicyWriteProposalV1Schema.shape.rationale,
+      })
+      .strict(),
+  })
+  .strict();
+
+/** The existing writer returns its admitted permission and compare-and-swap revision. */
+export const GoalTaskPolicyWriteOutputSchema = z
+  .object({
+    statement: PolicyPermissionV1Schema,
+    policyRevision: PolicyWriteProposalV1Schema.shape.baseRevision,
+  })
+  .strict();
+
 /** The shared registry includes native dispatch without publishing a transport projection. */
 export const OPERATION_REGISTRY = composeOperationTables(API_OPERATION_DEFINITIONS, {
   'policy.write': {
     binding: 'native',
     description:
-      'Apply one exact human-confirmed Policy candidate through the configuration owner.',
-    inputSchema: PolicyWriteProposalV1Schema,
-    outputSchema: PolicyWriteOutcomeV1Schema,
+      'Apply an exact human-confirmed Policy candidate or a bounded Goal Coordinator Task grant through the existing configuration owner.',
+    inputSchema: z.union([PolicyWriteProposalV1Schema, GoalTaskPolicyWriteInputSchema]),
+    outputSchema: z.union([PolicyWriteOutcomeV1Schema, GoalTaskPolicyWriteOutputSchema]),
     policyOperation: 'workspace.configure',
     crossings: ['administration'],
     stages: ['propose', 'decide', 'commit', 'completed'],
