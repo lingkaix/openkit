@@ -7,6 +7,7 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
@@ -83,10 +84,25 @@ describe('FsStore workspace persistence scope', () => {
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Retired layout workspace');
     const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
+    const healthy = store.createWorkspace('Healthy layout sibling');
+    const retainedThread = store.createThread(healthy.id, 'Retained sibling history');
 
     renameSync(join(workspaceRoot, 'workspace-record.json'), join(workspaceRoot, 'workspace.json'));
-
-    expect(() => new FsStore({ dataRoot })).toThrow(/unsupported.*workspace\.json/i);
+    const bytes = readFileSync(join(workspaceRoot, 'workspace.json'));
+    const database = readFileSync(join(workspaceRoot, 'db', 'workspace.sqlite'));
+    const entries = readdirSync(workspaceRoot, { recursive: true }).sort();
+    const reopened = new FsStore({ dataRoot });
+    const refusal = expect.objectContaining({ code: 'recovery_required' });
+    expect(() => reopened.getWorkspace(workspace.id)).toThrow(refusal);
+    expect(() => reopened.createThread(workspace.id, 'Must not recreate')).toThrow(refusal);
+    expect(reopened.listWorkspaces().map(({ id }) => id)).not.toContain(workspace.id);
+    expect(reopened.getThread(healthy.id, retainedThread.id)).toEqual(retainedThread);
+    const added = reopened.createThread(healthy.id, 'New sibling history');
+    expect(new FsStore({ dataRoot }).getThread(healthy.id, added.id)).toEqual(added);
+    expect(readFileSync(join(workspaceRoot, 'workspace.json'))).toEqual(bytes);
+    expect(readFileSync(join(workspaceRoot, 'db', 'workspace.sqlite'))).toEqual(database);
+    expect(readdirSync(workspaceRoot, { recursive: true }).sort()).toEqual(entries);
+    expect(existsSync(join(workspaceRoot, 'workspace-record.json'))).toBe(false);
   });
 
   it('persists one workspace when another workspace canonical tree is blocked', () => {

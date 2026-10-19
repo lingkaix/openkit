@@ -1,4 +1,12 @@
-import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -164,6 +172,10 @@ describe('canonical work owner and retained storage boundaries', () => {
           : invalidOwner.kind;
     it(`refuses retained Workspace Turn owner ${label} without rewriting its bytes`, () => {
       const f = fixture();
+      const healthy =
+        invalidOwner === undefined || invalidOwner.kind === 'user'
+          ? f.store.createWorkspace('Healthy unsupported-owner sibling')
+          : undefined;
       const path = join(
         f.dataRoot,
         'workspaces',
@@ -179,10 +191,50 @@ describe('canonical work owner and retained storage boundaries', () => {
       else raw.owner = invalidOwner;
       const corrupted = JSON.stringify(raw);
       writeFileSync(path, corrupted);
-      expect(() => new FsStore({ dataRoot: f.dataRoot })).toThrow();
+      if (healthy) {
+        const workspaceRoot = join(f.dataRoot, 'workspaces', f.workspace.id);
+        const entries = readdirSync(workspaceRoot, { recursive: true }).sort();
+        const database = readFileSync(join(workspaceRoot, 'db', 'workspace.sqlite'));
+        const reopened = new FsStore({ dataRoot: f.dataRoot });
+        const refusal = expect.objectContaining({ code: 'recovery_required' });
+        expect(() => reopened.getWorkspace(f.workspace.id)).toThrow(refusal);
+        expect(() => reopened.getTurn(f.workspace.id, f.thread.id, f.turn.id)).toThrow(refusal);
+        expect(() => reopened.createThread(f.workspace.id, 'Must not publish')).toThrow(refusal);
+        expect(reopened.getServerTurnById(f.serverTurn.id)).toEqual(
+          f.store.getServerTurnById(f.serverTurn.id)
+        );
+        expect(reopened.getWorkspace(healthy.id)).toEqual(f.store.getWorkspace(healthy.id));
+        const added = reopened.createThread(healthy.id, 'New sibling history');
+        expect(new FsStore({ dataRoot: f.dataRoot }).getThread(healthy.id, added.id)).toEqual(
+          added
+        );
+        expect(readFileSync(join(workspaceRoot, 'db', 'workspace.sqlite'))).toEqual(database);
+        expect(readdirSync(workspaceRoot, { recursive: true }).sort()).toEqual(entries);
+      } else {
+        expect(() => new FsStore({ dataRoot: f.dataRoot })).toThrow();
+      }
       expect(readFileSync(path, 'utf8')).toBe(corrupted);
     });
   }
+
+  it('refuses malformed Server Turn authority globally without rewriting its bytes', () => {
+    const f = fixture();
+    const path = join(
+      f.dataRoot,
+      'server',
+      'threads',
+      f.serverThread.id,
+      'turns',
+      f.serverTurn.id,
+      'turn.json'
+    );
+    const raw = JSON.parse(readFileSync(path, 'utf8'));
+    delete raw.owner;
+    const corrupted = JSON.stringify(raw);
+    writeFileSync(path, corrupted);
+    expect(() => new FsStore({ dataRoot: f.dataRoot })).toThrow();
+    expect(readFileSync(path, 'utf8')).toBe(corrupted);
+  });
 
   it('refuses an intact Workspace Thread moved to a different owner directory', () => {
     const f = fixture();
