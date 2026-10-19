@@ -1022,6 +1022,9 @@ export function discardAbandonedWorkspaceStaging(dataRoot: string): void {
   rmSync(join(root, '.staging'), { recursive: true, force: true });
 }
 
+/** Reports only an acknowledged canonical record, never an unpublished staged leaf. */
+type RecordPublished = (kind: 'thread' | 'turn' | 'agent-session', id: string) => void;
+
 /**
  * Writes one workspace's mutable canonical file records under a resolved root.
  *
@@ -1029,22 +1032,24 @@ export function discardAbandonedWorkspaceStaging(dataRoot: string): void {
  * @param records Current workspace records.
  * @param updateWorkspaceConfigName Whether Core may refresh its owned config name.
  * @param initialArtifact Actual admitted v1 record and optional original for one initial directory publication.
+ * @param onRecordPublished Publishes a derivative cache at its own durable commit, even if a later record fails.
  */
 export function writeWorkspaceFileRecords(
   workspaceRoot: string,
   records: WorkspaceFileRecords,
   updateWorkspaceConfigName = false,
-  initialArtifact?: { readonly record: ArtifactVersionRecord; readonly payloadPath?: string }
+  initialArtifact?: { readonly record: ArtifactVersionRecord; readonly payloadPath?: string },
+  onRecordPublished?: RecordPublished
 ): void {
   assertSafeWorkspaceFileRecordIds(records);
   assertExistingWorkspaceDirectoryParents(workspaceRoot);
   ensureWorkspaceLayoutRoot(workspaceRoot);
   assertExistingWorkspaceDirectoryParents(workspaceRoot);
   writeWorkspaceMetadata(workspaceRoot, records.workspace, updateWorkspaceConfigName);
-  writeThreads(workspaceRoot, records);
+  writeThreads(workspaceRoot, records, onRecordPublished);
   writeKnowledge(workspaceRoot, records);
   writeArtifacts(workspaceRoot, records, initialArtifact);
-  writeAgentSessions(workspaceRoot, records);
+  writeAgentSessions(workspaceRoot, records, onRecordPublished);
 }
 
 /**
@@ -2214,8 +2219,14 @@ export function publishNewRecordDirectory(
  * @param turnRoot Existing Turn directory, either canonical or staged.
  * @param turn Turn record to write.
  * @param records Workspace records that own the Turn's items and events.
+ * @param onMetadataPublished Acknowledges existing canonical metadata before any later log preparation.
  */
-function writeTurnDirectory(turnRoot: string, turn: Turn, records: WorkspaceFileRecords): void {
+function writeTurnDirectory(
+  turnRoot: string,
+  turn: Turn,
+  records: WorkspaceFileRecords,
+  onMetadataPublished?: () => void
+): void {
   const itemsPath = join(turnRoot, 'items.jsonl');
   const eventsPath = join(turnRoot, 'runtime', 'events.jsonl');
   const runtimeRoot = dirname(eventsPath);
@@ -2264,6 +2275,7 @@ function writeTurnDirectory(turnRoot: string, turn: Turn, records: WorkspaceFile
     },
     StoredTurnV1Schema
   );
+  onMetadataPublished?.();
   const revisions = records.itemRevisions.filter((item) => item.turnId === turn.id);
   const itemLogMetadata = lstatSync(itemsPath, { throwIfNoEntry: false });
   if (!itemLogMetadata) {
@@ -2432,8 +2444,13 @@ function writeStagedThreadDirectory(
  *
  * @param workspaceRoot Resolved workspace root.
  * @param records Current workspace records.
+ * @param onRecordPublished Reports acknowledged references before processing later records.
  */
-function writeThreads(workspaceRoot: string, records: WorkspaceFileRecords): void {
+function writeThreads(
+  workspaceRoot: string,
+  records: WorkspaceFileRecords,
+  onRecordPublished?: RecordPublished
+): void {
   const root = join(workspaceRoot, 'threads');
   const expectedThreadIds = new Set(records.threads.map((thread) => thread.id));
 
@@ -2449,6 +2466,8 @@ function writeThreads(workspaceRoot: string, records: WorkspaceFileRecords): voi
       publishNewRecordDirectory(workspaceRoot, threadRoot, (stage) => {
         writeStagedThreadDirectory(stage, thread, threadTurns, records);
       });
+      for (const turn of threadTurns) onRecordPublished?.('turn', turn.id);
+      onRecordPublished?.('thread', thread.id);
       continue;
     }
     ensureCanonicalDirectory(threadRoot);
@@ -2463,17 +2482,19 @@ function writeThreads(workspaceRoot: string, records: WorkspaceFileRecords): voi
     for (const turn of threadTurns) {
       const turnRoot = join(turnsRoot, turn.id);
       if (lstatSync(turnRoot, { throwIfNoEntry: false })) {
-        writeTurnDirectory(turnRoot, turn, records);
+        writeTurnDirectory(turnRoot, turn, records, () => onRecordPublished?.('turn', turn.id));
         continue;
       }
       publishNewRecordDirectory(workspaceRoot, turnRoot, (stage) => {
         writeTurnDirectory(stage, turn, records);
       });
+      onRecordPublished?.('turn', turn.id);
     }
     const nextBytes = Buffer.from(
       `${JSON.stringify(projectCanonicalThreadRecord(thread, previous), null, 2)}\n`
     );
     if (!previousBytes?.equals(nextBytes)) writeFileAtomic(threadPath, nextBytes);
+    onRecordPublished?.('thread', thread.id);
   }
 }
 
@@ -2616,8 +2637,13 @@ function writeArtifacts(
  *
  * @param workspaceRoot Resolved workspace root.
  * @param records Current workspace records.
+ * @param onRecordPublished Reports acknowledged references before processing later sessions.
  */
-function writeAgentSessions(workspaceRoot: string, records: WorkspaceFileRecords): void {
+function writeAgentSessions(
+  workspaceRoot: string,
+  records: WorkspaceFileRecords,
+  onRecordPublished?: RecordPublished
+): void {
   const root = join(workspaceRoot, 'runtime', 'agent-sessions');
   const expectedIds = new Set(records.agentSessions.map((session) => session.id));
 
@@ -2632,6 +2658,7 @@ function writeAgentSessions(workspaceRoot: string, records: WorkspaceFileRecords
         session,
         StoredAgentSessionV1Schema
       );
+      onRecordPublished?.('agent-session', session.id);
       continue;
     }
     publishNewRecordDirectory(workspaceRoot, sessionRoot, (stage) => {
@@ -2642,6 +2669,7 @@ function writeAgentSessions(workspaceRoot: string, records: WorkspaceFileRecords
         StoredAgentSessionV1Schema
       );
     });
+    onRecordPublished?.('agent-session', session.id);
   }
 }
 

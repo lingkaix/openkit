@@ -1562,7 +1562,7 @@ export class FsStore {
    * @param updateWorkspaceConfigName Whether Core may refresh its owned config name.
    * @param turnFilePayloads Verified private originals consumed only by their first receiving Turn publication.
    * @param initialArtifact Actual admitted initial version and optional original, consumed by its directory publication.
-   * @param candidate Unpublished record projections; live caches change only after this write succeeds.
+   * @param candidate Unpublished projections; each cache changes only after its own canonical commit succeeds.
    */
   private persist(
     workspaceId: string,
@@ -1705,7 +1705,7 @@ export class FsStore {
    * @param updateWorkspaceConfigName Whether Core may refresh its owned config name.
    * @param turnFilePayloads Verified private originals consumed only by their first receiving Turn publication.
    * @param initialArtifact Actual admitted initial version and optional original, consumed by its directory publication.
-   * @param candidate Unpublished record projections supplied instead of their cached values.
+   * @param candidate Unpublished projections whose caches advance at their own durable acknowledgement.
    */
   private writeWorkspaceFileRecordsToRoot(
     workspaceId: string,
@@ -1753,7 +1753,25 @@ export class FsStore {
         ),
       },
       updateWorkspaceConfigName,
-      initialArtifact
+      initialArtifact,
+      candidate
+        ? (kind, id) => {
+            // A later aggregate failure must not let an old cache overwrite this committed record.
+            if (kind === 'thread') {
+              const thread = candidate.threads?.find((record) => record.id === id);
+              if (thread && thread !== this.threads.get(id)) {
+                this.threads.set(id, thread);
+                if (candidate.workspace) this.workspaces.set(workspaceId, candidate.workspace);
+              }
+            } else if (kind === 'turn') {
+              const turn = candidate.turns?.find((record) => record.id === id);
+              if (turn) this.turns.set(id, turn);
+            } else {
+              const session = candidate.agentSessions?.find((record) => record.id === id);
+              if (session) this.agentSessions.set(id, session);
+            }
+          }
+        : undefined
     );
   }
 
