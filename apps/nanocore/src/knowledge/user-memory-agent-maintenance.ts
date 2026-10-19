@@ -502,8 +502,9 @@ export function prepareUserMemoryMaintenance(
             ...(supplied ? [`source:${supplied.id}@${supplied.contentDigest}`] : []),
           ])
             await admitSource(source);
+          // Page reads already admit their complete reference closures; an editing selection may omit those targets.
           const authoringGuidance = notebookAuthoringGuidance(
-            readUserMemoryNotebookAdmission(context, files).scopeSchemaText,
+            readUserMemoryNotebookAdmission(context, {}).scopeSchemaText,
             owner.ownerScope
           );
           const assertCurrent = () => {
