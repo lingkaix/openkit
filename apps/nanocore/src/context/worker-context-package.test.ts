@@ -1425,6 +1425,141 @@ describe('worker Context Package owner', () => {
     ).toThrow(/conflict/);
   });
 
+  it.each([
+    'live',
+    'imported',
+  ] as const)('retains manifest payload once while reopening the full %s trace view', async (kind) => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-context-manifest-authority-'));
+    const fixture =
+      kind === 'live'
+        ? await createAcceptedFixture(workspaceRoot, { knowledge: true })
+        : await createImportedHistoryFixture(workspaceRoot);
+    const turnRoot = join(
+      workspaceRoot,
+      'threads',
+      fixture.trace.threadId,
+      'turns',
+      fixture.trace.turnId
+    );
+    const manifestPath = join(turnRoot, 'context-package/package.json');
+    const manifestBytes = readFileSync(manifestPath);
+    const manifest = JSON.parse(manifestBytes.toString('utf8'));
+    expect(
+      manifest.fileInventory.some((entry: { path: string }) => entry.path === 'package.json')
+    ).toBe(false);
+
+    if (kind === 'live') {
+      expect(writeWorkerContextPackageTrace({ ...fixture, workspaceRoot })).toEqual(fixture.trace);
+    } else {
+      writeFileSync(
+        join(turnRoot, 'context-package.json'),
+        serializeWorkerContextPackageTrace(fixture.trace)
+      );
+    }
+    const selectors = {
+      authorities: fixture.authorities,
+      workspaceId: fixture.trace.workspaceId,
+      threadId: fixture.trace.threadId,
+      turnId: fixture.trace.turnId,
+      workspaceRoot,
+    };
+    // Reopen through the retained files, without passing the producer's in-memory trace.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const reopened = readPortableWorkerContextPackageTrace(selectors);
+      expect(reopened).toEqual({
+        trace: fixture.trace,
+        verification: kind === 'live' ? 'strict' : 'imported-history',
+      });
+      expect(reopened.trace.fileInventory).toEqual(
+        [
+          ...manifest.fileInventory,
+          {
+            path: 'package.json',
+            byteLength: manifestBytes.byteLength,
+            contentDigest: sha256(manifestBytes),
+          },
+        ].sort((left, right) => left.path.localeCompare(right.path))
+      );
+      if (kind === 'live') {
+        expect(readWorkerContextPackageTrace(selectors)).toEqual(fixture.trace);
+      } else {
+        expect(() => readWorkerContextPackageTrace(selectors)).toThrow(
+          'strict delivery rejects reserved import lineage'
+        );
+      }
+    }
+    expect(readFileSync(manifestPath)).toEqual(manifestBytes);
+
+    const retained = JSON.parse(readFileSync(join(turnRoot, 'context-package.json'), 'utf8'));
+    expect(retained).toMatchObject({
+      agentSessionId: fixture.trace.agentSessionId,
+      excludedItems: fixture.trace.excludedItems,
+      knowledgeExclusions: fixture.trace.knowledgeExclusions,
+      knowledgeSelectionInput: fixture.trace.knowledgeSelectionInput,
+      materialExclusions: fixture.trace.materialExclusions,
+      packageSnapshotId: fixture.trace.packageSnapshotId,
+      requestId: fixture.trace.requestId,
+    });
+    for (const field of [
+      'fileInventory',
+      'includedItemIds',
+      'knowledgeSelections',
+      'materialSelections',
+      'policyVersion',
+      'sourceFiles',
+      'workerRequestDigest',
+      'workerRequestItemId',
+    ]) {
+      expect(retained, `Retained trace duplicates manifest field: ${field}`).not.toHaveProperty(
+        field
+      );
+    }
+  });
+
+  it.each([
+    'live',
+    'imported',
+  ] as const)('refuses altered exact manifest bytes when reopening %s history', async (kind) => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-context-manifest-integrity-'));
+    const fixture =
+      kind === 'live'
+        ? await createAcceptedFixture(workspaceRoot)
+        : await createImportedHistoryFixture(workspaceRoot);
+    const turnRoot = join(
+      workspaceRoot,
+      'threads',
+      fixture.trace.threadId,
+      'turns',
+      fixture.trace.turnId
+    );
+    if (kind === 'live') {
+      writeWorkerContextPackageTrace({ ...fixture, workspaceRoot });
+    } else {
+      writeFileSync(
+        join(turnRoot, 'context-package.json'),
+        serializeWorkerContextPackageTrace(fixture.trace)
+      );
+    }
+    const selectors = {
+      authorities: fixture.authorities,
+      workspaceId: fixture.trace.workspaceId,
+      threadId: fixture.trace.threadId,
+      turnId: fixture.trace.turnId,
+      workspaceRoot,
+    };
+    expect(readPortableWorkerContextPackageTrace(selectors).trace).toEqual(fixture.trace);
+    const manifestPath = join(turnRoot, 'context-package/package.json');
+    const originalBytes = readFileSync(manifestPath);
+    chmodSync(manifestPath, 0o600);
+    // The parsed manifest is unchanged, but delivery proof binds the original exact bytes.
+    writeFileSync(manifestPath, Buffer.concat([originalBytes, Buffer.from('\n')]));
+    expect(() => readPortableWorkerContextPackageTrace(selectors)).toThrow(
+      /digest mismatch|manifest is malformed/
+    );
+    writeFileSync(manifestPath, originalBytes);
+    expect(readPortableWorkerContextPackageTrace(selectors).trace).toEqual(fixture.trace);
+  });
+
   it('rejects reserved import lineage before consulting live authorities', async () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-context-import-lineage-'));
     const fixture = await createAcceptedFixture(workspaceRoot);
@@ -2288,6 +2423,13 @@ describe('S39 original source authority and retained delivery proof', () => {
     expect(() =>
       verifyWorkerContextPackageTrace({ authorities, trace, workspaceRoot: root })
     ).toThrow(/digest mismatch/);
+    const retained = JSON.parse(
+      readFileSync(
+        join(root, 'threads', trace.threadId, 'turns', trace.turnId, 'context-package.json'),
+        'utf8'
+      )
+    );
+    expect(retained).not.toHaveProperty('sourceFiles');
   });
 
   it.each([
