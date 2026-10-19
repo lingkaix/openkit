@@ -11,6 +11,7 @@ import {
   type TaskModeEvidence,
   type WorkerEnvironmentStorageChoice,
 } from '@openkit/app-api-schemas';
+import { ASSISTANT_RUN_DEADLINE_MS } from '@openkit/config-schema';
 import {
   type ActorRef,
   type AssistantHandoff,
@@ -175,7 +176,6 @@ import type { WorkspaceMutationAdmission } from './workspace-mutation-admission.
 export const QUICK_CHAT_AGENT_ID = 'quick-chat';
 
 /** Shared absolute deadline for an ordinary Assistant run, including summaries and its answer. */
-const QUICK_CHAT_TIMEOUT_MS = 30_000;
 const ConversationCommandBodySchema = SubmitConversationResponseSchema.omit({
   originatingWorkspaceId: true,
   originatingThreadId: true,
@@ -3703,7 +3703,7 @@ export function createConversationService({
             limits: selection.profile?.limits ?? {
               maxModelTurns: 16,
               maxToolCalls: 48,
-              deadlineMs: QUICK_CHAT_TIMEOUT_MS,
+              deadlineMs: ASSISTANT_RUN_DEADLINE_MS,
             },
             signal: controller.signal,
           });
@@ -4523,7 +4523,7 @@ export function createConversationService({
               limits: selection.profile?.limits ?? {
                 maxModelTurns: 16,
                 maxToolCalls: 48,
-                deadlineMs: QUICK_CHAT_TIMEOUT_MS,
+                deadlineMs: ASSISTANT_RUN_DEADLINE_MS,
               },
               signal: new AbortController().signal,
               assertCurrent: () => {

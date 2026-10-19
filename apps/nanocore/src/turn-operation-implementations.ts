@@ -1,5 +1,6 @@
 import type { TURN_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { ProductTurnSchema } from '@openkit/protocol';
+import { interruptAdministrationTurn } from './administration/administration-operations.js';
 import { recordWorkspaceAuditEvent } from './audit-events.js';
 import { KernelCommandError } from './generative-kernel/errors.js';
 import { KnowledgePageValidationError } from './knowledge/okf.js';
@@ -54,7 +55,9 @@ export function createTurnOperationImplementations(
             coreDb: dependencies.coreDb,
             inflightCommands: dependencies.inflightCommands!,
             turnExecutor: dependencies.turnExecutor!,
-            interruptInternalChatTurn: dependencies.conversationService!.interrupt,
+            interruptInternalChatTurn: async (store, turnId) =>
+              (await interruptAdministrationTurn(store, turnId)) ||
+              (await dependencies.conversationService!.interrupt(store, turnId)),
             onInterruptAccepted: () => {
               const workspaceDb = dependencies.repositoryWorkspaceDb!(input.workspaceId);
               try {

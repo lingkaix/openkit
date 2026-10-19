@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { InternalRoleProfilesConfigSchema } from './internal-role.js';
 
 describe('Knowledge Manager default run deadline', () => {
-  it('gives an omitted KM limit object 300 seconds without changing other role defaults', () => {
+  it('gives omitted limits the accepted KM, Assistant and Coordinator defaults', () => {
     const config = InternalRoleProfilesConfigSchema.parse({
       schemaVersion: 1,
       profiles: ['knowledge-manager', 'assistant', 'workflow-coordinator'].map((roleId) => ({
@@ -17,7 +17,7 @@ describe('Knowledge Manager default run deadline', () => {
       },
       {
         roleId: 'assistant',
-        limits: { maxModelTurns: 16, maxToolCalls: 48, deadlineMs: 120_000 },
+        limits: { maxModelTurns: 16, maxToolCalls: 48, deadlineMs: 600_000 },
       },
       {
         roleId: 'workflow-coordinator',
