@@ -66,7 +66,6 @@ export const WORKER_CONTEXT_PACKAGE_POLICY_VERSION = 'worker-context-v1' as cons
 const EXCLUSION_REASONS = [
   'explicit_scope_excluded',
   'policy_excluded',
-  'selector_mismatch',
   'sensitive_content',
   'freshness_expired',
   'confidence_too_low',
