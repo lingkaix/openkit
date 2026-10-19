@@ -32,4 +32,8 @@ A fresh independent test author writes and runs deciding regressions before prod
 
 ## Checkpoint
 
-Base is accepted main `75747a7a248843614ca6f351b6fbe6411d839ab0`. The source diagnosis confirms Request cancellation propagation, misleading post-answer deadline wording, and catalog-backed context rather than an unknown-context fallback. Production correction has not started. Independent regression authoring is active. Retained phase timing is pending from the operator; the current 120-second default remains unchanged.
+Base is accepted main `75747a7a248843614ca6f351b6fbe6411d839ab0`. Independent author `9ec7a1fdd` records four intended RED cases and one passing real-candidate control. The lifetime and diagnostic correction passes all five unchanged cases. Focused formatting, Native typecheck and diff checks pass; complete-module qualification and fresh review remain pending.
+
+The operator's retained evidence places 119.7 seconds of each 120.1-second failed Turn inside model calls. A fresh Thread has no prior Items, and completed model calls take 4–83 seconds. The proposed 600-second default fits five calls at that observed maximum with about 187 seconds left for Tools and publication. The count fuses remain 16 model calls and 48 Tool calls.
+
+Administration and ordinary Assistant consume the same profile, whose reader supplies 120 seconds when limits are omitted. Ordinary Assistant can call the Knowledge Manager with a separately admitted 300-second budget; its no-profile fallback is only 30 seconds. The engineer requested a ruling before expanding ordinary Assistant scope. That scope decision, and whether dev explicitly authors its profile limits, remain pending. No default has changed. Do not land the two completed corrections alone; the requested cut contains lifetime, diagnostics and the effective bound together.

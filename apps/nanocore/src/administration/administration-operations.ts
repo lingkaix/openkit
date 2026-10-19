@@ -58,6 +58,30 @@ const ADMINISTRATION_AGENT_ID = 'assistant';
 const ADMINISTRATION_TARGET_REF = 'internal-role:administration';
 const DEFAULT_LIMITS = { maxModelTurns: 16, maxToolCalls: 48, deadlineMs: 120_000 } as const;
 
+// Live interruption handles belong to this entry; retained Turns never resume inference after restart.
+const activeAdministrationRuns = new WeakMap<
+  FsStore,
+  Map<string, { controller: AbortController; finished: Promise<void> }>
+>();
+
+/** Interrupts an admitted Administration run and verifies its durable terminal outcome before accepting Stop. */
+export async function interruptAdministrationTurn(
+  store: FsStore,
+  turnId: string
+): Promise<boolean> {
+  const run = activeAdministrationRuns.get(store)?.get(turnId);
+  if (!run) return false;
+  run.controller.abort();
+  await run.finished;
+  if (store.getTurnById(turnId).status !== 'interrupted')
+    throw new OperationError(
+      'recovery_required',
+      'Administration interruption requires inspection of its retained outcome.',
+      409
+    );
+  return true;
+}
+
 class AdministrationRecoveryRequiredError extends Error {
   public constructor() {
     super('Administration has partial durable state that requires inspection.');
@@ -229,6 +253,19 @@ export function createAdministrationOperationImplementations(input: Administrati
               throw error;
             }
 
+            // Admission, not the submitting connection, owns this run's cancellation lifetime.
+            const controller = new AbortController();
+            let finishRun!: () => void;
+            const finished = new Promise<void>((resolve) => {
+              finishRun = resolve;
+            });
+            let runs = activeAdministrationRuns.get(store);
+            if (!runs) {
+              runs = new Map();
+              activeAdministrationRuns.set(store, runs);
+            }
+            runs.set(turn.id, { controller, finished });
+            let answerStarted = false;
             try {
               const snapshot = input.runtimeConfig();
               const workspaceConfig = findWorkspaceConfig(snapshot, workspaceId)?.config;
@@ -368,7 +405,7 @@ export function createAdministrationOperationImplementations(input: Administrati
                     ],
                     profileId: selection.profile?.id ?? null,
                     limits: selection.profile?.limits ?? DEFAULT_LIMITS,
-                    signal: context.signal ?? new AbortController().signal,
+                    signal: controller.signal,
                     assertCurrent: () => requireCurrentDeploymentAdmin(input.coreDb!, actor),
                     readEvidence: (items) =>
                       readInternalContextEvidence({
@@ -381,6 +418,7 @@ export function createAdministrationOperationImplementations(input: Administrati
                       }),
                     callProvider: provider,
                   });
+                  answerStarted = true;
                   const exit = await runInternalAgentLoop(
                     {
                       systemPrompt,
@@ -399,6 +437,7 @@ export function createAdministrationOperationImplementations(input: Administrati
                   return exit;
                 }
               );
+              controller.signal.throwIfAborted();
               if (loopResult.kind !== 'quiescent') {
                 const code =
                   loopResult.kind === 'failed'
@@ -410,7 +449,9 @@ export function createAdministrationOperationImplementations(input: Administrati
                   store,
                   turn.id,
                   code,
-                  'Administration could not complete this bounded run.'
+                  loopResult.kind === 'limit_reached' && loopResult.limit === 'deadline'
+                    ? 'The admitted deadline expired during Administration answer production.'
+                    : 'Administration could not complete this bounded run.'
                 );
               }
               const answer = finalAssistantText(loopResult.messages);
@@ -452,17 +493,35 @@ export function createAdministrationOperationImplementations(input: Administrati
               }
             } catch (error) {
               if (error instanceof AdministrationRecoveryRequiredError) throw error;
+              if (controller.signal.aborted)
+                return failedAdministrationTurn(
+                  store,
+                  turn.id,
+                  'internal_agent_aborted',
+                  'Administration was explicitly interrupted.',
+                  'interrupted'
+                );
+              const contextFailure = internalContextFailure(error);
+              const answerDeadline =
+                answerStarted && contextFailure?.code === 'internal_agent_context_deadline';
               return failedAdministrationTurn(
                 store,
                 turn.id,
                 error instanceof DeploymentAdminRequiredError
                   ? 'deployment_admin_required'
-                  : (internalContextFailure(error)?.code ?? 'administration_execution_failed'),
+                  : answerDeadline
+                    ? 'internal_agent_deadline_limit'
+                    : (contextFailure?.code ?? 'administration_execution_failed'),
                 error instanceof DeploymentAdminRequiredError
                   ? 'Current deployment administrator authority was lost before publication.'
-                  : (internalContextFailure(error)?.message ??
+                  : answerDeadline
+                    ? 'The admitted deadline expired during Administration answer production.'
+                    : (contextFailure?.message ??
                       'Administration could not settle the current bounded run.')
               );
+            } finally {
+              runs.delete(turn.id);
+              finishRun();
             }
           },
           inflightCommands: input.inflightCommands,
@@ -549,11 +608,13 @@ function finalAssistantText(messages: readonly AgentMessage[]): string {
     .trim();
 }
 
+/** Records a failed or explicitly interrupted run through the existing refusal and command-replay shape. */
 function failedAdministrationTurn(
   store: FsStore,
   turnId: string,
   code: string,
-  explanation: string
+  explanation: string,
+  status: 'failed' | 'interrupted' = 'failed'
 ): AdministrationCommandResult {
   const turn = store.getTurnById(turnId);
   const completedAt = new Date().toISOString();
@@ -577,7 +638,7 @@ function failedAdministrationTurn(
     const completedTurn = store.updateTurn(
       turn.id,
       {
-        status: 'failed',
+        status,
         completedAt,
         error: { code, message: explanation },
       },
@@ -660,7 +721,8 @@ function replayAdministrationTurn(
       item.status === 'completed';
     const consistentRefusal =
       resultKind === 'refused' &&
-      turn.status === 'failed' &&
+      (turn.status === 'failed' ||
+        (turn.status === 'interrupted' && turn.error?.code === 'internal_agent_aborted')) &&
       turn.error !== null &&
       item?.type === 'status' &&
       item.status === 'completed';
