@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: in-progress
+status: completed
 date: "2026-10-18"
 ---
 # Knowledge Package v1 Format
@@ -23,4 +23,6 @@ Independent format fixtures freeze page/schema bytes, a binary original and dete
 
 ## Current Checkpoint
 
-Independent review on `00d6d3710` qualified three counterexamples: import replay refused before the existing receipt; a parsed href also changed identical prose/code; a started export continued after its Source audience was revoked. The independent probe cases were retained as canonical RED `7601bfe10` before correction, without changing the original round-trip oracle. Corrections reuse the common command publisher before fresh-target preparation, edit only parser-identified Markdown destination spans, and recheck Source/page admission during disclosure. Native typecheck and the complete package/public suite pass 13 cases. Complete affected suites and the same fresh review context remain pending. All original failed logs remain in backlog `evidence/L-AW/knowledge-roundtrip/`; the final landing note must name the exact review, gate and main SHA. No branch CI, deployment or reset is authorized or performed.
+The format and minimal public Workspace round trip are implemented. Independent author RED `0fd9cd2cd` reaches export 404 after real Source capture and Notebook setup; the original exact-byte, remint, fixed-KB, dependent-pin and tamper assertions remain unchanged. Fresh review `00d6d3710` qualified replay, Markdown literal preservation and streaming Source disclosure defects; canonical RED `7601bfe10` precedes their corrections. The final implementation reuses the existing receipt publisher, remaps parser-identified destination spans and checks current Source/page disclosure before every bounded archive chunk. Tar framing is coalesced within the existing 64 KiB bound; the 30-second test budget is unchanged. The CLI explicitly excludes the two HTTP-only streams through its existing owner-backed catalog disposition.
+
+Affected Native directories initially passed 1,561 cases with three failures: the original round-trip timing, the operation registration fixture and L-AK's Source-root history fixture. The corrected complete files passed all 49 cases, including the main-owned history repair; unchanged passing cases carry forward. Final complete package/public qualification passes 13 cases; all 101 CLI cases, Native typecheck/build, repository checks and canonical generation pass. The shared App API suite passes 463 cases and Core Client passes 119. All raw failed logs and the exact gate commands remain in backlog `evidence/L-AW/knowledge-roundtrip/`, including `builder-affected-gate.log`, `builder-final-gate.log` and `builder-qualification-gate.log`. The fresh independent review is `reviews/L-AW-knowledge-package-roundtrip.md`; the external landing note records the exact main SHA. No Web, deployment, reset or branch CI action was performed.
