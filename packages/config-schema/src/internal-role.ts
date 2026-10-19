@@ -34,7 +34,10 @@ export const InternalRoleExecutionProfileSchema = z.union([
   z
     .object({
       ...InternalRoleProfileFields,
-      roleId: z.string().min(1).regex(/^(?!knowledge-manager$)/),
+      roleId: z
+        .string()
+        .min(1)
+        .regex(/^(?!knowledge-manager$)/),
       limits: InternalRoleLimitsSchema.default({
         maxModelTurns: 16,
         maxToolCalls: 48,

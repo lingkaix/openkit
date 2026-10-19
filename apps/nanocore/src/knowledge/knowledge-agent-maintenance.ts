@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { KnowledgeMaintenanceResponseSchema } from '@openkit/app-api-schemas';
+import { KNOWLEDGE_MANAGER_RUN_DEADLINE_MS } from '@openkit/config-schema';
 import {
   type ActorRef,
   allocateEntityId,
@@ -466,7 +467,7 @@ export function prepareKnowledgeMaintenance(
       files,
       sources: sourceFiles,
       signal: AbortSignal.any([input.signal, controller.signal]),
-      deadlineMs: Date.now() + 120_000,
+      deadlineMs: Date.now() + KNOWLEDGE_MANAGER_RUN_DEADLINE_MS,
       revalidate: assertCurrent,
       submit: async (edit) => {
         if (edit.changes.length > 4) throw new NotebookError('invalid_request');
