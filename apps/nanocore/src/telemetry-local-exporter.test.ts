@@ -1,3 +1,4 @@
+// openkit-test-platform: posix
 import fs from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
