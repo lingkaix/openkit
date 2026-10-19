@@ -531,6 +531,7 @@ describe('Light App definition catalog', () => {
     const second = add(input, first.catalog.revision, 'Admissions v2');
     const exportRoot = join(input.dataRoot, 'export');
     const timestamp = '2026-10-17T00:00:00.000Z';
+    const knowledgeBaseId = allocateEntityId('kb');
     writeWorkspaceExportTree({
       exportRoot,
       exportId: 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4',
@@ -568,7 +569,16 @@ describe('Light App definition catalog', () => {
           workspace: {
             name: 'Definition templates',
             defaultAgentId: null,
-            defaultKnowledgeBaseId: allocateEntityId('kb'),
+            defaultKnowledgeBaseId: knowledgeBaseId,
+            knowledgeMounts: [
+              {
+                name: 'managed',
+                backend: 'local',
+                root: 'raw',
+                default: true,
+                knowledgeBaseId,
+              },
+            ],
           },
         }),
         workspaceSchema: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
