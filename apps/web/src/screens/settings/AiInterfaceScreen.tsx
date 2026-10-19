@@ -1,4 +1,8 @@
-import { ProviderApiKeyProfileIdSchema } from '@openkit/app-api-schemas';
+import {
+  type CodexSubscriptionSettings,
+  ProviderApiKeyProfileIdSchema,
+  type ProviderSubscriptionResetResponse,
+} from '@openkit/app-api-schemas';
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import { allocateEntityId } from '@openkit/protocol';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -14,12 +18,15 @@ import {
   Select,
   Skeleton,
   StatusChip,
+  Switch,
   TextField,
 } from '../../primitives';
 import {
+  type ConnectedAppCodexHeldReason,
   type ConnectedAppProviderRow,
   type ConnectedAppQuotaWindow,
   type ConnectedAppRow,
+  effectiveCodexSubscriptionSettings,
   overlayConnectedAppAccount,
   overlayConnectedAppQuota,
   projectConnectedApps,
@@ -572,7 +579,7 @@ function AccountControls({
       ? { subscriptionProviderId: providerId, accountSlotId: account.accountSlotId }
       : quotaRead.data
   )[0]!.accounts[0]!;
-  const live = overlayConnectedAppAccount(quotaAccount, status.data ?? snapshot ?? cachedStatus);
+  const live = overlayConnectedAppAccount(quotaAccount, snapshot ?? status.data ?? cachedStatus);
   useEffect(() => {
     if (isAdminDenied(quotaRead.error)) onAccessDenied(providerId, account.accountSlotId);
   }, [quotaRead.error, onAccessDenied, providerId, account.accountSlotId]);
@@ -736,7 +743,20 @@ function AccountControls({
             {disconnected ? `${statusLabel.label} · may be stale` : statusLabel.label}
           </StatusChip>
         </div>
-        <QuotaStatus account={live} />
+        <QuotaStatus account={live} providerId={providerId} />
+        {providerId === 'openai-codex' ? (
+          <CodexSubscriptionControls
+            account={live}
+            client={client}
+            disconnected={disconnected}
+            providerId={providerId}
+            statusKey={statusKey}
+            onAccountSnapshot={(next) => setSnapshot(next)}
+            onAccountsChanged={onAccountsChanged}
+            onQuotaRefresh={() => quota.mutate()}
+            onStatusRefresh={() => void status.refetch()}
+          />
+        ) : null}
         {live.inferenceObservation?.accessRejected ? (
           <div className="flex min-w-0 w-full flex-col gap-1">
             <p className="text-wrap text-sm font-bold text-fg-strong">Inference access rejected</p>
@@ -1083,8 +1103,224 @@ function QuotaWindow({ window }: { window: ConnectedAppQuotaWindow }) {
   );
 }
 
+/** Maps bounded Codex held reasons to operator-facing labels. */
+function codexHeldReasonLabel(reason: ConnectedAppCodexHeldReason): string {
+  switch (reason) {
+    case 'spend_control_reached':
+      return 'Spend control reached';
+    case 'overage_limit_reached':
+      return 'Overage limit reached';
+    case 'rate_limit_reached':
+      return 'Rate limit reached';
+    case 'not_allowed':
+      return 'Not allowed';
+  }
+}
+
+/** Describes one manual Codex reset outcome without assuming success after unknown. */
+function codexResetOutcomeLabel(outcome: ProviderSubscriptionResetResponse['outcome']): string {
+  switch (outcome) {
+    case 'reset':
+      return 'Reset applied.';
+    case 'nothing_to_reset':
+      return 'Nothing to reset.';
+    case 'no_credit':
+      return 'No reset credit available.';
+    case 'already_redeemed':
+      return 'This reset was already redeemed.';
+    case 'unknown':
+      return 'Outcome unknown. Retry with the same request to learn the result.';
+  }
+}
+
+/** Renders Codex-only quota extensions without treating missing values as zero. */
+function CodexQuotaExtensions({
+  account,
+  updatedAt,
+}: {
+  account: ConnectedAppRow;
+  updatedAt: string;
+}) {
+  const codex = account.quotaCodex;
+  return (
+    <div className="flex min-w-0 w-full flex-col gap-1 border-t border-border pt-2">
+      <p className="text-wrap text-xs font-bold text-fg-strong">Codex credits and resets</p>
+      <p className="text-wrap text-xs text-fg">
+        Credits{' '}
+        {codex.creditsHasCredits === null
+          ? 'unknown'
+          : codex.creditsHasCredits
+            ? codex.creditsUnlimited === true
+              ? 'available (unlimited)'
+              : codex.creditsBalance !== null
+                ? `balance ${codex.creditsBalance}`
+                : 'available'
+            : 'none reported'}
+      </p>
+      <p className="text-wrap text-xs text-fg">
+        Banked resets{' '}
+        {codex.resetAvailableCount === null ? 'unknown' : `${codex.resetAvailableCount} available`}
+      </p>
+      {codex.resetSoonestExpiresAt !== null ? (
+        <QuotaInstant label="Soonest reset expires" value={codex.resetSoonestExpiresAt} />
+      ) : codex.resetEntries !== null ? (
+        <p className="text-wrap text-xs text-fg-muted">Soonest reset expires unknown</p>
+      ) : null}
+      {codex.resetEntries?.map((entry) => (
+        <div key={entry.id} className="text-wrap text-xs text-fg-muted">
+          <p>
+            {entry.resetType} · {entry.id}
+          </p>
+          {entry.expiresAt === null ? (
+            <p className="text-wrap text-xs text-fg-muted">Expires no expiry</p>
+          ) : (
+            <QuotaInstant label="Expires" value={entry.expiresAt} />
+          )}
+        </div>
+      ))}
+      <p className="text-wrap text-xs text-fg">
+        Held {codex.heldReason === null ? 'unknown' : codexHeldReasonLabel(codex.heldReason)}
+      </p>
+      <QuotaInstant label="Active until" value={codex.activeUntil} />
+      <QuotaInstant label="Account updated" value={updatedAt} />
+    </div>
+  );
+}
+
+/** Codex reset and auto-use settings bound to deployment-admin mutations. */
+function CodexSubscriptionControls({
+  account,
+  client,
+  disconnected,
+  providerId,
+  statusKey,
+  onAccountSnapshot,
+  onAccountsChanged,
+  onQuotaRefresh,
+  onStatusRefresh,
+}: {
+  account: ConnectedAppRow;
+  client: CoreClient;
+  disconnected: boolean;
+  providerId: 'openai-codex';
+  statusKey: readonly string[];
+  onAccountSnapshot: (next: ProviderSubscriptionAccount) => void;
+  onAccountsChanged: () => void;
+  onQuotaRefresh: () => void;
+  onStatusRefresh: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const redeemRequestIdRef = useRef<string | null>(null);
+  const [resetOutcome, setResetOutcome] = useState<ProviderSubscriptionResetResponse | null>(null);
+  const settings = effectiveCodexSubscriptionSettings(account);
+  const updateSettings = useMutation({
+    mutationFn: (body: CodexSubscriptionSettings) =>
+      client.operations['provider-subscription.codex-settings']({
+        subscriptionProviderId: providerId,
+        accountSlotId: account.accountSlotId,
+        settings: body,
+      }),
+    onSuccess: (next) => {
+      if (queryClient.getQueryCache().find({ queryKey: statusKey, exact: true })) {
+        queryClient.setQueryData(statusKey, next);
+      }
+      onAccountSnapshot(next);
+      // Account list refresh must not invalidate the status cache; a stale refetch would overwrite saved settings.
+      void queryClient.invalidateQueries({
+        queryKey: [...settingsKeys.aiInterface, 'accounts'],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: [...settingsKeys.aiInterface, 'diagnostics'],
+      });
+    },
+  });
+  const useReset = useMutation({
+    mutationFn: async () => {
+      if (!redeemRequestIdRef.current) {
+        redeemRequestIdRef.current = crypto.randomUUID();
+      }
+      return client.operations['provider-subscription.account-use-reset']({
+        subscriptionProviderId: providerId,
+        accountSlotId: account.accountSlotId,
+        redeemRequestId: redeemRequestIdRef.current,
+      });
+    },
+    onSuccess: (result) => {
+      setResetOutcome(result);
+      if (result.outcome !== 'unknown') {
+        redeemRequestIdRef.current = null;
+      }
+      onAccountsChanged();
+      onQuotaRefresh();
+      onStatusRefresh();
+    },
+  });
+  const settingsBusy = disconnected || updateSettings.isPending;
+  const resetBusy = disconnected || useReset.isPending;
+
+  return (
+    <div className="flex min-w-0 w-full flex-col gap-3 border-t border-border pt-3">
+      <p className="text-wrap text-sm font-bold text-fg-strong">Codex reset and auto-use</p>
+      <Switch
+        isSelected={settings.codexAutoUseWeeklyReset}
+        onChange={(selected) => updateSettings.mutate({ codexAutoUseWeeklyReset: selected })}
+        isDisabled={settingsBusy}
+      >
+        Auto-use weekly reset
+      </Switch>
+      <Switch
+        isSelected={settings.codexAutoUseExpiringReset}
+        onChange={(selected) => updateSettings.mutate({ codexAutoUseExpiringReset: selected })}
+        isDisabled={settingsBusy}
+      >
+        Auto-use expiring reset
+      </Switch>
+      <Switch
+        isSelected={settings.codexUseCredits}
+        onChange={(selected) => updateSettings.mutate({ codexUseCredits: selected })}
+        isDisabled={settingsBusy}
+      >
+        Use credits
+      </Switch>
+      {updateSettings.isError ? (
+        <ErrorBanner
+          message={dependencyMessage(updateSettings.error, "Couldn't update Codex settings.")}
+          onRetry={() => updateSettings.mutate(updateSettings.variables ?? {})}
+        />
+      ) : null}
+      <div className="flex min-w-0 w-full flex-wrap gap-2">
+        <Button
+          size="sm"
+          variant="outline"
+          isDisabled={resetBusy}
+          onPress={() => useReset.mutate()}
+        >
+          Use reset
+        </Button>
+      </div>
+      {useReset.isError ? (
+        <ErrorBanner
+          message={dependencyMessage(useReset.error, "Couldn't use a Codex reset.")}
+          onRetry={() => useReset.mutate()}
+        />
+      ) : null}
+      {resetOutcome ? (
+        <p className="text-wrap text-xs text-fg-muted" role="status">
+          {codexResetOutcomeLabel(resetOutcome.outcome)}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 /** Renders the bounded quota posture for one provider-subscription account. */
-function QuotaStatus({ account }: { account: ConnectedAppRow }) {
+function QuotaStatus({
+  account,
+  providerId,
+}: {
+  account: ConnectedAppRow;
+  providerId: SubscriptionProviderId;
+}) {
   if (account.quotaAvailability === null) {
     return <p className="text-wrap text-xs text-fg-muted">Quota query failed</p>;
   }
@@ -1122,6 +1358,9 @@ function QuotaStatus({ account }: { account: ConnectedAppRow }) {
         </ul>
       )}
       {lastChecked}
+      {providerId === 'openai-codex' ? (
+        <CodexQuotaExtensions account={account} updatedAt={account.updatedAt} />
+      ) : null}
     </div>
   );
 }

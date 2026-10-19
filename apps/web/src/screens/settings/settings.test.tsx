@@ -2032,7 +2032,7 @@ describe('Gateway (board 20)', () => {
     expect(screen.queryByText('40.4% used')).not.toBeInTheDocument();
     expect(screen.getByText('Resets unknown')).toBeInTheDocument();
     expect(screen.queryByText('Quota unsupported')).not.toBeInTheDocument();
-    expect(screen.queryByText(/5h|\bweekly\b/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Weekly$/)).not.toBeInTheDocument();
     expect((await screen.findAllByText('Demo provider')).length).toBeGreaterThan(0);
     expect(client.operations['diagnostics.app']).toHaveBeenCalled();
 
@@ -2204,7 +2204,7 @@ describe('Gateway (board 20)', () => {
     expect(screen.queryByText('40.4% used')).not.toBeInTheDocument();
     expect(screen.getByText('Resets unknown')).toBeInTheDocument();
     expect(screen.queryByText('Quota unsupported')).not.toBeInTheDocument();
-    expect(screen.queryByText(/5h|\bweekly\b/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Weekly$/)).not.toBeInTheDocument();
   });
 
   it('disables reconnect actions when disconnected', async () => {

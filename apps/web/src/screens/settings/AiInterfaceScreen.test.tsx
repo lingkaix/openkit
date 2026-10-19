@@ -289,6 +289,31 @@ function makeClient(
       'vault.provider-api-key-set': vi
         .fn()
         .mockResolvedValue({ providerId: 'provider_demo', configured: true }),
+      'provider-subscription.codex-settings': vi
+        .fn()
+        .mockImplementation(
+          ({
+            subscriptionProviderId,
+            accountSlotId,
+            settings,
+          }: {
+            subscriptionProviderId: string;
+            accountSlotId: string;
+            settings: Record<string, boolean>;
+          }) =>
+            Promise.resolve({
+              ...LOGGED_IN_ACCOUNT,
+              subscriptionProviderId,
+              accountSlotId,
+              ...settings,
+            })
+        ),
+      'provider-subscription.account-use-reset': vi.fn().mockResolvedValue({
+        subscriptionProviderId: 'openai-codex',
+        accountSlotId: 'primary',
+        redeemRequestId: '00000000-0000-4000-8000-000000000001',
+        outcome: 'reset',
+      }),
       ...overrides.operations,
     },
   } as unknown as CoreClient;
@@ -1369,6 +1394,138 @@ describe('AI interface deployment-admin workflow', () => {
     expect(within(xai).getByText('Resets', { exact: false })).toBeInTheDocument();
     expect(within(xai).getByText('Last checked', { exact: false })).toBeInTheDocument();
     expect(screen.getByRole('meter', { name: 'Primary remaining 59.6%' })).toBeInTheDocument();
+  });
+
+  it('renders effective Codex toggle defaults and sends exact settings bodies', async () => {
+    const user = userEvent.setup();
+    const updateCodexSettings = vi
+      .fn()
+      .mockImplementation(
+        ({
+          settings,
+          subscriptionProviderId,
+          accountSlotId,
+        }: {
+          settings: Record<string, boolean>;
+          subscriptionProviderId: string;
+          accountSlotId: string;
+        }) =>
+          Promise.resolve({
+            ...LOGGED_IN_ACCOUNT,
+            subscriptionProviderId,
+            accountSlotId,
+            ...settings,
+          })
+      );
+    const client = makeConnectedClient({
+      operations: { 'provider-subscription.codex-settings': updateCodexSettings },
+    });
+    renderScreen(client);
+    const codex = await screen.findByRole('region', { name: 'OpenAI Codex' });
+    expect(within(codex).getByRole('switch', { name: 'Auto-use weekly reset' })).toBeChecked();
+    expect(within(codex).getByRole('switch', { name: 'Auto-use expiring reset' })).toBeChecked();
+    expect(within(codex).getByRole('switch', { name: 'Use credits' })).not.toBeChecked();
+    await user.click(within(codex).getByRole('switch', { name: 'Use credits' }));
+    await waitFor(() =>
+      expect(updateCodexSettings).toHaveBeenCalledExactlyOnceWith({
+        subscriptionProviderId: 'openai-codex',
+        accountSlotId: 'primary',
+        settings: { codexUseCredits: true },
+      })
+    );
+    await waitFor(() =>
+      expect(within(codex).getByRole('switch', { name: 'Use credits' })).toBeChecked()
+    );
+  });
+
+  it('reuses one redeemRequestId for reset retry after an unknown outcome', async () => {
+    const user = userEvent.setup();
+    const redeemId = '11111111-1111-4111-8111-111111111111';
+    const randomUUID = vi.spyOn(crypto, 'randomUUID').mockReturnValue(redeemId);
+    const useReset = vi
+      .fn()
+      .mockResolvedValueOnce({
+        subscriptionProviderId: 'openai-codex',
+        accountSlotId: 'primary',
+        redeemRequestId: redeemId,
+        outcome: 'unknown',
+      })
+      .mockResolvedValueOnce({
+        subscriptionProviderId: 'openai-codex',
+        accountSlotId: 'primary',
+        redeemRequestId: redeemId,
+        outcome: 'reset',
+      });
+    const client = makeConnectedClient({
+      operations: { 'provider-subscription.account-use-reset': useReset },
+    });
+    renderScreen(client);
+    const codex = await screen.findByRole('region', { name: 'OpenAI Codex' });
+    await user.click(within(codex).getByRole('button', { name: 'Use reset' }));
+    await waitFor(() =>
+      expect(useReset).toHaveBeenCalledExactlyOnceWith({
+        subscriptionProviderId: 'openai-codex',
+        accountSlotId: 'primary',
+        redeemRequestId: redeemId,
+      })
+    );
+    expect(await within(codex).findByText(/Outcome unknown/)).toBeInTheDocument();
+    await user.click(within(codex).getByRole('button', { name: 'Use reset' }));
+    await waitFor(() => expect(useReset).toHaveBeenCalledTimes(2));
+    expect(useReset.mock.calls[1]?.[0]).toEqual({
+      subscriptionProviderId: 'openai-codex',
+      accountSlotId: 'primary',
+      redeemRequestId: redeemId,
+    });
+    expect(await within(codex).findByText('Reset applied.')).toBeInTheDocument();
+    expect(randomUUID).toHaveBeenCalledTimes(1);
+    randomUUID.mockRestore();
+  });
+
+  it('omits Codex reset controls on xAI accounts', async () => {
+    const client = makeConnectedClient({
+      operations: {
+        'provider-subscription.account-list': vi
+          .fn()
+          .mockImplementation(
+            ({ subscriptionProviderId: providerId }: { subscriptionProviderId: string }) =>
+              Promise.resolve({
+                accounts: [
+                  {
+                    ...LOGGED_IN_ACCOUNT,
+                    subscriptionProviderId: providerId,
+                    displayName: providerId === 'xai' ? 'xAI primary' : 'Codex primary',
+                  },
+                ],
+              })
+          ),
+      },
+    });
+    renderScreen(client);
+    const xai = await screen.findByRole('region', { name: 'xAI' });
+    expect(within(xai).queryByRole('button', { name: 'Use reset' })).not.toBeInTheDocument();
+    expect(
+      within(xai).queryByRole('switch', { name: 'Auto-use weekly reset' })
+    ).not.toBeInTheDocument();
+    expect(within(xai).queryByText('Codex credits and resets')).not.toBeInTheDocument();
+  });
+
+  it('shows unknown Codex quota fields instead of zero', async () => {
+    const client = makeConnectedClient({
+      operations: {
+        'provider-subscription.account-quota': vi.fn().mockResolvedValue({
+          ...CODEX_QUOTA,
+          windows: [{ id: 'primary', periodType: 'weekly' }],
+        }),
+      },
+    });
+    renderScreen(client);
+    const codex = await screen.findByRole('region', { name: 'OpenAI Codex' });
+    expect(within(codex).getByText('Banked resets unknown')).toBeInTheDocument();
+    expect(within(codex).getByText(/Credits unknown/)).toBeInTheDocument();
+    expect(within(codex).getByText(/Held unknown/)).toBeInTheDocument();
+    expect(within(codex).getByText('Active until unknown')).toBeInTheDocument();
+    expect(within(codex).queryByText(/Banked resets 0/)).not.toBeInTheDocument();
   });
 
   it('loads auto-top-up only from costs expand and clears stale usage after a failed refresh', async () => {
