@@ -6,6 +6,12 @@ date: 2026-09-09
 ---
 # Knowledge Notebook Editing And Publication
 
+## Transactional Publication Head
+
+The [2026-10-19 decision](../decisions/20261019-durable_execution_and_control_store.md) supersedes Git-ref advancement as the mutable publication commit point. The Draft [control-store layout](20261019-durable_execution_and_control_store.md#workspace-authorities-outside-the-control-database) keeps immutable Git content/history but commits the current head, expected-base check, local Audit and receipt in the owning scope database after content synchronization. Git refs and materialized files become projections. Separate ref/Audit/receipt repair below describes the pre-cutover mechanism, not another authority to retain.
+
+Knowledge semantics, fixed-base conflict checks, exact actor and current permission, review and suppression, source references, retained history, and reference-may-miss rules remain unchanged. The replacement does not admit arbitrary Git mutation, a second Notebook, or new Knowledge publication rights.
+
 ## Source Pointer Extension
 
 [File Storage And Knowledge Packages](20261018-file_storage_and_knowledge_packages.md) extends the published Git tree with admitted OKF SourceSummary pointers at `sources/<source-id>.md`, retaining the same fixed-base publisher, current source disclosure, history and suppression rules. This supersedes the external Source-registry authority on activation; raw bytes and backend locations remain outside Git. Original changes update one pointer through one commit; an old digest pin resolves only while matching authorized bytes remain available.
