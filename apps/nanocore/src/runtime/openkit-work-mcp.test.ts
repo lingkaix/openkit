@@ -1328,14 +1328,21 @@ it('refuses changed or missing canonical original bytes without using delivered 
   expect(missing.structuredContent).toEqual({ status: 'unavailable', reason: 'unavailable' });
 });
 
-it('does not replace a selected Artifact version with the current owner head', async () => {
+it('reads the selected retained Artifact version after the current metadata head advances', async () => {
   const f = await sourceToolFixture(Buffer.from('Selected version\n'), 'text/plain');
   f.store.getArtifact(f.turn.workspaceId, f.artifactId).version += 1;
   const result = await dispatchOpenkitWorkTool(f.input, 'work_source_read', {
     path: f.packagePath,
   });
-  expect(result.structuredContent).toEqual({ status: 'unavailable', reason: 'unavailable' });
-  expect(JSON.stringify(result)).not.toContain('Selected version');
+  expect(result.structuredContent).toMatchObject({
+    status: 'ready',
+    identity: {
+      revision: '1',
+      originalDigest: `sha256:${createHash('sha256').update('Selected version\n').digest('hex')}`,
+    },
+    text: 'Selected version\n',
+    eof: true,
+  });
 });
 
 it('rejects a regenerated PDF representation when the captured recipe differs', async () => {

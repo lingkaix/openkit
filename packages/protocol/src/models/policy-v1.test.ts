@@ -90,6 +90,41 @@ describe('retained Policy version-one contracts', () => {
     expect(parsed).not.toHaveProperty('outputContract');
   });
 
+  it('keeps Tool permission targets in exact MCP resources without a second grant selector', () => {
+    const permission = {
+      kind: 'permission',
+      id: 'read-issues',
+      author: principal,
+      authority: { kind: 'human', userId },
+      authoredAt: binding.authoredAt,
+      scope,
+      lifetime: { anchor, uses: 1 },
+      state: 'inactive',
+      grant: { kind: 'ordinary' },
+    };
+    for (const effect of ['allow', 'prohibit', 'require_approval']) {
+      const statement = { ...permission, effect };
+      expect(
+        PolicyDocumentV1Schema.parse({ schemaVersion: 1, statements: [statement] }).statements
+      ).toEqual([statement]);
+    }
+    expect(PolicyGrantV1Schema.safeParse({ kind: 'ordinary', toolNames: ['read'] }).success).toBe(
+      false
+    );
+    expect(
+      PolicyDocumentV1Schema.safeParse({
+        schemaVersion: 1,
+        statements: [
+          {
+            ...permission,
+            effect: 'require_approval',
+            grant: { kind: 'gateway-tool-rule', toolNames: ['read', 'write'] },
+          },
+        ],
+      }).success
+    ).toBe(false);
+  });
+
   it('retains real Kernel evidence separately and forbids gate use consumption', () => {
     const decision = {
       operation: binding.operation,

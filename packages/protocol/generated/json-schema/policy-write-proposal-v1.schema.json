@@ -1152,43 +1152,17 @@
                     ]
                   },
                   "grant": {
-                    "oneOf": [
-                      {
-                        "type": "object",
-                        "properties": {
-                          "kind": {
-                            "type": "string",
-                            "const": "ordinary"
-                          }
-                        },
-                        "required": [
-                          "kind"
-                        ],
-                        "additionalProperties": false
-                      },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "kind": {
-                            "type": "string",
-                            "const": "gateway-tool-rule"
-                          },
-                          "toolNames": {
-                            "minItems": 1,
-                            "type": "array",
-                            "items": {
-                              "type": "string",
-                              "minLength": 1
-                            }
-                          }
-                        },
-                        "required": [
-                          "kind",
-                          "toolNames"
-                        ],
-                        "additionalProperties": false
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "ordinary"
                       }
-                    ]
+                    },
+                    "required": [
+                      "kind"
+                    ],
+                    "additionalProperties": false
                   }
                 },
                 "required": [
