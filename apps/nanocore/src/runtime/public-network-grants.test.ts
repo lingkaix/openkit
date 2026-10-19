@@ -263,8 +263,6 @@ describe('public network destination evidence', () => {
             transport: { kind: 'http', endpoint: 'https://search.example.com/mcp' },
             credentialBindings: [],
             allowedTools: ['search'],
-            deniedTools: [],
-            approvalRequiredTools: [],
             timeoutMs: 1000,
             schemaPolicy: 'tracking',
             pinnedSchemaSnapshotId: null,

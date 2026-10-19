@@ -6,7 +6,7 @@ updated: 2026-09-11
 
 This document records the storage principles and key concepts for OpenKit.
 
-This document owns OpenKit's file-system-first storage principles, logical storage hierarchy, SQLite companion-store boundary, source-of-truth rules, item-log persistence invariants, and the boundary between bounded NanoCore product storage and external source storage.
+This document owns OpenKit's scope-owned transactional control authority, immutable-content boundary, logical storage hierarchy, source-of-truth rules, item-log persistence invariants, and the boundary between bounded NanoCore product storage and external source storage.
 
 This document does not own the complete physical schema, table layout, file layout, migration plan, backup format, app read models, protocol record semantics, vault backend design, or implementation-specific data-root paths.
 
@@ -14,15 +14,11 @@ Cross-release continuity follows [Contract Evolution](contract-evolution.md#reta
 
 ## Principles
 
-OpenKit is file-system first.
+Each mutable control-state transition MUST commit in exactly one transaction in its owning scope store. Related local product records, execution facts and request receipts share that commit. Files hold immutable content made durable before its digest reference is committed; readable record files are projections, not a second authority. Publish observable state only after commit. The [durable execution decision](../decisions/20261019-durable_execution_and_control_store.md) replaces file-first control authority to remove split-publication recovery, not to add a journal beside it.
 
-Most durable data should be stored as files or directories so workspace data remains inspectable, portable, easy to back up, easy to archive, and easy to migrate.
+Each Workspace MUST retain independently backupable and movable control data and locally retained content inside its own directory. Server-owned physical state and global capacity remain separate. An operation across those scopes is an effect with intent and outcome, not one transaction across stores. External references, retained Worker volumes and Vault material require explicit coverage; local content identity does not make them portable bytes.
 
-SQLite is a companion store, not the default source of truth for every object.
-
-Use SQLite where the system needs structured query, indexes, vector or embedding metadata, pagination, constraints, transactions, materialized read models, or operational summaries.
-
-Full-text retrieval MUST use the rebuildable Retrieval Kernel projection. Its per-scope generations and derived sidecars retain their canonical source ownership and audience. SQLite retains its other companion-store uses. Arbitrary-byte originals remain canonical under their existing Artifact/upload owners. Versioned media derivatives remain rebuildable projections; file storage and transfer capacity is separate from raw model output and model-context budgets. [Large Files And Model Context](../decisions/20261015-large_files_and_model_context.md) records this separation.
+Full-text retrieval MUST use the rebuildable Retrieval Kernel projection. Its per-scope generations and derived sidecars retain their canonical source ownership and audience. Query indexes remain separate from canonical control authority. Arbitrary-byte originals remain canonical under their existing Artifact/upload owners. Versioned media derivatives remain rebuildable projections; file storage and transfer capacity is separate from raw model output and model-context budgets. [Large Files And Model Context](../decisions/20261015-large_files_and_model_context.md) records this separation.
 
 The source of truth MUST be explicit per data class.
 
@@ -78,7 +74,7 @@ CoreServer
   Workspace
 ```
 
-User Memory and Workspace/Server Knowledge reuse the same file-backed notebook machinery under distinct trusted scope roots. One published versioned content tree owns notebook content and retained history; materialized pages and indexes are projections. Sources retain original evidence independently. No separate Memory database or content-history owner is implied. Private project Thread bytes remain in the Workspace tree and carry private access through their owning Thread, not through directory concealment.
+User Memory and Workspace/Server Knowledge reuse the same notebook machinery under distinct trusted scope roots. One published versioned content tree owns notebook content and retained history; its mutable publication head follows the owning scope's control transaction. Materialized pages, content-store refs and indexes are projections. Sources retain original evidence independently. No separate Memory database or content-history owner is implied. Private project Thread bytes remain in the Workspace tree and carry private access through their owning Thread, not through directory concealment.
 
 User and Workspace are independent storage scopes. Identity membership links users to workspaces, while workspace ownership and access relationships must not be encoded by nesting the workspace under the current owner's storage scope.
 
@@ -98,22 +94,19 @@ A server-level database belongs to one Core server installation and may hold glo
 
 A user-level database belongs to one user and may hold user-level metadata, preferences, workspace list or order, and user-level indexes.
 
-A workspace-level database belongs to one workspace and may hold workspace-local indexes, search tables, vector or embedding metadata, materialized read models, and operational summaries.
+A Workspace control database belongs to one Workspace and owns its mutable control and product-record state. Derived indexes, vector or embedding metadata and read models retain their distinct projection role.
 
-Per-workspace SQLite files are preferred for workspace-local structured data because they make backup, export, deletion, migration, and debugging easier.
+Workspace-local control authority MUST NOT depend on a server-global database to reconstruct local history. Cross-scope physical ownership remains an explicit dependency, not duplicated Workspace authority. Per-Workspace databases support independent backup, movement, deletion and failure isolation.
 
 ## Source Of Truth
 
-Non-authoritative defaults:
+The scope control store owns mutable Workspace, Thread, Turn, AgentSession, Item revision, catalog, configuration-head and execution records. Existing domain owners keep their meanings and retention rules. Immutable content and authored revision bytes retain their original identities and content owners; database heads select the admitted revision. Authored server configuration stays server-scoped, and Workspace executions retain its admitted revision/digest as provenance rather than server authority.
 
-- Files are the source of truth for workspace records, thread records, turn records, item logs, artifacts, knowledge sources, server config, provider instance inputs, agent setup config, resource catalogs and installed snapshots, runtime snapshots, and logs.
-- SQLite indexes those records for query, search, pagination, constraints, and UI read models.
-- SQLite may be the source of truth for operational records that do not have a natural durable file form and require structured query.
-- Secret values are not stored in normal workspace files or protocol records. Workspace storage may keep secret references, grants, injection rules, and audit metadata, while secret material belongs behind the vault boundary.
+Reuse the shared Storage Service for byte locations and immutable handoff; it does not decide publication or access. Knowledge keeps its content/history semantics while its mutable heads obey the same commit rule. Application-owned business stores and opaque process data are not additional control stores: their writers and snapshot boundaries must be explicit, and cross-store operations are effects. No unclassified mutable authority may be silently omitted from a Workspace backup.
 
-If SQLite stores a derived copy of a file-backed record, the default expectation is that the SQLite data can be rebuilt from file-system records.
+Secret values are not stored in normal Workspace files or protocol records. Workspace storage may keep secret references, grants, injection rules, and audit metadata, while secret material belongs behind Vault. Derived projections rebuild only from intact canonical control records and content, never the reverse.
 
-SQLite source-of-truth record classes may include:
+Existing transaction-owned record classes also include:
 
 - permission decisions
 - audit events
@@ -171,10 +164,11 @@ A separate product-record lifecycle for an unadmitted raw-audio/private-state ca
 - Workspace data MUST remain separable enough for backup, export, deletion, migration, and debugging.
 - Workspace-owned storage MUST remain independent from any current human owner's user-owned storage so sharing or owner transfer never requires copying, linking, or moving canonical workspace data.
 - User-visible workspace collections MUST be derived from identity and permission relationships rather than filesystem discovery or user-owned links.
-- File-backed records SHOULD be inspectable and portable unless a data class has a clear reason to use SQLite as source of truth.
-- Derived SQLite indexes SHOULD be rebuildable from file-backed records when SQLite is not the source of truth.
+- Canonical records MUST remain inspectable and portable through their owners; readable files MUST NOT become a second mutable authority.
+- Derived indexes MUST be rebuildable from intact canonical records and content, independently of their physical format.
+- A consistent Workspace snapshot MUST cover every admitted mutable authority and protect its referenced immutable content against garbage collection until copying finishes or is explicitly abandoned.
 - Each canonical store MUST have one acknowledgement point, as defined in [Fault Tolerance](fault-tolerance.md). An owner MUST NOT report acceptance before content reaches it, and content MUST be durable before a durable reference to it is published.
-- An integrity failure in authority-bearing storage, or the absence of authority-bearing storage that a durable record expects, MUST fail closed and preserve what remains in place; automatic recovery MUST NOT replace lost authority with a fresh empty store.
+- An integrity failure in authority-bearing storage, or the absence of authority-bearing storage that a durable record expects, MUST fail closed within its owning scope under [Fault Tolerance](fault-tolerance.md) and preserve what remains in place; automatic recovery MUST NOT replace lost authority with a fresh empty store.
 - Storage layout MUST NOT redefine workspace, thread, turn, item, artifact, knowledge, vault, audit, usage, or AgentSession semantics.
 - Secret values MUST NOT be stored in normal workspace files, item payloads, protocol records, or derived indexes.
 - Authority-bearing storage fields MUST NOT be silently ignored by readers that do not understand them.
@@ -197,7 +191,7 @@ Compaction MAY materialize completed item snapshots, but it MUST NOT change item
 
 ## Storage Scope Direction
 
-User-level and workspace-level databases should be introduced only when their independent ownership scopes need them.
+Workspace control authority uses its own scope database. Additional databases require an existing independent ownership or data-recovery need; they MUST NOT duplicate control authority.
 
 The rebuildable Retrieval Kernel projection is the default full-text search index family. Vector search remains an optional future index family until promoted by stable core requirements.
 

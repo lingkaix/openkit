@@ -1210,9 +1210,7 @@ function resolveWorkerMcpServerSupply(
 
     return {
       allowedTools: [...entry.allowedTools],
-      approvalRequiredTools: [...entry.approvalRequiredTools],
       catalogDigest: entry.catalogDigest,
-      deniedTools: [...entry.deniedTools],
       id: entry.id,
       pinnedSchemaSnapshotId: entry.pinnedSchemaSnapshotId,
       schemaPolicy: entry.schemaPolicy,

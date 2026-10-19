@@ -1,6 +1,29 @@
 import type { CredentialStore } from '@earendil-works/pi-ai';
+import { z } from 'zod';
 
 const CODEX_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage';
+const CODEX_RESETS_URL = 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits';
+const DecimalBalanceSchema = z.string().regex(/^-?\d+(?:\.\d+)?$/);
+const ResetCountSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+const VendorCreditsSchema = z.object({
+  has_credits: z.boolean(),
+  unlimited: z.boolean(),
+  balance: DecimalBalanceSchema.nullish(),
+  overage_limit_reached: z.boolean().nullish(),
+});
+const VendorResetListSchema = z.object({
+  available_count: ResetCountSchema,
+  credits: z.array(z.unknown()),
+});
+const VendorResetSchema = z.object({
+  id: z.string().trim().min(1),
+  reset_type: z.string().min(1),
+  expires_at: z.string().datetime({ offset: true }).nullable(),
+});
+const VendorConsumeSchema = z.object({
+  code: z.enum(['reset', 'nothing_to_reset', 'no_credit', 'already_redeemed']),
+  windows_reset: z.boolean().optional(),
+});
 const CODEX_USAGE_TIMEOUT_MS = 10_000;
 const MAX_CODEX_USAGE_BODY_BYTES = 65_536;
 const MIN_SIGNED_INT32 = -2_147_483_648;
@@ -10,6 +33,8 @@ const MAX_SIGNED_INT32 = 2_147_483_647;
 interface CodexQuotaWindow {
   /** Stable OpenKit window identifier. */
   readonly id: 'primary' | 'secondary';
+  /** Duration-derived display label, never inferred from the window position. */
+  readonly label?: string;
   /** Positive provider-reported window duration; absent for a non-positive value. */
   readonly limitWindowSeconds?: number;
   /** Percentage of the window that remains. */
@@ -28,6 +53,28 @@ export interface CodexQuotaObservation {
   readonly planType: string;
   /** Present provider windows in primary-then-secondary order. */
   readonly windows: CodexQuotaWindow[];
+  /** Exact decimal balance, with no numeric conversion or inferred missing balance. */
+  readonly credits?: { hasCredits: boolean; unlimited: boolean; balance?: string };
+  /** Observed count and available detail rows; the count need not equal the list length. */
+  readonly resetCredits?: {
+    availableCount: number;
+    available: { id: string; resetType: string; expiresAt: string | null }[];
+    soonestExpiresAt?: string;
+  };
+  /** Bounded held state, never an upstream reason string. */
+  readonly heldReason?:
+    | 'spend_control_reached'
+    | 'overage_limit_reached'
+    | 'rate_limit_reached'
+    | 'not_allowed';
+}
+
+/** Sanitized vendor reset result; unknown never asserts success or failure of a dispatched effect. */
+export interface CodexResetResult {
+  /** Confirmed vendor code or an indeterminate external result. */
+  readonly outcome: 'reset' | 'nothing_to_reset' | 'no_credit' | 'already_redeemed' | 'unknown';
+  /** Provider-reported window effect, present only on a validated response. */
+  readonly windowsReset?: boolean;
 }
 
 /** Presented Codex fields whose equality proves selection without inspecting other OAuth properties. */
@@ -49,7 +96,7 @@ export interface CodexPresentedCredential {
  * @returns False for changed, unreadable, missing or late credentials.
  */
 export async function proveCodexCredentialCurrent(
-  credentials: CredentialStore,
+  credentials: Pick<CredentialStore, 'read'>,
   presented: CodexPresentedCredential,
   absoluteDeadline: number,
   verifyVersion?: () => Promise<boolean>
@@ -86,17 +133,19 @@ export async function proveCodexCredentialCurrent(
  *
  * @param credentials Credential store constrained to one provider-subscription account pair.
  * @param verifyVersion Optional pair-owned material-version proof within the original deadline.
+ * @param signal Original caller cancellation, shared by both reads and the rejection proof.
  * @returns Validated quota, exact current-credential rejection, or null for an unclassified failure.
  */
 export async function readCodexQuota(
-  credentials: CredentialStore,
-  verifyVersion?: () => Promise<boolean>
+  credentials: Pick<CredentialStore, 'read'>,
+  verifyVersion?: () => Promise<boolean>,
+  signal?: AbortSignal
 ): Promise<CodexQuotaObservation | { readonly availability: 'authentication_required' } | null> {
+  let request: ReturnType<typeof startCodexRequest> | undefined;
   try {
-    const credential = await credentials.read('openai-codex');
-    if (!isRecord(credential)) {
-      return null;
-    }
+    request = startCodexRequest(signal);
+    const credential = await Promise.race([credentials.read('openai-codex'), request.deadline]);
+    if (!isRecord(credential)) return null;
     const { access, accountId, type } = credential;
     if (
       type !== 'oauth' ||
@@ -104,64 +153,161 @@ export async function readCodexQuota(
       access.length === 0 ||
       typeof accountId !== 'string' ||
       accountId.length === 0
-    ) {
+    )
       return null;
-    }
 
-    const absoluteDeadline = Date.now() + CODEX_USAGE_TIMEOUT_MS;
-    const controller = new AbortController();
-    let timeout: ReturnType<typeof setTimeout> | undefined;
-    const deadline = new Promise<never>((_resolve, reject) => {
-      timeout = setTimeout(() => {
-        controller.abort();
-        reject(new DOMException('Codex quota request timed out.', 'TimeoutError'));
-      }, CODEX_USAGE_TIMEOUT_MS);
-    });
-
-    try {
+    let quota: CodexQuotaObservation | undefined;
+    for (const url of [CODEX_USAGE_URL, CODEX_RESETS_URL]) {
+      if (url === CODEX_RESETS_URL && !quota?.resetCredits?.availableCount) break;
+      request.signal.throwIfAborted();
       const response = await Promise.race([
-        fetch(CODEX_USAGE_URL, {
+        fetch(url, {
           headers: {
             Authorization: `Bearer ${access}`,
             'ChatGPT-Account-ID': accountId,
             'User-Agent': 'codex-cli',
           },
           method: 'GET',
-          signal: controller.signal,
+          redirect: 'error',
+          signal: request.signal,
         }),
-        deadline,
+        request.deadline,
       ]);
       if (!response.ok) {
         void response.body?.cancel().catch(() => undefined);
-        if (response.status === 401) {
-          // A concurrent pi-ai refresh or login may already have replaced the rejected credential.
-          if (
-            await Promise.race([
-              proveCodexCredentialCurrent(
-                credentials,
-                { type: 'oauth', access, accountId },
-                absoluteDeadline,
-                verifyVersion
-              ),
-              deadline,
-            ])
-          ) {
-            return { availability: 'authentication_required' };
-          }
-        }
+        // A concurrent pi-ai refresh or login may already have replaced the rejected credential.
+        if (
+          response.status === 401 &&
+          (await Promise.race([
+            proveCodexCredentialCurrent(
+              credentials,
+              { type: 'oauth', access, accountId },
+              request.absoluteDeadline,
+              verifyVersion
+            ),
+            request.deadline,
+          ]))
+        )
+          return { availability: 'authentication_required' };
         return null;
       }
-      const bytes = await readResponseBytes(response, deadline);
-      const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-      return parseCodexQuota(JSON.parse(text));
-    } finally {
-      if (timeout !== undefined) {
-        clearTimeout(timeout);
-      }
+      const bytes = await readResponseBytes(response, request.deadline);
+      const value: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+      quota =
+        url === CODEX_USAGE_URL
+          ? parseCodexQuota(value)
+          : { ...quota!, resetCredits: parseResetCredits(value) };
     }
+    return quota ?? null;
   } catch {
     return null;
+  } finally {
+    request?.close();
   }
+}
+
+/**
+ * Sends one already-selected reset effect. The caller owns the pair fence, Audit and replay identity.
+ * @param credential Exact credential held by the account owner's effect fence; never refreshed here.
+ * @param input Exact selected credit and UUIDv4 redemption identity persisted by the caller.
+ * @param signal Original caller cancellation.
+ * @returns A validated vendor outcome or unknown after any dispatched failure; never retries.
+ * @throws A redacted input or cancellation error before dispatch.
+ */
+export async function consumeCodexReset(
+  credential: CodexPresentedCredential,
+  input: { creditId: string; redeemRequestId: string },
+  signal?: AbortSignal
+): Promise<CodexResetResult> {
+  if (
+    !credential ||
+    credential.type !== 'oauth' ||
+    typeof credential.access !== 'string' ||
+    !credential.access.trim() ||
+    typeof credential.accountId !== 'string' ||
+    !credential.accountId.trim() ||
+    !input ||
+    typeof input.creditId !== 'string' ||
+    !input.creditId.trim() ||
+    !z.uuidv4().safeParse(input.redeemRequestId).success
+  )
+    throw new TypeError('Invalid Codex reset input.');
+  const body = JSON.stringify({
+    credit_id: input.creditId,
+    redeem_request_id: input.redeemRequestId,
+  });
+  if (new TextEncoder().encode(body).byteLength > MAX_CODEX_USAGE_BODY_BYTES) {
+    throw new TypeError('Invalid Codex reset input.');
+  }
+  const request = startCodexRequest(signal);
+  try {
+    const response = await Promise.race([
+      fetch(`${CODEX_RESETS_URL}/consume`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${credential.access}`,
+          'ChatGPT-Account-ID': credential.accountId,
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body,
+        redirect: 'error',
+        signal: request.signal,
+      }),
+      request.deadline,
+    ]);
+    if (!response.ok) {
+      void response.body?.cancel().catch(() => undefined);
+      return { outcome: 'unknown' };
+    }
+    const bytes = await readResponseBytes(response, request.deadline);
+    const value = VendorConsumeSchema.parse(
+      JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes))
+    );
+    return {
+      outcome: value.code,
+      ...(value.windows_reset !== undefined ? { windowsReset: value.windows_reset } : {}),
+    };
+  } catch {
+    // A lost response cannot prove whether the vendor spent the credit.
+    return { outcome: 'unknown' };
+  } finally {
+    request.close();
+  }
+}
+
+/**
+ * Bounds one quota observation or consume call, including stalled credential and body reads.
+ * @param signal Original caller cancellation.
+ * @returns One cumulative deadline, abort signal, and mandatory cleanup for this transport call.
+ * @throws When the caller has already cancelled, before any external dispatch.
+ */
+function startCodexRequest(signal?: AbortSignal) {
+  signal?.throwIfAborted();
+  const controller = new AbortController();
+  const absoluteDeadline = Date.now() + CODEX_USAGE_TIMEOUT_MS;
+  let abort: () => void;
+  let timeout: ReturnType<typeof setTimeout>;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    abort = () => {
+      controller.abort();
+      reject(new DOMException('Codex request cancelled.', 'AbortError'));
+    };
+    signal?.addEventListener('abort', abort, { once: true });
+    timeout = setTimeout(() => {
+      controller.abort();
+      reject(new DOMException('Codex request timed out.', 'TimeoutError'));
+    }, CODEX_USAGE_TIMEOUT_MS);
+  });
+  return {
+    absoluteDeadline,
+    deadline,
+    signal: controller.signal,
+    close: () => {
+      clearTimeout(timeout);
+      signal?.removeEventListener('abort', abort);
+    },
+  };
 }
 
 /**
@@ -239,7 +385,83 @@ function parseCodexQuota(value: unknown): CodexQuotaObservation {
     }
   }
 
-  return { availability: 'available', planType: value.plan_type, windows };
+  const credits = value.credits == null ? undefined : VendorCreditsSchema.parse(value.credits);
+  const resetCount =
+    value.rate_limit_reset_credits == null
+      ? undefined
+      : z.object({ available_count: ResetCountSchema }).parse(value.rate_limit_reset_credits)
+          .available_count;
+  const spendControl =
+    value.spend_control == null
+      ? undefined
+      : z.object({ reached: z.boolean().nullish() }).parse(value.spend_control);
+  const reachedType =
+    value.rate_limit_reached_type == null
+      ? undefined
+      : z.object({ type: z.string().min(1) }).parse(value.rate_limit_reached_type).type;
+  const rateLimit = isRecord(value.rate_limit) ? value.rate_limit : undefined;
+  const heldReason: CodexQuotaObservation['heldReason'] =
+    spendControl?.reached === true
+      ? 'spend_control_reached'
+      : credits?.overage_limit_reached === true
+        ? 'overage_limit_reached'
+        : rateLimit?.allowed === false
+          ? rateLimit.limit_reached === true || reachedType !== undefined
+            ? 'rate_limit_reached'
+            : 'not_allowed'
+          : undefined;
+
+  return {
+    availability: 'available',
+    planType: value.plan_type,
+    windows,
+    ...(credits
+      ? {
+          credits: {
+            hasCredits: credits.has_credits,
+            unlimited: credits.unlimited,
+            ...(credits.balance != null ? { balance: credits.balance } : {}),
+          },
+        }
+      : {}),
+    ...(resetCount !== undefined
+      ? { resetCredits: { availableCount: resetCount, available: [] } }
+      : {}),
+    ...(heldReason ? { heldReason } : {}),
+    // Stock pi-ai does not retain the id token. Do not acquire or retain another token for display.
+  };
+}
+
+/**
+ * Projects only available resets, sorting finite expiries before non-expiring credits.
+ * @param value Decoded reset-list response, independent of the earlier usage count.
+ * @returns The reported count and detail rows, without assuming that the vendor list is complete.
+ * @throws When a consumed reset-list field is malformed.
+ */
+function parseResetCredits(value: unknown): NonNullable<CodexQuotaObservation['resetCredits']> {
+  const list = VendorResetListSchema.parse(value);
+  const available: NonNullable<CodexQuotaObservation['resetCredits']>['available'] = [];
+  for (const row of list.credits) {
+    if (!isRecord(row) || row.status !== 'available') continue;
+    if (typeof row.id !== 'string' || !row.id.trim()) continue;
+    const credit = VendorResetSchema.parse(row);
+    available.push({
+      id: row.id,
+      resetType: credit.reset_type,
+      expiresAt: credit.expires_at === null ? null : new Date(credit.expires_at).toISOString(),
+    });
+  }
+  available.sort((left, right) => {
+    if (left.expiresAt === null) return right.expiresAt === null ? 0 : 1;
+    if (right.expiresAt === null) return -1;
+    return Date.parse(left.expiresAt) - Date.parse(right.expiresAt);
+  });
+  const soonestExpiresAt = available[0]?.expiresAt;
+  return {
+    availableCount: list.available_count,
+    available,
+    ...(soonestExpiresAt ? { soonestExpiresAt } : {}),
+  };
 }
 
 /**
@@ -268,6 +490,8 @@ function parseWindow(value: unknown, id: CodexQuotaWindow['id']): CodexQuotaWind
   const resetsAt = new Date(value.reset_at * 1_000).toISOString();
   return {
     id,
+    ...(value.limit_window_seconds === 18_000 ? { label: '5 hours' } : {}),
+    ...(value.limit_window_seconds === 604_800 ? { label: '7 days' } : {}),
     ...(value.limit_window_seconds > 0 ? { limitWindowSeconds: value.limit_window_seconds } : {}),
     remainingPercent: Math.min(100, Math.max(0, 100 - value.used_percent)),
     resetsAt,

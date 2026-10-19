@@ -140,6 +140,16 @@ export async function executeGatewayPlan<T>(input: {
   autoFailover: boolean;
   signal: AbortSignal;
   attempt(selection: GatewaySelection, context: GatewayAttemptContext): Promise<T>;
+  /** Read-only eligibility prevents an unrecoverable member from discarding a recoverable failure. */
+  quotaRecoveryEligible?(
+    selection: GatewaySelection,
+    context: Pick<GatewayAttemptContext, 'signal' | 'deadline'>
+  ): Promise<boolean>;
+  /** One confirmed account reset may recover a settled quota failure only after route exhaustion. */
+  recoverSettledQuota?(
+    selection: GatewaySelection,
+    context: Pick<GatewayAttemptContext, 'signal' | 'deadline'>
+  ): Promise<boolean>;
   clock?: GatewayClock;
 }): Promise<T> {
   const clock = input.clock ?? gatewayClock;
@@ -148,13 +158,39 @@ export async function executeGatewayPlan<T>(input: {
   let expired = false;
   let order = 0;
   let lastFailure: PiAiFailure | undefined;
+  let quotaSelection: GatewaySelection | undefined;
+  let resetRetry = false;
   const timer = clock.setTimer(() => {
     expired = true;
     committed = active;
   }, GATEWAY_PRECOMMIT_DEADLINE_MS);
   let active = false;
+  let attemptedRecovery = false;
   try {
-    for (const selection of input.selections) {
+    for (let index = 0; ; index++) {
+      let selection = !input.autoFailover && lastFailure ? undefined : input.selections[index];
+      // Extend this same plan once; do not introduce an await before its first admitted attempt.
+      if (!selection) {
+        if (
+          attemptedRecovery ||
+          !quotaSelection ||
+          !input.recoverSettledQuota ||
+          committed ||
+          expired ||
+          input.signal.aborted ||
+          clock.now() >= deadline
+        )
+          break;
+        attemptedRecovery = true;
+        const recovered = await input.recoverSettledQuota(quotaSelection, {
+          signal: input.signal,
+          deadline,
+        });
+        input.signal.throwIfAborted();
+        if (!recovered || committed || expired || clock.now() >= deadline) break;
+        resetRetry = true;
+        selection = quotaSelection;
+      }
       if (!selection.selected) continue;
       for (let retryIndex = 0; ; retryIndex++) {
         input.signal.throwIfAborted();
@@ -211,11 +247,19 @@ export async function executeGatewayPlan<T>(input: {
             input.signal.aborted ||
             committed ||
             !failure.settled ||
-            (!decision.retry && !decision.advance)
+            (!decision.retry && !decision.advance && failure.kind !== 'quota_exhausted')
           )
             throw new GatewayAttemptFailure(failure, error);
           if (expired || clock.now() >= deadline) throw new GatewayAttemptFailure(failure, error);
           if (
+            failure.kind === 'quota_exhausted' &&
+            input.recoverSettledQuota &&
+            (!input.quotaRecoveryEligible ||
+              (await input.quotaRecoveryEligible(selection, { signal: input.signal, deadline })))
+          )
+            quotaSelection = selection;
+          if (
+            !resetRetry &&
             decision.retry &&
             !(error instanceof GatewayAttemptFailure && error.beforeDispatch) &&
             retryIndex < GATEWAY_RETRY_DELAYS_MS.length
@@ -227,7 +271,8 @@ export async function executeGatewayPlan<T>(input: {
               continue;
             }
           }
-          if (!decision.advance) throw new GatewayAttemptFailure(failure, error);
+          if (!decision.advance && failure.kind !== 'quota_exhausted')
+            throw new GatewayAttemptFailure(failure, error);
           break;
         } finally {
           active = false;

@@ -1126,6 +1126,49 @@ describe('Administration', () => {
     expect(applyAdministrationConfiguration).not.toHaveBeenCalled();
   });
 
+  it('labels a policy configuration candidate as Policy, not Gateway', async () => {
+    const policyPayload = {
+      kind: 'administration-configuration-candidate',
+      targetFamily: 'policy' as const,
+      targetId: 'server',
+      expectedRevision: CONFIG_REVISION,
+      changes: {
+        proposed: { schemaVersion: 1, statements: [] },
+        rationale: 'Require human review for one tool.',
+      },
+      before: { schemaVersion: 1, statements: [] },
+      after: { schemaVersion: 1, statements: [] },
+      restartRequired: true,
+      command: 'administration.configuration.apply',
+      operation: 'update',
+      policyProposal: {
+        schemaVersion: 1,
+        proposer: { kind: 'human', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        rationale: 'Require human review for one tool.',
+        baseRevision: CONFIG_REVISION,
+        proposed: { schemaVersion: 1, statements: [] },
+        validation: 'valid' as const,
+      },
+    };
+    const policyArtifact = {
+      ...CONFIG_ARTIFACT,
+      content: { format: 'json' as const, body: JSON.stringify(policyPayload) },
+    };
+    const client = makeClient(
+      {},
+      {
+        'artifact.read': vi.fn().mockResolvedValue(policyArtifact),
+        'thread.items': vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
+        'thread.list': vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
+      }
+    );
+    renderScreen(client);
+
+    expect(await screen.findByText('Prepared configuration change')).toBeInTheDocument();
+    expect(screen.getAllByText('Policy server').length).toBeGreaterThan(0);
+    expect(screen.queryByText('Gateway server')).not.toBeInTheDocument();
+  });
+
   it('applies the exact private Thread candidate after human review', async () => {
     const user = userEvent.setup();
     const applyAdministrationConfiguration = vi.fn().mockResolvedValue(CONFIG_OUTCOME);

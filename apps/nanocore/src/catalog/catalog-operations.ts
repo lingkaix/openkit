@@ -805,10 +805,8 @@ export function createCatalogOperationImplementations(
         const next = updateMcpBinding({
           binding: {
             allowedTools: input.allowedTools,
-            approvalRequiredTools: input.approvalRequiredTools,
             credentialBindings:
               input.credentialBindings ?? existingBinding?.credentialBindings ?? [],
-            deniedTools: input.deniedTools,
             enabled: input.enabled,
             pinnedSchemaSnapshotId: existingBinding?.pinnedSchemaSnapshotId ?? null,
             revision: input.bindingRevision,
@@ -919,10 +917,8 @@ export function mcpEntries(catalog: ReturnType<typeof loadWorkspaceResourceCatal
     return {
       availability: entry.availability,
       allowedTools: binding?.allowedTools ?? [],
-      approvalRequiredTools: binding?.approvalRequiredTools ?? [],
       bindingRevision: binding?.revision ?? 0,
       currentVersionDigest: entry.currentVersionDigest,
-      deniedTools: binding?.deniedTools ?? [],
       displayName: entry.displayName,
       enabled: binding?.enabled === true,
       id: entry.id,

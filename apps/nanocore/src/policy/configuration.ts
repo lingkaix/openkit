@@ -20,6 +20,12 @@ import {
 import { parseJsoncObject } from '../config/jsonc.js';
 import type { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import type { FsStore } from '../lib/store.js';
+import { readCurrentMcpToolSchemaSnapshot } from '../runtime/mcp-tool-schema-snapshots.js';
+import {
+  OPENKIT_GENERATIVE_MCP_ID,
+  OPENKIT_GENERATIVE_TOOLS,
+} from '../runtime/openkit-generative-supply.js';
+import { OPENKIT_WORK_MCP_ID, OPENKIT_WORK_TOOLS } from '../runtime/openkit-work-supply.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import {
   listExportableWorkspacePermissionDecisions,
@@ -83,6 +89,35 @@ export function preparePolicyConfiguration(input: {
     now: authoredAt,
   });
   if (prepared.classification === 'unchanged') throw new Error('Policy changes are required.');
+  // Tool name validity follows the current admitted observation; no schema version is pinned.
+  const changedToolConditions = new Set([...prepared.diff.added, ...prepared.diff.changed]);
+  for (const statement of prepared.document.statements) {
+    if (
+      !changedToolConditions.has(statement.id) ||
+      statement.kind !== 'permission' ||
+      statement.state !== 'active' ||
+      statement.grant.kind !== 'ordinary' ||
+      statement.authority.kind !== 'human'
+    )
+      continue;
+    for (const resource of statement.scope.resources) {
+      if (resource.kind !== 'mcp-tool') continue;
+      const tools =
+        resource.serverId === OPENKIT_WORK_MCP_ID
+          ? OPENKIT_WORK_TOOLS
+          : resource.serverId === OPENKIT_GENERATIVE_MCP_ID
+            ? OPENKIT_GENERATIVE_TOOLS
+            : readCurrentMcpToolSchemaSnapshot({
+                catalogEntryId: resource.serverId,
+                pinnedSchemaSnapshotId: null,
+                workspaceDb: input.repositoryWorkspaceDb(resource.workspaceId),
+                workspaceId: resource.workspaceId,
+              })?.tools;
+      if (!tools?.some((tool) => tool.name === resource.toolName))
+        throw new Error('MCP Tool name has no current admitted schema observation.');
+    }
+  }
+
   // Goal statements are projections of one joint Plan approval. Their owner
   // publishes and withdraws them; an unrelated Server candidate must preserve them.
   const currentGoals = currentDocument.statements.filter(
