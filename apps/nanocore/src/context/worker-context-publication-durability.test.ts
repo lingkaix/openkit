@@ -221,7 +221,7 @@ async function fixture() {
   });
   const turn = {
     id: turnId,
-    workspaceId,
+    owner: { kind: 'workspace' as const, workspaceId },
     threadId,
     agentSessionId,
     items: [],
@@ -333,7 +333,7 @@ async function fixture() {
     readThreadItems: () => [
       {
         id: itemId,
-        workspaceId,
+        owner: { kind: 'workspace', workspaceId },
         threadId,
         turnId,
         type: 'user-message',

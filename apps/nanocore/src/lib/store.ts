@@ -1544,12 +1544,16 @@ export class FsStore {
    * @param updateWorkspaceConfigName Whether Core may refresh its owned config name.
    * @param turnFilePayloads Verified private originals consumed only by their first receiving Turn publication.
    * @param initialArtifact Actual admitted initial version and optional original, consumed by its directory publication.
+   * @param candidate Unpublished record projections; live caches change only after this write succeeds.
    */
   private persist(
     workspaceId: string,
     updateWorkspaceConfigName = false,
     turnFilePayloads?: ReadonlyMap<string, readonly string[]>,
-    initialArtifact?: { readonly record: ArtifactVersionRecord; readonly payloadPath?: string }
+    initialArtifact?: { readonly record: ArtifactVersionRecord; readonly payloadPath?: string },
+    candidate?: Partial<
+      Pick<WorkspaceFileRecords, 'workspace' | 'threads' | 'turns' | 'agentSessions'>
+    >
   ): void {
     if (!this.dataRoot) {
       return;
@@ -1561,7 +1565,8 @@ export class FsStore {
       workspaceRoot,
       updateWorkspaceConfigName,
       turnFilePayloads,
-      initialArtifact
+      initialArtifact,
+      candidate
     );
   }
 
@@ -1674,20 +1679,23 @@ export class FsStore {
    * @param updateWorkspaceConfigName Whether Core may refresh its owned config name.
    * @param turnFilePayloads Verified private originals consumed only by their first receiving Turn publication.
    * @param initialArtifact Actual admitted initial version and optional original, consumed by its directory publication.
+   * @param candidate Unpublished record projections supplied instead of their cached values.
    */
   private writeWorkspaceFileRecordsToRoot(
     workspaceId: string,
     workspaceRoot: string,
     updateWorkspaceConfigName = false,
     turnFilePayloads?: ReadonlyMap<string, readonly string[]>,
-    initialArtifact?: { readonly record: ArtifactVersionRecord; readonly payloadPath?: string }
+    initialArtifact?: { readonly record: ArtifactVersionRecord; readonly payloadPath?: string },
+    candidate?: Partial<
+      Pick<WorkspaceFileRecords, 'workspace' | 'threads' | 'turns' | 'agentSessions'>
+    >
   ): void {
-    const workspace = this.getWorkspace(workspaceId);
-    const turnIds = new Set(
-      [...this.turns.values()]
-        .filter((turn) => workspaceIdForOwner(turn.owner) === workspaceId)
-        .map((turn) => turn.id)
-    );
+    const workspace = candidate?.workspace ?? this.getWorkspace(workspaceId);
+    const turns =
+      candidate?.turns ??
+      [...this.turns.values()].filter((turn) => workspaceIdForOwner(turn.owner) === workspaceId);
+    const turnIds = new Set(turns.map((turn) => turn.id));
 
     writeWorkspaceFileRecords(
       workspaceRoot,
@@ -1695,10 +1703,8 @@ export class FsStore {
         ...(turnFilePayloads ? { turnFilePayloads } : {}),
         workspace,
         knowledge: this.getWorkspaceResources(workspaceId).knowledge,
-        threads: this.listThreads(workspaceId),
-        turns: [...this.turns.values()].filter(
-          (turn) => workspaceIdForOwner(turn.owner) === workspaceId
-        ),
+        threads: candidate?.threads ?? this.listThreads(workspaceId),
+        turns,
         itemRevisions: this.itemRevisions.filter(
           (item) => workspaceIdForOwner(item.owner) === workspaceId
         ),
@@ -1710,9 +1716,9 @@ export class FsStore {
           .flat()
           .filter((review) => review.workspaceId === workspaceId),
         knowledgeSources: this.listKnowledgeSources(workspaceId),
-        agentSessions: [...this.agentSessions.values()].filter(
-          (session) => session.workspaceId === workspaceId
-        ),
+        agentSessions:
+          candidate?.agentSessions ??
+          [...this.agentSessions.values()].filter((session) => session.workspaceId === workspaceId),
         streamEvents: [...this.streams.entries()]
           .filter(([turnId]) => turnIds.has(turnId))
           .map(([turnId, stream]) => [turnId, stream.events]),
@@ -3141,9 +3147,19 @@ export class FsStore {
       createdAt: now(),
       updatedAt: now(),
     });
+    const threads = [...this.listThreads(workspaceId), thread];
+    const workspace: WorkspaceRecord = {
+      ...this.getWorkspace(workspaceId),
+      counts: {
+        threadCount: threads.length,
+        artifactCount: this.listArtifacts(workspaceId).length,
+        knowledgeEntryCount: this.getWorkspaceResources(workspaceId).knowledge.length,
+      },
+      updatedAt: now(),
+    };
+    this.persist(workspaceId, false, undefined, undefined, { threads, workspace });
     this.threads.set(thread.id, thread);
-    this.refreshWorkspaceCounts(workspaceId);
-    this.persist(workspaceId);
+    this.workspaces.set(workspaceId, workspace);
     return thread;
   }
 
@@ -3168,8 +3184,12 @@ export class FsStore {
       ...(input.status !== undefined ? { status: input.status } : {}),
       updatedAt: now(),
     };
+    this.persist(workspaceId, false, undefined, undefined, {
+      threads: this.listThreads(workspaceId).map((record) =>
+        record.id === threadId ? updated : record
+      ),
+    });
     this.threads.set(threadId, updated);
-    this.persist(workspaceId);
     return updated;
   }
 
@@ -3477,8 +3497,13 @@ export class FsStore {
     }
     if (!isSealedTurnTerminal(turn.status) && isSealedTurnTerminal(updated.status))
       this.turnAdmissionHooks?.onTerminalFact?.(updated);
+    const workspaceId = workspaceIdForOwner(turn.owner);
+    this.persist(workspaceId, false, undefined, undefined, {
+      turns: [...this.turns.values()]
+        .filter((record) => workspaceIdForOwner(record.owner) === workspaceId)
+        .map((record) => (record.id === turnId ? updated : record)),
+    });
     this.turns.set(turnId, updated);
-    this.persist(workspaceIdForOwner(turn.owner));
     if (updated.status === 'completed' && !turn.completedAt && updated.completedAt) {
       ensureTurnFeedback(this, updated, updated.agentId ?? null);
     }
@@ -3791,8 +3816,10 @@ export class FsStore {
       throw new Error(`Thread already has a current AgentSession: ${input.threadId}`);
     }
 
+    this.persist(agentSession.workspaceId, false, undefined, undefined, {
+      agentSessions: [...this.listWorkspaceAgentSessions(agentSession.workspaceId), agentSession],
+    });
     this.agentSessions.set(agentSession.id, agentSession);
-    this.persist(agentSession.workspaceId);
     return agentSession;
   }
 
@@ -3874,8 +3901,12 @@ export class FsStore {
       ...input,
       updatedAt: input.updatedAt ?? now(),
     }) as AgentSession;
+    this.persist(agentSession.workspaceId, false, undefined, undefined, {
+      agentSessions: this.listWorkspaceAgentSessions(agentSession.workspaceId).map((record) =>
+        record.id === agentSessionId ? updated : record
+      ),
+    });
     this.agentSessions.set(agentSessionId, updated);
-    this.persist(agentSession.workspaceId);
     return updated;
   }
 

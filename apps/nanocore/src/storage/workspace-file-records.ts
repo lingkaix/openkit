@@ -6,6 +6,7 @@ import {
   fchmodSync,
   fstatSync,
   fsyncSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   openSync,
@@ -2847,13 +2848,19 @@ export function appendCanonicalTextFile(path: string, content: string): void {
 }
 
 /**
- * Writes text through a same-directory temporary file and atomic rename.
+ * Writes complete bytes durably through a same-directory temporary file.
  *
  * @param path Target file path.
  * @param content Complete file content.
  * @param mode Exact replacement mode when supplied; otherwise the private writer default.
+ * @param publication Replace by rename, or create by link without clobbering an existing file.
  */
-export function writeFileAtomic(path: string, content: string | Uint8Array, mode?: number): void {
+export function writeFileAtomic(
+  path: string,
+  content: string | Uint8Array,
+  mode?: number,
+  publication: 'replace' | 'create' = 'replace'
+): void {
   const byteLength = typeof content === 'string' ? Buffer.byteLength(content) : content.byteLength;
   const reservation = reserveCanonicalFileWrite(byteLength);
   const temporaryPath = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
@@ -2878,7 +2885,12 @@ export function writeFileAtomic(path: string, content: string | Uint8Array, mode
     } finally {
       closeSync(descriptor);
     }
-    renameSync(temporaryPath, path);
+    if (publication === 'create') {
+      linkSync(temporaryPath, path);
+      rmSync(temporaryPath);
+    } else {
+      renameSync(temporaryPath, path);
+    }
     syncCanonicalDirectory(dirname(path));
     reservation?.assertAvailable();
     safeToRelease = true;

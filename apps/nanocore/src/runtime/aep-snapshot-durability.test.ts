@@ -182,7 +182,7 @@ function createEnvironmentPackage(): AgentEnvironmentPackage {
       requestId: 'req_1',
       turn: {
         id: 'tu_00000000-0000-7b5c-9add-c4bfc5a04575',
-        workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201' },
         threadId: 'th_00000000-0000-7267-800d-a65e1b6a22d7',
         items: [],
         status: 'running',

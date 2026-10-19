@@ -23,6 +23,8 @@ The S39 authority reader locates the trace's exact AEP snapshot filename under r
 
 Run `pnpm --filter @openkit/nanocore exec vitest run src/context` and the workflows that materialize context packages.
 
+Context traces use the shared durable no-clobber file writer. Exact replay synchronizes the accepted file and parent directory before acknowledgement. Package members remain unpublished until the final `package.json` marker is atomically published; a retry discards unfinished derived files only when both that marker and the trace are absent. A committed package keeps its exact verification and is never rebuilt from current sources. `worker-context-publication-durability.test.ts` covers syscall failures, immutable racing winners and abrupt child-process death before the marker.
+
 See [Work Model](../../../../docs/core/work-model.md).
 
 Revalidating a parsed Context Package trace with its retained original requires equality of their normalized known core; a changed supplied core fails closed before serialization.
