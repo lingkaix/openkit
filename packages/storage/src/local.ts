@@ -291,7 +291,7 @@ export class LocalStorage implements StorageService {
           );
           if (observed.byteLength !== stage.byteLength)
             refuse({ status: 'unavailable', reason: 'changed' });
-          stage.content = contentFor(stage.knowledgeBaseId, stage.locator, observed);
+          stage.content = contentFor(stage.access.knowledgeBaseId, stage.locator, observed);
         } finally {
           stage.busy = false;
         }
