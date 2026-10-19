@@ -102,7 +102,7 @@ describe('scoped runtime config schemas', () => {
       }).profiles[0]
     ).toMatchObject({
       roleId: 'assistant',
-      limits: { maxModelTurns: 16, maxToolCalls: 48, deadlineMs: 120_000 },
+      limits: { maxModelTurns: 16, maxToolCalls: 48, deadlineMs: 600_000 },
     });
     expect(
       InternalRoleProfilesConfigSchema.parse({
