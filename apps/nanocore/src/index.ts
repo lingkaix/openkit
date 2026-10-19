@@ -633,7 +633,13 @@ const nanoHostFetch: typeof app.fetch = async (request, env, executionContext) =
     ? app.fetch(request, env, executionContext)
     : new Response(null, { status: 404 });
 
-startTelemetry({ bootId });
+startTelemetry({
+  bootId,
+  logDirectory: resolveDataRootPath(dataRoot, 'server', 'logs'),
+  readReserveBytes: () => readFileReserveBytes(),
+  serviceVersion: releaseIdentity?.releaseTag ?? releaseIdentity?.sourceCommit ?? undefined,
+  deploymentEnvironment: mode,
+});
 const appServer = appTlsListen
   ? serve(
       {
