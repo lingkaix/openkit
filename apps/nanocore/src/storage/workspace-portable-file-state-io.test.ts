@@ -26,7 +26,6 @@ import {
 
 /** Exact base owned by the authored directory, Notebook and trace fixture. */
 const PORTABLE_KNOWLEDGE_BASE_ID = 'kb_00000000-0000-7000-8000-000000000001';
-const JUNE = '2026-06-30T23:59:59.000Z';
 const JULY = '2026-07-01T00:00:00.000Z';
 const PORTABLE_TURN = {
   threadId: 'th_00000000-0000-7d57-bb9a-837e048d6465',
