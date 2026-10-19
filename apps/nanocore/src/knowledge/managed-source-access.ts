@@ -33,8 +33,9 @@ export function deriveManagedSourceAccess(input: ManagedSourceAdmission): Storag
     if (
       input.consumer !== 'native' ||
       !access.coreDb ||
-      !access.requestActor ||
-      access.requestActor.userId !== responsibleUserIdForActor(access.actor) ||
+      !responsibleUserIdForActor(access.actor) ||
+      (access.requestActor &&
+        access.requestActor.userId !== responsibleUserIdForActor(access.actor)) ||
       resolve(access.coreDb.dataRoot) !== resolve(owner.dataRoot) ||
       !mount.default ||
       mount.backend !== 'local' ||
@@ -52,6 +53,8 @@ export function deriveManagedSourceAccess(input: ManagedSourceAdmission): Storag
         access: { ...access, store: access.store! },
       });
     } else {
+      // Private User and Server owners require their actual current self/admin credential.
+      if (!access.requestActor) return null;
       const current = resolveScopedNotebookOwner({
         coreDb: access.coreDb,
         actor: access.requestActor,

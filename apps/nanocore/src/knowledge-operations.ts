@@ -57,6 +57,7 @@ import {
   KnowledgePageValidationError,
   resolveRegisteredKnowledgeSourceReference,
 } from './knowledge/okf.js';
+import { publishCapturedSource } from './knowledge/source-publication.js';
 import {
   checkKnowledgeHealth,
   draftKnowledgeProposal,
@@ -823,11 +824,66 @@ export function createKnowledgeOperationImplementations(
           scope: { workspaceId, title: commandInput.title },
           input: { ...commandInput, workspaceId },
           responseKind: 'knowledge_source',
-          execute: () =>
-            store.createKnowledgeSource(
+          execute: async () => {
+            if (
+              !coreDb ||
+              !store.getDataRoot() ||
+              (actor.kind !== 'user' && actor.kind !== 'agent')
+            )
+              throw new OperationError(
+                'knowledge_source_unavailable',
+                'Knowledge Source publication is unavailable.',
+                503
+              );
+            const source = await publishCapturedSource(
+              {
+                owner: {
+                  dataRoot: coreDb.dataRoot,
+                  ownerScope: { kind: 'workspace', workspaceId },
+                },
+                database: { kind: 'workspace', workspaceDb: repositoryWorkspaceDb(workspaceId) },
+                access: current.access,
+                producer: actor,
+                requestId: commandInput.requestId,
+                commandInput: { ...commandInput, workspaceId },
+                captureChannel: 'knowledge.source.register',
+                revalidatePublication: () => {
+                  admitKnowledgeRetrieval(current);
+                  const principal = publicOperationActor(context);
+                  if (
+                    !principal ||
+                    !isWorkspaceOperationAuthorized(coreDb, principal, workspaceId, {
+                      mutating: true,
+                      policyOperation: 'knowledge.write',
+                    })
+                  )
+                    throw new OperationError(
+                      'workspace_access_denied',
+                      'Knowledge Source publication denied.',
+                      403
+                    );
+                  if (
+                    commandInput.originatingThreadId &&
+                    !threadReadable(current, commandInput.originatingThreadId)
+                  )
+                    throw new OperationError(
+                      'workspace_access_denied',
+                      'Knowledge Source is unavailable.',
+                      403
+                    );
+                  if (commandInput.originatingTurnId) {
+                    if (!commandInput.originatingThreadId)
+                      throw new NotebookError('invalid_request');
+                    store.getTurn(
+                      workspaceId,
+                      commandInput.originatingThreadId,
+                      commandInput.originatingTurnId
+                    );
+                  }
+                },
+              },
               {
                 id: allocateEntityId('ks'),
-                workspaceId,
                 kind: commandInput.kind,
                 title: commandInput.title,
                 uri: commandInput.uri ?? null,
@@ -841,8 +897,10 @@ export function createKnowledgeOperationImplementations(
                 createdAt: now,
                 updatedAt: now,
               },
-              commandInput.content
-            ),
+              Buffer.from(commandInput.content)
+            );
+            return { ...source.source, workspaceId };
+          },
           replay: (record) => store.getKnowledgeSource(workspaceId, record.response.id),
           responseId: (result) => result.id,
         });

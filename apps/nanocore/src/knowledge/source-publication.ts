@@ -154,8 +154,8 @@ export async function publishCapturedSource(
     throw new NotebookError('recovery_required');
   }
   if (
-    !input.access.requestActor ||
-    responsibleUserIdForActor(input.producer) !== input.access.requestActor.userId
+    !responsibleUserIdForActor(input.access.actor) ||
+    responsibleUserIdForActor(input.producer) !== responsibleUserIdForActor(input.access.actor)
   )
     throw new NotebookError('invalid_request');
   const source = SourceMetadataSchema.parse(sourceInput);
@@ -203,7 +203,9 @@ export async function publishCapturedSource(
       owner: input.database,
       initialization: {
         requestId: input.requestId,
-        producer: { kind: 'user', id: input.access.requestActor.userId },
+        producer: input.access.requestActor
+          ? { kind: 'user', id: input.access.requestActor.userId }
+          : { kind: 'system', id: 'notebook-initializer', responsibleUserId: null },
         instructionReference: `${input.captureChannel}:${input.requestId}`,
       },
       revalidate: () => {

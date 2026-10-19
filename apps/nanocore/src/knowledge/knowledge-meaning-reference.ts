@@ -72,6 +72,8 @@ export async function resolveKnowledgeMeaningReference(input: {
     const binding = () => readDefaultKnowledgeBaseId({ dataRoot, scope: ownerScope });
     if (binding() !== scope.knowledgeBaseId) return unavailable;
     if (scope.family === 'raw') {
+      // This native meaning path cannot turn a Worker's KB read grant into an original-byte lease.
+      if (input.access.resourcePolicyActor?.kind === 'agent') return unavailable;
       const owner = { dataRoot, ownerScope };
       const notebook = new KnowledgeNotebook({
         repositoryPath: join(

@@ -96,6 +96,7 @@ import {
   stringListFrontmatterField,
   validateKnowledgePageCandidate,
 } from '../knowledge/okf.js';
+import { readSourcePointers } from '../knowledge/source-pointers.js';
 import { OperationError } from '../operation-error.js';
 import { ensureTurnFeedback } from '../runtime/feedback.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
@@ -5415,33 +5416,33 @@ export class FsStore {
   }
 
   /**
-   * Returns one workspace source registry record.
+   * Returns one Workspace Source metadata projection from the published Notebook.
    *
    * @param workspaceId Workspace that owns the source.
    * @param sourceId Source id to return.
    * @returns Stored source identity record.
    */
   public getKnowledgeSource(workspaceId: string, sourceId: string): KnowledgeSourceRecord {
-    const source = this.knowledgeSources.get(sourceId);
-
-    if (!source || source.workspaceId !== workspaceId) {
-      throw new StoreRecordNotFoundError(`Knowledge source not found: ${sourceId}`);
-    }
-
+    const source = this.listKnowledgeSources(workspaceId).find((source) => source.id === sourceId);
+    if (!source) throw new StoreRecordNotFoundError(`Knowledge source not found: ${sourceId}`);
     return source;
   }
 
   /**
-   * Lists source registry records for one workspace.
+   * Lists Source metadata from the current Workspace Notebook.
    *
    * @param workspaceId Workspace that owns the sources.
    * @returns Stored source identity records.
    */
   public listKnowledgeSources(workspaceId: string): KnowledgeSourceRecord[] {
     this.getWorkspace(workspaceId);
-    return [...this.knowledgeSources.values()].filter(
-      (source) => source.workspaceId === workspaceId
-    );
+    if (!this.dataRoot) return [];
+    return [
+      ...readSourcePointers({
+        dataRoot: this.dataRoot,
+        ownerScope: { kind: 'workspace', workspaceId },
+      }).values(),
+    ].map(({ source }) => ({ ...source, workspaceId }));
   }
 
   /**
