@@ -123,6 +123,68 @@ describe('Workspace candidate set authority', () => {
     ).toEqual([]);
   });
 
+  it('writes and reads the shared retained v1 marker for membership and selection history', async () => {
+    const state = fixture();
+    const created = await createCandidateSet(state.access, {
+      workspaceId: state.workspace.id,
+      requestId: 'shared-retained-marker',
+      candidates: state.candidates,
+    });
+    const selected = await selectCandidateSet(state.access, {
+      workspaceId: state.workspace.id,
+      candidateSetId: created.candidateSetId,
+      requestId: 'shared-retained-choice',
+      choice: state.candidates[1]!,
+    });
+    const raw = JSON.parse(
+      (
+        state.workspaceDb.sqlite
+          .prepare(
+            'SELECT payload_json AS payloadJson FROM evaluation_candidate_sets WHERE candidate_set_id = ?'
+          )
+          .get(created.candidateSetId) as { payloadJson: string }
+      ).payloadJson
+    );
+    for (const record of [raw, raw.judgements[0]]) {
+      expect.soft(record.schemaVersion).toBe(1);
+      expect.soft(record).not.toHaveProperty('formatVersion');
+    }
+    expect(readCandidateSet(state.access, created.candidateSetId)).toEqual(selected);
+    const update = state.workspaceDb.sqlite.prepare(
+      'UPDATE evaluation_candidate_sets SET payload_json = ? WHERE candidate_set_id = ?'
+    );
+    const legacy = { ...raw, formatVersion: 1 };
+    delete legacy.schemaVersion;
+    update.run(JSON.stringify(legacy), created.candidateSetId);
+    expect
+      .soft(() => readCandidateSet(state.access, created.candidateSetId))
+      .toThrow(expect.objectContaining({ code: 'recovery_required' }));
+    update.run(JSON.stringify({ ...raw, schemaVersion: 2 }), created.candidateSetId);
+    expect
+      .soft(() => readCandidateSet(state.access, created.candidateSetId))
+      .toThrow(expect.objectContaining({ code: 'recovery_required' }));
+    const legacyJudgement = { ...raw.judgements[0], formatVersion: 1 };
+    delete legacyJudgement.schemaVersion;
+    update.run(JSON.stringify({ ...raw, judgements: [legacyJudgement] }), created.candidateSetId);
+    expect
+      .soft(() => readCandidateSet(state.access, created.candidateSetId))
+      .toThrow(expect.objectContaining({ code: 'recovery_required' }));
+    update.run(JSON.stringify(raw), created.candidateSetId);
+    state.workspaceDb.sqlite.close();
+    const reopenedDb = openWorkspaceDb(state.dataRoot, state.workspace.id);
+    databases.push(reopenedDb);
+    expect(
+      readCandidateSet(
+        {
+          ...state.access,
+          workspaceDb: reopenedDb,
+          store: new FsStore({ dataRoot: state.dataRoot }),
+        },
+        created.candidateSetId
+      )
+    ).toEqual(selected);
+  });
+
   it('retains two exact members, attributable choices, replay prefixes and restart history without changing pinned versions', async () => {
     const state = fixture();
     const create = {
