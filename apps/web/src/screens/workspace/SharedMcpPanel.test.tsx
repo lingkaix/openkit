@@ -20,8 +20,6 @@ function setup({ shadowed = false, disabled = false, removed = false } = {}) {
           disabled,
           shadowed,
           allowedTools: ['read'],
-          deniedTools: [],
-          approvalRequiredTools: ['read'],
         },
       ],
     }),

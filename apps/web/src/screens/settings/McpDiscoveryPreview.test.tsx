@@ -24,8 +24,6 @@ const configuration = {
     enabled: false,
     currentVersionDigest: digest,
     allowedTools: [],
-    approvalRequiredTools: [],
-    deniedTools: [],
     bindingRevision: 0,
     timeoutMs: null,
     schemaPolicy: null,
