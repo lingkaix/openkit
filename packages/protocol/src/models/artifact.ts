@@ -167,14 +167,11 @@ export const ArtifactVersionSchema = z
     }
   });
 
-/** Actual parent and producing facts retained beside the exact Artifact snapshot. */
+/** Actual producer facts that cannot be derived from the immutable Artifact origin. */
 export const ArtifactVersionCommitSchema = z.object({
-  parentVersion: z.number().int().positive().nullable(),
   actor: ActorRefSchema,
   threadId: ThreadIdSchema.nullable(),
   turnId: TurnIdSchema.nullable(),
-  requestId: z.string().min(1),
-  recordedAt: TimestampSchema,
 });
 
 /** One exact retained Artifact snapshot with its actual linear parent and producing facts. */
@@ -182,11 +179,8 @@ export const ArtifactVersionRecordSchema = z
   .object({ artifact: ArtifactSchema, version: ArtifactVersionCommitSchema })
   .superRefine(({ artifact, version }, context) => {
     if (
-      version.parentVersion !== (artifact.version === 1 ? null : artifact.version - 1) ||
       (version.threadId === null) !== (version.turnId === null) ||
       (artifact.version > 1 && version.turnId === null) ||
-      artifact.lastMutationRequestId !== version.requestId ||
-      artifact.updatedAt !== version.recordedAt ||
       (artifact.version === 1 &&
         artifact.origin.kind === 'turn-output' &&
         (artifact.origin.threadId !== version.threadId ||
@@ -195,7 +189,7 @@ export const ArtifactVersionRecordSchema = z
         artifact.origin.kind === 'imported' &&
         (version.threadId !== null ||
           version.turnId !== null ||
-          version.recordedAt !== artifact.origin.recordedAt ||
+          artifact.updatedAt !== artifact.origin.recordedAt ||
           JSON.stringify(version.actor) !== JSON.stringify(artifact.origin.actor)))
     ) {
       context.addIssue({

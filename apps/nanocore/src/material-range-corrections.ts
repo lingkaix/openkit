@@ -6,6 +6,7 @@ import {
   JudgementRecordReaderSchema,
   JudgementRecordSchema,
 } from '@openkit/app-api-schemas';
+import { writeRetainedV1 } from '@openkit/protocol';
 import { OperationError } from './operation-error.js';
 import type { WorkspaceDb } from './storage/db.js';
 import {
@@ -159,17 +160,18 @@ export function correctMaterialRange(
   }
   return appendMaterialJudgement(
     db,
-    JudgementRecordSchema.parse({
-      formatVersion: 1,
-      workspaceId: db.workspaceId,
-      requestId: input.requestId,
-      actor: input.actor,
-      recordedAt: input.acceptedAt,
-      kind: 'correct',
-      target: input.target,
-      choice,
-      note: input.note,
-      extensions: input.extensions,
-    })
+    JudgementRecordSchema.parse(
+      writeRetainedV1({
+        workspaceId: db.workspaceId,
+        requestId: input.requestId,
+        actor: input.actor,
+        recordedAt: input.acceptedAt,
+        kind: 'correct',
+        target: input.target,
+        choice,
+        note: input.note,
+        extensions: input.extensions,
+      })
+    )
   );
 }

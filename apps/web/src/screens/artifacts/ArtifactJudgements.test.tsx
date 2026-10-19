@@ -28,7 +28,7 @@ beforeEach(() => {
   add.mockImplementation(async (input) => ({
     judgement: {
       ...input.judgement,
-      formatVersion: 1,
+      schemaVersion: 1,
       workspaceId: input.workspaceId,
       requestId: input.requestId,
       actor,
@@ -52,7 +52,7 @@ it('records an exact historical version rating with explicit scale and displays 
         ...pin,
         judgements: [
           {
-            formatVersion: 1,
+            schemaVersion: 1,
             workspaceId: 'workspace-a',
             requestId: 'earlier',
             kind: 'accept',
