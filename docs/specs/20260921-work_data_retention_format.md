@@ -9,7 +9,7 @@ updated: "2026-10-19"
 
 ## Export Purpose Clarification
 
-Export preserves admitted work data for external analysis, evaluation, audit, and other external use. Lossless re-import into OpenKit is not an export requirement; backup / restore is separately deferred under [Workspace Backup, Export, Import, And Data-Root Migration](20260704-workspace_backup_export_import.md). Goal-specific storage and export redesign are frozen pending the engineer's product Redesign. This changes neither existing retention and access boundaries nor the facts of prior implementation checks. See [the engineer's decision](../decisions/20260928-goal_freeze_and_export_backup_boundary.md).
+Export preserves admitted work data for external analysis, evaluation, audit, and other external use. Lossless re-import into OpenKit is not an export requirement; operational backup, restore, and MOVE are governed separately by [Workspace Backup, Export, Import, And Data-Root Migration](20260704-workspace_backup_export_import.md). Goal-specific storage and export redesign are frozen pending the engineer's product Redesign. This changes neither existing retention and access boundaries nor the facts of prior implementation checks. See [the engineer's decision](../decisions/20260928-goal_freeze_and_export_backup_boundary.md).
 
 ## Summary
 
@@ -440,13 +440,13 @@ A reference MAY fail to resolve. A reference MUST NEVER be wrong: it MUST NOT bi
 
 ### Capture Coverage
 
-**Definition.** Coverage is the one declaration that cannot be added after the fact. It is a system-level effective setting, not a per-thread fan-out. Resolve `server → workspace → task` to `off` or `on`; the server default is `on`. An explicit lower setting remains possible. Record its source scope, value, and the known override reason/configuration provenance without inventing a data-use purpose flag. `off` still requires the Collect metadata cells in the First-Release Capture Matrix. `on` requires full model I/O and other restricted originals. A missing collector is an explicit producer gap, not a weaker meaning of on. Cells marked Unsupported stay empty under both values. The resolved pair `{scope, value}` is fixed at Turn admission, before any work governed by that coverage starts, and is written into `turn.json` as immutable historical content, not as a pointer into a live server changelog. `turn.json` is already rewritten on every persist by the storage owner, so this adds no file. The persisted declaration MUST be derived from that same effective capture policy, not from a separately maintained claim.
+**Definition.** Coverage is the one declaration that cannot be added after the fact. It is a system-level effective setting, not a per-thread fan-out. Resolve `server → workspace → task` to `off` or `on`; the server default is `on`. An explicit lower setting remains possible. Record its source scope, value, and the known override reason/configuration provenance without inventing a data-use purpose flag. `off` still requires the Collect metadata cells in the First-Release Capture Matrix. `on` requires full model I/O and other restricted originals. A missing collector is an explicit producer gap, not a weaker meaning of on. Cells marked Unsupported stay empty under both values. The resolved pair `{scope, value}` MUST commit with Turn admission as immutable historical content in the owning control transaction, before any work governed by that coverage starts; it is not a pointer into a live server changelog. The persisted declaration MUST be derived from that same effective capture policy, not from a separately maintained claim.
 
 **Exclusions.** Do not store a thread-creation server epoch. Do not create CaptureBatch. Do not treat coverage as proof of collection success. Do not interrupt an already-started Turn when the capture switch changes. Security revocation of routes remains the continuity owner's rule and is not this switch.
 
 **Lifecycle.** Create at admission. Unchanged for provider retry, while a pending request is outstanding, and proved exact reconnect of that Turn. AgentSession release does not invalidate the request and does not re-resolve the binding. Restart MUST NOT recompute a historical binding from current server config. A later Turn, including a sealed Turn's new attempt, re-resolves. Task-level override selects where to resolve; Turn stores which resolution this execution used. `(goalId, taskId)` when applicable is written on the Turn at creation, not on the Thread. Turns that are not Goal-task executions MUST omit the task tuple; planning Turns MAY carry Goal identity without inventing a Task.
 
-**Failure.** Collector unsupported, fault, or missing data uses unavailable/failure facts. For Worker and Gateway collectors, a source or parser fault that is durably recorded as such a fact does not by itself change the actual work outcome or trigger another execution. Failure to persist required observations or failure facts remains fail-closed under the existing transport and execution owners; authorization, revocation, lineage and durable receipt requirements remain binding ([decision](../decisions/20260924-recorded_collector_fault_preserves_work_outcome.md)). Changing a bound setting MUST NOT hide an execution gap. Records outside any Turn carry the bound setting only inside an already-named existing owner; they MUST NOT borrow a past or future Turn. Crash after the admission write fails is missing binding: governed collection MUST NOT start, and the Turn is not silently given current server policy. A conflicting existing binding on the same Turn is `recovery_required` for that Turn, not an overwrite. Historical Turns with no field remain distinguishable as never-recorded, not as `off`.
+**Failure.** Collector unsupported, fault, or missing data uses unavailable/failure facts. For Worker and Gateway collectors, a source or parser fault that is durably recorded as such a fact does not by itself change the actual work outcome or trigger another execution. Failure to persist required observations or failure facts remains fail-closed under the existing transport and execution owners; authorization, revocation, lineage and durable receipt requirements remain binding ([decision](../decisions/20260924-recorded_collector_fault_preserves_work_outcome.md)). Changing a bound setting MUST NOT hide an execution gap. Records outside any Turn carry the bound setting only inside an already-named existing owner; they MUST NOT borrow a past or future Turn. If Turn admission does not commit the canonical binding, governed collection MUST NOT start; do not silently assign current server policy. A conflicting existing binding on the same Turn is `recovery_required` for that Turn, not an overwrite. Historical Turns with no field remain distinguishable as never-recorded, not as `off`.
 
 **Acceptance.** Default-on intent never proves complete delivery. A reader distinguishes explicitly off, a missing historical binding, an absent/unsupported producer, failure, truncation, lawful reclamation, and non-occurrence. Earlier off history cannot be backfilled from current policy. Required metadata stays mandatory even under an explicit off override. The Collect metadata cells (configured provider and physical model, provider-reported snapshot when a response exists, requested sampling, internal-agent `env.bound`, task-instance pairing when applicable, `turn.reap` when recovery runs, system-prompt digest, harness identity) are present or recorded as a failed required collection, not omitted as unsupported.
 
@@ -625,11 +625,13 @@ For a current canonical file representation, publication remains the observation
 
 **Failure.** Power loss after a non-fsynced append can drop lines the writer believed committed, which is wrong data under the missing-versus-wrong rule. Power loss after blob fsync and before line fsync MAY leave orphan blobs; they are unendorsed and ignored, not a committed publication.
 
-**Acceptance.** A crash-boundary observation must show: a committed publication never cites unpublished bytes; unendorsed orphan blobs may exist and are ignored; missing `turn.json` coverage persistence blocks governed work. Observing that `fsync` was called is not by itself that observation.
+**Acceptance.** A crash-boundary observation must show: a committed publication never cites unpublished bytes; unendorsed orphan blobs may exist and are ignored; missing canonical coverage binding blocks governed collection. A Turn with committed SQL coverage and a missing or stale disposable `turn.json` projection still collects under its bound setting, without recomputation. Observing that `fsync` was called is not by itself that observation.
 
 ## Current Implementation Projection
 
 Implementation alignment remains `Partial`. Existing collectors/importers must neither be described as absent nor treated as complete. This documentation change does not implement the default-on native exchange/content-addressed target.
+
+The pre-replacement file representation writes the immutable coverage binding into `turn.json`, which its owner rewrites on every persist. This is pre-reset implementation detail, not the target commit point. No compatibility writer or reader remains after reset.
 
 - `apps/nanocore/src/llm/model-capture.ts` binds existing Core or Workspace databases to an admitted Turn, records environment metadata, and conditionally captures selected pre-adapter requests and normalized semantic response events. That filtering/buffering does not prove lossless upstream or translated Worker-facing exchange retention.
 - `apps/nanocore/src/storage/work-observations.ts` already supplies observation schemas, immutable binding reads, append/recovery rules and EvidenceBundle body references. Reuse this owner rather than add another capture ledger.
@@ -650,9 +652,23 @@ Implementation alignment remains `Partial`. Existing collectors/importers must n
 | Judgments | Durable requests/Reviews exist; complete edit/correction/retry/rating lineage and joins are not established. |
 | Lifecycle | The separate journal owner supplies step facts; metadata and telemetry cannot replace its unimplemented portions. |
 
+### Collector Replacement Map
+
+| Remove from the new write path | Replacement / preserve |
+| --- | --- |
+| Default-off resolver fallback | Default-on effective resolution; preserve explicit off and immutable historical bindings. |
+| `model-capture.ts` pre-adapter semantic writer / `admittedModelRequest` allowlist as complete I/O | Actual native upstream/translated exchange roots; preserve required safe metadata and historical boundary labels. |
+| Normalized semantic response-body persistence | Derived reconstruction from the retained native sequence; safe UI projections remain disposable. |
+| Repeated full request/history bodies or full reference-prefix arrays | Scoped message/part blobs and structurally shared roots. |
+| Parallel EvidenceBundle body-byte copies | Storage owns bytes; preserve EvidenceBundle identity, access and publication lifecycle. |
+| Optional-only provenance gate as the sole transcript collector | Default bound-policy incremental native capture; preserve provenance guards and source watermarks. |
+| File publication/recovery path | Follow the [DX replacement inventory](20261019-durable_execution_and_control_store.md#replacement-inventory), not a separate RET file-authority path. |
+
+These replacements preserve secret exclusion, required metadata, safe UI projections, existing request/Review authority, and the declared meaning of retained old bodies.
+
 ### Collector Priority And Estimated Increments
 
-Deliver increments 1–3 first so real work retains useful originals before broader enrichment. Each increment reuses existing writers, authorization and Storage publication. These are implementation estimates, not new owners, observed test results, or a runner.
+Deliver increments 1–3 first so real work retains useful originals before broader enrichment. Each increment reuses existing writers, authorization and Storage publication, and applies the [collector replacement map](#collector-replacement-map) without retaining the replaced write authority. These are implementation estimates, not new owners, observed test results, or a runner.
 
 | Order | Collector and owner boundary | Estimated production modules | Estimated focused test files |
 | --- | --- | --- | --- |
