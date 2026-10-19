@@ -108,6 +108,23 @@ describe('generated JSON Schema event parity', () => {
     });
 
     expect(validate(auditEvent)).toBe(true);
+    const authentication = {
+      credentialKind: 'token',
+      credentialId: 'tok_00000000-0000-7000-8000-000000000001',
+    };
+    expect(validate({ ...auditEvent, authentication })).toBe(true);
+    expect(
+      validate({ ...auditEvent, authentication: { ...authentication, channel: 'http' } })
+    ).toBe(false);
+    expect(
+      validate({ ...auditEvent, authentication: { ...authentication, token: 'secret-sentinel' } })
+    ).toBe(false);
+    expect(
+      validate({
+        ...auditEvent,
+        authentication: { ...authentication, credentialId: 'sha256:secret' },
+      })
+    ).toBe(false);
     expect(validate({ ...auditEvent, resourceRevision: 2 })).toBe(true);
     expect(validate({ ...auditEvent, resourceRevision: 0 })).toBe(false);
     expect(validate({ ...auditEvent, actorId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f' })).toBe(

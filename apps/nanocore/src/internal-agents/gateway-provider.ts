@@ -104,9 +104,19 @@ export function createInternalAgentGatewayProvider(
       throw new ModelCaptureError();
     const call = context
       ? workspaceDb.scope === 'core' && 'owner' in context
-        ? startCapabilityCall({ ...context, ...lineage, workspaceDb })
+        ? startCapabilityCall({
+            ...context,
+            ...lineage,
+            workspaceDb,
+            ...(options.auditLineage ? { auditLineage: options.auditLineage } : {}),
+          })
         : workspaceDb.scope === 'workspace' && !('owner' in context)
-          ? startCapabilityCall({ ...context, ...lineage, workspaceDb })
+          ? startCapabilityCall({
+              ...context,
+              ...lineage,
+              workspaceDb,
+              ...(options.auditLineage ? { auditLineage: options.auditLineage } : {}),
+            })
           : undefined
       : undefined;
     let callFinished = false;

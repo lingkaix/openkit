@@ -4,25 +4,31 @@ import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { parseRecordEnvelope } from '@openkit/config-schema';
 import {
-  GitFailureExplanationReaderSchema,
+  readRetainedV1,
   type ServerItem,
-  ServerItemSchema,
   type ServerThread,
-  ServerThreadSchema,
   type ServerTurn,
   type ServerTurnEventEnvelope,
-  ServerTurnEventEnvelopeSchema,
-  ServerTurnSchema,
   ThreadIdSchema,
   TurnIdSchema,
+  writeRetainedV1,
 } from '@openkit/protocol';
 import { z } from 'zod';
 import {
-  ActorRefReaderSchema,
+  StoredServerEventPayloadV1Schema,
+  StoredServerEventV1Schema,
+  StoredServerItemPayloadV1Schema,
+  StoredServerItemV1Schema,
+  StoredServerThreadPayloadV1Schema,
+  StoredServerTurnPayloadV1Schema,
+  StoredServerTurnSnapshotV1Schema,
+  StoredServerTurnV1Schema,
+} from './retained-server-work-v1.js';
+import {
   appendCanonicalTextFile,
   assertCanonicalDirectory,
   assertImmutableItemAttribution,
-  CaptureCoverageBindingSchema,
+  type CaptureCoverageBindingSchema,
   ensureCanonicalDirectory,
   listDirectoryNames,
   preserveDescriptiveRecord,
@@ -35,34 +41,8 @@ import {
 
 const SERVER_THREAD_FEATURE = 'openkit.server-threads.v1';
 
-/** Retained actor additions are descriptive; actor kind and attribution remain closed. */
-const ServerItemReaderSchema = z.preprocess((value) => {
-  if (typeof value !== 'object' || value === null || !('actor' in value)) return value;
-  return { ...value, actor: ActorRefReaderSchema.parse(value.actor) };
-}, ServerItemSchema);
-
-/** Canonical Server Turn metadata including the existing immutable capture declaration. */
-export const ServerTurnReaderSchema = ServerTurnSchema.safeExtend({
-  triggerActor: ActorRefReaderSchema,
-  error: ServerTurnSchema.shape.error
-    .unwrap()
-    .extend({ explanation: GitFailureExplanationReaderSchema.optional() })
-    .nullable(),
-  captureCoverage: CaptureCoverageBindingSchema.optional(),
-  requiredFeatures: z.array(z.literal('openkit.work-observations.v1')).optional(),
-});
-
-/** Normalizes retained Item attribution before the exact Server Turn snapshot validator. */
-const ServerTurnSnapshotReaderSchema = z.preprocess((value) => {
-  if (
-    typeof value !== 'object' ||
-    value === null ||
-    !('items' in value) ||
-    !Array.isArray(value.items)
-  )
-    return value;
-  return { ...value, items: value.items.map((item) => ServerItemReaderSchema.parse(item)) };
-}, ServerTurnReaderSchema);
+/** Canonical Server Turn payloads retain capture declarations without inheriting live wire grammar. */
+export const ServerTurnReaderSchema = StoredServerTurnPayloadV1Schema;
 
 /** Reads canonical Server Turn metadata for current capture and recovery owners. */
 export function readServerTurnRecord(
@@ -77,7 +57,9 @@ export function readServerTurnRecord(
       join(dataRoot, 'server', 'threads', threadId, 'turns', turnId, 'turn.json')
     )
   );
-  const turn = ServerTurnReaderSchema.parse(value);
+  const turn = readRetainedV1(value, (record) =>
+    ServerTurnReaderSchema.parse(StoredServerTurnV1Schema.parse(record))
+  );
   if (turn.id !== turnId || turn.threadId !== threadId || turn.items.length)
     throw new Error(`Server Turn has invalid lineage: ${turnId}.`);
   return turn;
@@ -101,7 +83,7 @@ function threadDigest(thread: ServerThread): string {
 function readThread(path: string): ServerThread {
   const raw: unknown = JSON.parse(readCanonicalTextFile(path));
   const envelope = parseRecordEnvelope(raw, { supportedFeatures: [SERVER_THREAD_FEATURE] });
-  const thread = ServerThreadSchema.parse(raw);
+  const thread = StoredServerThreadPayloadV1Schema.parse(raw);
   if (
     envelope.schemaVersion !== 1 ||
     envelope.recordType !== 'thread' ||
@@ -149,7 +131,7 @@ export function loadServerThreadRecords(dataRoot: string): ServerThreadRecords {
       if (turn.status === 'pending' || turn.status === 'running') activeTurns++;
       const items = new Map<string, ServerItem>();
       for (const value of readCanonicalJsonLines(join(turnRoot, 'items.jsonl'))) {
-        const item = ServerItemReaderSchema.parse(value);
+        const item = readRetainedV1(value, StoredServerItemPayloadV1Schema.parse);
         if (item.turnId !== turn.id || item.threadId !== thread.id)
           throw new Error(`Server Item has invalid lineage: ${item.id}.`);
         const previous = items.get(item.id);
@@ -160,7 +142,7 @@ export function loadServerThreadRecords(dataRoot: string): ServerThreadRecords {
         records.itemRevisions.push(item);
       }
       const completeTurn = ServerTurnReaderSchema.parse({ ...turn, items: [...items.values()] });
-      records.turns.push(ServerTurnSchema.parse(completeTurn));
+      records.turns.push(StoredServerTurnSnapshotV1Schema.parse(completeTurn));
       const events = readServerTurnEvents(dataRoot, completeTurn);
       records.turnEvents.set(turn.id, events);
     }
@@ -180,15 +162,7 @@ export function readServerTurnEvents(
   return readCanonicalJsonLines(
     join(dataRoot, 'server', 'threads', turn.threadId, 'turns', turn.id, 'runtime', 'events.jsonl')
   ).map((value, index) => {
-    const raw = value as { data?: Record<string, unknown> };
-    const data = raw?.data;
-    const normalized =
-      data && 'item' in data
-        ? { ...data, item: ServerItemReaderSchema.parse(data.item) }
-        : data && 'turn' in data
-          ? { ...data, turn: ServerTurnSnapshotReaderSchema.parse(data.turn) }
-          : data;
-    const event = ServerTurnEventEnvelopeSchema.parse({ ...(value as object), data: normalized });
+    const event = readRetainedV1(value, StoredServerEventPayloadV1Schema.parse);
     assertServerTurnEventLineage(event, turn);
     if (event.sequence !== index + 1)
       throw new Error(`Server Turn event sequence is recovery_required: ${turn.id}.`);
@@ -254,7 +228,9 @@ export function writeServerTurnRecord(
   const write = (directory: string) => {
     const path = join(directory, 'turn.json');
     const previous = existsSync(path)
-      ? ServerTurnReaderSchema.parse(JSON.parse(readCanonicalTextFile(path)))
+      ? readRetainedV1(JSON.parse(readCanonicalTextFile(path)), (record) =>
+          ServerTurnReaderSchema.parse(StoredServerTurnV1Schema.parse(record))
+        )
       : undefined;
     if (
       previous?.captureCoverage &&
@@ -264,13 +240,13 @@ export function writeServerTurnRecord(
       throw new Error(`Server Turn capture coverage is recovery_required: ${turn.id}.`);
     writeOwnedDescriptiveJson(
       path,
-      {
+      writeRetainedV1({
         ...turn,
         items: [],
         ...(previous?.captureCoverage ? { captureCoverage: previous.captureCoverage } : {}),
         ...(previous?.requiredFeatures ? { requiredFeatures: previous.requiredFeatures } : {}),
-      },
-      ServerTurnReaderSchema
+      }),
+      z.preprocess((record) => readRetainedV1(record, (value) => value), StoredServerTurnV1Schema)
     );
 
     if (!existsSync(join(directory, 'items.jsonl')))
@@ -314,7 +290,11 @@ export function appendServerThreadRecord(
   if ('event' in record) assertCanonicalDirectory(join(turnRoot, 'runtime'));
   const path =
     'event' in record ? join(turnRoot, 'runtime', 'events.jsonl') : join(turnRoot, 'items.jsonl');
-  appendCanonicalTextFile(path, `${JSON.stringify(record)}\n`);
+  const stored =
+    'event' in record
+      ? StoredServerEventV1Schema.parse(writeRetainedV1(record))
+      : StoredServerItemV1Schema.parse(writeRetainedV1(record));
+  appendCanonicalTextFile(path, `${JSON.stringify(stored)}\n`);
 }
 
 /** Enforces the same containing Turn lineage on Server transcript payloads and their envelope. */

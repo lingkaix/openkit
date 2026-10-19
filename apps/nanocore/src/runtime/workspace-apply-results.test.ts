@@ -2,19 +2,20 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { GetWorkspaceApplyResultResponseSchema } from '@openkit/app-api-schemas';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import {
   getWorkspaceApplyResult,
+  importWorkspaceApplyResults,
   listExportableWorkspaceApplyResults,
   type RecordWorkspaceApplyResultInput,
   recordWorkspaceApplyResult,
 } from './workspace-apply-results.js';
 
 describe('workspace apply results', () => {
-  it('normalizes retained verification additions and preserves exact replay bytes after reopening', () => {
+  it('writes v1 and normalizes retained verification additions without changing replay bytes', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-apply-result-extensions-'));
     let db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     const input: RecordWorkspaceApplyResultInput = {
@@ -36,6 +37,11 @@ describe('workspace apply results', () => {
     try {
       applyScopedMigrations(db);
       recordWorkspaceApplyResult(db, input);
+      expect(
+        db.sqlite
+          .prepare('SELECT schema_version AS schemaVersion FROM workspace_apply_results')
+          .get()
+      ).toEqual({ schemaVersion: 1 });
       const verification = JSON.stringify(
         input.result.verification.map((item) => ({
           ...item,
@@ -102,6 +108,61 @@ describe('workspace apply results', () => {
     }
   });
 
+  it('refuses an unknown result version before malformed JSON, effects or replay', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-apply-result-version-'));
+    onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
+    const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+    try {
+      applyScopedMigrations(db);
+      const input: RecordWorkspaceApplyResultInput = {
+        requestId: 'request_apply_version',
+        result: {
+          id: 'war_version',
+          workspaceId: db.workspaceId,
+          reviewId: 'swr_version',
+          changeSetId: 'wcs_version',
+          status: 'applied',
+          appliedPaths: ['src/file.ts'],
+          skippedPaths: [],
+          conflictRecords: [],
+          verification: [],
+          commitIds: [],
+          appliedAt: '2026-07-05T00:00:00.000Z',
+        },
+      };
+      recordWorkspaceApplyResult(db, input);
+      const auditCount = db.sqlite.prepare('SELECT count(*) AS count FROM audit_events').get();
+      db.sqlite
+        .prepare('UPDATE workspace_apply_results SET schema_version=2,applied_paths_json=?')
+        .run('{');
+
+      expect(() => getWorkspaceApplyResult(db, db.workspaceId, input.result.id)).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(() => listExportableWorkspaceApplyResults(db, db.workspaceId)).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(() => recordWorkspaceApplyResult(db, input)).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(() =>
+        importWorkspaceApplyResults(db, [{ ...input.result, requestId: input.requestId }])
+      ).toThrow('Unsupported retained record format.');
+      expect(
+        db.sqlite
+          .prepare(
+            'SELECT schema_version AS schemaVersion,applied_paths_json FROM workspace_apply_results'
+          )
+          .get()
+      ).toEqual({ schemaVersion: 2, applied_paths_json: '{' });
+      expect(db.sqlite.prepare('SELECT count(*) AS count FROM audit_events').get()).toEqual(
+        auditCount
+      );
+    } finally {
+      db.sqlite.close();
+    }
+  });
+
   it('records one linked audit event when an apply result is stored', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-apply-result-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
@@ -110,6 +171,7 @@ describe('workspace apply results', () => {
       applyScopedMigrations(workspaceDb);
 
       recordWorkspaceApplyResult(workspaceDb, {
+        actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
         requestId: '00000000-0000-4000-8000-000000000021',
         result: {
           appliedAt: '2026-07-05T00:00:00.000Z',
@@ -166,6 +228,10 @@ describe('workspace apply results', () => {
       expect(audits).toEqual([
         expect.objectContaining({
           action: 'workspace.apply.finish',
+          actor_json: JSON.stringify({
+            kind: 'user',
+            id: 'usr_00000000-0000-7000-8000-000000000001',
+          }),
           category: 'artifact',
           created_at: '2026-07-05T00:00:00.000Z',
           error_code: null,

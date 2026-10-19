@@ -1,4 +1,5 @@
-import { index, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { writeRetainedV1 } from '@openkit/protocol';
+import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 /** Durable evidence bundle retention classes. */
 export type EvidenceBundleRetentionClass =
@@ -24,6 +25,8 @@ export type EvidenceBundleImportStatus =
 export const evidenceBundles = sqliteTable(
   'evidence_bundles',
   {
+    /** Independent retained-record format marker. */
+    schemaVersion: integer('schema_version').notNull().default(writeRetainedV1({}).schemaVersion),
     /** Stable evidence bundle id. */
     evidenceBundleId: text('evidence_bundle_id').primaryKey().notNull(),
     /** Workspace owner, or null for a Server-owned row in Core. */

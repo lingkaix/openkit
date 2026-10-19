@@ -67,6 +67,8 @@ test('old producers seed a nonempty B01 file corpus that old readers reopen exac
   assert.ok(!report.includes(input.retainedRoot));
   assert.deepEqual(Object.keys(first).sort(), [...FILE_CORPUS_FAMILIES].sort());
   assert.ok(first['Conversation original file inputs'].values[0].length > 0);
+  assert.equal(first['Immutable Artifact versions']?.values.length, 2);
+  assert.equal(first['Artifact original payload']?.bytes.length, 2);
   for (const [family, observed] of Object.entries(first)) {
     assert.ok(observed.values.length > 0, `${family}: no native reader result`);
     assert.ok(observed.bytes.length > 0, `${family}: no retained bytes`);

@@ -1,13 +1,16 @@
 import {
-  AutomationCadenceSchema,
   type AutomationRecord,
-  AutomationRecordSchema,
   type CreateAutomationRequest,
   CreateAutomationRequestSchema,
   type UpdateAutomationRequest,
   UpdateAutomationRequestSchema,
 } from '@openkit/app-api-schemas';
-import { allocateEntityId, deriveEntityId } from '@openkit/protocol';
+import {
+  allocateEntityId,
+  deriveEntityId,
+  readRetainedV1,
+  writeRetainedV1,
+} from '@openkit/protocol';
 import { recordServerAuditEvent } from '../audit-events.js';
 import {
   createSchedulerAdmissionEntry,
@@ -28,6 +31,7 @@ import {
   recurringRequestId,
   recurringSchedulerAdmissionInput,
 } from '../storage/recurring-records.js';
+import { StoredAutomationCadenceV1Schema } from '../storage/recurring-retained-v1.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
   advanceRecurringNominal,
@@ -54,19 +58,17 @@ export class AutomationStore {
     coreDb.sqlite.function(
       'recurring_live_frontier',
       { deterministic: true },
-      (intervalSeconds: unknown, monthlyJson: unknown, first: unknown, through: unknown) => {
-        if (
-          typeof first !== 'number' ||
-          typeof through !== 'number' ||
-          (monthlyJson !== null && typeof monthlyJson !== 'string')
-        )
-          throw new Error('Recurring scan has invalid required timing values.');
-        const cadence = AutomationCadenceSchema.parse({
-          ...(intervalSeconds === null ? {} : { intervalSeconds }),
-          ...(monthlyJson === null ? {} : { monthlyUtc: JSON.parse(monthlyJson as string) }),
-        });
-        return recurringPrefixThrough(cadence, first, through)?.next ?? first;
-      }
+      (schemaVersion: unknown, recordJson: unknown, first: unknown, through: unknown) =>
+        readRetainedV1({ schemaVersion }, () => {
+          if (
+            typeof recordJson !== 'string' ||
+            typeof first !== 'number' ||
+            typeof through !== 'number'
+          )
+            throw new Error('Recurring scan has invalid required timing values.');
+          const cadence = StoredAutomationCadenceV1Schema.parse(JSON.parse(recordJson));
+          return recurringPrefixThrough(cadence, first, through)?.next ?? first;
+        })
     );
   }
 
@@ -175,7 +177,7 @@ export class AutomationStore {
             if (edits.intervalSeconds !== undefined) delete candidate.monthlyUtc;
             for (const field of ['agentId', 'profileId', 'modelId'] as const)
               if (candidate[field] === null) delete candidate[field];
-            schedule = AutomationRecordSchema.parse(candidate);
+            schedule = readRecurringSchedule(JSON.stringify(candidate));
           }
           const updated = { ...schedule, revision: schedule.revision + 1, updatedAt: timestamp };
           this.writeSchedule(updated);
@@ -233,13 +235,13 @@ export class AutomationStore {
             occurrence?: RecurringOccurrence;
           }[] = [];
           const pending = this.coreDb.sqlite
-            .prepare(`SELECT occurrence.record_json FROM recurring_occurrences occurrence
+            .prepare(`SELECT occurrence.schema_version AS schemaVersion, occurrence.record_json FROM recurring_occurrences occurrence
         JOIN recurring_schedules schedule ON schedule.id = occurrence.schedule_id
         WHERE occurrence.state = 'pending' AND occurrence.deadline > ? AND occurrence.scheduled_at <= ?
           AND schedule.status = 'active' ORDER BY occurrence.deadline, occurrence.id LIMIT ?`)
             .all(now, now, SCAN_LIMIT) as JsonRow[];
           for (const row of pending) {
-            const occurrence = readRecurringOccurrence(row.record_json);
+            const occurrence = readRetainedV1(row, () => readRecurringOccurrence(row.record_json));
             if (!admit(occurrence.workspaceId)) continue;
             candidates.push({
               schedule: this.getAutomation(occurrence.scheduleId),
@@ -250,13 +252,12 @@ export class AutomationStore {
           // Compute the live frontier directly from the one durable cursor. An arbitrarily old
           // prefix becomes one range in the same transaction that materializes its live successor.
           const schedules = this.coreDb.sqlite
-            .prepare(`SELECT record_json FROM recurring_schedules
+            .prepare(`SELECT schema_version AS schemaVersion, record_json FROM recurring_schedules
         WHERE status = 'active' AND next_scheduled_at <= ?
-        ORDER BY recurring_live_frontier(json_extract(record_json, '$.intervalSeconds'),
-          json_extract(record_json, '$.monthlyUtc'), next_scheduled_at, ?), id LIMIT ?`)
+        ORDER BY recurring_live_frontier(schema_version, record_json, next_scheduled_at, ?), id LIMIT ?`)
             .all(now, now - DEADLINE_MS, SCAN_LIMIT) as JsonRow[];
           for (const row of schedules) {
-            const schedule = readRecurringSchedule(row.record_json);
+            const schedule = readRetainedV1(row, () => readRecurringSchedule(row.record_json));
             if (!admit(schedule.workspaceId)) continue;
             const next = Date.parse(schedule.nextScheduledAt!);
             const first = recurringPrefixThrough(schedule, next, now - DEADLINE_MS)?.next ?? next;
@@ -281,18 +282,18 @@ export class AutomationStore {
           });
           // Expiring pending history and expired-only schedules also have a fixed per-scan bound.
           const stale = this.coreDb.sqlite
-            .prepare(`SELECT record_json FROM recurring_occurrences
+            .prepare(`SELECT schema_version AS schemaVersion, record_json FROM recurring_occurrences
         WHERE state = 'pending' AND deadline <= ? ORDER BY deadline, id LIMIT ?`)
             .all(now, SCAN_LIMIT) as JsonRow[];
           for (const row of stale) {
-            const occurrence = readRecurringOccurrence(row.record_json);
+            const occurrence = readRetainedV1(row, () => readRecurringOccurrence(row.record_json));
             if (admit(occurrence.workspaceId)) this.finish(occurrence, 'expired', timestamp);
           }
           for (const row of this.coreDb.sqlite
-            .prepare(`SELECT record_json FROM recurring_schedules
+            .prepare(`SELECT schema_version AS schemaVersion, record_json FROM recurring_schedules
         WHERE status = 'active' AND next_scheduled_at <= ? ORDER BY next_scheduled_at, id LIMIT ?`)
             .all(now - DEADLINE_MS, SCAN_LIMIT - expiredRangeCount) as JsonRow[]) {
-            const schedule = readRecurringSchedule(row.record_json);
+            const schedule = readRetainedV1(row, () => readRecurringSchedule(row.record_json));
             if (admit(schedule.workspaceId)) this.accountExpiredPrefix(schedule, now, timestamp);
           }
           return selected;
@@ -433,10 +434,12 @@ export class AutomationStore {
   /** Reads one validated individual occurrence, including its immutable input and bounded attempts. */
   public getOccurrence(id: string): RecurringOccurrence {
     const row = this.coreDb.sqlite
-      .prepare('SELECT record_json FROM recurring_occurrences WHERE id = ?')
+      .prepare(
+        'SELECT schema_version AS schemaVersion, record_json FROM recurring_occurrences WHERE id = ?'
+      )
       .get(id) as JsonRow | undefined;
     if (!row) throw new AutomationRecordNotFoundError(`Recurring occurrence not found: ${id}`);
-    return readRecurringOccurrence(row.record_json);
+    return readRetainedV1(row, () => readRecurringOccurrence(row.record_json));
   }
 
   /** Returns bounded history directly as individual occurrences or lossless ranges, newest first. */
@@ -455,8 +458,8 @@ export class AutomationStore {
       throw new AutomationMutationError('History limit must be between 1 and 128.');
     const rows = this.coreDb.sqlite
       .prepare(`SELECT * FROM (
-      SELECT 'occurrence' AS kind, scheduled_at AS instant, record_json FROM recurring_occurrences WHERE schedule_id = ?
-      UNION ALL SELECT 'expired-range' AS kind, first_scheduled_at AS instant, record_json FROM recurring_expired_ranges WHERE schedule_id = ?
+      SELECT 'occurrence' AS kind, scheduled_at AS instant, schema_version AS schemaVersion, record_json FROM recurring_occurrences WHERE schedule_id = ?
+      UNION ALL SELECT 'expired-range' AS kind, first_scheduled_at AS instant, schema_version AS schemaVersion, record_json FROM recurring_expired_ranges WHERE schedule_id = ?
       ) WHERE instant < ? ORDER BY instant DESC LIMIT ?`)
       .all(
         scheduleId,
@@ -468,10 +471,15 @@ export class AutomationStore {
     return {
       items: selected.map((row) =>
         row.kind === 'occurrence'
-          ? { kind: 'occurrence' as const, record: readRecurringOccurrence(row.record_json) }
+          ? {
+              kind: 'occurrence' as const,
+              record: readRetainedV1(row, () => readRecurringOccurrence(row.record_json)),
+            }
           : {
               kind: 'expired-range' as const,
-              record: ExpiredOccurrenceRangeSchema.parse(JSON.parse(row.record_json)),
+              record: readRetainedV1(row, () =>
+                ExpiredOccurrenceRangeSchema.parse(JSON.parse(row.record_json))
+              ),
             }
       ),
       nextBefore: rows.length > limit ? new Date(selected.at(-1)!.instant).toISOString() : null,
@@ -491,10 +499,14 @@ export class AutomationStore {
       }
     }
     for (const row of this.coreDb.sqlite
-      .prepare(`SELECT record_json FROM recurring_occurrences
+      .prepare(`SELECT schema_version AS schemaVersion, record_json FROM recurring_occurrences
       WHERE schedule_id = ? AND state = 'pending'`)
       .all(schedule.id) as JsonRow[])
-      this.finish(readRecurringOccurrence(row.record_json), 'cancelled', timestamp);
+      this.finish(
+        readRetainedV1(row, () => readRecurringOccurrence(row.record_json)),
+        'cancelled',
+        timestamp
+      );
     return { ...schedule, status: 'paused', nextScheduledAt: null };
   }
 
@@ -515,7 +527,7 @@ export class AutomationStore {
       scheduleId: schedule.id,
       workspaceId: schedule.workspaceId,
       definitionRevision: schedule.revision,
-      ...AutomationCadenceSchema.parse(schedule),
+      ...StoredAutomationCadenceV1Schema.parse(schedule),
       firstScheduledAt: new Date(first).toISOString(),
       lastScheduledAt: new Date(last).toISOString(),
       count,
@@ -526,8 +538,8 @@ export class AutomationStore {
     };
     this.coreDb.sqlite
       .prepare(`INSERT INTO recurring_expired_ranges
-      (id, schedule_id, workspace_id, definition_revision, first_scheduled_at, last_scheduled_at, record_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      (id, schedule_id, workspace_id, definition_revision, first_scheduled_at, last_scheduled_at, record_json, schema_version)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(
         record.id,
         record.scheduleId,
@@ -535,7 +547,8 @@ export class AutomationStore {
         record.definitionRevision,
         first,
         last,
-        JSON.stringify(record)
+        JSON.stringify(record),
+        writeRetainedV1({}).schemaVersion
       );
     recordServerAuditEvent({
       coreDb: this.coreDb,
@@ -658,11 +671,12 @@ export class AutomationStore {
   /** Writes both indexed selectors and the validated known-core payload in one owner mutation. */
   private writeOccurrence(record: RecurringOccurrence, insert = false): void {
     readRecurringOccurrence(JSON.stringify(record));
+    if (!insert) this.getOccurrence(record.id);
     if (insert)
       this.coreDb.sqlite
         .prepare(`INSERT INTO recurring_occurrences
-      (id, schedule_id, workspace_id, scheduled_at, deadline, state, queue_entry_id, record_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      (id, schedule_id, workspace_id, scheduled_at, deadline, state, queue_entry_id, record_json, schema_version)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(
           record.id,
           record.scheduleId,
@@ -671,7 +685,8 @@ export class AutomationStore {
           Date.parse(record.deadline),
           record.state,
           record.queueEntryId,
-          JSON.stringify(record)
+          JSON.stringify(record),
+          writeRetainedV1({}).schemaVersion
         );
     else
       this.coreDb.sqlite
@@ -684,6 +699,7 @@ export class AutomationStore {
   /** Writes one definition and the indexed cursor under the caller's transaction when present. */
   private writeSchedule(record: AutomationRecord, insert = false): void {
     readRecurringSchedule(JSON.stringify(record));
+    if (!insert) this.getAutomation(record.id);
     const values = [
       record.workspaceId,
       record.responsibleUserId,
@@ -695,8 +711,8 @@ export class AutomationStore {
     if (insert)
       this.coreDb.sqlite
         .prepare(`INSERT INTO recurring_schedules
-      (workspace_id, responsible_user_id, status, revision, next_scheduled_at, record_json, id) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-        .run(...values, record.id);
+      (workspace_id, responsible_user_id, status, revision, next_scheduled_at, record_json, id, schema_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(...values, record.id, writeRetainedV1({}).schemaVersion);
     else
       this.coreDb.sqlite
         .prepare(`UPDATE recurring_schedules SET workspace_id = ?, responsible_user_id = ?,
@@ -707,22 +723,26 @@ export class AutomationStore {
   /** Reads the one definition authority without private content enumeration. */
   private findSchedule(id: string): AutomationRecord | null {
     const row = this.coreDb.sqlite
-      .prepare('SELECT record_json FROM recurring_schedules WHERE id = ?')
+      .prepare(
+        'SELECT schema_version AS schemaVersion, record_json FROM recurring_schedules WHERE id = ?'
+      )
       .get(id) as JsonRow | undefined;
-    return row ? readRecurringSchedule(row.record_json) : null;
+    return row ? readRetainedV1(row, () => readRecurringSchedule(row.record_json)) : null;
   }
 
   /** Reads a bounded owner-selected definition collection. */
   private readSchedules(where: string, ...parameters: string[]): AutomationRecord[] {
     return (
       this.coreDb.sqlite
-        .prepare(`SELECT record_json FROM recurring_schedules WHERE ${where} ORDER BY id`)
+        .prepare(
+          `SELECT schema_version AS schemaVersion, record_json FROM recurring_schedules WHERE ${where} ORDER BY id`
+        )
         .all(...parameters) as JsonRow[]
-    ).map((row) => readRecurringSchedule(row.record_json));
+    ).map((row) => readRetainedV1(row, () => readRecurringSchedule(row.record_json)));
   }
 }
 
-type JsonRow = { record_json: string };
+type JsonRow = { schemaVersion: unknown; record_json: string };
 /** Preserves the exact old authored request in each occurrence and missed-history range. */
 function snapshot(schedule: AutomationRecord): RecurringOccurrence['snapshot'] {
   return {

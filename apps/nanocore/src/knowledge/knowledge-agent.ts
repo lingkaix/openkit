@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import {
   KnowledgeAskResponseSchema,
   type KnowledgeRetrievalCandidate,
+  RetrieveKnowledgeRequestSchema,
 } from '@openkit/app-api-schemas';
 import {
   formatReferenceUri,
@@ -66,8 +67,12 @@ const answerSchema = z
     uncertainty: z.string().min(1).nullable(),
   })
   .strict();
-const searchSchema = z
-  .object({ query: z.string().min(1), limit: z.number().int().min(1).max(10).default(5) })
+const searchSchema = RetrieveKnowledgeRequestSchema.pick({
+  query: true,
+  types: true,
+  appliesTo: true,
+})
+  .extend({ limit: z.number().int().min(1).max(10).default(5) })
   .strict();
 const pageSchema = z
   .object({ pageId: z.string().min(1), offset: z.number().int().nonnegative().default(0) })

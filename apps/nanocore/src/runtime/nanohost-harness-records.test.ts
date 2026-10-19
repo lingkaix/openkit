@@ -1,9 +1,9 @@
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
@@ -11,9 +11,11 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
+  copyNanoHostMeasuredHarnessIdentity,
   createNanoHostHarnessRuntime,
   deriveNanoHostAgentSessionCompatibilityKey,
   dispatchNanoHostHarnessOperation,
+  drainNanoHostHarnessAdmission,
   listNanoHostMeasuredHarnessIdentities,
   markNanoHostHarnessOperationUnknown,
   openNanoHostAgentSessionBinding,
@@ -34,6 +36,80 @@ const now = '2098-08-21T00:00:00.000Z';
 const physicalEpoch = 'e'.repeat(64);
 
 describe('private NanoHost Harness records', () => {
+  it('refuses an unknown Harness format before decoding or replacing its command', () => {
+    const coreDb = openOpeningBindingDb('openkit-harness-format-');
+    try {
+      queueNanoHostHarnessOperation(coreDb, {
+        body: sessionOpenBody(),
+        harnessInstanceId: 'harness-1',
+        operation: 'session.open',
+        timestamp: now,
+      });
+      coreDb.sqlite.exec(
+        "UPDATE harness_instance_records SET schema_version = 2, command_body_json = '{'"
+      );
+      const before = coreDb.sqlite.serialize();
+      expect(() =>
+        dispatchNanoHostHarnessOperation(coreDb, {
+          sandboxIntegrationBindingRef: 'integration-binding-1',
+          now: () => now,
+        })
+      ).toThrow('Unsupported retained record format.');
+      expect(() =>
+        queueNanoHostHarnessOperation(coreDb, {
+          body: {},
+          harnessInstanceId: 'harness-1',
+          operation: 'harness.drain',
+          timestamp: now,
+        })
+      ).toThrow('Unsupported retained record format.');
+      expect(() =>
+        drainNanoHostHarnessAdmission(coreDb, {
+          harnessBindingRef: 'harness-binding-1',
+          timestamp: now,
+        })
+      ).toThrow('Unsupported retained record format.');
+      expect(coreDb.sqlite.serialize().equals(before)).toBe(true);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('refuses an unknown AgentSession binding before decoding environment or granting reuse', () => {
+    const coreDb = openOpeningBindingDb('openkit-harness-binding-format-');
+    try {
+      coreDb.sqlite.exec(
+        "UPDATE agent_session_runtime_bindings SET schema_version = 2, native_environment_json = '{'"
+      );
+      const before = coreDb.sqlite.serialize();
+      expect(() =>
+        queueNanoHostHarnessOperation(coreDb, {
+          body: sessionOpenBody(),
+          harnessInstanceId: 'harness-1',
+          operation: 'session.open',
+          timestamp: now,
+        })
+      ).toThrow('Unsupported retained record format.');
+      expect(() =>
+        readNanoHostThreadAgentSessionBinding(coreDb, {
+          workspaceId: testEntityId('ws', 'workspace-1'),
+          threadId: testEntityId('th', 'thread-1'),
+        })
+      ).toThrow('Unsupported retained record format.');
+      expect(() =>
+        copyNanoHostMeasuredHarnessIdentity(coreDb, {
+          agentSessionRuntimeBindingId: 'agent-session-binding-1',
+          imageDigest: `sha256:${'f'.repeat(64)}`,
+          timestamp: now,
+        })
+      ).toThrow('Unsupported retained record format.');
+      expect(coreDb.sqlite.serialize().equals(before)).toBe(true);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  // Twenty durable Turn admissions need fixture time under parallel gates; capacity assertions stay exact.
   it('runs twenty Thread-bound Turns in one Harness and releases only the inspected sibling', () => {
     const coreDb = openActiveTurnDb('twenty-thread-turns-', 20);
     try {
@@ -167,7 +243,8 @@ describe('private NanoHost Harness records', () => {
     } finally {
       coreDb.sqlite.close();
     }
-  });
+  }, 60_000);
+
   it('reserves the shared Sandbox bound while another runtime Harness start is still queued', () => {
     const coreDb = openActiveTurnDb('cross-harness-queued-capacity-', 2);
     try {
@@ -618,8 +695,10 @@ describe('private NanoHost Harness records', () => {
     }
   });
 
-  it('keeps Sandbox, Harness, AgentSession, and Turn projections distinct', () => {
-    const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-harness-records-')));
+  it('keeps v1 Harness and AgentSession projections distinct from Sandbox and Turn', () => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-harness-records-'));
+    onTestFinished(() => rmSync(root, { recursive: true, force: true }));
+    const coreDb = openCoreDb(root);
     try {
       applyMigrations(coreDb);
       seedRuntimeTarget(coreDb);
@@ -648,6 +727,16 @@ describe('private NanoHost Harness records', () => {
         timestamp: now,
         workspaceId: testEntityId('ws', 'workspace-1'),
       });
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT schema_version AS schemaVersion FROM harness_instance_records')
+          .get()
+      ).toEqual({ schemaVersion: 1 });
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT schema_version AS schemaVersion FROM agent_session_runtime_bindings')
+          .get()
+      ).toEqual({ schemaVersion: 1 });
       expect
         .soft(() =>
           openNanoHostAgentSessionBinding(coreDb, {
@@ -2718,7 +2807,9 @@ function sessionOpenBody(): Readonly<Record<string, unknown>> {
 
 /** Creates one Harness with one AgentSession binding still `opening`. */
 function openOpeningBindingDb(prefix: string): ReturnType<typeof openCoreDb> {
-  const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), prefix)));
+  const root = mkdtempSync(join(tmpdir(), prefix));
+  onTestFinished(() => rmSync(root, { recursive: true, force: true }));
+  const coreDb = openCoreDb(root);
   applyMigrations(coreDb);
   seedRuntimeTarget(coreDb);
   createNanoHostHarnessRuntime(coreDb, {

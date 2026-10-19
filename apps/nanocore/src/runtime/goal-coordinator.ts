@@ -1,11 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import {
   GOAL_OPERATION_DEFINITIONS,
-  GoalRecordSchema,
   OPERATION_DEFINITIONS,
   operationModelInput,
 } from '@openkit/app-api-schemas';
-import { allocateEntityId, isSealedTurnTerminal } from '@openkit/protocol';
+import {
+  allocateEntityId,
+  isSealedTurnTerminal,
+  readRetainedV1,
+  writeRetainedV1,
+} from '@openkit/protocol';
 import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
 import {
@@ -44,6 +48,7 @@ import {
   readGoalView,
   requireCoordinatorGoal,
 } from './goal-owner.js';
+import { StoredGoalV1Schema } from './goal-retained-v1.js';
 import { proveFrozenDelivery } from './pending-requests.js';
 import { recoverTaskTerminalFacts } from './task-terminal-fact.js';
 
@@ -75,11 +80,18 @@ export function considerGoal(
     undefined,
     { turnId: allocateEntityId('tu'), executorKind: 'coordinator', agentId: 'goal-coordinator' }
   );
-  db.sqlite
-    .prepare(
-      "UPDATE goals SET payload_json=json_set(payload_json, '$.consideredRevision', ?) WHERE goal_id=?"
-    )
-    .run(goal.changeRevision, goalId);
+  const current = db.sqlite
+    .prepare('SELECT schema_version AS schemaVersion,payload_json FROM goals WHERE goal_id=?')
+    .get(goalId) as { schemaVersion: unknown; payload_json: string } | undefined;
+  if (current)
+    readRetainedV1(current, () => {
+      StoredGoalV1Schema.parse(JSON.parse(current.payload_json));
+      db.sqlite
+        .prepare(
+          "UPDATE goals SET payload_json=json_set(payload_json, '$.consideredRevision', ?),schema_version=? WHERE goal_id=?"
+        )
+        .run(goal.changeRevision, writeRetainedV1({}).schemaVersion, goalId);
+    });
   return turn;
 }
 /** Existing Gateway and Task owners supplied by application assembly. */
@@ -462,11 +474,12 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
     const turn = store.getTurnById(turnId);
     const db = options.openWorkspace(turn.workspaceId);
     const row = db.sqlite
-      .prepare('SELECT goal_id FROM goals WHERE thread_id=?')
-      .get(turn.threadId) as { goal_id: string } | undefined;
+      .prepare('SELECT schema_version AS schemaVersion,goal_id FROM goals WHERE thread_id=?')
+      .get(turn.threadId) as { schemaVersion: unknown; goal_id: string } | undefined;
     try {
       if (!row) throw new Error('Coordinator Goal is unavailable.');
-      const view = readGoalView(store, db, row.goal_id);
+      const goalId = readRetainedV1(row, () => row.goal_id);
+      const view = readGoalView(store, db, goalId);
       const goal = view.goal!;
       const actor: Actor = goalActor(goal);
       if (
@@ -478,13 +491,18 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
       )
         throw new Error('Coordinator current authority is unavailable.');
       db.sqlite.transaction(() => {
-        const current = readGoalView(store, db, goal.goalId).goal!;
+        const currentRow = db.sqlite
+          .prepare('SELECT schema_version AS schemaVersion,payload_json FROM goals WHERE goal_id=?')
+          .get(goal.goalId) as { schemaVersion: unknown; payload_json: string } | undefined;
+        if (!currentRow) throw new Error('Coordinator Goal is unavailable.');
+        const current = readRetainedV1(currentRow, () =>
+          StoredGoalV1Schema.parse(JSON.parse(currentRow.payload_json))
+        );
         db.sqlite
-          .prepare('UPDATE goals SET payload_json=? WHERE goal_id=?')
-          .run(
-            JSON.stringify({ ...current, consideredRevision: current.changeRevision }),
-            goal.goalId
-          );
+          .prepare(
+            "UPDATE goals SET payload_json=json_set(payload_json, '$.consideredRevision', ?),schema_version=? WHERE goal_id=?"
+          )
+          .run(current.changeRevision, writeRetainedV1({}).schemaVersion, goal.goalId);
       })();
       const snapshot = options.runtimeConfig();
       const workspaceConfig = findWorkspaceConfig(snapshot, goal.workspaceId)?.config;
@@ -693,10 +711,11 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
     try {
       const rows = db.sqlite
         .prepare(
-          'SELECT goal_id FROM goals WHERE thread_id=? UNION SELECT goal_id FROM goal_card_tasks WHERE thread_id=?'
+          'SELECT schema_version AS schemaVersion,goal_id FROM goals WHERE thread_id=? UNION SELECT schema_version AS schemaVersion,goal_id FROM goal_card_tasks WHERE thread_id=?'
         )
-        .all(turn.threadId, turn.threadId) as { goal_id: string }[];
-      for (const row of rows) wake(turn.workspaceId, row.goal_id);
+        .all(turn.threadId, turn.threadId) as { schemaVersion: unknown; goal_id: string }[];
+      const goalIds = rows.map((row) => readRetainedV1(row, () => row.goal_id));
+      for (const goalId of new Set(goalIds)) wake(turn.workspaceId, goalId);
     } finally {
       db.sqlite.close();
     }
@@ -706,10 +725,15 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
       const db = options.openWorkspace(workspace.id);
       try {
         recoverTaskTerminalFacts(options.store, db);
-        for (const row of db.sqlite.prepare('SELECT payload_json FROM goals').all() as {
+        for (const row of db.sqlite
+          .prepare('SELECT schema_version AS schemaVersion,payload_json FROM goals')
+          .all() as {
+          schemaVersion: unknown;
           payload_json: string;
         }[]) {
-          const goal = GoalRecordSchema.parse(JSON.parse(row.payload_json));
+          const goal = readRetainedV1(row, () =>
+            StoredGoalV1Schema.parse(JSON.parse(row.payload_json))
+          );
           for (const turn of options.store.listThreadTurns(workspace.id, goal.threadId))
             if (
               turn.agentId === 'goal-coordinator' &&

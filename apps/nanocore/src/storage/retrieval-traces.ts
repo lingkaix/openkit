@@ -4,7 +4,6 @@ import {
   type ConversationRetrievalTrace,
   type KnowledgeRetrievalTrace,
   type ProductRetrievalTrace,
-  ProductRetrievalTraceReaderSchema,
   ProductRetrievalTraceSchema,
 } from '@openkit/app-api-schemas';
 import {
@@ -12,8 +11,11 @@ import {
   parseReferenceScope,
   type RetrievalTraceReference,
   RetrievalTraceReferenceSchema,
+  readRetainedV1,
+  writeRetainedV1,
 } from '@openkit/protocol';
 import { OperationError } from '../operation-error.js';
+import { StoredProductRetrievalTraceV1Schema } from './retrieval-trace-retained-v1.js';
 import {
   assertCanonicalDirectory,
   ensureCanonicalDirectory,
@@ -75,7 +77,7 @@ export function publishRetrievalTrace(
       409
     );
   // The publisher is one synchronous writer. No await separates its existence check and rename.
-  writeFileAtomic(path, JSON.stringify(trace));
+  writeFileAtomic(path, JSON.stringify(writeRetainedV1(trace)));
 }
 
 /** Allocates through the existing retrieval-trace identifier owner. */
@@ -110,7 +112,9 @@ export function readRetrievalTrace(
   }
   const path = join(workspaceRoot, relative);
   if (!lstatSync(path, { throwIfNoEntry: false })) return null;
-  const trace = ProductRetrievalTraceReaderSchema.parse(JSON.parse(readCanonicalTextFile(path)));
+  const trace = readRetainedV1(JSON.parse(readCanonicalTextFile(path)), (value) =>
+    StoredProductRetrievalTraceV1Schema.parse(value)
+  );
   if ((sourceKind === 'conversation') !== 'sourceKind' in trace)
     throw new OperationError(
       'workspace_access_denied',
@@ -147,8 +151,9 @@ export function readTurnRetrievalTraces(
         scopeId,
         objectId: name.slice(0, -5),
       });
-      const trace = ProductRetrievalTraceReaderSchema.parse(
-        JSON.parse(readCanonicalTextFile(join(directory, name)))
+      const trace = readRetainedV1(
+        JSON.parse(readCanonicalTextFile(join(directory, name))),
+        (value) => StoredProductRetrievalTraceV1Schema.parse(value)
       );
       assertRetrievalTraceIdentity(reference, trace);
       return { reference, trace };

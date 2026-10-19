@@ -2,11 +2,13 @@ import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import {
   AgentSessionIdSchema,
+  readRetainedV1,
   ThreadIdSchema,
   TimestampSchema,
   TurnIdSchema,
   WorkerStorageTargetIdSchema,
   WorkspaceIdSchema,
+  writeRetainedV1,
 } from '@openkit/protocol';
 import { z } from 'zod';
 import { OperationError } from '../operation-error.js';
@@ -15,8 +17,13 @@ import {
   sameWorkspaceSnapshot,
   WorkspaceCollectionError,
   type WorkspaceSnapshotPair,
-  WorkspaceSnapshotPairSchema,
 } from './workspace-collect-wire.js';
+
+/** Frozen retained v1 snapshot references; transport schema changes do not reinterpret saved pairs. */
+const StoredWorkspaceSnapshotPairV1Schema = z.object({
+  tree: z.string().regex(/^[0-9a-f]{40}$/),
+  manifest: z.string().regex(/^[0-9a-f]{40}$/),
+});
 
 /** Exact admitted volume and collection lineage; no private credentials enter these records. */
 const WorkspaceCollectionIdentitySchema = z.object({
@@ -61,18 +68,18 @@ const StoredCollectionResultSchema = z
           .int()
           .positive()
           .max(256 * 1024 * 1024),
-        head: WorkspaceSnapshotPairSchema,
-        previousHead: WorkspaceSnapshotPairSchema,
-        acceptedBase: WorkspaceSnapshotPairSchema,
+        head: StoredWorkspaceSnapshotPairV1Schema,
+        previousHead: StoredWorkspaceSnapshotPairV1Schema,
+        acceptedBase: StoredWorkspaceSnapshotPairV1Schema,
         unstable: z.boolean(),
       })
       .passthrough(),
     z
       .object({
         outcome: z.literal('empty'),
-        head: WorkspaceSnapshotPairSchema,
-        previousHead: WorkspaceSnapshotPairSchema,
-        acceptedBase: WorkspaceSnapshotPairSchema,
+        head: StoredWorkspaceSnapshotPairV1Schema,
+        previousHead: StoredWorkspaceSnapshotPairV1Schema,
+        acceptedBase: StoredWorkspaceSnapshotPairV1Schema,
         unstable: z.boolean(),
       })
       .passthrough(),
@@ -98,23 +105,25 @@ export function readWorkspaceSnapshotCursor(
 ): WorkspaceSnapshotCursor | null {
   const row = db.sqlite
     .prepare(
-      'SELECT accepted_base_json, head_json, accepted_commit FROM workspace_snapshot_cursors WHERE workspace_id = ? AND storage_ref = ? AND work_slot = ?'
+      'SELECT schema_version AS schemaVersion, accepted_base_json, head_json, accepted_commit FROM workspace_snapshot_cursors WHERE workspace_id = ? AND storage_ref = ? AND work_slot = ?'
     )
     .get(identity.workspaceId, identity.storageRef, identity.workSlot) as
     | {
+        schemaVersion: unknown;
         accepted_base_json: string | null;
         head_json: string | null;
         accepted_commit: string | null;
       }
     | undefined;
+  if (row) readRetainedV1(row, () => undefined);
   if (row && (row.accepted_base_json === null) !== (row.head_json === null))
     throw new z.ZodError([
       { code: 'custom', message: 'Workspace snapshot cursor is partially initialized.', path: [] },
     ]);
   return row && row.accepted_base_json !== null && row.head_json !== null
     ? {
-        acceptedBase: WorkspaceSnapshotPairSchema.parse(JSON.parse(row.accepted_base_json)),
-        head: WorkspaceSnapshotPairSchema.parse(JSON.parse(row.head_json)),
+        acceptedBase: StoredWorkspaceSnapshotPairV1Schema.parse(JSON.parse(row.accepted_base_json)),
+        head: StoredWorkspaceSnapshotPairV1Schema.parse(JSON.parse(row.head_json)),
         acceptedCommit: z
           .string()
           .regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/)
@@ -130,12 +139,19 @@ export function readWorkspaceCollection(
 ): WorkspaceCollectionReceipt | null {
   const row = db.sqlite
     .prepare(
-      'SELECT identity_json, result_json, candidate, is_link FROM workspace_snapshot_collections WHERE workspace_id = ? AND storage_ref = ? AND work_slot = ? AND collection_id = ?'
+      'SELECT schema_version AS schemaVersion, identity_json, result_json, candidate, is_link FROM workspace_snapshot_collections WHERE workspace_id = ? AND storage_ref = ? AND work_slot = ? AND collection_id = ?'
     )
     .get(identity.workspaceId, identity.storageRef, identity.workSlot, identity.collectionId) as
-    | { identity_json: string; result_json: string; candidate: Buffer | null; is_link: number }
+    | {
+        schemaVersion: unknown;
+        identity_json: string;
+        result_json: string;
+        candidate: Buffer | null;
+        is_link: number;
+      }
     | undefined;
   if (!row) return null;
+  readRetainedV1(row, () => undefined);
   const stored = WorkspaceCollectionIdentitySchema.parse(JSON.parse(row.identity_json));
   if (!isDeepStrictEqual(stored, WorkspaceCollectionIdentitySchema.parse(identity)))
     throw new z.ZodError([
@@ -152,7 +168,7 @@ export function readWorkspaceCollection(
     ]);
   if (result.outcome === 'no_new_head' && result.unstable === true) {
     for (const field of ['head', 'previousHead', 'acceptedBase'])
-      WorkspaceSnapshotPairSchema.parse(result[field]);
+      StoredWorkspaceSnapshotPairV1Schema.parse(result[field]);
   }
   if (
     result.outcome === 'candidate'
@@ -186,28 +202,28 @@ export function workspaceSnapshotAcceptedCommitIsKnown(
 ): boolean {
   const proofs = db.sqlite
     .prepare(`
-    SELECT 'cursor' AS kind, storage_ref AS storageRef, baseline_identity_json AS identity
+    SELECT schema_version AS schemaVersion, 'cursor' AS kind, storage_ref AS storageRef, baseline_identity_json AS identity
     FROM workspace_snapshot_cursors
-    WHERE workspace_id = ? AND work_slot = ? AND accepted_commit = ?
-      AND json_extract(baseline_identity_json, '$.threadId') = ?
+    WHERE workspace_id=? AND work_slot=? AND accepted_commit=?
     UNION ALL
-    SELECT 'collection' AS kind, storage_ref AS storageRef, identity_json AS identity
-    FROM workspace_snapshot_collections
-    WHERE workspace_id = ? AND work_slot = ?
-      AND json_extract(result_json, '$.acceptedCommit') = ?
-      AND json_extract(identity_json, '$.threadId') = ?
-    `)
-    .all(workspaceId, workSlot, commit, threadId, workspaceId, workSlot, commit, threadId) as {
+    SELECT schema_version AS schemaVersion, 'collection' AS kind, storage_ref AS storageRef, identity_json AS identity
+    FROM workspace_snapshot_collections WHERE workspace_id=? AND work_slot=?
+  `)
+    .all(workspaceId, workSlot, commit, workspaceId, workSlot) as {
+    schemaVersion: unknown;
     kind: 'cursor' | 'collection';
     storageRef: string;
     identity: string;
   }[];
   return proofs.some((proof) =>
-    proof.kind === 'cursor'
-      ? readWorkspaceSnapshotCursor(db, { workspaceId, storageRef: proof.storageRef, workSlot })
-          ?.acceptedCommit === commit
-      : readWorkspaceCollection(db, JSON.parse(proof.identity) as WorkspaceCollectionIdentity)
-          ?.result.acceptedCommit === commit
+    readRetainedV1(proof, () => {
+      const identity = WorkspaceCollectionIdentitySchema.parse(JSON.parse(proof.identity));
+      if (identity.threadId !== threadId) return false;
+      return proof.kind === 'cursor'
+        ? readWorkspaceSnapshotCursor(db, { workspaceId, storageRef: proof.storageRef, workSlot })
+            ?.acceptedCommit === commit
+        : readWorkspaceCollection(db, identity)?.result.acceptedCommit === commit;
+    })
   );
 }
 
@@ -216,11 +232,23 @@ export function authorizeWorkspaceBaselineInitialization(
   db: WorkspaceDb,
   identity: WorkspaceCollectionIdentity
 ): void {
+  const existing = db.sqlite
+    .prepare(
+      'SELECT schema_version AS schemaVersion FROM workspace_snapshot_cursors WHERE workspace_id=? AND storage_ref=? AND work_slot=?'
+    )
+    .get(identity.workspaceId, identity.storageRef, identity.workSlot);
+  if (existing) readRetainedV1(existing, () => undefined);
   db.sqlite
     .prepare(
-      'INSERT INTO workspace_snapshot_cursors (workspace_id, storage_ref, work_slot, accepted_base_json, head_json, baseline_identity_json) VALUES (?, ?, ?, NULL, NULL, ?) ON CONFLICT DO NOTHING'
+      'INSERT INTO workspace_snapshot_cursors (workspace_id, storage_ref, work_slot, accepted_base_json, head_json, baseline_identity_json, schema_version) VALUES (?, ?, ?, NULL, NULL, ?, ?) ON CONFLICT DO NOTHING'
     )
-    .run(identity.workspaceId, identity.storageRef, identity.workSlot, JSON.stringify(identity));
+    .run(
+      identity.workspaceId,
+      identity.storageRef,
+      identity.workSlot,
+      JSON.stringify(identity),
+      writeRetainedV1({}).schemaVersion
+    );
 }
 /** Requires the same unfinished initialization, never a retained unrelated slot. */
 export function requireWorkspaceBaselineInitialization(
@@ -229,13 +257,16 @@ export function requireWorkspaceBaselineInitialization(
 ): void {
   const row = db.sqlite
     .prepare(
-      'SELECT baseline_identity_json FROM workspace_snapshot_cursors WHERE workspace_id = ? AND storage_ref = ? AND work_slot = ?'
+      'SELECT schema_version AS schemaVersion, baseline_identity_json FROM workspace_snapshot_cursors WHERE workspace_id = ? AND storage_ref = ? AND work_slot = ?'
     )
     .get(identity.workspaceId, identity.storageRef, identity.workSlot) as
-    | { baseline_identity_json: string }
+    | { schemaVersion: unknown; baseline_identity_json: string }
     | undefined;
   const stored =
-    row && WorkspaceCollectionIdentitySchema.safeParse(JSON.parse(row.baseline_identity_json));
+    row &&
+    readRetainedV1(row, () =>
+      WorkspaceCollectionIdentitySchema.safeParse(JSON.parse(row.baseline_identity_json))
+    );
   if (
     !stored?.success ||
     !isDeepStrictEqual(stored.data, WorkspaceCollectionIdentitySchema.parse(identity))
@@ -257,7 +288,7 @@ export function acceptWorkspaceBaseline(
   expectedTree: string | null,
   acceptedCommit: string | null = null
 ): void {
-  const pair = WorkspaceSnapshotPairSchema.parse(head);
+  const pair = StoredWorkspaceSnapshotPairV1Schema.parse(head);
   if (
     expectedTree === null
       ? acceptedCommit === null || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(acceptedCommit)
@@ -357,9 +388,9 @@ export function acceptWorkspaceCapture(
       throw new Error('Failed workspace collection cannot advance its cursor.');
     let head = cursor.head;
     if (changed) {
-      const previous = WorkspaceSnapshotPairSchema.parse(result.previousHead);
-      const accepted = WorkspaceSnapshotPairSchema.parse(result.acceptedBase);
-      head = WorkspaceSnapshotPairSchema.parse(result.head);
+      const previous = StoredWorkspaceSnapshotPairV1Schema.parse(result.previousHead);
+      const accepted = StoredWorkspaceSnapshotPairV1Schema.parse(result.acceptedBase);
+      head = StoredWorkspaceSnapshotPairV1Schema.parse(result.head);
       if (!sameWorkspaceSnapshot(previous, cursor.head))
         throw new WorkspaceCollectionError({
           outcome: 'recovery_required',
@@ -389,12 +420,13 @@ export function acceptWorkspaceCapture(
         ? (
             db.sqlite
               .prepare(
-                "SELECT c.collection_id FROM workspace_snapshot_collections c JOIN staged_workspace_reviews r ON r.workspace_id = c.workspace_id AND r.change_set_id = c.change_set_id WHERE c.workspace_id = ? AND c.storage_ref = ? AND c.work_slot = ? AND r.status = 'pending' ORDER BY c.rowid"
+                "SELECT c.schema_version AS schemaVersion,c.collection_id FROM workspace_snapshot_collections c JOIN staged_workspace_reviews r ON r.workspace_id = c.workspace_id AND r.change_set_id = c.change_set_id WHERE c.workspace_id = ? AND c.storage_ref = ? AND c.work_slot = ? AND r.status = 'pending' ORDER BY c.rowid"
               )
               .all(identity.workspaceId, identity.storageRef, identity.workSlot) as {
+              schemaVersion: unknown;
               collection_id: string;
             }[]
-          ).map((row) => row.collection_id)
+          ).map((row) => readRetainedV1(row, () => row.collection_id))
         : [];
     const checkedResult = {
       ...result,
@@ -422,7 +454,7 @@ export function acceptWorkspaceCapture(
     };
     db.sqlite
       .prepare(
-        'INSERT INTO workspace_snapshot_collections (workspace_id, storage_ref, work_slot, collection_id, identity_json, result_json, candidate, is_link) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO workspace_snapshot_collections (workspace_id, storage_ref, work_slot, collection_id, identity_json, result_json, candidate, is_link, schema_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
       )
       .run(
         identity.workspaceId,
@@ -432,7 +464,8 @@ export function acceptWorkspaceCapture(
         JSON.stringify(identity),
         JSON.stringify(storedResult),
         candidate,
-        receipt.isLink ? 1 : 0
+        receipt.isLink ? 1 : 0,
+        writeRetainedV1({}).schemaVersion
       );
     if (changed)
       db.sqlite
@@ -481,11 +514,16 @@ function workspaceReviewCollection(
 ): WorkspaceCollectionReceipt | null {
   const row = db.sqlite
     .prepare(
-      'SELECT identity_json FROM workspace_snapshot_collections WHERE workspace_id = ? AND change_set_id = ?'
+      'SELECT schema_version AS schemaVersion, identity_json FROM workspace_snapshot_collections WHERE workspace_id = ? AND change_set_id = ?'
     )
-    .get(workspaceId, changeSetId) as { identity_json: string } | undefined;
+    .get(workspaceId, changeSetId) as { schemaVersion: unknown; identity_json: string } | undefined;
   return row
-    ? readWorkspaceCollection(db, JSON.parse(row.identity_json) as WorkspaceCollectionIdentity)
+    ? readRetainedV1(row, () =>
+        readWorkspaceCollection(
+          db,
+          WorkspaceCollectionIdentitySchema.parse(JSON.parse(row.identity_json))
+        )
+      )
     : null;
 }
 /** Detects a later candidate whose immutable accepted base has already moved through apply. */
@@ -501,7 +539,7 @@ export function workspaceSnapshotReviewIsStale(
     !cursor ||
     !sameWorkspaceSnapshot(
       cursor.acceptedBase,
-      WorkspaceSnapshotPairSchema.parse(receipt.result.acceptedBase)
+      StoredWorkspaceSnapshotPairV1Schema.parse(receipt.result.acceptedBase)
     )
   );
 }
@@ -515,7 +553,7 @@ export function acceptAppliedWorkspaceSnapshot(
   const receipt = workspaceReviewCollection(db, workspaceId, changeSetId);
   if (!receipt) return;
   const cursor = readWorkspaceSnapshotCursor(db, receipt.identity);
-  const head = WorkspaceSnapshotPairSchema.parse(receipt.result.head);
+  const head = StoredWorkspaceSnapshotPairV1Schema.parse(receipt.result.head);
   if (cursor && sameWorkspaceSnapshot(cursor.acceptedBase, head)) return;
   if (workspaceSnapshotReviewIsStale(db, workspaceId, changeSetId))
     throw new OperationError(
@@ -543,10 +581,14 @@ export function readWorkspaceBaselineIdentity(
 ): WorkspaceCollectionIdentity | null {
   const row = db.sqlite
     .prepare(
-      'SELECT baseline_identity_json FROM workspace_snapshot_cursors WHERE workspace_id = ? AND storage_ref = ? AND work_slot = ?'
+      'SELECT schema_version AS schemaVersion, baseline_identity_json FROM workspace_snapshot_cursors WHERE workspace_id = ? AND storage_ref = ? AND work_slot = ?'
     )
     .get(identity.workspaceId, identity.storageRef, identity.workSlot) as
-    | { baseline_identity_json: string }
+    | { schemaVersion: unknown; baseline_identity_json: string }
     | undefined;
-  return row ? (JSON.parse(row.baseline_identity_json) as WorkspaceCollectionIdentity) : null;
+  return row
+    ? readRetainedV1(row, () =>
+        WorkspaceCollectionIdentitySchema.parse(JSON.parse(row.baseline_identity_json))
+      )
+    : null;
 }

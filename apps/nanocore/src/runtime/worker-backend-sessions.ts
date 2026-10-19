@@ -1,4 +1,5 @@
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
+import { readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 import type { CoreDb } from '../storage/db.js';
 import type {
   WorkerBackendSessionState,
@@ -180,6 +181,7 @@ export interface MarkWorkerBackendWorkspaceHandoffCompleteInput {
 
 /** Raw SQLite worker backend session row. */
 interface WorkerBackendSessionRow {
+  readonly schemaVersion: unknown;
   readonly attempt_id: string;
   readonly workspace_id: string;
   readonly thread_id: string;
@@ -322,8 +324,8 @@ export function recordWorkerBackendSessionMaterializing(
            package_snapshot_id, backend_kind, deployment_id, backend_version,
            backend_session_id, runtime_target_id, origin_physical_epoch, backend_lineage_json, sandbox_binding_ref,
            staging_directory_ref, transient_provider_instance_id, workspace_handoff_state,
-           state, physical_cleaned_at, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'materializing', NULL, ?, ?)`
+           state, physical_cleaned_at, created_at, updated_at, schema_version
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'materializing', NULL, ?, ?, ?)`
       )
       .run(
         attemptId,
@@ -343,7 +345,8 @@ export function recordWorkerBackendSessionMaterializing(
         input.identity.stagingDirectoryRef,
         input.identity.transientProviderInstanceId,
         timestamp,
-        timestamp
+        timestamp,
+        writeRetainedV1({}).schemaVersion
       );
     coreDb.sqlite.exec('COMMIT');
   } catch (error) {
@@ -372,6 +375,8 @@ export function transitionWorkerBackendSessionState(
     );
   }
   const timestamp = input.now?.() ?? new Date().toISOString();
+  const current = selectWorkerBackendSession(coreDb, input.attemptId);
+  if (current) readRetainedV1(current, () => current);
   const result = coreDb.sqlite
     .prepare(
       `UPDATE worker_backend_sessions
@@ -406,7 +411,7 @@ export function markWorkerBackendSessionLaunching(
   try {
     const row = coreDb.sqlite
       .prepare(
-        `SELECT sessions.state,
+        `SELECT sessions.schema_version AS schemaVersion, sessions.state,
                 sessions.workspace_handoff_state AS workspaceHandoffState,
                 leases.phase,
                 leases.deadline AS deadline,
@@ -419,6 +424,7 @@ export function markWorkerBackendSessionLaunching(
       )
       .get(input.attemptId) as
       | {
+          readonly schemaVersion: unknown;
           readonly deadline: string | null;
           readonly heartbeatDeadline: string;
           readonly lastAcceptedHeartbeatAt: string | null;
@@ -428,6 +434,7 @@ export function markWorkerBackendSessionLaunching(
           readonly workspaceHandoffState: WorkerBackendWorkspaceHandoffState;
         }
       | undefined;
+    if (row) readRetainedV1(row, () => row);
     const deadline = row?.lastAcceptedHeartbeatAt ? row.heartbeatDeadline : row?.startupDeadline;
     if (
       !row ||
@@ -473,6 +480,8 @@ export function markWorkerBackendWorkspaceHandoffComplete(
   input: MarkWorkerBackendWorkspaceHandoffCompleteInput
 ): WorkerBackendSessionRecord {
   const timestamp = input.now?.() ?? new Date().toISOString();
+  const current = selectWorkerBackendSession(coreDb, input.attemptId);
+  if (current) readRetainedV1(current, () => current);
   const result = coreDb.sqlite
     .prepare(
       `UPDATE worker_backend_sessions
@@ -538,7 +547,7 @@ function selectWorkerBackendSession(
 
 /** Returns the canonical worker backend session select projection. */
 function workerBackendSessionSelectSql(): string {
-  return `SELECT attempt_id, workspace_id, thread_id, turn_id, agent_session_id,
+  return `SELECT schema_version AS schemaVersion, attempt_id, workspace_id, thread_id, turn_id, agent_session_id,
                  package_snapshot_id, backend_kind, deployment_id, backend_version,
                  backend_session_id, runtime_target_id, origin_physical_epoch, backend_lineage_json, sandbox_binding_ref,
                  staging_directory_ref, transient_provider_instance_id, workspace_handoff_state,
@@ -588,7 +597,7 @@ function workerBackendSessionMatchesInput(
 
 /** Maps a raw SQLite row to the durable public record. */
 function mapWorkerBackendSessionRow(row: WorkerBackendSessionRow): WorkerBackendSessionRecord {
-  return {
+  return readRetainedV1(row, () => ({
     attemptId: row.attempt_id,
     workspaceId: row.workspace_id,
     threadId: row.thread_id,
@@ -610,7 +619,7 @@ function mapWorkerBackendSessionRow(row: WorkerBackendSessionRow): WorkerBackend
     physicalCleanedAt: row.physical_cleaned_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-  };
+  }));
 }
 
 /** Removes the input discriminator before persisting the exact lineage payload. */

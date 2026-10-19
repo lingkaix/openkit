@@ -98,7 +98,9 @@ function goalTools(): readonly AgentTool[] {
   const db = {
     sqlite: {
       prepare(sql: string) {
-        expect(sql).toMatch(/^SELECT payload_json FROM goals WHERE goal_id\s*=\s*\?$/);
+        expect(sql).toMatch(
+          /^SELECT schema_version AS schemaVersion,payload_json FROM goals WHERE goal_id\s*=\s*\?$/
+        );
         return { get: () => undefined };
       },
     },

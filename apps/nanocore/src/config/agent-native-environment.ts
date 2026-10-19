@@ -3,6 +3,7 @@ import {
   UpdateAgentNativeEnvironmentRequestSchema,
 } from '@openkit/app-api-schemas';
 import { AuthoredAgentConfigSchema } from '@openkit/config-schema';
+import { readRetainedV1 } from '@openkit/protocol';
 import {
   canonicalNativeEnvironment,
   isProtectedNativeEnvironmentName,
@@ -63,9 +64,11 @@ export function createAgentNativeEnvironmentService(input: {
       const snapshot = input.manager.current();
       const reloaded = snapshot.agentManifests.find((agent) => agent.id === manifest.id);
       const rows = input.coreDb.sqlite
-        .prepare(`SELECT b.workspace_id AS workspaceId, b.thread_id AS threadId, b.lifecycle_state AS lifecycleState, b.cleanup_state AS cleanupState, h.lifecycle_state AS harnessState, s.lifecycle_state AS sandboxState, t.ready AS targetReady, t.physical_epoch AS physicalEpoch, s.origin_physical_epoch AS originEpoch,
+        .prepare(`SELECT b.schema_version AS schemaVersion, h.schema_version AS harnessSchemaVersion, b.workspace_id AS workspaceId, b.thread_id AS threadId, b.lifecycle_state AS lifecycleState, b.cleanup_state AS cleanupState, h.lifecycle_state AS harnessState, s.lifecycle_state AS sandboxState, t.ready AS targetReady, t.physical_epoch AS physicalEpoch, s.origin_physical_epoch AS originEpoch,
         b.native_environment_json AS environment, b.native_environment_applied AS applied FROM agent_session_runtime_bindings b JOIN harness_instance_records h ON h.harness_instance_id = b.harness_instance_id LEFT JOIN sandbox_runtime_records s ON s.sandbox_runtime_id = h.sandbox_runtime_id LEFT JOIN nanohost_runtime_targets t ON t.target_id = s.runtime_target_id WHERE b.native_environment_json IS NOT NULL`)
         .all() as {
+        schemaVersion: unknown;
+        harnessSchemaVersion: unknown;
         workspaceId: string;
         threadId: string;
         lifecycleState: string;
@@ -88,7 +91,10 @@ export function createAgentNativeEnvironmentService(input: {
           !isThreadIdVisible(input.store, row.workspaceId, row.threadId, actor.userId)
         )
           return [];
-        const record = JSON.parse(row.environment) as Record<string, unknown>;
+        const record = readRetainedV1(row, () => {
+          readRetainedV1({ schemaVersion: row.harnessSchemaVersion }, () => row);
+          return JSON.parse(row.environment) as Record<string, unknown>;
+        });
         if (record.agentId !== manifest.id) return [];
         const environment = NativeEnvironmentRecordSchema.parse(record);
         const state =

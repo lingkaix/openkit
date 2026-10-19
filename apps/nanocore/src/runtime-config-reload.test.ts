@@ -62,6 +62,7 @@ function writeServerConfig(dataRoot: string, model: string): void {
   writeFileSync(
     join(providersRoot, 'agent-openrouter.provider.jsonc'),
     JSON.stringify({
+      schemaVersion: 1,
       id: 'agent-openrouter',
       vendor: 'openrouter',
       kind: 'gateway',

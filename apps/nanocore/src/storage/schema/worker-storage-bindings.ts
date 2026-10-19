@@ -1,3 +1,4 @@
+import { writeRetainedV1 } from '@openkit/protocol';
 import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 /** Closed lifecycle states for one private retained Worker storage association. */
@@ -13,6 +14,8 @@ export type WorkerStorageBindingState =
 export const workerStorageBindings = sqliteTable(
   'worker_storage_bindings',
   {
+    /** Retained JSON payload format; native DDL versions scalar columns separately. */
+    schemaVersion: integer('schema_version').notNull().default(writeRetainedV1({}).schemaVersion),
     /** Opaque association identity shared with one configured NanoHost. */
     storageRef: text('storage_ref').primaryKey().notNull(),
     /** Configured NanoHost RuntimeTarget that owns physical effects. */

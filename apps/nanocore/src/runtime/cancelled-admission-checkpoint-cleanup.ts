@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { readRetainedV1 } from '@openkit/protocol';
 import { acquireDataRootLock, type DataRootLock, DataRootLockError } from '../bootstrap/lock.js';
 import {
   type DurableCommandRequestRead,
@@ -637,13 +638,14 @@ function listAdmissions(
   try {
     return coreDb.sqlite
       .prepare(
-        `SELECT queue_entry_id AS queueEntryId, request_id AS requestId, status,
+        `SELECT schema_version AS schemaVersion, queue_entry_id AS queueEntryId, request_id AS requestId, status,
                 workspace_id AS workspaceId, thread_id AS threadId, turn_id AS turnId
          FROM scheduler_admission_entries
          WHERE turn_id = ? OR request_id = ?
          ORDER BY queue_entry_id ASC`
       )
-      .all(checkpoint.turnId, checkpoint.requestId) as {
+      .all(checkpoint.turnId, checkpoint.requestId)
+      .map((row) => readRetainedV1(row, () => row)) as {
       readonly queueEntryId: string;
       readonly requestId: string | null;
       readonly status: string;

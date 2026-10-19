@@ -13,6 +13,7 @@ import {
   revokeOpenKitAccessTokenRecord,
   setDefaultServerAdminTokenId,
 } from '../auth/access-token-store.js';
+import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import {
   composeWorkspaceMcpCatalog,
   createMcpConfig,
@@ -20,6 +21,7 @@ import {
 } from '../catalog/resource-catalog.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { FsStore } from '../lib/store.js';
+import { WORKSPACE_MEMBER_OPERATIONS } from '../policy/workspace-access.js';
 import { recordAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import {
   acceptSchedulerExecutionObservation,
@@ -212,7 +214,8 @@ describe('supported Vault grant request and review', () => {
 /** Creates existing native records before exercising the new command boundary. */
 async function prepare(
   f: ReturnType<typeof fixture>,
-  ownerScope: 'workspace' | 'server' = 'workspace'
+  ownerScope: 'workspace' | 'server' = 'workspace',
+  visibility: 'private' | 'workspace' = 'private'
 ) {
   const workspace = await f.send('workspace.create', {
     name: 'Grant authority',
@@ -223,6 +226,7 @@ async function prepare(
   const thread = await f.send('thread.create', {
     workspaceId,
     name: 'Exact grant review',
+    visibility,
     requestId: randomUUID(),
   });
   expect(thread.status).toBe(200);
@@ -523,6 +527,62 @@ it('refuses a revoked initiating credential without substituting current members
   }
 });
 
+it('refuses issuance after the human requester loses only request-Thread write rights', async () => {
+  const f = fixture();
+  try {
+    const source = await prepare(f, 'workspace', 'workspace');
+    const requester = createOpenKitAccessTokenRecord(f.coreDb, {
+      ownerUserId: FIXTURE_LOCAL_USER_ID,
+      scope: 'workspace',
+      workspaceIds: [source.workspaceId],
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    });
+    const response = await f.serverSend(
+      'vault.grant-request',
+      { ...source, requestId: randomUUID() },
+      requester.secret
+    );
+    expect(response.status).toBe(200);
+    const request = await response.json();
+    expect((await f.send('approval.respond', decision(request, 'granted'))).status).toBe(200);
+    f.store.setWorkspaceResourcePolicyProjection(() => [
+      {
+        resource: { family: 'thread', id: source.threadId },
+        grants: [
+          {
+            subject: { kind: 'user', userId: FIXTURE_LOCAL_USER_ID },
+            operations: WORKSPACE_MEMBER_OPERATIONS.filter((right) => right !== 'workspace.write'),
+          },
+        ],
+        prohibitions: [],
+      },
+    ]);
+    expect(
+      isThreadIdVisible(f.store, source.workspaceId, source.threadId, FIXTURE_LOCAL_USER_ID)
+    ).toBe(true);
+    expect(
+      isThreadIdVisible(
+        f.store,
+        source.workspaceId,
+        source.threadId,
+        FIXTURE_LOCAL_USER_ID,
+        false,
+        'workspace.write'
+      )
+    ).toBe(false);
+    const issue = await f.send('vault.grant-issue', {
+      workspaceId: source.workspaceId,
+      threadId: source.threadId,
+      approvalRequestId: request.approvalRequestId,
+    });
+    expect(issue.status).toBe(403);
+    expect((await issue.json()).code).toBe('workspace_access_denied');
+    expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_grants').all()).toHaveLength(0);
+  } finally {
+    f.cleanup();
+  }
+});
+
 it('retains an interrupted claim as unknown after restart and never issues again', async () => {
   const f = fixture();
   try {
@@ -701,11 +761,17 @@ it('permits deny and withdraw when exact disclosure is unavailable and prevents 
 it.each([
   'workspace',
   'server',
-] as const)('binds a Worker %s request to its exact package and current canonical MCP slot', async (ownerScope) => {
+  'revoked-agent',
+] as const)('binds a Worker %s request to its exact package and current canonical MCP slot', async (selection) => {
+  const ownerScope = selection === 'revoked-agent' ? 'workspace' : selection;
   const f = fixture();
   let workspaceDb: ReturnType<typeof openWorkspaceDb> | undefined;
   try {
-    const source = await prepare(f, ownerScope);
+    const source = await prepare(
+      f,
+      ownerScope,
+      selection === 'revoked-agent' ? 'workspace' : 'private'
+    );
     const existingGrantId = allocateEntityId('grant');
     createVaultGrant(f.coreDb, {
       grantId: existingGrantId,
@@ -872,6 +938,68 @@ it.each([
       approvalRequestId: string;
     };
     expect((await f.send('approval.respond', decision(request, 'granted'))).status).toBe(200);
+    if (selection === 'revoked-agent') {
+      const requestingAgent = {
+        kind: 'agent' as const,
+        userId: FIXTURE_LOCAL_USER_ID,
+        agentId: pkg.agent.agentId,
+        processId: sessionId,
+      };
+      f.store.setWorkspaceResourcePolicyProjection(() => [
+        {
+          resource: { family: 'thread', id: source.threadId },
+          grants: [
+            {
+              subject: { kind: 'user', userId: FIXTURE_LOCAL_USER_ID },
+              operations: WORKSPACE_MEMBER_OPERATIONS,
+            },
+            {
+              subject: {
+                kind: 'agent',
+                userId: requestingAgent.userId,
+                agentId: requestingAgent.agentId,
+              },
+              operations: ['thread.read'],
+            },
+          ],
+          prohibitions: [],
+        },
+      ]);
+      expect(
+        isThreadIdVisible(f.store, source.workspaceId, source.threadId, FIXTURE_LOCAL_USER_ID)
+      ).toBe(true);
+      expect(
+        isThreadIdVisible(
+          f.store,
+          source.workspaceId,
+          source.threadId,
+          FIXTURE_LOCAL_USER_ID,
+          false,
+          'thread.read',
+          requestingAgent
+        )
+      ).toBe(true);
+      expect(
+        isThreadIdVisible(
+          f.store,
+          source.workspaceId,
+          source.threadId,
+          FIXTURE_LOCAL_USER_ID,
+          false,
+          'workspace.write',
+          requestingAgent
+        )
+      ).toBe(false);
+      const refused = await f.send('vault.grant-issue', {
+        workspaceId: source.workspaceId,
+        threadId: source.threadId,
+        approvalRequestId: request.approvalRequestId,
+      });
+      expect(refused.status).toBe(403);
+      expect((await refused.json()).code).toBe('workspace_access_denied');
+      expect(f.coreDb.sqlite.prepare('SELECT * FROM vault_grants').all()).toHaveLength(1);
+      return;
+    }
     const issue = await f.send('vault.grant-issue', {
       workspaceId: source.workspaceId,
       threadId: source.threadId,

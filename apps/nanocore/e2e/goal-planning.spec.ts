@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { GoalView } from '@openkit/app-api-schemas';
 import { afterEach, describe, expect, it } from 'vitest';
+import { testGoalDomainProposal } from '../src/test-support/goal-domain.js';
 import { type NanoCoreHarness, removeDataRoot, startNanoCoreHarness } from './_lib/harness.js';
 
 let harness: NanoCoreHarness | null = null;
@@ -55,6 +56,7 @@ describe('Goal atomic cutover e2e', () => {
     const proposed = await operation('goal.plan.propose', {
       ...scope,
       expectedRevision: read.goal!.changeRevision,
+      goalDomain: testGoalDomainProposal(scope.workspaceId, scope.goalId),
       commitment: {
         intentBasis: { revision: 0, intent: created.goal!.intent },
         cards: [

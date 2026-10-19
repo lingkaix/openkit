@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { KnowledgeMaintenanceResponseSchema } from '@openkit/app-api-schemas';
@@ -25,11 +26,19 @@ import type { CoreDb } from '../storage/db.js';
 import { KnowledgeNotebook, NotebookError } from './notebook.js';
 import { createNotebookAgentEditing } from './notebook-agent-editing.js';
 import { boundedNotebookDiff } from './notebook-history.js';
-import { type NotebookPublicationAdmission, publishNotebook } from './notebook-publication.js';
 import {
+  attributedNotebookPageBytes,
+  type NotebookPublicationAdmission,
+  publishNotebook,
+} from './notebook-publication.js';
+import {
+  parseKnowledgePageSourceReference,
   parseOkfDocument,
+  parseScopeKnowledgeSchema,
   resolveRegisteredKnowledgeSourceReference,
+  stringFrontmatterField,
   stringListFrontmatterField,
+  validateScopeKnowledgeSchema,
 } from './okf.js';
 import { initializeScopedNotebook, pinScopedNotebook } from './scoped-notebook-owner.js';
 import {
@@ -79,10 +88,11 @@ export function currentServerMaintenanceActor(
   }
 }
 
-/** Current Server notebook/schema and Source bytes are checked at each disclosure/effect boundary. */
+/** Rechecks current Server authority and Source closure for the selected immutable tree or current publication. */
 export function serverNotebookAdmission(
   dependencies: ServerKnowledgeMaintenanceDependencies,
-  actor: Actor
+  actor: Actor,
+  selectedFiles?: Readonly<Record<string, string>>
 ): NotebookPublicationAdmission {
   requireCurrentDeploymentAdmin(dependencies.coreDb, actor);
   const notebook = pinScopedNotebook({
@@ -90,37 +100,96 @@ export function serverNotebookAdmission(
     actor,
     target: { kind: 'server' },
   });
-  const files = notebook.read().files;
+  const currentFiles = notebook.read().files;
+  const files = selectedFiles ?? currentFiles;
+  const pageScopeId = `page/server/${notebook.knowledgeBaseId}`;
+  const scopeSchemaText = readFileSync(
+    join(dependencies.coreDb.dataRoot, 'server', 'knowledge', 'schema', 'scope-schema.yaml'),
+    'utf8'
+  );
+  const scopeSchema = parseScopeKnowledgeSchema(scopeSchemaText);
+  if (!scopeSchema.ok) throw new NotebookError('recovery_required');
   const registeredSources = new Map(
     listServerKnowledgeSources({ coreDb: dependencies.coreDb, actor }).map((source) => [
       source.id,
       source.contentDigest,
     ])
   );
-  for (const [path, content] of Object.entries(files)) {
+  const resolvedReferences = new Map<string, ReadonlySet<string>>();
+  const visiting = new Set<string>();
+  const checked = new Set<string>();
+  const checkPage = (path: string, selected = files): void => {
+    const pageId = path.slice(0, -3);
+    const key = `${selected === files ? 'selected' : 'current'}:${pageId}`;
+    if (checked.has(key)) return;
+    if (visiting.has(key)) throw new NotebookError('invalid_request');
+    visiting.add(key);
+    const content = selected[path];
+    if (content === undefined) throw new NotebookError('invalid_request');
     const parsed = parseOkfDocument({ path, content });
     if (!parsed.ok) throw new NotebookError('recovery_required');
+    if (
+      !parsed.document.reserved &&
+      validateScopeKnowledgeSchema(parsed.document, scopeSchema.schema, { kind: 'server' }).errors
+        .length
+    )
+      throw new NotebookError('invalid_request');
     const refs = stringListFrontmatterField(parsed.document, 'source_refs') ?? [];
+    const resolved = new Set<string>();
     for (const ref of refs) {
-      const selected = resolveRegisteredKnowledgeSourceReference(ref, registeredSources);
-      if (
-        !selected.resolved ||
-        !selected.targetId ||
-        !readServerKnowledgeSource({ coreDb: dependencies.coreDb, actor }, selected.targetId)
-      )
-        throw new NotebookError('recovery_required');
+      if (ref.startsWith('openkit:')) {
+        const reference = parseKnowledgePageSourceReference(ref, pageScopeId);
+        if (!reference) throw new NotebookError('invalid_request');
+        const targetPath = `${reference.reference.objectId}.md`;
+        // An older selected target cannot bypass a later current restriction.
+        const targetTrees =
+          selected !== currentFiles && currentFiles[targetPath] !== undefined
+            ? [selected, currentFiles]
+            : [selected];
+        for (const targetTree of targetTrees) {
+          const target = targetTree[targetPath];
+          if (
+            target === undefined ||
+            (targetTree === selected &&
+              reference.contentDigest !== undefined &&
+              reference.contentDigest !==
+                `sha256:${createHash('sha256').update(target).digest('hex')}`)
+          )
+            throw new NotebookError('invalid_request');
+          const document = parseOkfDocument({ path: targetPath, content: target });
+          if (
+            !document.ok ||
+            ['restricted', 'confidential'].includes(
+              stringFrontmatterField(document.document, 'sensitivity') ?? ''
+            )
+          )
+            throw new NotebookError('invalid_request');
+          checkPage(targetPath, targetTree);
+        }
+      } else {
+        const selected = resolveRegisteredKnowledgeSourceReference(ref, registeredSources);
+        if (
+          !selected.resolved ||
+          !selected.targetId ||
+          !readServerKnowledgeSource({ coreDb: dependencies.coreDb, actor }, selected.targetId)
+        )
+          throw new NotebookError('recovery_required');
+      }
+      resolved.add(ref);
     }
-  }
+    visiting.delete(key);
+    checked.add(key);
+    if (selected === files) resolvedReferences.set(pageId, resolved);
+  };
+  for (const path of Object.keys(files)) checkPage(path);
   return {
-    scopeSchemaText: readFileSync(
-      join(dependencies.coreDb.dataRoot, 'server', 'knowledge', 'schema', 'scope-schema.yaml'),
-      'utf8'
-    ),
+    pageScopeId,
+    scopeSchemaText,
     reviewRequiredPageIds:
       dependencies.runtimeConfigManager.current().openKitConfig.knowledgeMaintenance
         ?.reviewRequiredPageIds ?? [],
     registeredSources,
-    resolvedReferences: new Map(),
+    resolvedReferences,
   };
 }
 
@@ -257,10 +326,13 @@ export function prepareServerKnowledgeMaintenance(
       originalSources.set(source.source.id, source.source.contentDigest);
     }
 
+    const historicalRevisions = new Set<string>();
     const assertCurrent = () => {
       input.signal.throwIfAborted();
       requireCurrentDeploymentAdmin(coreDb, actor);
-      const current = serverNotebookAdmission(dependencies, actor!);
+      const current = serverNotebookAdmission(dependencies, actor!, canonicalFiles);
+      for (const revision of historicalRevisions)
+        serverNotebookAdmission(dependencies, actor!, git.readRevision(revision).files);
       for (const [id, digest] of originalSources)
         if (current.registeredSources.get(id) !== digest)
           throw new NotebookError('recovery_required');
@@ -290,7 +362,9 @@ export function prepareServerKnowledgeMaintenance(
     while (cursor && cursor !== since && scanned++ < 256) {
       const revision = git.readRevision(cursor);
       const parent = revision.parentRevision ? git.readRevision(revision.parentRevision) : null;
-      if (revision.metadata.producer.kind === 'user')
+      if (revision.metadata.producer.kind === 'user') {
+        historicalRevisions.add(revision.revision);
+        if (parent) historicalRevisions.add(parent.revision);
         for (const path of new Set([
           ...Object.keys(parent?.files ?? {}),
           ...Object.keys(revision.files),
@@ -301,9 +375,11 @@ export function prepareServerKnowledgeMaintenance(
               before: parent?.files[path] ?? null,
               after: revision.files[path] ?? null,
             });
+      }
       cursor = revision.parentRevision;
     }
     if (cursor && cursor !== since) throw new NotebookError('invalid_request');
+    assertCurrent();
     const humanEdits = boundedNotebookDiff(humanChanges, false);
     const editor = createNotebookAgentEditing({
       notebook: git,
@@ -348,6 +424,16 @@ export function prepareServerKnowledgeMaintenance(
               content === null || facts.reviewRequiredPageIds.includes(path.slice(0, -3))
           )
         ) {
+          // Pin proofs use the same final attribution bytes as the common publisher.
+          const candidateFiles = { ...canonicalFiles };
+          for (const { path, content } of edit.changes) {
+            if (content === null) delete candidateFiles[path];
+            else
+              candidateFiles[path] =
+                canonicalFiles[path] === content
+                  ? content
+                  : attributedNotebookPageBytes(path, content, { kind: 'server' }, 'delegated');
+          }
           const published = await publishNotebook(
             {
               owner: { kind: 'server', coreDb },
@@ -370,7 +456,7 @@ export function prepareServerKnowledgeMaintenance(
                   ) !== commandInputHash(setting)
                 )
                   throw new NotebookError('review_required');
-                return serverNotebookAdmission(dependencies, actor!);
+                return serverNotebookAdmission(dependencies, actor!, candidateFiles);
               },
             },
             edit
@@ -384,9 +470,9 @@ export function prepareServerKnowledgeMaintenance(
           {
             ...dependencies,
             actor: actor!,
-            revalidate: () => {
+            revalidate: (candidateFiles?: Readonly<Record<string, string>>) => {
               assertCurrent();
-              return serverNotebookAdmission(dependencies, actor!);
+              return serverNotebookAdmission(dependencies, actor!, candidateFiles);
             },
           },
           edit,

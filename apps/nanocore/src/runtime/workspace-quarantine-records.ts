@@ -2,9 +2,12 @@ import {
   type WorkspaceQuarantineRecord,
   WorkspaceQuarantineRecordSchema,
 } from '@openkit/app-api-schemas';
+import { readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 import type { WorkspaceDb } from '../storage/db.js';
+import { StoredWorkspaceQuarantineRecordV1Schema } from './workspace-sync-outcomes-v1.js';
 
 interface WorkspaceQuarantineRecordRow {
+  readonly schemaVersion: unknown;
   readonly payload_json: string;
 }
 
@@ -19,7 +22,24 @@ export function recordWorkspaceQuarantineRecord(
   workspaceDb: WorkspaceDb,
   record: WorkspaceQuarantineRecord
 ): WorkspaceQuarantineRecord {
-  const parsed = WorkspaceQuarantineRecordSchema.parse(record);
+  return persistWorkspaceQuarantineRecordV1(
+    workspaceDb,
+    WorkspaceQuarantineRecordSchema.parse(record)
+  );
+}
+
+/** Persists validated current or imported v1 payloads without replacing an unsupported format. */
+function persistWorkspaceQuarantineRecordV1(
+  workspaceDb: WorkspaceDb,
+  record: WorkspaceQuarantineRecord
+): WorkspaceQuarantineRecord {
+  const parsed = StoredWorkspaceQuarantineRecordV1Schema.parse(record);
+  const existing = workspaceDb.sqlite
+    .prepare(
+      'SELECT schema_version AS schemaVersion FROM workspace_quarantine_records WHERE workspace_id=? AND quarantine_record_id=?'
+    )
+    .get(parsed.workspaceId, parsed.id);
+  if (existing) readRetainedV1(existing, () => undefined);
   workspaceDb.sqlite
     .prepare(
       `INSERT INTO workspace_quarantine_records (
@@ -30,14 +50,16 @@ export function recordWorkspaceQuarantineRecord(
         payload_json,
         created_at,
         updated_at,
-        resolved_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        resolved_at,
+        schema_version
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(workspace_id, quarantine_record_id) DO UPDATE SET
         failure_kind = excluded.failure_kind,
         resolution = excluded.resolution,
         payload_json = excluded.payload_json,
         updated_at = excluded.updated_at,
-        resolved_at = excluded.resolved_at`
+        resolved_at = excluded.resolved_at,
+        schema_version = excluded.schema_version`
     )
     .run(
       parsed.id,
@@ -47,7 +69,8 @@ export function recordWorkspaceQuarantineRecord(
       JSON.stringify(parsed),
       parsed.createdAt,
       parsed.updatedAt,
-      parsed.resolvedAt
+      parsed.resolvedAt,
+      writeRetainedV1({}).schemaVersion
     );
 
   return parsed;
@@ -67,14 +90,18 @@ export function listWorkspaceQuarantineRecords(
   return (
     workspaceDb.sqlite
       .prepare(
-        `SELECT payload_json
+        `SELECT schema_version AS schemaVersion,payload_json
          FROM workspace_quarantine_records
          WHERE workspace_id = ?
          ORDER BY created_at ASC, quarantine_record_id ASC`
       )
       .all(workspaceId) as WorkspaceQuarantineRecordRow[]
   )
-    .map((row) => WorkspaceQuarantineRecordSchema.parse(JSON.parse(row.payload_json) as unknown))
+    .map((row) =>
+      readRetainedV1(row, () =>
+        StoredWorkspaceQuarantineRecordV1Schema.parse(JSON.parse(row.payload_json))
+      )
+    )
     .reverse();
 }
 
@@ -103,6 +130,9 @@ export function importWorkspaceQuarantineRecords(
   records: readonly WorkspaceQuarantineRecord[]
 ): void {
   for (const record of records) {
-    recordWorkspaceQuarantineRecord(workspaceDb, WorkspaceQuarantineRecordSchema.parse(record));
+    persistWorkspaceQuarantineRecordV1(
+      workspaceDb,
+      StoredWorkspaceQuarantineRecordV1Schema.parse(record)
+    );
   }
 }

@@ -1,5 +1,6 @@
+import { writeRetainedV1 } from '@openkit/protocol';
 import { sql } from 'drizzle-orm';
-import { check, index, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { check, index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 import type { VaultReferenceOwnerScope } from './vault-references.js';
 
@@ -26,6 +27,8 @@ export type VaultGrantIssuance = 'target' | 'imported-history';
 export const vaultGrants = sqliteTable(
   'vault_grants',
   {
+    /** Retained allowed-injection-paths payload format. */
+    schemaVersion: integer('schema_version').notNull().default(writeRetainedV1({}).schemaVersion),
     /** Stable vault grant id. */
     grantId: text('grant_id').primaryKey().notNull(),
     /** Required provenance; portable history cannot regain live issuance. */

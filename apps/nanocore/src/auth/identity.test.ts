@@ -26,6 +26,15 @@ describe('actorFromRequest', () => {
 });
 
 describe('actorFromSession', () => {
+  it('preserves the canonical non-secret authentication session record id', () => {
+    const id = 'usr_01890f3e-0000-7000-8000-000000000001';
+    const sessionId = 'auth_01890f3e-0000-7000-8000-000000000001';
+    expect(actorFromSession({ user: { id }, session: { id: sessionId } })).toEqual({
+      userId: id,
+      kind: 'session',
+      sessionId,
+    });
+  });
   it('keeps the exact canonical recorded User and refuses another identity kind', () => {
     const id = 'usr_01890f3e-0000-7000-8000-000000000001';
     expect(actorFromSession({ user: { id } })).toEqual({ userId: id, kind: 'session' });

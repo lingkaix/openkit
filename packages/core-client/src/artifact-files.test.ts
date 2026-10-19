@@ -37,6 +37,83 @@ function downloadHeaders(): Record<string, string> {
 }
 
 describe('Artifact binary client bindings', () => {
+  it('streams a next version with exact selectors, JSON summary and retained request identity', async () => {
+    const threadId = allocateEntityId('th');
+    const turnId = allocateEntityId('tu');
+    const actor = { kind: 'user', id: allocateEntityId('usr') };
+    const recordedAt = '2026-10-17T00:01:00.000Z';
+    const input = {
+      ...metadata,
+      artifactId,
+      threadId,
+      expectedArtifactVersion: 1,
+      summary: 'literal null + "quoted"\r\n',
+    };
+    const accepted = {
+      artifact: {
+        id: artifactId,
+        workspaceId,
+        threadId: null,
+        turnId: null,
+        kind: 'file',
+        title: input.title,
+        status: 'ready',
+        summary: input.summary,
+        version: 2,
+        content: { format: 'file', mediaType: input.mediaType, byteLength: input.byteLength },
+        contentDigest: input.contentDigest,
+        lastMutationRequestId: input.requestId,
+        origin: {
+          kind: 'imported',
+          sourceKind: 'direct-import',
+          sourceId: 'first-import',
+          sourceDigest: `sha256:${'a'.repeat(64)}`,
+          actor,
+          requestId: 'first-import',
+          recordedAt: '2026-10-17T00:00:00.000Z',
+        },
+        createdAt: '2026-10-17T00:00:00.000Z',
+        updatedAt: recordedAt,
+      },
+      version: {
+        artifactId,
+        workspaceId,
+        artifactVersion: 2,
+        parentVersion: 1,
+        title: input.title,
+        summary: input.summary,
+        contentDigest: input.contentDigest,
+        actor,
+        threadId,
+        turnId,
+        requestId: input.requestId,
+        recordedAt,
+      },
+    };
+    const body = new Blob([bytes]);
+    const fetcher = vi.fn<typeof fetch>(async (urlValue, init) => {
+      const url = new URL(String(urlValue));
+      expect(url.pathname).toBe('/api/app/operations/artifact.version-file-commit');
+      expect(init?.body).toBe(body);
+      expect(new Headers(init?.headers).get('x-openkit-request-id')).toBe(input.requestId);
+      expect(Object.fromEntries(url.searchParams)).toEqual({
+        workspaceId,
+        artifactId,
+        threadId,
+        title: input.title,
+        mediaType: input.mediaType,
+        byteLength: String(input.byteLength),
+        contentDigest: input.contentDigest,
+        expectedArtifactVersion: '1',
+        summary: JSON.stringify(input.summary),
+      });
+      expect(Buffer.from(await new Response(init?.body).arrayBuffer())).toEqual(bytes);
+      return Response.json(accepted, { status: 201 });
+    });
+    const client = createCoreClient({ baseUrl: 'http://127.0.0.1', fetch: fetcher });
+    expect(await client.artifactFiles.commitVersion(input, body)).toEqual(accepted);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
   it.each(
     originals.filter((entry) => ['empty', 'binary-invalid-utf8'].includes(entry.id))
   )('imports the exact $id body with bounded query metadata and a separate request identity', async (entry) => {

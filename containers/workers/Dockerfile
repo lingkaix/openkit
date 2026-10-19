@@ -152,11 +152,11 @@ RUN uv python install "${PYTHON_VERSION}" \
   && ln -s "${python_path}" /usr/local/bin/python \
   && uv cache clean
 
-COPY --from=worker-shim-builder /deploy/worker-shim/ /usr/local/lib/openkit/worker-shim/
-COPY containers/workers/openkit-file-effect /usr/local/bin/openkit-file-effect
-COPY containers/workers/openkit-worker-shim /usr/local/bin/openkit-worker-shim
-COPY containers/workers/smoke-common.sh /usr/local/bin/openkit-worker-common-smoke
-COPY containers/workers/openkit-worker-common-base-smoke.sh /usr/local/bin/openkit-worker-common-base-smoke
+COPY --chmod=0755 --from=worker-shim-builder /deploy/worker-shim/ /usr/local/lib/openkit/worker-shim/
+COPY --chmod=0755 containers/workers/openkit-file-effect /usr/local/bin/openkit-file-effect
+COPY --chmod=0755 containers/workers/openkit-worker-shim /usr/local/bin/openkit-worker-shim
+COPY --chmod=0755 containers/workers/smoke-common.sh /usr/local/bin/openkit-worker-common-smoke
+COPY --chmod=0755 containers/workers/openkit-worker-common-base-smoke.sh /usr/local/bin/openkit-worker-common-base-smoke
 
 RUN /usr/sbin/groupmod --new-name sandbox node \
   && /usr/sbin/usermod --login sandbox --home /sandbox --shell /bin/bash node \
@@ -192,7 +192,6 @@ RUN /usr/sbin/groupmod --new-name sandbox node \
     'export UV_PYTHON_INSTALL_DIR="/opt/uv/python"' \
     'export PS1="\u@\h:\w\$ "' \
     > /opt/openkit/.bashrc \
-  && chmod +x /usr/local/bin/openkit-file-effect /usr/local/bin/openkit-worker-shim /usr/local/bin/openkit-worker-common-smoke /usr/local/bin/openkit-worker-common-base-smoke \
   && chown -R 1000:1000 /openkit /sandbox /tmp/openkit-bootstrap /workspace \
   && chmod 0700 /tmp/openkit-bootstrap
 
@@ -283,14 +282,13 @@ RUN export HOME=/tmp/runtime-home \
   && test ! -e /etc/opencode
 
 # Preserve the frozen workspace patch and every transitive production asset.
-COPY --from=worker-shim-builder /deploy/pi-runtime-host/ /usr/local/lib/openkit/pi-runtime-host/
-COPY patches/pi-coding-agent-1.0.2-openkit-native-state.patch /usr/local/lib/openkit/pi-native-state.patch
-COPY containers/worker-runtimes/versions.json /usr/local/lib/openkit/worker-runtimes-versions.json
-COPY containers/worker-runtimes/smoke-package.json /usr/local/lib/openkit/image-smoke-package.json
-COPY containers/worker-runtimes/smoke.sh /usr/local/bin/openkit-worker-runtimes-smoke
+COPY --chmod=0755 --from=worker-shim-builder /deploy/pi-runtime-host/ /usr/local/lib/openkit/pi-runtime-host/
+COPY --chmod=0644 patches/pi-coding-agent-1.0.2-openkit-native-state.patch /usr/local/lib/openkit/pi-native-state.patch
+COPY --chmod=0644 containers/worker-runtimes/versions.json /usr/local/lib/openkit/worker-runtimes-versions.json
+COPY --chmod=0644 containers/worker-runtimes/smoke-package.json /usr/local/lib/openkit/image-smoke-package.json
+COPY --chmod=0755 containers/worker-runtimes/smoke.sh /usr/local/bin/openkit-worker-runtimes-smoke
 
-RUN chmod +x /usr/local/lib/openkit/pi-runtime-host/dist/bin/openkit-pi-runtime-host.js /usr/local/bin/openkit-worker-runtimes-smoke \
-  && ln -s /usr/local/lib/openkit/pi-runtime-host/dist/bin/openkit-pi-runtime-host.js /usr/local/bin/openkit-pi-runtime-host \
+RUN ln -s /usr/local/lib/openkit/pi-runtime-host/dist/bin/openkit-pi-runtime-host.js /usr/local/bin/openkit-pi-runtime-host \
   && ln -s /usr/local/lib/openkit/pi-runtime-host/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js /usr/local/bin/pi
 
 USER 1000:1000

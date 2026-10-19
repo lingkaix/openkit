@@ -69,6 +69,7 @@ function fixture() {
   write(
     'config/providers/fixture.provider.jsonc',
     JSON.stringify({
+      schemaVersion: 1,
       id: 'agent-openrouter',
       displayName: 'Synthetic local inference supply',
       kind: 'local',

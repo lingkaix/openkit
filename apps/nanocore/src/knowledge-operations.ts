@@ -1182,6 +1182,8 @@ export function createKnowledgeOperationImplementations(
             query: commandInput.query,
             limit: commandInput.limit,
             pinnedReferences: commandInput.pinnedReferences,
+            types: commandInput.types,
+            appliesTo: commandInput.appliesTo,
             sourceScope: commandInput.sourceScope,
             states: commandInput.states,
             access: {
@@ -1719,6 +1721,7 @@ export function createKnowledgeOperationImplementations(
           },
         });
         return ListKnowledgeEntriesResponseSchema.parse({
+          knowledgeBaseId: snapshot.knowledgeBaseId,
           notebookRevision: snapshot.notebookRevision,
           items: snapshot.pages.map(({ path, id, content }) => ({
             ...parseOwnedKnowledgeEntry(path, id, content),

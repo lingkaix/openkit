@@ -1,14 +1,17 @@
 import { isDeepStrictEqual } from 'node:util';
 import {
+  AuditAuthenticationSchema,
   type AuditEvent,
   AuditEventSchema,
   allocateEntityId,
   type KnowledgeOwnerScope,
+  PolicyInvocationV1Schema,
+  PolicyWriteOutcomeV1Schema,
   RequestIdSchema,
+  writeRetainedV1,
 } from '@openkit/protocol';
-
+import { readAuditEventRowV1 } from './policy/retained-records-v1.js';
 import type { CoreDb, UserDb, WorkspaceDb } from './storage/db.js';
-import { ActorRefReaderSchema } from './storage/workspace-file-records.js';
 
 /** Input for recording one server-owned audit event. */
 export interface RecordServerAuditEventInput {
@@ -36,6 +39,8 @@ export interface RecordServerAuditEventInput {
   requestId?: string | null;
   /** Exact authenticated actor reference when available. */
   actor?: AuditEvent['actor'];
+  /** Allowlisted non-secret authentication method and credential record id. */
+  authentication?: AuditEvent['authentication'];
   /** Exact affected subject reference when available. */
   subject?: AuditEvent['subject'];
   /** Agent lineage when available. */
@@ -52,6 +57,10 @@ export interface RecordServerAuditEventInput {
   resourceRevision?: number | null;
   /** Exact notebook admission facts, never page bodies or a reusable permission. */
   notebookAdmission?: AuditEvent['notebookAdmission'];
+  /** Exact non-secret participant evidence. */
+  policyInvocation?: AuditEvent['policyInvocation'];
+  /** Exact Policy write persistence and activation outcome. */
+  policyWriteOutcome?: AuditEvent['policyWriteOutcome'];
   /** Event outcome. */
   outcome: AuditEvent['outcome'];
   /** Event severity. */
@@ -92,6 +101,8 @@ export interface RecordWorkspaceAuditEventInput {
   requestId?: string | null;
   /** Exact authenticated actor reference when available. */
   actor?: AuditEvent['actor'];
+  /** Allowlisted non-secret authentication method and credential record id. */
+  authentication?: AuditEvent['authentication'];
   /** Exact affected subject reference when available. */
   subject?: AuditEvent['subject'];
   /** Agent lineage when available. */
@@ -108,6 +119,10 @@ export interface RecordWorkspaceAuditEventInput {
   resourceRevision?: number | null;
   /** Exact notebook admission facts, never page bodies or a reusable permission. */
   notebookAdmission?: AuditEvent['notebookAdmission'];
+  /** Exact non-secret participant evidence. */
+  policyInvocation?: AuditEvent['policyInvocation'];
+  /** Exact Policy write persistence and activation outcome. */
+  policyWriteOutcome?: AuditEvent['policyWriteOutcome'];
   /** Event outcome. */
   outcome: AuditEvent['outcome'];
   /** Event severity. */
@@ -260,6 +275,7 @@ export function listSqliteAuditEvents(
     .prepare(
       `SELECT
         audit_event_id,
+        schema_version,
         workspace_id,
         protocol_version,
         thread_id,
@@ -270,6 +286,7 @@ export function listSqliteAuditEvents(
         vault_grant_id,
         request_id,
         actor_json,
+        authentication_json,
         subject_json,
         agent_id,
         agent_session_id,
@@ -278,6 +295,8 @@ export function listSqliteAuditEvents(
         resource,
         resource_revision,
         notebook_admission_json,
+        policy_invocation_json,
+        policy_write_outcome_json,
         outcome,
         severity,
         summary,
@@ -319,6 +338,7 @@ export function listServerAuditEvents(coreDb: CoreDb): AuditEvent[] {
     .prepare(
       `SELECT
         audit_event_id,
+        schema_version,
         workspace_id,
         protocol_version,
         thread_id,
@@ -329,6 +349,7 @@ export function listServerAuditEvents(coreDb: CoreDb): AuditEvent[] {
         vault_grant_id,
         request_id,
         actor_json,
+        authentication_json,
         subject_json,
         agent_id,
         agent_session_id,
@@ -337,6 +358,8 @@ export function listServerAuditEvents(coreDb: CoreDb): AuditEvent[] {
         resource,
         resource_revision,
         notebook_admission_json,
+        policy_invocation_json,
+        policy_write_outcome_json,
         outcome,
         severity,
         summary,
@@ -403,6 +426,7 @@ function recordAuditEvent(
     vaultGrantId: input.vaultGrantId ?? null,
     requestId: protocolRequestIdOrNull(input.requestId),
     actor: input.actor ?? null,
+    ...(input.authentication ? { authentication: input.authentication } : {}),
     subject: input.subject ?? null,
     agentId: input.agentId ?? null,
     agentSessionId: input.agentSessionId ?? null,
@@ -411,6 +435,10 @@ function recordAuditEvent(
     resource: input.resource ?? null,
     resourceRevision: input.resourceRevision ?? null,
     ...(input.notebookAdmission ? { notebookAdmission: input.notebookAdmission } : {}),
+    ...(input.policyInvocation === undefined ? {} : { policyInvocation: input.policyInvocation }),
+    ...(input.policyWriteOutcome === undefined
+      ? {}
+      : { policyWriteOutcome: input.policyWriteOutcome }),
     outcome: input.outcome,
     severity: input.severity ?? 'info',
     summary: input.summary,
@@ -431,102 +459,54 @@ function recordAuditEvent(
  * @param event Protocol audit event to insert.
  */
 function insertAuditEvent(sqlite: CoreDb['sqlite'], event: AuditEvent): void {
-  sqlite
-    .prepare(
-      `INSERT INTO audit_events (
-        audit_event_id,
-        workspace_id,
-        protocol_version,
-        thread_id,
-        turn_id,
-        item_id,
-        capability_call_id,
-        permission_decision_id,
-        vault_grant_id,
-        request_id,
-        actor_json,
-        subject_json,
-        agent_id,
-        agent_session_id,
-        category,
-        action,
-        resource,
-        resource_revision,
-        notebook_admission_json,
-        outcome,
-        severity,
-        summary,
-        error_code,
-        created_at,
-        occurred_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(
-      event.id,
-      event.workspaceId,
-      event.protocolVersion ?? null,
-      event.threadId,
-      event.turnId,
-      event.itemId,
-      event.capabilityCallId,
-      event.permissionDecisionId,
-      event.vaultGrantId,
-      event.requestId,
-      event.actor === null ? null : JSON.stringify(event.actor),
-      event.subject === null ? null : JSON.stringify(event.subject),
-      event.agentId,
-      event.agentSessionId,
-      event.category,
-      event.action,
-      event.resource,
-      event.resourceRevision,
-      event.notebookAdmission === undefined ? null : JSON.stringify(event.notebookAdmission),
-      event.outcome,
-      event.severity,
-      event.summary,
-      event.errorCode,
-      event.createdAt,
-      event.occurredAt
-    );
-}
-
-/** Normalizes retained descriptive attribution before projecting one protocol-valid SQLite audit event. */
-function auditEventFromRow(row: unknown): AuditEvent {
-  const event = row as Record<string, unknown>;
-
-  return AuditEventSchema.parse({
-    id: event.audit_event_id,
-    workspaceId: event.workspace_id,
-    protocolVersion: event.protocol_version ?? undefined,
-    threadId: event.thread_id,
-    turnId: event.turn_id,
-    itemId: event.item_id,
-    capabilityCallId: event.capability_call_id,
-    permissionDecisionId: event.permission_decision_id,
-    vaultGrantId: event.vault_grant_id,
-    requestId: event.request_id,
-    actor: event.actor_json
-      ? ActorRefReaderSchema.parse(JSON.parse(String(event.actor_json)))
-      : null,
-    subject: event.subject_json
-      ? ActorRefReaderSchema.parse(JSON.parse(String(event.subject_json)))
-      : null,
-    agentId: event.agent_id,
-    agentSessionId: event.agent_session_id,
+  // Omit unknown optional authentication so snapshot rollback keeps its captured native format.
+  const values = {
+    audit_event_id: event.id,
+    schema_version: writeRetainedV1(event).schemaVersion,
+    workspace_id: event.workspaceId,
+    protocol_version: event.protocolVersion ?? null,
+    thread_id: event.threadId,
+    turn_id: event.turnId,
+    item_id: event.itemId,
+    capability_call_id: event.capabilityCallId,
+    permission_decision_id: event.permissionDecisionId,
+    vault_grant_id: event.vaultGrantId,
+    request_id: event.requestId,
+    actor_json: event.actor === null ? null : JSON.stringify(event.actor),
+    ...(event.authentication === undefined
+      ? {}
+      : { authentication_json: JSON.stringify(event.authentication) }),
+    subject_json: event.subject === null ? null : JSON.stringify(event.subject),
+    agent_id: event.agentId,
+    agent_session_id: event.agentSessionId,
     category: event.category,
     action: event.action,
     resource: event.resource,
-    resourceRevision: event.resource_revision ?? null,
-    ...(event.notebook_admission_json
-      ? { notebookAdmission: JSON.parse(String(event.notebook_admission_json)) }
-      : {}),
+    resource_revision: event.resourceRevision,
+    policy_invocation_json:
+      event.policyInvocation === undefined ? null : JSON.stringify(event.policyInvocation),
+    policy_write_outcome_json:
+      event.policyWriteOutcome === undefined ? null : JSON.stringify(event.policyWriteOutcome),
+    notebook_admission_json:
+      event.notebookAdmission === undefined ? null : JSON.stringify(event.notebookAdmission),
     outcome: event.outcome,
     severity: event.severity,
     summary: event.summary,
-    errorCode: event.error_code,
-    createdAt: event.created_at,
-    occurredAt: event.occurred_at,
-  });
+    error_code: event.errorCode,
+    created_at: event.createdAt,
+    occurred_at: event.occurredAt,
+  };
+  const columns = Object.keys(values);
+  sqlite
+    .prepare(
+      `INSERT INTO audit_events (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`
+    )
+    .run(...Object.values(values));
+}
+
+/** Projects the frozen retained Audit core after validating its independent format marker. */
+function auditEventFromRow(row: unknown): AuditEvent {
+  return readAuditEventRowV1(row);
 }
 
 /**
@@ -535,7 +515,15 @@ function auditEventFromRow(row: unknown): AuditEvent {
  * @param value Value to inspect recursively.
  */
 function assertNoUnsafeAuditValue(value: unknown): void {
-  if (findUnsafeAuditKey(value)) {
+  const { policyInvocation, policyWriteOutcome, authentication, ...ordinary } = value as Record<
+    string,
+    unknown
+  >;
+  // The closed typed payload admits credential kind, never credential material or arbitrary bodies.
+  if (policyInvocation !== undefined) PolicyInvocationV1Schema.parse(policyInvocation);
+  if (policyWriteOutcome !== undefined) PolicyWriteOutcomeV1Schema.parse(policyWriteOutcome);
+  if (authentication !== undefined) AuditAuthenticationSchema.parse(authentication);
+  if (findUnsafeAuditKey(ordinary)) {
     throw new Error('Audit event values must be redacted before recording.');
   }
 }

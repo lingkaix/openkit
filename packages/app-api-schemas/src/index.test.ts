@@ -267,6 +267,7 @@ const allowedRuntimeNeutralImports = new Set([
   '@openkit/config-schema/native-environment',
   '@openkit/config-schema/provider-subscription',
   '@openkit/config-schema/workspace-export',
+  '@openkit/config-schema/workspace-resource-policy',
   '@openkit/protocol',
   'zod',
 ]);

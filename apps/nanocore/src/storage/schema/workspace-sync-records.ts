@@ -1,4 +1,5 @@
-import { index, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { writeRetainedV1 } from '@openkit/protocol';
+import { index, integer, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 /**
  * Durable workspace input snapshots scoped by workspace.
@@ -6,6 +7,8 @@ import { index, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 export const workspaceInputSnapshots = sqliteTable(
   'workspace_input_snapshots',
   {
+    /** Retained JSON payload format; native DDL versions scalar columns separately. */
+    schemaVersion: integer('schema_version').notNull().default(writeRetainedV1({}).schemaVersion),
     /** Stable workspace input snapshot id. */
     inputSnapshotId: text('input_snapshot_id').notNull(),
     /** Workspace that owns the snapshot. */
@@ -38,6 +41,8 @@ export const workspaceInputSnapshots = sqliteTable(
 export const workspaceMaterializationRecords = sqliteTable(
   'workspace_materialization_records',
   {
+    /** Retained JSON payload format; native DDL versions scalar columns separately. */
+    schemaVersion: integer('schema_version').notNull().default(writeRetainedV1({}).schemaVersion),
     /** Stable materialization record id. */
     materializationRecordId: text('materialization_record_id').notNull(),
     /** Workspace that owns the materialization. */
@@ -80,6 +85,8 @@ export const workspaceMaterializationRecords = sqliteTable(
 export const backendWorkspaceHandles = sqliteTable(
   'backend_workspace_handles',
   {
+    /** Retained JSON payload format; native DDL versions scalar columns separately. */
+    schemaVersion: integer('schema_version').notNull().default(writeRetainedV1({}).schemaVersion),
     /** Stable backend workspace handle id. */
     backendWorkspaceHandleId: text('backend_workspace_handle_id').notNull(),
     /** Workspace that owns the handle. */
@@ -122,6 +129,8 @@ export const backendWorkspaceHandles = sqliteTable(
 export const workerOutputManifests = sqliteTable(
   'worker_output_manifests',
   {
+    /** Retained JSON payload format; native DDL versions scalar columns separately. */
+    schemaVersion: integer('schema_version').notNull().default(writeRetainedV1({}).schemaVersion),
     /** Stable worker output manifest id. */
     workerOutputManifestId: text('worker_output_manifest_id').notNull(),
     /** Workspace that owns the manifest. */
@@ -160,6 +169,8 @@ export const workerOutputManifests = sqliteTable(
 export const workspaceChangeSets = sqliteTable(
   'workspace_change_sets',
   {
+    /** Retained JSON payload format; native DDL versions scalar columns separately. */
+    schemaVersion: integer('schema_version').notNull().default(writeRetainedV1({}).schemaVersion),
     /** Stable workspace change set id. */
     changeSetId: text('change_set_id').notNull(),
     /** Workspace that owns the change set. */
@@ -196,6 +207,8 @@ export const workspaceChangeSets = sqliteTable(
 export const stagedWorkspaceReviews = sqliteTable(
   'staged_workspace_reviews',
   {
+    /** Retained JSON payload format; native DDL versions scalar columns separately. */
+    schemaVersion: integer('schema_version').notNull().default(writeRetainedV1({}).schemaVersion),
     /** Stable staged review id. */
     reviewId: text('review_id').notNull(),
     /** Workspace that owns the review. */

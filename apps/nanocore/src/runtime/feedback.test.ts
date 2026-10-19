@@ -31,8 +31,31 @@ function createHeaderAuthStub(): BetterAuthServer {
 }
 
 describe('turn feedback', () => {
+  it('refuses missing or unknown feedback formats before decoding and does not replace them', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-feedback-format-'));
+    onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
+    const store = createDemoStore({ dataRoot });
+    const turn = store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Feedback',
+      { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' }
+    );
+    store.updateTurn(turn.id, { completedAt: new Date().toISOString(), status: 'completed' });
+    const path = feedbackFilePath(store, turn);
+    for (const marker of [{}, { schemaVersion: 2 }]) {
+      const invalid = JSON.stringify({ ...marker, rating: 'future' });
+      writeFileSync(path, invalid);
+      expect(() => readTurnFeedback(store, turn.id)).toThrow('Unsupported retained record format.');
+      expect(() =>
+        updateTurnFeedback(store, turn.id, { rating: 'good', note: 'Replace' }, turn.triggerActor)
+      ).toThrow('Unsupported retained record format.');
+      expect(readFileSync(path, 'utf8')).toBe(invalid);
+    }
+  });
   it('preserves descriptive disk additions across update and reopen while returning only known fields', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-feedback-extension-'));
+    onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
     const store = createDemoStore({ dataRoot });
     const turn = store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
@@ -45,19 +68,21 @@ describe('turn feedback', () => {
     );
     store.updateTurn(turn.id, { completedAt: new Date().toISOString(), status: 'completed' });
     const path = feedbackFilePath(store, turn);
-    const original = JSON.parse(readFileSync(path, 'utf8'));
-    writeFileSync(path, JSON.stringify({ ...original, futureNote: 'retained' }));
+    const retained = JSON.parse(readFileSync(path, 'utf8'));
+    expect(retained.schemaVersion).toBe(1);
+    const { schemaVersion: _schemaVersion, ...original } = retained;
+    writeFileSync(path, JSON.stringify({ ...retained, futureNote: 'retained' }));
     expect(readTurnFeedback(store, turn.id)).toEqual(original);
     expect(
       updateTurnFeedback(store, turn.id, { rating: 'good', note: 'Updated' }, turn.triggerActor)
     ).not.toHaveProperty('futureNote');
     expect(readTurnFeedback(createDemoStore({ dataRoot }), turn.id).rating).toBe('good');
     expect(JSON.parse(readFileSync(path, 'utf8')).futureNote).toBe('retained');
-    writeFileSync(path, JSON.stringify({ ...original, rating: 'future' }));
+    writeFileSync(path, JSON.stringify({ ...retained, rating: 'future' }));
     expect(() => readTurnFeedback(store, turn.id)).toThrow();
     writeFileSync(
       path,
-      JSON.stringify({ ...original, turnId: 'tu_00000000-0000-7629-845e-55588f675dfb' })
+      JSON.stringify({ ...retained, turnId: 'tu_00000000-0000-7629-845e-55588f675dfb' })
     );
     expect(() => readTurnFeedback(store, turn.id)).toThrow();
   });

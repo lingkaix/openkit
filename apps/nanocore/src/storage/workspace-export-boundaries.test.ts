@@ -22,7 +22,9 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { zstdCompressSync, zstdDecompressSync } from 'node:zlib';
+import { WORKSPACE_RESOURCE_POLICY_FEATURE } from '@openkit/config-schema';
 import { allocateEntityId, deriveEntityId } from '@openkit/protocol';
+import { parse as parseJsonc } from 'jsonc-parser';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ZodError } from 'zod';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
@@ -732,6 +734,44 @@ describe('workspace export route boundaries', () => {
 
 describe('workspace import route handles', () => {
   it.each([
+    'auditEvents',
+    'permissionDecisions',
+  ] as const)('checks the portable %s marker before decoding invalid family bytes', (family) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-portable-policy-version-'));
+    try {
+      const exportRoot = join(dataRoot, 'export');
+      const input = minimalExportInput(exportRoot);
+      input[family] = [{ invalidFamilyBody: true }];
+      writeWorkspaceExportTree(input);
+      const path = `records/${family === 'auditEvents' ? 'audit-events' : 'permission-decisions'}.jsonl`;
+      const original = JSON.parse(readFileSync(join(exportRoot, path), 'utf8'));
+      expect(original.schemaVersion).toBe(1);
+      const content = `${JSON.stringify({ ...original, schemaVersion: 2 })}\n`;
+      writeFileSync(join(exportRoot, path), content);
+      const manifestPath = join(exportRoot, WORKSPACE_EXPORT_MANIFEST_FILE);
+      const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+      const entry = manifest.contentInventory.find(
+        (value: { path: string }) => value.path === path
+      );
+      if (!entry) throw new Error('Expected portable family inventory.');
+      entry.digest = `sha256:${createHash('sha256').update(content).digest('hex')}`;
+      entry.bytes = Buffer.byteLength(content);
+      manifest.contentDigest = `sha256:${createHash('sha256').update(JSON.stringify(manifest.contentInventory)).digest('hex')}`;
+      writeFileSync(manifestPath, `${JSON.stringify(manifest)}\n`);
+      const verified = verifyWorkspaceExportTree({ exportRoot });
+      expect(() =>
+        readWorkspaceImportSnapshot({
+          verified,
+          targetServerId: 'server_target',
+          targetWorkspaceId: 'ws_00000000-0000-7000-8000-000000000002',
+        })
+      ).toThrow('Unsupported retained record format.');
+    } finally {
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
     'legacy',
     'ws_00000000-0000-7000-8000-000000000001',
   ])('refuses a verified portable PermissionDecision with invalid kind %s before Workspace publication', (decisionId) => {
@@ -743,6 +783,14 @@ describe('workspace import route handles', () => {
     try {
       applyScopedMigrations(workspaceDb);
       const input = minimalExportInput(join(dataRoot, 'verified-export'));
+      input.workspace = store.getWorkspace(sourceWorkspaceId);
+      input.portableFileState = {
+        ...input.portableFileState!,
+        workspaceConfig: readFileSync(
+          join(dataRoot, 'workspaces', sourceWorkspaceId, 'config', 'workspace.jsonc'),
+          'utf8'
+        ),
+      };
       input.permissionDecisions = [
         {
           action: 'runtime.launch',
@@ -820,9 +868,14 @@ describe('workspace import route handles', () => {
     mkdirSync(dirname(exportRoot), { recursive: true });
     const verified = writeWorkspaceExportTree({
       ...input,
+      workspace: store.getWorkspace(input.workspace.id),
       sourceDeploymentId: readDataRootLayoutMarker(dataRoot).deploymentId,
       portableFileState: {
         ...input.portableFileState!,
+        workspaceConfig: readFileSync(
+          join(dataRoot, 'workspaces', input.workspace.id, 'config', 'workspace.jsonc'),
+          'utf8'
+        ),
         nativeKnowledgePages: new Map([
           ['knowledge/pages/topic/index.md', nestedIndex],
           ['knowledge/pages/topic/log.md', nestedLog],
@@ -1600,6 +1653,69 @@ describe('workspace portable authority boundaries', () => {
     } finally {
       sourceCoreDb.sqlite.close();
       targetCoreDb.sqlite.close();
+    }
+  });
+});
+
+describe('Workspace resource Policy portability', () => {
+  it('exports and remints a last-revoke boundary while rejecting unvalidated principals', () => {
+    const root = mkdtempSync(join(tmpdir(), 'resource-policy-portable-'));
+    try {
+      const store = new FsStore();
+      const workspace = store.createWorkspace('Boundary workspace');
+      const thread = store.createThread(workspace.id, 'Managed Thread');
+      const input = minimalExportInput(
+        join(root, 'export'),
+        workspace.id,
+        allocateEntityId('wsexp')
+      );
+      input.threads = [thread];
+      const boundary = {
+        resource: { family: 'thread', id: thread.id },
+        grants: [],
+        prohibitions: [],
+      };
+      input.portableFileState!.workspaceConfig = JSON.stringify({
+        requiredFeatures: [WORKSPACE_RESOURCE_POLICY_FEATURE],
+        workspace: { name: 'Boundary workspace', policy: { resourceAccess: [boundary] } },
+      });
+      const verified = writeWorkspaceExportTree(input);
+      expect(verified.manifest.requiredFeatures).toContain(WORKSPACE_RESOURCE_POLICY_FEATURE);
+      const snapshot = readWorkspaceImportSnapshot({
+        verified,
+        targetWorkspaceId: allocateEntityId('ws'),
+      });
+      const imported = parseJsonc(snapshot.portableFileState.workspaceConfig!);
+      expect(imported.workspace.policy.resourceAccess).toEqual([
+        { ...boundary, resource: { family: 'thread', id: snapshot.threads[0]!.id } },
+      ]);
+      expect(snapshot.threads[0]!.id).not.toBe(thread.id);
+      const restricted = {
+        ...boundary,
+        grants: [
+          {
+            subject: { kind: 'user', userId: allocateEntityId('usr') },
+            operations: ['thread.read'],
+          },
+        ],
+      };
+      input.exportRoot = join(root, 'principal-export');
+      input.portableFileState!.workspaceConfig = JSON.stringify({
+        requiredFeatures: [WORKSPACE_RESOURCE_POLICY_FEATURE],
+        workspace: { name: 'Boundary workspace', policy: { resourceAccess: [restricted] } },
+      });
+      const withPrincipal = writeWorkspaceExportTree(input);
+      expect(() =>
+        readWorkspaceImportSnapshot({
+          verified: withPrincipal,
+          targetWorkspaceId: allocateEntityId('ws'),
+        })
+      ).toThrow('principal binding');
+      expect(
+        existsSync(join(root, 'principal-export', 'workspace-files', 'config', 'workspace.jsonc'))
+      ).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

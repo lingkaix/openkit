@@ -11,7 +11,9 @@ import {
   planSessionWorkspaceMaterialization,
   type SessionWorkspaceMaterializationPlan,
   sessionStaticControl,
+  WORKSPACE_RESOURCE_POLICY_FEATURE,
   WorkerSandboxAccessSchema,
+  WorkspaceConfigSchema,
 } from '@openkit/config-schema';
 import { ENTITY_KINDS, entityIdPattern, isEntityId } from '@openkit/protocol';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
@@ -103,7 +105,7 @@ import { startSchedulerAttemptMaintenanceService } from './scheduler-attempt-mai
 import { runSchedulerDispatchLoop } from './scheduler-dispatch-loop.js';
 import {
   createConfiguredTurnExecutor,
-  createConfiguredWorkerLifecycleRuntime,
+  createConfiguredWorkerLifecycleRuntime as createWorkerLifecycleOwner,
 } from './turn-executor-factory.js';
 import type { PrepareAgentSessionForTurnInput } from './types.js';
 import {
@@ -923,7 +925,9 @@ function prepareNonmemberAdminWorkerStorage(label: string) {
     sandboxBindingRef: `lease-binding:${label}`,
     serverAdminTokenId: tokenId,
   });
+  const currentConfiguration = createInMemoryRuntimeConfigSnapshot({ dataRoot: coreDb.dataRoot });
   const runtime = createConfiguredWorkerLifecycleRuntime({
+    readRuntimeConfig: () => currentConfiguration,
     coreDb,
     env: {},
     nanoHostSessionDispatch: createFactoryNanoHostDispatch(effects, hooks),
@@ -933,6 +937,7 @@ function prepareNonmemberAdminWorkerStorage(label: string) {
     .backend;
   anchorNanoHostMaterialization(coreDb, backend, environmentPackage);
   return {
+    currentConfiguration,
     adminUserId,
     backend,
     coreDb,
@@ -960,6 +965,19 @@ function observeExecutionAttempts(
         .prepare('SELECT * FROM scheduler_execution_attempts ORDER BY rowid')
         .all() as Record<string, unknown>[])
     : [];
+}
+
+/** Supplies the explicit current Policy input required by real retained-storage admission. */
+function createConfiguredWorkerLifecycleRuntime(
+  options: Parameters<typeof createWorkerLifecycleOwner>[0] = {}
+) {
+  const current = createInMemoryRuntimeConfigSnapshot({
+    dataRoot: options.coreDb?.dataRoot ?? null,
+  });
+  return createWorkerLifecycleOwner({
+    ...options,
+    readRuntimeConfig: options.readRuntimeConfig ?? (() => current),
+  });
 }
 
 describe('createConfiguredTurnExecutor', () => {
@@ -4101,6 +4119,18 @@ describe('createConfiguredTurnExecutor', () => {
             .all()
         )
       ).not.toContain('original-injected-value');
+      f.coreDb.sqlite
+        .prepare(
+          "UPDATE agent_session_runtime_bindings SET schema_version = 2, runtime_env_check_versions_json = '{' WHERE agent_session_runtime_binding_id = ?"
+        )
+        .run(real.agentSessionRuntimeBindingId);
+      const retained = f.coreDb.sqlite.serialize();
+      const resolutions = resolve.mock.calls.length;
+      expect(() => collector.restoreCollectionRuntimeEnvironment(session)).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(resolve).toHaveBeenCalledTimes(resolutions);
+      expect(f.coreDb.sqlite.serialize().equals(retained)).toBe(true);
     } finally {
       f.coreDb.sqlite.close();
     }
@@ -10141,6 +10171,12 @@ describe('createConfiguredTurnExecutor', () => {
     'cross-thread-handoff',
     'cross-thread-closed-handoff',
     'cross-thread-old-epoch-handoff',
+    'cross-thread-pre-naming-recorded',
+    'cross-thread-pre-naming-live',
+    'cross-thread-pre-naming-unrecorded',
+    'cross-thread-pre-naming-conflicting-digest',
+    'cross-thread-pre-naming-conflicting-snapshot',
+    'cross-thread-pre-naming-conflicting-attachment',
     'ignored-package-proof-handoff',
     'ignored-package-cross-thread-handoff',
     'ignored-package-restoration',
@@ -10377,7 +10413,19 @@ describe('createConfiguredTurnExecutor', () => {
           `workspaces/ws_00000000-0000-7af1-aea9-339aceb3f05b/runtime/agent-sessions/${testEntityId('as', 'as_resume_1')}/session.json`
         );
         const record = JSON.parse(readFileSync(recordPath, 'utf8'));
-        if (!['intact', 'image-intact'].includes(scenario)) record.nativeHandleDigest = null;
+        if (
+          !['intact', 'image-intact'].includes(scenario) &&
+          (!scenario.includes('pre-naming') || scenario.endsWith('unrecorded'))
+        )
+          record.nativeHandleDigest = null;
+        if (scenario.endsWith('conflicting-digest')) record.nativeHandleDigest = 'e'.repeat(64);
+        if (scenario.endsWith('conflicting-snapshot'))
+          record.environmentPackageSnapshotId = 'snapshot_unrelated';
+        if (scenario.endsWith('conflicting-attachment'))
+          record.retainedStorage.workSlotRef = workerStorageDefaultWorkSlotRef(
+            predecessor.workspaceId,
+            testEntityId('th', 'thread_other_attachment')
+          );
         if (['missing-fact', 'cross-thread-missing-fact'].includes(scenario))
           record.retainedStorage = null;
         writeFileSync(recordPath, JSON.stringify(record));
@@ -10418,6 +10466,101 @@ describe('createConfiguredTurnExecutor', () => {
             )
             .get(predecessor.id)
         ).toMatchObject({ state: 'ready', digest });
+        if (scenario.includes('pre-naming')) {
+          const snapshotPath = join(
+            coreDb.dataRoot,
+            'workspaces',
+            predecessor.workspaceId,
+            'runtime/agent-sessions',
+            predecessor.id,
+            'aep-snapshots',
+            `${predecessor.environmentPackageSnapshotId}.json`
+          );
+          const retained = JSON.parse(readFileSync(snapshotPath, 'utf8'));
+          // An admitted historical package is no longer executable after the naming cutover.
+          retained.snapshot.capabilities.routes = [
+            'mcp.list_servers',
+            'mcp.list_tools',
+            'mcp.call_tool',
+          ];
+          retained.contentDigest = createHash('sha256')
+            .update(JSON.stringify(retained.snapshot))
+            .digest('hex');
+          writeFileSync(snapshotPath, JSON.stringify(retained));
+          const historicalBytes = readFileSync(snapshotPath, 'utf8');
+          const packageDb = openWorkspaceDb(coreDb.dataRoot, predecessor.workspaceId);
+          try {
+            expect(() =>
+              requireAgentEnvironmentPackageSnapshot(
+                packageDb,
+                predecessor.workspaceId,
+                predecessor.environmentPackageSnapshotId!
+              )
+            ).toThrow();
+          } finally {
+            packageDb.sqlite.close();
+          }
+          if (!scenario.endsWith('live'))
+            coreDb.sqlite
+              .prepare('UPDATE nanohost_runtime_targets SET physical_epoch = ?')
+              .run('f'.repeat(64));
+          const desired = completeNanoHostPackage({
+            runtime: {
+              image: { kind: 'reference', pullPolicy: 'never', ref: `sha256:${'2'.repeat(64)}` },
+            },
+            scope: {
+              agentSessionId: testEntityId('as', 'as_capacity_preview'),
+              threadId: testEntityId('th', 'thread_resume_1'),
+              turnId: testEntityId('tu', 'turn_capacity_preview'),
+              workspaceId: predecessor.workspaceId,
+            },
+            snapshotId: 'snapshot_capacity_preview',
+          });
+          if (scenario !== 'cross-thread-pre-naming-recorded') {
+            const effectsBefore = [...effects];
+            expect(() => restoredBackend.inspectMaterializationCapacity!(desired)).toThrow();
+            await expect(
+              (
+                restoredBackend as WorkerGovernanceBackend & {
+                  evictIncompatibleIdleSandbox(
+                    preview: AgentEnvironmentPackage,
+                    force: boolean
+                  ): Promise<unknown>;
+                }
+              ).evictIncompatibleIdleSandbox(desired, true)
+            ).rejects.toThrow();
+            expect(
+              coreDb.sqlite
+                .prepare('SELECT 1 FROM agent_session_runtime_bindings WHERE agent_session_id = ?')
+                .get(predecessor.id)
+            ).toBeDefined();
+            expect(readFileSync(snapshotPath, 'utf8')).toBe(historicalBytes);
+            expect(effects).toEqual(effectsBefore);
+            return;
+          }
+          // Preflight preserves the old rows; actual admission must retire them through the same rule.
+          expect(restoredBackend.inspectMaterializationCapacity!(desired)).toBe('available');
+          expect(
+            coreDb.sqlite
+              .prepare('SELECT 1 FROM agent_session_runtime_bindings WHERE agent_session_id = ?')
+              .get(predecessor.id)
+          ).toBeDefined();
+          await run(2, 1);
+          expect(opens).toHaveLength(2);
+          expect(opens[1]).toMatchObject({ resume: null });
+          expect(
+            coreDb.sqlite
+              .prepare('SELECT 1 FROM agent_session_runtime_bindings WHERE agent_session_id = ?')
+              .get(predecessor.id)
+          ).toBeUndefined();
+          expect(readFileSync(snapshotPath, 'utf8')).toBe(historicalBytes);
+          expect(store.getAgentSession(predecessor.id)).toMatchObject({
+            nativeHandleDigest: digest,
+            retainedStorage: predecessor.retainedStorage,
+            environmentPackageSnapshotId: predecessor.environmentPackageSnapshotId,
+          });
+          return;
+        }
         if (scenario === 'cross-thread-closed-handoff') {
           coreDb.sqlite
             .prepare("UPDATE agent_session_runtime_bindings SET lifecycle_state = 'closed'")
@@ -12729,6 +12872,7 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
+  // Real resident setup shares gate CPU; the assertions still check fencing and no replay.
   it.each([
     { label: 'previous-Epoch A2', origin: 'f'.repeat(64), dirty: false, operation: 'dispatched' },
     { label: 'same-Epoch A2', origin: 'a'.repeat(64), dirty: false, operation: 'dispatched' },
@@ -13476,7 +13620,7 @@ describe('createConfiguredTurnExecutor', () => {
     } finally {
       coreDb.sqlite.close();
     }
-  });
+  }, 60_000);
 
   it.each([
     ['pre-witness', true, false, 'idle'],
@@ -14190,6 +14334,7 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
+  // The multi-database restart fixture needs headroom under parallel gates; storage and cleanup checks stay exact.
   it.each([
     {
       missingStorage: false,
@@ -14538,7 +14683,7 @@ describe('createConfiguredTurnExecutor', () => {
     } finally {
       coreDb.sqlite.close();
     }
-  });
+  }, 60_000);
 
   it('rejects persistent runtime-file credentials and unsupported Providers before effects', async () => {
     const coreDb = createFactoryCoreDb();
@@ -14844,6 +14989,61 @@ describe('createConfiguredTurnExecutor', () => {
           storageRef: storage.storageRef,
         })?.contributors.map((contributor) => contributor.responsibleUserId)
       ).toEqual([fixture.adminUserId]);
+    } finally {
+      fixture.coreDb.sqlite.close();
+    }
+  });
+
+  it('refuses retained storage after current named Thread Policy revokes the exact Agent', async () => {
+    const fixture = prepareNonmemberAdminWorkerStorage('resource_policy_revoked');
+    const boundary = WorkspaceConfigSchema.parse({
+      requiredFeatures: [WORKSPACE_RESOURCE_POLICY_FEATURE],
+      workspace: {
+        name: 'Managed retained storage',
+        policy: {
+          resourceAccess: [
+            {
+              resource: { family: 'thread', id: fixture.environmentPackage.scope.threadId },
+              grants: [
+                {
+                  subject: {
+                    kind: 'agent',
+                    userId: fixture.adminUserId,
+                    agentId: fixture.environmentPackage.agent.agentId,
+                  },
+                  operations: ['thread.read'],
+                },
+              ],
+              prohibitions: [],
+            },
+          ],
+        },
+      },
+    });
+    fixture.currentConfiguration.workspaceConfigs.push({
+      workspaceId: fixture.workspaceId,
+      path: join(
+        fixture.coreDb.dataRoot,
+        'workspaces',
+        fixture.workspaceId,
+        'config/workspace.jsonc'
+      ),
+      config: boundary,
+    });
+    fixture.hooks.onInspect = () => {
+      boundary.workspace.policy!.resourceAccess[0]!.grants = [];
+    };
+    try {
+      await expect(
+        fixture.backend.materialize(fixture.environmentPackage, {
+          sandboxBindingRef: factoryPackageBinding(fixture.coreDb, fixture.environmentPackage),
+          workspaceRoots: [],
+        })
+      ).rejects.toMatchObject({ code: 'authorization_denied', name: 'WorkerStorageBindingError' });
+      expect(fixture.effects.map((effect) => effect.kind)).toEqual([
+        'image.acquire',
+        'image.inspect',
+      ]);
     } finally {
       fixture.coreDb.sqlite.close();
     }

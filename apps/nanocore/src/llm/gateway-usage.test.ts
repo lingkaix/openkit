@@ -60,6 +60,7 @@ describe('recordInternalLlmGatewayUsage audit lineage', () => {
     try {
       applyScopedMigrations(workspaceDb);
       const call = startCapabilityCall({
+        ...(auditLineage ? { auditLineage } : {}),
         authorityActor: { kind: 'user', id: testEntityId('usr', 'user_usage') },
         capabilityId: 'llm.responses',
         family: 'llm',
@@ -111,6 +112,7 @@ describe('recordInternalLlmGatewayUsage audit lineage', () => {
           .prepare('SELECT * FROM audit_events WHERE capability_call_id = ?')
           .all(call.id)
       ).toEqual([
+        expect.objectContaining({ action: 'capability.admit', request_id: expectedRequestId }),
         expect.objectContaining({
           action: 'capability.finish',
           capability_call_id: call.id,
@@ -190,7 +192,7 @@ describe('recordInternalLlmGatewayUsage audit lineage', () => {
         workspaceDb.sqlite
           .prepare('SELECT * FROM audit_events WHERE capability_call_id = ?')
           .all(call.id)
-      ).toEqual([]);
+      ).toEqual([expect.objectContaining({ action: 'capability.admit', request_id: null })]);
     } finally {
       workspaceDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });

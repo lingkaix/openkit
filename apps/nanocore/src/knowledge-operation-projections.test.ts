@@ -411,6 +411,7 @@ describe('Knowledge operation definition cutover', () => {
         candidateRevision: draft.proposal.candidateRevision,
       });
       const reviewed = await compare('knowledge.list', {});
+      expect(reviewed.knowledgeBaseId).toBe(f.knowledgeBaseId);
       expect(reviewed.items.find(({ id }) => id === 'cutover-lesson')?.content).toContain(
         'Source traced'
       );

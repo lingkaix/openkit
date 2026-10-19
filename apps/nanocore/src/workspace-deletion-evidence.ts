@@ -17,6 +17,7 @@ import { EvidenceBundleRecordSchema } from '@openkit/app-api-schemas';
 import {
   DeploymentIdSchema,
   RequestIdSchema,
+  readRetainedV1,
   TimestampSchema,
   UserIdSchema,
   WorkspaceExportIdSchema,
@@ -552,9 +553,11 @@ function captureRecurringClosureHistory(coreDb: CoreDb, workspaceId: string): st
   ) =>
     (
       coreDb.sqlite
-        .prepare(`SELECT record_json FROM ${table} WHERE workspace_id = ? ORDER BY id`)
-        .all(workspaceId) as { record_json: string }[]
-    ).map((row) => JSON.parse(row.record_json));
+        .prepare(
+          `SELECT schema_version AS schemaVersion, record_json FROM ${table} WHERE workspace_id = ? ORDER BY id`
+        )
+        .all(workspaceId) as { schemaVersion: unknown; record_json: string }[]
+    ).map((row) => readRetainedV1(row, () => JSON.parse(row.record_json)));
   const schedules = readRows('recurring_schedules');
   const occurrences = readRows('recurring_occurrences');
   const expiredRanges = readRows('recurring_expired_ranges');

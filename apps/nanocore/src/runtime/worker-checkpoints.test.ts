@@ -352,6 +352,14 @@ describe('worker checkpoint storage', () => {
         now: () => '2026-05-31T00:11:00.000Z',
       });
 
+      const actor = workspaceDb.sqlite
+        .prepare("SELECT actor_json FROM audit_events WHERE action = 'worker.checkpoint.terminal'")
+        .get() as { actor_json: string };
+      expect(JSON.parse(actor.actor_json)).toEqual({
+        kind: 'agent',
+        id: 'agent_runtime_demo',
+        responsibleUserId: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b',
+      });
       expect(
         workspaceDb.sqlite
           .prepare(

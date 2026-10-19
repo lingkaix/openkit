@@ -2,21 +2,64 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   type SubmitTurnFeedbackRequest,
-  TurnFeedbackEntrySchema,
   type TurnFeedbackResponse,
   TurnFeedbackResponseSchema,
 } from '@openkit/app-api-schemas';
-import type { ActorRef, TurnSchema } from '@openkit/protocol';
+import {
+  type ActorRef,
+  AutomationIdSchema,
+  readRetainedV1,
+  TurnIdSchema,
+  type TurnSchema,
+  UserIdSchema,
+  writeRetainedV1,
+} from '@openkit/protocol';
+import { z } from 'zod';
 import type { FsStore } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
 import { writeFileAtomic } from '../storage/workspace-file-records.js';
 
 type Turn = import('zod').infer<typeof TurnSchema>;
 
+// Frozen feedback meaning stays separate from the current response projection.
+const StoredFeedbackActorV1Schema = z.union([
+  z.object({ kind: z.literal('user'), id: UserIdSchema }).strict(),
+  z
+    .object({
+      kind: z.enum(['agent', 'integration', 'system']),
+      id: z.string().min(1),
+      responsibleUserId: UserIdSchema.nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('automation'),
+      id: AutomationIdSchema,
+      responsibleUserId: UserIdSchema.nullable(),
+    })
+    .strict(),
+]);
+const StoredFeedbackRatingV1Schema = z.enum(['good', 'bad']).nullable();
 /** Owned disk annotations survive rewrites; public responses use the known-field projection. */
-const PersistedTurnFeedbackSchema = TurnFeedbackResponseSchema.extend({
-  history: TurnFeedbackEntrySchema.passthrough().array(),
-}).passthrough();
+const StoredTurnFeedbackV1Schema = z
+  .object({
+    turnId: TurnIdSchema,
+    agentId: z.string().min(1).nullable(),
+    rating: StoredFeedbackRatingV1Schema,
+    note: z.string().nullable(),
+    createdAt: z.string().min(1),
+    history: z.array(
+      z
+        .object({
+          actor: StoredFeedbackActorV1Schema,
+          submittedAt: z.string().min(1),
+          rating: StoredFeedbackRatingV1Schema,
+          note: z.string().nullable(),
+        })
+        .passthrough()
+    ),
+  })
+  .passthrough();
 
 /**
  * Returns the feedback file path for one turn.
@@ -141,7 +184,9 @@ export function updateTurnFeedback(
  * @returns Feedback record.
  */
 function readFeedbackFile(path: string, turnId: string): TurnFeedbackResponse {
-  const feedback = PersistedTurnFeedbackSchema.parse(JSON.parse(readFileSync(path, 'utf8')));
+  const feedback = readRetainedV1(JSON.parse(readFileSync(path, 'utf8')), (value) =>
+    StoredTurnFeedbackV1Schema.parse(value)
+  );
   if (feedback.turnId !== turnId)
     throw new Error('Feedback Turn identity does not match its owner.');
   return feedback;
@@ -154,5 +199,9 @@ function readFeedbackFile(path: string, turnId: string): TurnFeedbackResponse {
  * @param feedback Feedback record.
  */
 function writeFeedbackFile(path: string, feedback: TurnFeedbackResponse): void {
-  writeFileAtomic(path, `${JSON.stringify(feedback, null, 2)}\n`, 0o666 & ~process.umask());
+  writeFileAtomic(
+    path,
+    `${JSON.stringify(writeRetainedV1(feedback), null, 2)}\n`,
+    0o666 & ~process.umask()
+  );
 }

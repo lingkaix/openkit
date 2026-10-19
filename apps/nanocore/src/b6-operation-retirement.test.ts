@@ -312,6 +312,7 @@ describe('B6 binding retirement', () => {
       writeFileSync(
         join(providersRoot, 'provider-b6.provider.jsonc'),
         JSON.stringify({
+          schemaVersion: 1,
           id: 'provider-b6',
           displayName: 'B6 provider',
           kind: 'custom',
