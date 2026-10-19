@@ -136,3 +136,5 @@ AEP Skill lineage optionally carries `pinAuditRef`, validated by the Protocol Au
 `knowledgeMounts` is the shared scope-owned declaration array beside the fixed `defaultKnowledgeBaseId` (inside `workspace` for Workspace settings). Parsing preserves declarations, requires one default and unique names, and binds every mount to that exact base. Unsupported backend declarations remain descriptive until an owning adapter can activate them; parsing creates neither storage nor access. Native fresh Knowledge Base initialization records the managed local `raw` declaration.
 
 An omitted internal-role limits object uses a 300-second deadline for Knowledge Manager and the existing 120-second deadline for other roles. Explicit authored limits override these defaults; no additional deadline setting is introduced.
+
+MCP binding, effective-server and AEP supply shapes retain only allowedTools. Current Policy owns per-Tool prohibition and human approval. Retained catalog readers refuse retired approvalRequiredTools and deniedTools authority fields while preserving descriptive annotations; no predecessor conversion is provided.
