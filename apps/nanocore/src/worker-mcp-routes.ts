@@ -478,29 +478,31 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
               );
               applyScopedMigrations(activeWorkspaceDb);
               requireRawOutputCapabilityAdmission(activeWorkspaceDb, environmentPackage);
-              const toolConditions = currentWorkerMcpPermissions(
-                input,
-                environmentPackage,
-                serverId,
-                request.params.name,
-                activeWorkspaceDb
-              );
-              if (toolConditions.length > 0) {
-                const authority = currentMcpPolicyAuthority({
+              const requireCurrentBuiltinToolPolicy = () => {
+                const toolConditions = currentWorkerMcpPermissions(
                   input,
                   environmentPackage,
-                  workspaceDb: activeWorkspaceDb,
                   serverId,
-                  toolName: request.params.name,
-                });
-                const kernel = authority.kernel;
-                if (
-                  applyMcpToolProhibitions(kernel, toolConditions).effect !== 'allow' ||
-                  toolConditions.some((rule) => rule.effect === 'require_approval')
-                )
-                  throw mcpDeniedError();
-              }
-
+                  request.params.name,
+                  activeWorkspaceDb!
+                );
+                if (toolConditions.length > 0) {
+                  const authority = currentMcpPolicyAuthority({
+                    input,
+                    environmentPackage,
+                    workspaceDb: activeWorkspaceDb!,
+                    serverId,
+                    toolName: request.params.name,
+                  });
+                  const kernel = authority.kernel;
+                  if (
+                    applyMcpToolProhibitions(kernel, toolConditions).effect !== 'allow' ||
+                    toolConditions.some((rule) => rule.effect === 'require_approval')
+                  )
+                    throw mcpDeniedError();
+                }
+              };
+              requireCurrentBuiltinToolPolicy();
               if (workBuiltin && request.params.name === 'work_input_request') {
                 try {
                   const duplicate = preflightWorkRequestInput(
@@ -567,6 +569,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                               )
                             )
                               throw mcpDeniedError();
+                            requireCurrentBuiltinToolPolicy();
                           },
                           notebook: new KnowledgeNotebook({
                             repositoryPath: join(
@@ -610,20 +613,34 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                             input.coreDb!,
                             environmentPackage
                           );
+                        requireCurrentBuiltinToolPolicy();
                       },
                     },
                     request.params.name,
                     (request.params.arguments ?? {}) as Record<string, unknown>
                   );
                   const delivered = mcp.projectCallToolResult(result, undefined);
+                  let resultCurrent = false;
+                  try {
+                    requireCurrentBuiltinToolPolicy();
+                    resultCurrent = true;
+                  } catch {
+                    // Withhold content after authority changes; the completed effect stays completed.
+                  }
                   finishCapabilityCall({
                     callId: call.id,
                     status: 'succeeded',
                     workspaceDb: activeWorkspaceDb,
-                    ...(request.params.name === operationToolName('knowledge.ask')
+                    ...(resultCurrent && request.params.name === operationToolName('knowledge.ask')
                       ? { deliveredKnowledgeAnswer: JSON.stringify(delivered) }
                       : {}),
                   });
+                  if (!resultCurrent)
+                    throw new WorkerControlGatewayError(
+                      'mcp-policy-stale',
+                      'MCP call completed; current authority does not permit result delivery.',
+                      409
+                    );
                   return delivered;
                 }
                 const result = await dispatchOpenkitGenerativeTool(
@@ -649,9 +666,27 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                   status: 'succeeded',
                   workspaceDb: activeWorkspaceDb,
                 });
+                try {
+                  requireCurrentBuiltinToolPolicy();
+                } catch {
+                  throw new WorkerControlGatewayError(
+                    'mcp-policy-stale',
+                    'MCP call completed; current authority does not permit result delivery.',
+                    409
+                  );
+                }
                 return mcp.projectCallToolResult(result, undefined);
               } catch (error) {
-                throw finishMcpHandlerFailure(error, call, activeWorkspaceDb);
+                // Admission callbacks use the SDK refusal; retain its denial at the capability owner.
+                const failure =
+                  error instanceof ProtocolError &&
+                  error.data !== null &&
+                  typeof error.data === 'object' &&
+                  'code' in error.data &&
+                  error.data.code === 'mcp-denied'
+                    ? new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403)
+                    : error;
+                throw finishMcpHandlerFailure(failure, call, activeWorkspaceDb);
               }
             } finally {
               activeWorkspaceDb?.sqlite.close();

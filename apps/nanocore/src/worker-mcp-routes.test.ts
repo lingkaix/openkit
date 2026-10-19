@@ -1301,6 +1301,54 @@ describe('worker MCP routes', () => {
           pendingBefore
         );
         publishBuiltinCondition(null);
+        const ledgerBeforeHeldAsk = listWorkspaceCapabilityCalls(conditionDb, turn.workspaceId);
+        const previousCallIds = new Set(ledgerBeforeHeldAsk.map((call) => call.id));
+        const withheldAnswer = 'BUILTIN_POST_AWAIT_WITHHELD_ANSWER';
+        let releaseAsk!: () => void;
+        let enteredAsk!: () => void;
+        const askEntered = new Promise<void>((resolve) => {
+          enteredAsk = resolve;
+        });
+        const askHold = new Promise<void>((resolve) => {
+          releaseAsk = resolve;
+        });
+        askKnowledge.mockImplementationOnce(async () => {
+          enteredAsk();
+          await askHold;
+          return { ...knowledgeAnswer, answer: withheldAnswer };
+        });
+        const heldAsk = workClient.callTool({
+          name: operationToolName('knowledge.ask'),
+          arguments: { question: 'Hold this answer until current Policy is checked.' },
+        });
+        const withheld = expect(heldAsk).rejects.toMatchObject({ data: { code: 'mcp-denied' } });
+        try {
+          await askEntered;
+          publishBuiltinCondition('prohibit');
+          releaseAsk();
+          await withheld;
+          expect(askKnowledge).toHaveBeenCalledTimes(2);
+          const ledgerAfterHeldAsk = listWorkspaceCapabilityCalls(conditionDb, turn.workspaceId);
+          expect(ledgerAfterHeldAsk.filter((call) => previousCallIds.has(call.id))).toEqual(
+            ledgerBeforeHeldAsk
+          );
+          const heldCalls = ledgerAfterHeldAsk.filter((call) => !previousCallIds.has(call.id));
+          expect(heldCalls).toHaveLength(1);
+          expect(heldCalls[0]).toMatchObject({
+            capabilityId: `mcp.call-tool.${operationToolName('knowledge.ask')}`,
+            completedAt: expect.any(String),
+          });
+          expect(heldCalls[0]!.extensions?.['openkit.knowledge/delivery']).toBeUndefined();
+          expect(
+            JSON.stringify(store.listThreadItems(turn.workspaceId, turn.threadId))
+          ).not.toContain(withheldAnswer);
+          expect(conditionDb.sqlite.prepare('SELECT * FROM pending_requests').all()).toEqual(
+            pendingBefore
+          );
+        } finally {
+          releaseAsk();
+          publishBuiltinCondition(null);
+        }
       } finally {
         conditionDb.sqlite.close();
       }
