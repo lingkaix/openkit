@@ -131,12 +131,9 @@ export async function resolveCurrentWorkerSource(
       throw new Error('Current source scope is unavailable.');
     let sourceThreadId: string | null = null;
     if (source.source.kind === 'artifact') {
-      const artifact = input.store.getArtifactVersion(
-        scope.workspaceId, source.source.reference.objectId, source.source.artifactVersion
-      ).artifact;
+      const artifact = input.store.getArtifact(scope.workspaceId, source.source.reference.objectId);
       if (
-        artifact.version !== source.source.artifactVersion ||
-        artifact.contentDigest !== source.originalDigest ||
+        artifact.version < source.source.artifactVersion ||
         !isArtifactVisible(input.store, artifact, userId, administrator, resourcePolicyActor)
       )
         throw new Error('Current source is unavailable.');
@@ -259,9 +256,17 @@ export async function resolveCurrentWorkerSource(
   };
   let currentSource: WorkerContextPackageSourceFileInput | undefined;
   if (source?.source.kind === 'artifact') {
+    // Current source and receiving-audience admission precede any retained original read.
+    const artifact = input.store.getArtifactVersion(
+      scope.workspaceId,
+      source.source.reference.objectId,
+      source.source.artifactVersion
+    ).artifact;
+    if (artifact.contentDigest !== source.originalDigest)
+      throw new Error('Current source is unavailable.');
     [currentSource] = await prepareArtifactSourceInputs({
       workspaceRoot,
-      artifacts: [input.store.getArtifact(scope.workspaceId, source.source.reference.objectId)],
+      artifacts: [artifact],
       assertCurrent,
       ...(input.fileAdmission ? { admission: input.fileAdmission } : {}),
       ...(input.signal ? { signal: input.signal } : {}),

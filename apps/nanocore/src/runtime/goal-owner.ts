@@ -15,8 +15,8 @@ import {
   allocateEntityId,
   deriveEntityId,
   isSealedTurnTerminal,
-  readRetainedV1,
   PolicyDelegationV1Schema,
+  readRetainedV1,
   type TurnSchema,
   writeRetainedV1,
 } from '@openkit/protocol';

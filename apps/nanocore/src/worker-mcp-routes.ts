@@ -25,9 +25,8 @@ import {
   CapabilityCallStatusSchema,
   deriveEntityId,
   ItemSchema,
-  readRetainedV1,
-
   isSealedTurnTerminal,
+  readRetainedV1,
   responsibleUserIdForActor,
 } from '@openkit/protocol';
 import { Ajv2020 } from 'ajv/dist/2020.js';

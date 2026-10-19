@@ -21,11 +21,10 @@ import {
 import {
   allocateEntityId,
   deriveEntityId,
-  readRetainedV1,
-  writeRetainedV1,
-
   PolicyDocumentV1Schema,
   PolicyWriteOutcomeV1Schema,
+  readRetainedV1,
+  writeRetainedV1,
 } from '@openkit/protocol';
 import { z } from 'zod';
 import { recordServerAuditEvent } from '../audit-events.js';

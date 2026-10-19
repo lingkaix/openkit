@@ -153,7 +153,7 @@ and are not listed here.
 - `docs/specs/20261017-evaluation_foundation.md` — Accepted, In Progress — This specification owns the judgement record and the candidate set with its attributable selection.
 - `docs/specs/20261017-retained_format_register.md` — Accepted, Implemented — The register owns the family inventory, authority classification, current marker evidence, reader boundary, fixture pointers and identified gaps.
 - `docs/specs/20261018-file_storage_and_knowledge_packages.md` — Accepted, Partial — Ablation: shared file contracts must not create competing product authorities.
-- `docs/specs/20261018-nanocore_interception_and_information_consolidation.md` — Accepted, Not Started — Needed for the approved unified mediation and information-consolidation decisions.
+- `docs/specs/20261018-nanocore_interception_and_information_consolidation.md` — Accepted, Partial — Needed for the approved unified mediation and information-consolidation decisions.
 
 ## Terminal Specifications
 

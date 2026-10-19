@@ -63,7 +63,6 @@ import {
 const KNOWLEDGE_BASE_ID = 'kb_0190f4c8-0000-7000-8000-000000000001';
 
 /** Fixed timestamp shared by accepted-Turn authority fixtures. */
-const KNOWLEDGE_BASE_ID = 'kb_0190f4c8-0000-7000-8000-000000000001';
 const TURN_STARTED_AT = '2026-07-18T00:00:00.000Z';
 
 /** Exact structured worker request retained by the same-Turn request Item. */

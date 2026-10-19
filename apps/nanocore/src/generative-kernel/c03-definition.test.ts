@@ -50,14 +50,21 @@ describe('C03 definition admission', () => {
 
   it('removes repeated exact targets while retaining first order and different content pins', () => {
     const laterPage = formatReferenceUri(page, `sha256:${'cd'.repeat(32)}`);
-    const repeated = [references[0]!, references[1]!, references[0]!, skill, references[1]!, laterPage];
+    const repeated = [
+      references[0]!,
+      references[1]!,
+      references[0]!,
+      skill,
+      references[1]!,
+      laterPage,
+    ];
     const expected = [...references, laterPage];
     expect(admitLightAppDefinition({ ...definition, references: repeated }).references).toEqual(
       expected
     );
-    expect(admitLightAppSchema({ ...definition, references: repeated }, appId, 1).references).toEqual(
-      expected
-    );
+    expect(
+      admitLightAppSchema({ ...definition, references: repeated }, appId, 1).references
+    ).toEqual(expected);
   });
 
   it('changes only reference metadata when revising its list', () => {

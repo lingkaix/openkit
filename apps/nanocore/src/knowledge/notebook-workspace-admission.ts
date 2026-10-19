@@ -3,9 +3,8 @@ import { join } from 'node:path';
 import type { ActorRef } from '@openkit/protocol';
 import type { Actor } from '../auth/identity.js';
 import { isWorkspaceOperationAuthorized } from '../auth/operation-authorizer.js';
-import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
-
 import { canDiscloseThreadToAudience } from '../auth/thread-visibility.js';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { findWorkspaceConfig, type RuntimeConfigManager } from '../config/runtime-config.js';
 import { verifyKnowledgeProposalWorkHistory } from '../knowledge-source-authority.js';
 import type { FsStore } from '../lib/store.js';

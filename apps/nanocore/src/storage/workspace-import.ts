@@ -116,13 +116,12 @@ import {
 import { remintPortableWorkspaceNotebookPages } from '../knowledge/notebook-workspace-portability.js';
 import { parseOkfDocument, stringFrontmatterField } from '../knowledge/okf.js';
 import type { AgentSession, KnowledgeSourceRecord } from '../lib/store.js';
+import { remintResourcePolicyConfig } from '../policy/resource-policy-portability.js';
 import {
   AuditEventRetainedV1Schema,
   PermissionDecisionRetainedV1Schema,
   projectPermissionDecision,
 } from '../policy/retained-records-v1.js';
-
-import { remintResourcePolicyConfig } from '../policy/resource-policy-portability.js';
 import type { AgentEnvironmentPackageSnapshotRecord } from '../runtime/aep-snapshot-ledger.js';
 import {
   StoredGoalCardTaskV1Schema,
@@ -4721,9 +4720,14 @@ function readPortableFileStateFromExport(
       });
       workspaceConfig = applyEdits(
         remintedConfig,
-        modify(remintedConfig, ['workspace', 'defaultKnowledgeBaseId'], context.targetKnowledgeBaseId, {
-          formattingOptions: { insertSpaces: true, tabSize: 2 },
-        })
+        modify(
+          remintedConfig,
+          ['workspace', 'defaultKnowledgeBaseId'],
+          context.targetKnowledgeBaseId,
+          {
+            formattingOptions: { insertSpaces: true, tabSize: 2 },
+          }
+        )
       );
     } else if (workspacePath === 'knowledge/schema/scope-schema.yaml') {
       workspaceSchema = content;
