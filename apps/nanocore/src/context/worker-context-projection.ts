@@ -17,14 +17,11 @@ import type { FsStore } from '../lib/store.js';
 import { listSchedulerAdmissionEntriesForWorkspace } from '../scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { resolveDataRootPath } from '../storage/fs-layout.js';
-import {
-  assertCanonicalDirectory,
-  readCanonicalTextFile,
-} from '../storage/workspace-file-records.js';
+import { assertCanonicalDirectory } from '../storage/workspace-file-records.js';
 import { createWorkerContextPackageAuthorityReader } from './worker-context-authorities.js';
 import {
+  readPortableWorkerContextPackageTrace,
   readWorkerContextPackageTrace,
-  verifyPortableWorkerContextPackageTrace,
   type WorkerContextPackageTrace,
 } from './worker-context-package.js';
 
@@ -208,14 +205,6 @@ function readVerifiedThreadWorkerContextTraces(
   try {
     const authorities = createWorkerContextPackageAuthorityReader(input);
     return turnsWithTrace.map((turn) => {
-      const path = join(
-        workspaceRoot,
-        'threads',
-        input.threadId,
-        'turns',
-        turn.id,
-        'context-package.json'
-      );
       for (const directory of [
         workspaceRoot,
         join(workspaceRoot, 'threads'),
@@ -225,17 +214,11 @@ function readVerifiedThreadWorkerContextTraces(
       ]) {
         assertCanonicalDirectory(directory);
       }
-      const trace = JSON.parse(readCanonicalTextFile(path)) as WorkerContextPackageTrace;
-      if (
-        trace.workspaceId !== workspaceId ||
-        trace.threadId !== input.threadId ||
-        trace.turnId !== turn.id
-      ) {
-        throw new Error('Worker Context Package trace path lineage mismatch.');
-      }
-      const verified = verifyPortableWorkerContextPackageTrace({
+      const verified = readPortableWorkerContextPackageTrace({
         authorities,
-        trace,
+        workspaceId,
+        threadId: input.threadId,
+        turnId: turn.id,
         workspaceRoot,
       });
       if (!turn.startedAt) {
