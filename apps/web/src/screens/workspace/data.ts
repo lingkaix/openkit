@@ -4,6 +4,7 @@ import {
   createRequestId,
   type WorkspaceRecord,
 } from '@openkit/core-client';
+import { parseReferenceScope } from '@openkit/protocol';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCoreClient } from '../../app/core-client';
 import {
@@ -19,6 +20,66 @@ import {
  * first-run readiness all flow through `@openkit/core-client` under TanStack
  * Query — server state is never copied into Zustand.
  */
+/** Exact Workspace notebook page collection path for one retained Knowledge Base. */
+export function workspaceKnowledgePageScopeId(
+  workspaceId: string,
+  knowledgeBaseId: string
+): string {
+  return `page/workspace/${workspaceId}/${knowledgeBaseId}`;
+}
+
+/** Whether one page reference targets the selected Workspace Knowledge Base. */
+export function matchesWorkspaceKnowledgePageReference(
+  scopeId: string,
+  workspaceId: string,
+  knowledgeBaseId: string
+): boolean {
+  const scope = parseReferenceScope(scopeId);
+  return (
+    scope?.family === 'page' &&
+    scope.kind === 'workspace' &&
+    scope.workspaceId === workspaceId &&
+    scope.knowledgeBaseId === knowledgeBaseId
+  );
+}
+
+/** Product label for one Knowledge page reference scope. */
+export function knowledgePageScopeLabel(scopeId: string): string {
+  const scope = parseReferenceScope(scopeId);
+  if (!scope || scope.family !== 'page') return scopeId;
+  if (scope.kind === 'workspace') return 'Workspace Knowledge';
+  if (scope.kind === 'server') return 'Server Knowledge';
+  if (scope.kind === 'user') return 'User Memory';
+  return scopeId;
+}
+
+/** Optional citation evidence carried beside structured page references. */
+export type KnowledgeCitationEvidence = {
+  revision?: string;
+  contentDigest?: string;
+  referenceUri?: string;
+};
+
+/** Reads optional citation evidence without inferring values from scope or excerpt. */
+export function readKnowledgeCitationEvidence(citation: unknown): KnowledgeCitationEvidence {
+  if (!citation || typeof citation !== 'object') return {};
+  const record = citation as Record<string, unknown>;
+  return {
+    revision: typeof record.revision === 'string' ? record.revision : undefined,
+    contentDigest: typeof record.contentDigest === 'string' ? record.contentDigest : undefined,
+    referenceUri: typeof record.referenceUri === 'string' ? record.referenceUri : undefined,
+  };
+}
+
+/** Server and canonical URI citations expose revision and digest separately from the URI pin. */
+export function shouldShowKnowledgeCitationEvidence(
+  scopeId: string,
+  evidence: KnowledgeCitationEvidence
+): boolean {
+  const scope = parseReferenceScope(scopeId);
+  return scope?.kind === 'server' || evidence.referenceUri !== undefined;
+}
+
 export const workspaceKeys = {
   attention: (workspaceId: string) => ['attention', workspaceId] as const,
   agents: (workspaceId: string) => ['agents', workspaceId] as const,

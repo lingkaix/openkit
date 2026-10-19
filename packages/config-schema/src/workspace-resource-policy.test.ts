@@ -10,6 +10,7 @@ const boundary = {
   prohibitions: [],
 };
 const config = (resourceAccess: unknown[]) => ({
+  schemaVersion: 1,
   requiredFeatures: ['openkit.workspace-resource-policy.v1'],
   workspace: { name: 'Private project', policy: { resourceAccess } },
 });
@@ -26,7 +27,9 @@ describe('Workspace resource privacy configuration', () => {
 
   it('rejects missing feature declarations and malformed authority without stripping it', () => {
     const valid = config([boundary]);
-    expect(WorkspaceConfigSchema.safeParse({ workspace: valid.workspace }).success).toBe(false);
+    expect(
+      WorkspaceConfigSchema.safeParse({ schemaVersion: 1, workspace: valid.workspace }).success
+    ).toBe(false);
     for (const invalid of [
       { ...boundary, resource: { family: 'artifact', id: threadId } },
       { ...boundary, extraAuthority: true },

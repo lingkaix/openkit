@@ -164,7 +164,7 @@ A binding MUST retain:
 
 Binding creation, replacement, narrowing, activation, and revocation use `policy.write`. Its invocation cannot derive disclosure authority from participant availability or Tool presence. Validation MUST check the proposed input scope and participant grant before committing the binding. At invocation, Core MUST recheck current disclosure and acting authority with the Kernel only. A participant's investigative calls also use Kernel-only checks with its own grant; neither path permits another binding or recursive approval. The owning human's root decision terminates the authority chain.
 
-Permission statements include Gateway Tool allow, deny, and approval-required rules; these use the ordinary Kernel check at dispatch. They do not create another Tool-rule format. Storage leases remain the grant kind above. Existing finite Worker Git-read assignments retain their exact authority and application boundary below; this design does not widen that exception.
+Permission statements include Gateway Tool allow, deny, and approval-required rules; these use the ordinary Kernel check at dispatch. MCP Tool permissions select the exact Workspace, server and Tool only in `scope.resources` through the `mcp-tool` resource, with an ordinary grant; no second Tool-name selector or Tool-rule grant kind exists. Storage leases remain the grant kind above. Existing finite Worker Git-read assignments retain their exact authority and application boundary below; this design does not widen that exception.
 
 ## Point And Evaluation Contract
 

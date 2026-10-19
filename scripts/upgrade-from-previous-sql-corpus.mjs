@@ -1839,6 +1839,17 @@ export async function readSqlCorpus({ appRoot, dataRoot, selectors }) {
       sql.lightAppSnapshotId
     );
     const metadata = o.kernel.getLightApp(dataRoot, workspaceId, sql.lightAppId);
+    // App receipts belong to the admitted native Kernel format, not the Core SQL row format.
+    // Read at each receipt's creation time so this inventory neither expires nor prunes history.
+    const appReceipts = app.sqlite
+      .prepare('SELECT request_key AS key, created_at AS createdAt FROM idempotency_requests')
+      .all()
+      .map(({ key, createdAt }) =>
+        required(
+          o.commands.getCommandRequestRecordFromDb(app, key, createdAt),
+          'Light App command receipt'
+        )
+      );
     const receipt = (handle, key) =>
       o.commands.readCommandRequestRecordsFromSqlite(handle.sqlite).find((row) => row.key === key);
     const linked = await readLinkedEvidence(o, core, workspace, store, sql);
@@ -2031,7 +2042,7 @@ export async function readSqlCorpus({ appRoot, dataRoot, selectors }) {
           metadata.schemaRevision
         ),
         o.audit.listSqliteAuditEvents(app.sqlite, workspaceId),
-        o.commands.readCommandRequestRecordsFromSqlite(app.sqlite),
+        appReceipts,
       ]),
       [SQL_CORPUS_FAMILIES[21]]: one(
         SQL_CORPUS_FAMILIES[21],
