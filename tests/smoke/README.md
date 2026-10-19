@@ -17,3 +17,5 @@ The Worker MCP smoke reads `scheduler_execution_attempts.phase = 'closed'` as du
 The authenticated NanoHost stand-in sends the shared transport revision at admission and requires the same revision in the success headers before it carries effects.
 
 The NanoCore health smoke first probes the recovered deletion fence through `POST /api/app/operations/workspace.dashboard` and requires HTTP 403 `workspace_access_denied`. It then continues its exact retained deletion request through `POST /api/app/operations/workspace.delete` with the logical Workspace selector and `x-openkit-request-id`, and checks the cleaned lifecycle outcome.
+
+The Worker MCP smoke checks its authored Provider fixture through the production loader before launch. Its permission observation uses the existing Policy record reader and exact mediated operation/stage rather than the retired raw enforcement-point projection.
