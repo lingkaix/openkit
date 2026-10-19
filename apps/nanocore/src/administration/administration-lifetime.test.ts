@@ -70,7 +70,9 @@ function answer(): ModelResponse {
 }
 
 /** Real private admission, authored configuration, candidate publication and public interruption. */
-function fixture(options: { blockedCall?: 1 | 2; deadlineMs?: number } = {}) {
+function fixture(
+  options: { blockedCall?: 1 | 2; deadlineMs?: number; defaultProfile?: boolean } = {}
+) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'administration-lifetime-'));
   const coreDb = openCoreDb(dataRoot);
   cleanup.push(() => {
@@ -139,21 +141,29 @@ function fixture(options: { blockedCall?: 1 | 2; deadlineMs?: number } = {}) {
       ],
     })
   );
-  // Only the stalled-answer case selects an explicitly authored short profile.
+  // A profile with omitted limits tests schema selection; an empty list tests entry fallback.
   writeFileSync(
     join(dataRoot, 'config/internal-role-profiles.jsonc'),
     JSON.stringify({
       schemaVersion: 1,
       defaultLogicalModelId: 'administration',
       profiles:
-        options.deadlineMs === undefined
+        options.deadlineMs === undefined && !options.defaultProfile
           ? []
           : [
               {
-                id: 'short-answer-test',
+                id: options.deadlineMs === undefined ? 'assistant-default' : 'short-answer-test',
                 roleId: 'assistant',
                 preferredLogicalModelId: 'administration',
-                limits: { maxModelTurns: 16, maxToolCalls: 48, deadlineMs: options.deadlineMs },
+                ...(options.deadlineMs === undefined
+                  ? {}
+                  : {
+                      limits: {
+                        maxModelTurns: 16,
+                        maxToolCalls: 48,
+                        deadlineMs: options.deadlineMs,
+                      },
+                    }),
               },
             ],
     })
@@ -346,6 +356,54 @@ function fixture(options: { blockedCall?: 1 | 2; deadlineMs?: number } = {}) {
 }
 
 describe('Administration admitted Turn lifetime', () => {
+  it.each([
+    {
+      label: 'parsed default profile',
+      defaultProfile: true,
+      deadlineMs: undefined,
+      profileId: 'assistant-default',
+      expectedDeadlineMs: 600_000,
+    },
+    {
+      label: 'no-profile fallback',
+      defaultProfile: false,
+      deadlineMs: undefined,
+      profileId: null,
+      expectedDeadlineMs: 600_000,
+    },
+    {
+      label: 'explicit short profile',
+      defaultProfile: false,
+      deadlineMs: 4_000,
+      profileId: 'short-answer-test',
+      expectedDeadlineMs: 4_000,
+    },
+  ])('retains the shared Assistant admission deadline for $label', async (options) => {
+    const f = fixture(options);
+    const pending = f.submit();
+    await admittedInference(f.entered.promise, pending);
+    const admitted = f.retained().turns[0]!;
+    f.release.resolve(answer());
+    const response = await pending;
+    const body = (await response.json()) as SubmitAdministrationConversationResponse;
+
+    expect(response.status).toBe(200);
+    expect(body, JSON.stringify(body)).toMatchObject({
+      outcome: 'answered',
+      turn: { status: 'completed' },
+    });
+    const expected = {
+      roleId: 'assistant',
+      profileId: options.profileId,
+      limits: { maxModelTurns: 16, maxToolCalls: 48, deadlineMs: options.expectedDeadlineMs },
+    };
+    expect(admitted.status).toBe('running');
+    expect(admitted.internalExecution).toMatchObject(expected);
+    expect(body.turn.internalExecution).toMatchObject(expected);
+    expect(f.store.getTurnById(body.turn.id).internalExecution).toMatchObject(expected);
+    expect(f.createResponses).toHaveBeenCalledOnce();
+  });
+
   it.each([
     false,
     true,

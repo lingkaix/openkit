@@ -9,6 +9,7 @@ import {
   operationToolName,
   SubmitConversationResponseSchema,
 } from '@openkit/app-api-schemas';
+import { InternalRoleProfilesConfigSchema } from '@openkit/config-schema';
 import { allocateEntityId, formatReferenceUri, workspaceIdForOwner } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
@@ -3269,6 +3270,80 @@ describe('quick chat app API', () => {
       outcome: 'answered',
       item: { text: 'Stock adapter answer' },
     });
+  });
+});
+
+describe('Ordinary Assistant admission defaults', () => {
+  it.each([
+    {
+      label: 'parsed default profile',
+      hasProfile: true,
+      authoredDeadlineMs: undefined,
+      profileId: 'assistant-default',
+      expectedDeadlineMs: 600_000,
+    },
+    {
+      label: 'no-profile fallback',
+      hasProfile: false,
+      authoredDeadlineMs: undefined,
+      profileId: null,
+      expectedDeadlineMs: 600_000,
+    },
+    {
+      label: 'explicit short profile',
+      hasProfile: true,
+      authoredDeadlineMs: 4_000,
+      profileId: 'assistant-default',
+      expectedDeadlineMs: 4_000,
+    },
+  ])('retains the shared Assistant admission deadline for $label', async (options) => {
+    const internalRoleProfiles = InternalRoleProfilesConfigSchema.parse({
+      schemaVersion: 1,
+      defaultLogicalModelId: 'quick-chat',
+      profiles: options.hasProfile
+        ? [
+            {
+              id: 'assistant-default',
+              roleId: 'assistant',
+              preferredLogicalModelId: 'quick-chat',
+              ...(options.authoredDeadlineMs === undefined
+                ? {}
+                : {
+                    limits: {
+                      maxModelTurns: 16,
+                      maxToolCalls: 48,
+                      deadlineMs: options.authoredDeadlineMs,
+                    },
+                  }),
+            },
+          ]
+        : [],
+    });
+    let admittedAtInference: ReturnType<FsStore['getTurnById']> | undefined;
+    const dispatch = vi.fn(async () => {
+      admittedAtInference = fixture.store.listThreadTurns(
+        fixture.selectors.workspaceId,
+        fixture.selectors.threadId
+      )[0];
+      return providerAnswer('A bounded ordinary Assistant answer.');
+    });
+    const fixture = await createTimelineFixture({
+      internalRoleProfiles,
+      llmGatewayDispatcher: { createResponses: dispatch } as never,
+    });
+    const response = await fixture.submit('Explain a short concept.');
+    expect(response.status, await response.clone().text()).toBe(200);
+    const body = SubmitConversationResponseSchema.parse(await response.json());
+    const expected = {
+      roleId: 'quick-chat',
+      profileId: options.profileId,
+      limits: { maxModelTurns: 16, maxToolCalls: 48, deadlineMs: options.expectedDeadlineMs },
+    };
+    expect(admittedAtInference?.status).toBe('running');
+    expect(admittedAtInference?.internalExecution).toMatchObject(expected);
+    expect(body.turn.internalExecution).toMatchObject(expected);
+    expect(fixture.store.getTurnById(body.turn.id).internalExecution).toMatchObject(expected);
+    expect(dispatch).toHaveBeenCalledOnce();
   });
 });
 
