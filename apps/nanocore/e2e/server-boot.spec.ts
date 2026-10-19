@@ -157,6 +157,10 @@ describe('nanocore e2e server boot', () => {
         dataRoot,
         port: Number(new URL(baseUrl).port),
         seedDemoWorkspace: false,
+      }).then((unexpectedlyStarted) => {
+        // A broken refusal must still leave the unexpected child owned by afterEach.
+        harness = unexpectedlyStarted;
+        return unexpectedlyStarted;
       })
     ).rejects.toThrow(
       /NanoCore exited before health check passed: [1-9][\s\S]*SQLite integrity check failed/
