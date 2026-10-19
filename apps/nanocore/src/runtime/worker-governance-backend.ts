@@ -144,6 +144,7 @@ export class WorkerNativeProofValidationError extends Error {
   /** First fixed predicate that refused package lineage, or the subsequent proof/storage check. */
   public readonly failedCheck:
     | 'package-binding-lineage/anchor-missing'
+    | 'package-binding-lineage/workspace-deleted'
     | 'package-binding-lineage/attachment-missing'
     | 'package-binding-lineage/lease-missing'
     | 'package-binding-lineage/admission-missing'
