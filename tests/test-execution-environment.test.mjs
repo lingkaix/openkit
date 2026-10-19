@@ -34,8 +34,8 @@ const ciWorkflow = parse(read('.github/workflows/ci.yml'));
 const turboTasks = JSON.parse(read('turbo.json')).tasks;
 const retrievalDictionaryInputs = [
   'scripts/retrieval-dictionary.py',
-  'apps/retrieval-kernel/vendor/mecab-ipadic-2.7.0-20250920.tar.gz',
-  'apps/retrieval-kernel/vendor/IPADIC-COPYING',
+  'packages/retrieval-kernel/vendor/mecab-ipadic-2.7.0-20250920.tar.gz',
+  'packages/retrieval-kernel/vendor/IPADIC-COPYING',
 ];
 
 /**

@@ -24,11 +24,11 @@ test('retrieval tests fetch locked dependencies before offline notices and stop 
         (command === 'cargo' ? 'exit "${FETCH_EXIT:-0}"\n' : ''),
       { mode: 0o755 }
     );
-  const recipe = JSON.parse(readFileSync(join(root, 'apps/retrieval-kernel/package.json'))).scripts
-    .test;
+  const recipe = JSON.parse(readFileSync(join(root, 'packages/retrieval-kernel/package.json')))
+    .scripts.test;
   const run = (fetchExit) =>
     spawnSync('/bin/sh', ['-c', recipe], {
-      cwd: join(root, 'apps/retrieval-kernel'),
+      cwd: join(root, 'packages/retrieval-kernel'),
       encoding: 'utf8',
       env: { ...process.env, PATH: fixture, FETCH_EXIT: String(fetchExit) },
     });
@@ -47,7 +47,7 @@ test('retrieval tests fetch locked dependencies before offline notices and stop 
 });
 
 test('vendored IPADIC is exact, caches without downloads, retains COPYING, and rejects cache corruption', () => {
-  const archive = join(root, 'apps/retrieval-kernel/vendor', archiveName);
+  const archive = join(root, 'packages/retrieval-kernel/vendor', archiveName);
   assert.equal(sha(readFileSync(archive)), expected);
   const cache = mkdtempSync(join(tmpdir(), 'retrieval-dictionary-supply-'));
   const notice = join(cache, 'COPYING');
@@ -63,7 +63,7 @@ test('vendored IPADIC is exact, caches without downloads, retains COPYING, and r
   assert.equal(sha(readFileSync(cached)), expected);
   assert.deepEqual(
     readFileSync(notice),
-    readFileSync(join(root, 'apps/retrieval-kernel/vendor/IPADIC-COPYING'))
+    readFileSync(join(root, 'packages/retrieval-kernel/vendor/IPADIC-COPYING'))
   );
   const reused = run();
   assert.equal(reused.status, 0, reused.stderr);
@@ -75,7 +75,7 @@ test('vendored IPADIC is exact, caches without downloads, retains COPYING, and r
 });
 
 test('every vendored missing-crate notice has exact revision and byte provenance', () => {
-  const notices = join(root, 'apps/retrieval-kernel/notices');
+  const notices = join(root, 'packages/retrieval-kernel/notices');
   const records = JSON.parse(readFileSync(join(notices, 'UPSTREAM.json'), 'utf8'));
   assert.ok(records.length > 0);
   for (const record of records) {
