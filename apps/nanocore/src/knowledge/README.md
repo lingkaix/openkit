@@ -4,6 +4,8 @@ This directory owns the portable OKF v0.2 Markdown parser, OpenKit knowledge-pro
 
 ## Boundaries
 
+`source-pointers.ts` validates the shared SourceSummary captured fields and projects existing Source metadata from native `sources/` blobs in Notebook Git. `source-bytes.ts` reads exact bounded ranges or UTF-8 through the shared Storage service and rechecks caller-supplied current admission before delivery. Neither helper supplies Policy authority. `KnowledgeNotebook` preserves native Source blobs across ordinary page candidates; its Source-only candidate method is reserved for the native Source publisher. Raw bytes never enter that tree.
+
 - `user-memory-agent-maintenance.ts` binds explicit User information and current User Sources to the same bounded KM runner, virtual editor, fixed-base publisher and User command receipts. One private Thread in the existing personal Workspace records fresh runs and required approvals; Workspace Threads are not learning inputs. `user-memory-proposals.ts` retains exact candidates and append-only human Review in the existing User families. Model delivery cannot approve them. `user-memory-schedule.ts` uses the existing daily scan and default-off User setting; missing current authority is a visible failure, not a borrowed stored credential.
 
 - `knowledge-agent.ts` runs a bounded query with the configured Knowledge Manager model, separate role usage and current source checks. Workspace and admitted Server selections keep independent rankings and scope-qualified page IDs. The admitted retained Knowledge Base qualifies every canonical `openkit:` page URI; Notebook revision and page digest remain separate evidence. Query Tools cannot select a new scope. The asking capability call retains the delivered answer bytes.

@@ -94,6 +94,8 @@ Ablation: the raw namespace must support several locations while preserving one 
 
 The default local mount is the Knowledge Base's physical `raw/` itself: `raw/image.png` has no default-mount name segment. Additional mounts occupy declared namespace subdirectories `raw/<mount>/`. A declaration carries `name`, `backend`, backend-specific `root`, `default` boolean and `knowledgeBaseId`; names are unique within that Knowledge Base. Exactly one mount is default. Reserve additional mount names in the manifest and reject a declaration that collides with a physical folder under `raw/`. Backend roots are locators, not credentials or permission grants. Unsupported backend activation returns unavailable, never another root.
 
+The shared mount array is `knowledgeMounts` beside `defaultKnowledgeBaseId` in the existing Server and User configurations and in the Workspace configuration `workspace` object. Without this retained member, a pointer cannot resolve its mount after restart or import. Fresh native Knowledge Base creation records one local default mount named `managed`, with root `raw` relative to that scope's Knowledge root. Additional local roots resolve relative to that same root, or use an explicit administrator-authored absolute path. Paths and roots grant no access. Every declaration binds the scope's exact fixed Knowledge Base; missing or contradictory established declarations fail explicitly rather than selecting an implicit backend.
+
 | Canonical path or family | Meaning |
 | --- | --- |
 | `raw/` | Default local mount's immutable managed originals; `raw/a.pdf` addresses the physical `raw/a.pdf`. Additional declared mounts occupy `raw/<mount>/`. |
