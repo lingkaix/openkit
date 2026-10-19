@@ -1,6 +1,7 @@
 ---
 type: change-plan
-status: in-progress
+status: implemented
+completed: 2026-10-19
 ---
 # One Knowledge Notebook Page Contract
 
@@ -24,4 +25,21 @@ The engineer confirmed F5 cleanup on 2026-10-19 at approximately 01:5xZ. The coo
 
 ## Execution And Evidence
 
-Independent Test Author /root/f5_notebook_test_author owns only two new contract test files. It derives intended failures from the accepted owners and ruling before production implementation. A real existing publisher/read control must establish a valid fixture. Source review uses a separate fresh Sol context, followed by L-AK's bounded owner review. Normal main merge and affected suites plus Native typecheck precede the coordinator-authorized direct fix-forward landing. Full tests stay on shared main. Test commit, RED/GREEN logs, source verdict and exact landing head will be recorded when observed.
+Independent Test Author /root/f5_notebook_test_author established the public-contract RED in bccacd0e4, e4046de8c and eaac02d94, then authored the removal/replay and changed-input RED in 4dd410867 before builder correction 4a1e9dca6. Healthy existing publisher/read controls qualified the fixtures. A separate fresh Sol reviewer inspected the source and corrections; L-AK gave the bounded Knowledge-owner approval. Coordinator-owned Web children 69208aa41 and 7d9a69b1c were normally merged, including the browser crypto correction. No GPT Web edit was made. Normal main merges preserve the admitted Policy, runtime and Knowledge Manager owners. Full CI remains the shared-main check.
+
+
+## Implementation Summary
+
+Workspace Knowledge exposes one full OKF page projection and the Notebook list/create/update/delete family. Create and confirmed deletion constrain the existing fixed-base publisher and reuse its publication result and receipt. The legacy CRUD operations, KnowledgeEntry DTO and entry-kind metadata producers are removed. Store, export/import, Core Client, generated API/CLI, Web editor and active manual use the same exact page bytes, path and digest. Current Source admission, removal confirmation, history, Review invalidation and request replay remain governed by the existing owners. No page type, retained family, registry, converter or compatibility reader was added.
+
+The source review closed the removed-page Source/replay and changed-input findings through independent regressions. A real browser run exposed a Node crypto import in the coordinator's first Web child; the corrected child confines it to test fixtures. Three remaining native fixture records were aligned with the canonical page contract without removing their retrieval, export or foreign-tree preservation assertions. The initial Memory timeout passed unedited on retry. The final main merge also requires regeneration of the CLI bundle after the separately owned Knowledge Manager deadline change.
+
+Complexity at closeout is 125 F5 files, three changed owning documents, three governing owners and zero new closed sets or registries. Later Source and Claim/Observation work remains outside this increment. The reset-era cleanup carries no converter; release and live-host acceptance remain separate.
+
+## Verification Evidence
+
+The original contract RED/GREEN and independent admission RED/GREEN are retained in lane evidence; the latter complete four-file check passed 19 tests plus Native typecheck. Native e2e passed all six cases. On the Web-joined head, complete Protocol 432, App API 467, Core Client 119 and root/CLI 103 tests passed; Web typecheck/build, all 1,550 unit tests and all 34 browser cases passed.
+
+The initial broad Native run on 6b41739e2 completed 136 files with 2,178 passing and ten failing tests; its failed log is retained. After reviewed fixture-only corrections and the runtime main merge, all seven complete affected files passed 484/484 on 16bf39731, including Worker execution 215, executor factory 196, Workspace deletion 29, export 31, child lineage five, governed retrieval seven and unedited Memory search one. Passing unchanged suites are carried; this is not a claim of a single green 136-file invocation. The clean main985e merge at 10ba2c81b passed the complete 47-file Knowledge/KM overlap, 528/528, complete Config Schema 383/383 and Native typecheck. Its sole final failure was the actual CLI fresh-byte check; canonical regeneration then passed OpenAPI validation, exact CLI freshness, root/CLI 103/103 and repository checks. The generated OpenAPI bytes did not change. No test budget or assertion was weakened.
+
+The independent source report is L-GO-f5-page-contract-review.md; the bounded Knowledge-owner report is L-AK-F5-owner-4a1e9dca6.md. Deciding logs are f5-final-6b417-native.log, f5-fixture-correction-final.log, f5-km-main-overlap.log, f5-final-6b417-web.log and f5-main-km-generated-refresh.log. Earlier interrupted mixed-head and superseded runs remain diagnostics, not passes. The final documentation/current-main check and landing identity are recorded in the lane checkpoint and seam board. No live host action, reset, release or branch CI was performed by this increment.
