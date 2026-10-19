@@ -1,4 +1,4 @@
-import { WORKSPACE_RESOURCE_POLICY_FEATURE } from '@openkit/config-schema';
+import { WORKSPACE_RESOURCE_POLICY_FEATURE, WorkspaceConfigSchema } from '@openkit/config-schema';
 import { allocateEntityId } from '@openkit/protocol';
 import { parse } from 'jsonc-parser';
 import { describe, expect, it } from 'vitest';
@@ -23,6 +23,7 @@ const input = {
 
 describe('portable Workspace resource Policy', () => {
   it('retains an empty last-revoke boundary with its reminted Thread on a different Server', () => {
+    expect(WorkspaceConfigSchema.safeParse(parse(input.content)).success).toBe(true);
     const imported = parse(remintResourcePolicyConfig(input));
     expect(imported.workspace.policy.resourceAccess).toEqual([
       { ...entry, resource: { family: 'thread', id: target } },

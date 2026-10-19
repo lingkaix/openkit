@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { RESOURCE_POLICY_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
+import { WorkspaceConfigSchema } from '@openkit/config-schema';
 import { allocateEntityId } from '@openkit/protocol';
 import { parse } from 'jsonc-parser';
 import { describe, expect, it, vi } from 'vitest';
@@ -180,6 +181,9 @@ describe('resource Policy Pending Request commands', () => {
   it('requires an unused human grant and distinct confirmation, then preserves the empty managed boundary', () => {
     const f = fixture();
     try {
+      expect(
+        WorkspaceConfigSchema.safeParse(parse(readFileSync(f.configPath, 'utf8'))).success
+      ).toBe(true);
       const record = f.raise();
       const input = {
         requestId: record.requestId,
