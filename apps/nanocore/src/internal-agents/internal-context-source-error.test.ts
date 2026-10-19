@@ -87,7 +87,7 @@ async function fixture(selected = false) {
   const sourceTurn = store.createTurn(workspace.id, thread.id, 'Recall preferences.', actorRef);
   store.createItem({
     id: allocateEntityId('it'),
-    workspaceId: workspace.id,
+    owner: { kind: 'workspace', workspaceId: workspace.id },
     threadId: thread.id,
     turnId: sourceTurn.id,
     type: 'user-message',
