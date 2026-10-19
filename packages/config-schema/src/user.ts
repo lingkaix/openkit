@@ -1,6 +1,7 @@
 import { KnowledgeBaseIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import { KnowledgeMaintenanceSchema } from './knowledge-maintenance.js';
+import { KnowledgeMountsSchema, validateKnowledgeMountBinding } from './knowledge-mounts.js';
 import { AuthoredConfigRequiredFeaturesSchema } from './schema-evolution.js';
 
 /** Personal preference for one internal Core role in one Workspace. */
@@ -29,6 +30,7 @@ export const UserConfigSchema = z
     schemaVersion: z.literal(1),
     /** Fixed scope binding after Knowledge Base creation; parsing never allocates an ID. */
     defaultKnowledgeBaseId: KnowledgeBaseIdSchema.optional(),
+    knowledgeMounts: KnowledgeMountsSchema.optional(),
     knowledgeMaintenance: KnowledgeMaintenanceSchema.optional(),
     requiredFeatures: AuthoredConfigRequiredFeaturesSchema.optional(),
     workspaces: z.array(UserWorkspacePreferenceSchema).default([]),
@@ -36,6 +38,7 @@ export const UserConfigSchema = z
   })
   .strip()
   .superRefine((value, ctx) => {
+    validateKnowledgeMountBinding(value, ctx);
     const workspaceIds = new Set<string>();
     for (const [index, workspace] of value.workspaces.entries()) {
       if (workspaceIds.has(workspace.workspaceId)) {

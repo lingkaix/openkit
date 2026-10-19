@@ -395,7 +395,7 @@ describe('knowledge proposal authority', () => {
   it.each([
     'changed',
     'missing',
-  ] as const)('rejects draft and native acceptance when registered source bytes are %s', async (name) => {
+  ] as const)('preserves exact Proposal evidence when its independent original bytes are %s', async (name) => {
     const f = createOwners();
     const sourceContent = 'Captured source bytes remain immutable evidence.\n';
     const source = await call(f, 'knowledge.source.register', {
@@ -412,22 +412,33 @@ describe('knowledge proposal authority', () => {
       `source-valid-before-${name}`,
       `source/accepted-before-${name}`
     );
-    const path = join(f.workspaceRoot, 'sources', 'materials', source.source.id, 'content.txt');
+    const path = join(f.workspaceRoot, 'knowledge', 'raw', 'sources', source.source.id, 'original');
     if (name === 'changed') writeFileSync(path, 'Changed captured source bytes.\n');
     else rmSync(path);
-    expect(() => draft(f, sourceReference, `source-${name}-draft`, `source/${name}-draft`)).toThrow(
-      KnowledgePageValidationError
-    );
+    const laterDraft = draft(f, sourceReference, `source-${name}-draft`, `source/${name}-draft`);
+    expect(laterDraft.sourceReferences).toEqual([sourceReference]);
     expect(f.store.listKnowledgeProposals(f.workspaceId).map((value) => value.id)).toEqual([
       proposal.id,
+      laterDraft.id,
     ]);
-    const before = f.notebook.publishedRevision();
-    await expect(
-      call(f, 'knowledge.proposal.decide', decisionInput(f, proposal, 'accepted', `review-${name}`))
-    ).rejects.toMatchObject({ code: 'recovery_required', status: 409 });
-    expect(f.notebook.publishedRevision()).toBe(before);
-    expect(f.store.listKnowledgeProposalReviewDecisions(f.workspaceId)).toHaveLength(0);
-    expect(currentPage(f, proposal.knowledgePageId)).toBeUndefined();
+    const decision = await call(
+      f,
+      'knowledge.proposal.decide',
+      decisionInput(f, proposal, 'accepted', `review-${name}`)
+    );
+    expect(decision.review.decision).toBe('accepted');
+    expect(decision.application).toMatchObject({
+      knowledgePageId: proposal.knowledgePageId,
+      present: true,
+      notebookRevision: proposal.candidateRevision,
+    });
+    expect(f.store.listKnowledgeProposalReviewDecisions(f.workspaceId)).toHaveLength(1);
+    expect(currentPage(f, proposal.knowledgePageId)).toBeDefined();
+    expect(
+      f.notebook.readRevision(f.notebook.publishedRevision()).files[
+        `${proposal.knowledgePageId}.md`
+      ]
+    ).toContain(sourceReference);
   });
 
   it.each([

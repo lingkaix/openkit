@@ -1,7 +1,8 @@
-import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { ContentReferenceSchema } from '@openkit/protocol';
 import { expect, it, onTestFinished, vi } from 'vitest';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import type { KnowledgeManagerAgentRun } from '../internal-agents/knowledge-manager-agent.js';
@@ -10,6 +11,7 @@ import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { KnowledgeNotebook } from './notebook.js';
+import { parseOkfDocument } from './okf.js';
 import { listUserKnowledgeSources, readUserKnowledgeSource } from './scoped-knowledge-sources.js';
 import { resolveScopedNotebookOwner } from './scoped-notebook-owner.js';
 import { runUserMemoryMaintenanceCommand } from './user-memory-agent-maintenance.js';
@@ -100,7 +102,7 @@ it('reports native no-change through the recorded result and replay despite a mi
     requestActor: actor,
     trigger: 'request' as const,
     instructions: 'Remember my preference.',
-    tellContent: 'I prefer green labels.',
+    tellContent: 'I prefer green labels.\r\n  Preserve my exact wording. Ω 雪.\n',
     sources: [],
     signal: new AbortController().signal,
   };
@@ -112,9 +114,49 @@ it('reports native no-change through the recorded result and replay despite a mi
   expect(JSON.stringify(baseFiles)).not.toContain('I prefer green labels.');
   const sources = listUserKnowledgeSources({ coreDb, userDb, actor });
   expect(sources).toHaveLength(1);
-  expect(readUserKnowledgeSource({ coreDb, userDb, actor }, sources[0]!.id)?.content).toBe(
+  const source = sources[0]!;
+  expect((await readUserKnowledgeSource({ coreDb, userDb, actor }, source.id))?.content).toBe(
     input.tellContent
   );
+  // Capture commits the Source pointer before the editor base without publishing a Memory page.
+  const captured = notebook().readRevision(baseRevision);
+  expect(captured.parentRevision).not.toBeNull();
+  expect(notebook().readRevision(captured.parentRevision!).files).toEqual(baseFiles);
+  expect(notebook().readSourcePointers(captured.parentRevision!)).toEqual({});
+  const pointers = notebook().readSourcePointers(baseRevision);
+  expect(Object.keys(pointers)).toEqual([source.id]);
+  const pointer = pointers[source.id]!;
+  const parsed = parseOkfDocument({ path: `sources/${source.id}.md`, content: pointer });
+  if (!parsed.ok) throw new Error('Expected a valid captured SourceSummary.');
+  const original = Buffer.from(input.tellContent);
+  const contentDigest = `sha256:${createHash('sha256').update(original).digest('hex')}`;
+  expect(parsed.document.frontmatter).toMatchObject({
+    type: 'SourceSummary',
+    scope: { kind: 'user', userId },
+    byteLength: original.byteLength,
+    captureChannel: 'knowledge.source.register',
+  });
+  const contentRef = ContentReferenceSchema.parse(parsed.document.frontmatter.contentRef);
+  expect(contentRef).toMatchObject({
+    contentDigest,
+    locator: { ownerScope: { kind: 'user', userId }, mount: 'managed' },
+    range: null,
+    availability: 'available',
+  });
+  expect(source.contentDigest).toBe(contentDigest);
+  const { notebookRoot } = resolveScopedNotebookOwner({ coreDb, actor, target: { kind: 'user' } });
+  expect(readFileSync(join(notebookRoot, 'raw', contentRef.locator.path))).toEqual(original);
+  expect(pointer).not.toContain(input.tellContent);
+  expect(pointer).not.toContain(misleadingSummary);
+  expect(JSON.stringify(baseFiles)).not.toContain(misleadingSummary);
+  expect(captured.metadata).toMatchObject({
+    producer: { kind: 'user', id: userId },
+    changeRequest: { requestId: input.requestId },
+    authority: {
+      kind: 'direct',
+      instructionReference: `knowledge.source.register:${input.requestId}`,
+    },
+  });
   const turn = store.getTurnById(result.turnId);
   const status = store
     .listThreadItems(turn.workspaceId, turn.threadId)
@@ -125,4 +167,6 @@ it('reports native no-change through the recorded result and replay despite a mi
   });
   expect(await runUserMemoryMaintenanceCommand(dependencies, input)).toEqual(result);
   expect(run).toHaveBeenCalledTimes(1);
+  expect(notebook().publishedRevision()).toBe(baseRevision);
+  expect(listUserKnowledgeSources({ coreDb, userDb, actor })).toEqual(sources);
 });

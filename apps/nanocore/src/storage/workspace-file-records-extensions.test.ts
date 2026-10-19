@@ -1,13 +1,19 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { deriveEntityId, formatReferenceUri } from '@openkit/protocol';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
+import { updateOkfFrontmatter } from '../knowledge/okf.js';
 import { FsStore } from '../lib/store.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
+import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { openCoreDb } from './db.js';
+import { applyMigrations } from './migrate.js';
 import {
   appendWorkspaceTurnEvent,
   loadWorkspaceFileRecords,
@@ -25,10 +31,18 @@ function annotate(path: string, nested: readonly string[] = []): void {
 }
 
 describe('descriptive canonical history extensions', () => {
-  it('preserves immutable Proposal bytes, ordered Review annotations and Source history on rewrite', () => {
+  it('preserves immutable Proposal bytes, ordered Review annotations and Source history on rewrite', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-history-'));
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Knowledge');
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    const userId = ensureLocalUser(coreDb);
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: userId, workspaceId: workspace.id });
+    onTestFinished(() => {
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
     const root = join(dataRoot, 'workspaces', workspace.id);
     const initial = loadWorkspaceFileRecords(dataRoot).find(
       (record) => record.workspace.id === workspace.id
@@ -107,20 +121,28 @@ describe('descriptive canonical history extensions', () => {
       producer: { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' },
       createdAt: workspace.createdAt,
     };
-    const source = {
-      id: 'ks_00000000-0000-7735-9de8-620b1f965365',
-      workspaceId: workspace.id,
-      kind: 'document' as const,
-      title: 'History',
-      uri: null,
-      contentDigest: `sha256:${'c'.repeat(64)}`,
-      originatingThreadId: null,
-      originatingTurnId: null,
-      originatingFileId: null,
-      capturedAt: workspace.createdAt,
-      createdAt: workspace.createdAt,
-      updatedAt: workspace.createdAt,
-    };
+    const capturedContent = 'Retained canonical Source history.\n';
+    const source = await captureWorkspaceSourceFixture({
+      dataRoot,
+      coreDb,
+      store,
+      userId,
+      source: {
+        id: 'ks_00000000-0000-7735-9de8-620b1f965365',
+        workspaceId: workspace.id,
+        kind: 'document' as const,
+        title: 'History',
+        uri: null,
+        contentDigest: `sha256:${createHash('sha256').update(capturedContent).digest('hex')}`,
+        originatingThreadId: null,
+        originatingTurnId: null,
+        originatingFileId: null,
+        capturedAt: workspace.createdAt,
+        createdAt: workspace.createdAt,
+        updatedAt: workspace.createdAt,
+      },
+      content: capturedContent,
+    });
     writeWorkspaceFileRecords(root, {
       ...initial,
       knowledgeProposals: [proposal],
@@ -163,12 +185,53 @@ describe('descriptive canonical history extensions', () => {
     annotate(reviewPath);
     annotate(reviewPath, ['decisions', '0']);
     annotate(reviewPath, ['decisions', '0', 'actor']);
-    const sourcePath = join(root, 'sources', 'registry', `${source.id}.json`);
-    annotate(sourcePath);
+    const sourceRevision = notebook.publishedRevision();
+    const annotatedPointer = updateOkfFrontmatter({
+      path: `sources/${source.id}.md`,
+      content: notebook.readSourcePointers(sourceRevision)[source.id]!,
+      updates: { futureNote: 'retained' },
+    });
+    const annotatedCandidate = notebook.prepareSourcePointers({
+      baseRevision: sourceRevision,
+      changes: { [source.id]: annotatedPointer },
+      metadata: {
+        ...notebook.readRevision(sourceRevision).metadata,
+        summary: 'Annotate descriptive Source history',
+        changeRequest: {
+          requestId: 'annotation-source-extension',
+          inputDigest: `sha256:${createHash('sha256').update(annotatedPointer).digest('hex')}`,
+        },
+      },
+    });
+    const annotatedRevision = notebook.publish({
+      baseRevision: sourceRevision,
+      candidateRevision: annotatedCandidate,
+    }).revision;
     const extended = loadWorkspaceFileRecords(dataRoot).find(
       (record) => record.workspace.id === workspace.id
     )!;
     expect(JSON.stringify(extended)).not.toContain('futureNote');
+    const updatedPointer = updateOkfFrontmatter({
+      path: `sources/${source.id}.md`,
+      content: notebook.readSourcePointers(annotatedRevision)[source.id]!,
+      updates: { title: 'Updated' },
+    });
+    const updatedCandidate = notebook.prepareSourcePointers({
+      baseRevision: annotatedRevision,
+      changes: { [source.id]: updatedPointer },
+      metadata: {
+        ...notebook.readRevision(annotatedRevision).metadata,
+        summary: 'Update the descriptive Source title',
+        changeRequest: {
+          requestId: 'annotation-source-title',
+          inputDigest: `sha256:${createHash('sha256').update(updatedPointer).digest('hex')}`,
+        },
+      },
+    });
+    const updatedRevision = notebook.publish({
+      baseRevision: annotatedRevision,
+      candidateRevision: updatedCandidate,
+    }).revision;
     writeWorkspaceFileRecords(root, {
       ...extended,
       knowledgeSources: [{ ...extended.knowledgeSources[0]!, title: 'Updated' }],
@@ -179,7 +242,13 @@ describe('descriptive canonical history extensions', () => {
     expect(reopened.knowledgeSources[0]?.title).toBe('Updated');
     expect(readFileSync(proposalPath, 'utf8')).toBe(bytes);
     expect(readFileSync(reviewPath, 'utf8')).toContain('futureNote');
-    expect(readFileSync(sourcePath, 'utf8')).toContain('futureNote');
+    expect(notebook.readSourcePointers(updatedRevision)[source.id]).toBe(updatedPointer);
+    expect(updatedPointer).toContain('futureNote');
+    expect(
+      new KnowledgeNotebook({
+        repositoryPath: join(root, 'knowledge', 'notebook.git'),
+      }).readSourcePointers(updatedRevision)[source.id]
+    ).toBe(updatedPointer);
     const reviewFile = JSON.parse(readFileSync(reviewPath, 'utf8'));
     reviewFile.decisions.push(reviewFile.decisions[0]);
     writeFileSync(reviewPath, JSON.stringify(reviewFile));

@@ -36,6 +36,11 @@ import {
   startCapabilityCall,
 } from '../capability/usage-ledger.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
+import {
+  DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
+  parseOkfDocument,
+  updateOkfFrontmatter,
+} from '../knowledge/okf.js';
 import { FsStore } from '../lib/store.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoWorkspaceForUser } from '../test-support/demo-store.js';
@@ -44,6 +49,7 @@ import { ensureLocalUser } from '../test-support/local-user.js';
 import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { managedThreadPolicy } from '../test-support/resource-policy.js';
+import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
@@ -60,7 +66,11 @@ import {
 } from './workspace-export.js';
 import { loadWorkspaceFileRecords } from './workspace-file-records.js';
 import { readWorkspaceImportSnapshot } from './workspace-import.js';
-import { importVerifiedWorkspace } from './workspace-transfer-routes.js';
+import {
+  createVerifiedWorkspaceExport,
+  existingWorkspaceExportRoot,
+  importVerifiedWorkspace,
+} from './workspace-transfer-routes.js';
 
 const timestamp = '2026-07-12T00:00:00.000Z';
 
@@ -80,6 +90,7 @@ function minimalExportInput(
   workspaceId = 'ws_00000000-0000-7000-8000-000000000001',
   exportId = 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4'
 ): Parameters<typeof writeWorkspaceExportTree>[0] {
+  const knowledgeBaseId = allocateEntityId('kb');
   return {
     exportRoot,
     exportId,
@@ -114,10 +125,13 @@ function minimalExportInput(
         workspace: {
           name: 'Boundary workspace',
           defaultAgentId: null,
-          defaultKnowledgeBaseId: allocateEntityId('kb'),
+          defaultKnowledgeBaseId: knowledgeBaseId,
+          knowledgeMounts: [
+            { knowledgeBaseId, name: 'default', backend: 'local', root: 'raw', default: true },
+          ],
         },
       }),
-      workspaceSchema: null,
+      workspaceSchema: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
     },
   };
 }
@@ -130,7 +144,7 @@ function knowledgeSource(id: string): Record<string, unknown> {
     kind: 'document',
     title: 'Boundary source',
     uri: null,
-    contentDigest: 'sha256:source',
+    contentDigest: `sha256:${'a'.repeat(64)}`,
     originatingThreadId: null,
     originatingTurnId: null,
     originatingFileId: null,
@@ -307,7 +321,7 @@ async function archiveWithEntry(
 }
 
 describe('workspace export filesystem boundaries', () => {
-  it('rejects unsafe knowledge source and material ids before writing outside the export', () => {
+  it('rejects unsafe Source identities before writing outside the export', () => {
     const parent = mkdtempSync(join(tmpdir(), 'openkit-export-source-boundary-'));
     const unsafeId = '../../../outside-source';
 
@@ -318,38 +332,84 @@ describe('workspace export filesystem boundaries', () => {
       })
     ).toThrow(ZodError);
 
-    expect(() =>
-      writeWorkspaceExportTree({
-        ...minimalExportInput(join(parent, 'material-export')),
-        knowledgeSourceMaterials: [{ sourceId: unsafeId, content: 'must stay contained' }],
-      })
-    ).toThrow(/safe path segment/i);
-    expect(existsSync(join(parent, 'outside-source', 'content.txt'))).toBe(false);
+    expect(existsSync(join(parent, 'outside-source'))).toBe(false);
   });
 
-  it('rejects an unsafe persisted source id before reading material outside the export', () => {
+  it('rejects an unsafe persisted Source raw locator before reading outside the export', async () => {
     const parent = mkdtempSync(join(tmpdir(), 'openkit-import-source-boundary-'));
-    const exportRoot = join(parent, 'export');
-    const safeId = 'ks_00000000-0000-72dd-a2ca-ce0fb9e172c1';
-    const unsafeId = '../../../outside-source';
-    writeWorkspaceExportTree({
-      ...minimalExportInput(exportRoot),
-      knowledgeSources: [knowledgeSource(safeId)],
+    const dataRoot = join(parent, 'data');
+    const store = new FsStore({ dataRoot });
+    const workspace = store.createWorkspace('Unsafe raw locator');
+    const coreDb = boundaryAuthority(dataRoot, workspace.id);
+    const sourceContent = 'Contained original bytes.';
+    const source = await captureWorkspaceSourceFixture({
+      dataRoot,
+      store,
+      coreDb,
+      userId: 'usr_00000000-0000-7000-8000-000000000001',
+      content: sourceContent,
+      source: {
+        id: allocateEntityId('ks'),
+        workspaceId: workspace.id,
+        kind: 'document',
+        title: 'Contained source',
+        uri: null,
+        contentDigest: `sha256:${createHash('sha256').update(sourceContent).digest('hex')}`,
+        originatingThreadId: null,
+        originatingTurnId: null,
+        originatingFileId: null,
+        capturedAt: timestamp,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
     });
-
-    const sourcePath = join(exportRoot, 'records', 'knowledge-sources.jsonl');
-    const sourceText = `${JSON.stringify(knowledgeSource(unsafeId))}\n`;
+    const exported = await createVerifiedWorkspaceExport({
+      authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      authorityActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+      requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+      coreDb,
+      dataRoot,
+      store,
+      workspaceId: workspace.id,
+      repositoryWorkspaceDb: () => {
+        const db = openWorkspaceDb(dataRoot, workspace.id);
+        applyScopedMigrations(db);
+        return db;
+      },
+    });
+    const exportRoot = existingWorkspaceExportRoot(
+      dataRoot,
+      workspace.id,
+      exported.verified.manifest.id
+    );
+    const pointerPath = `workspace-files/knowledge/sources/${source.id}.md`;
+    const sourcePath = join(exportRoot, pointerPath);
+    const before = readFileSync(sourcePath, 'utf8');
+    const parsed = parseOkfDocument({ path: `sources/${source.id}.md`, content: before });
+    expect(parsed.ok).toBe(true);
+    const contentRef = parsed.document.frontmatter.contentRef as Record<string, unknown>;
+    const sourceText = updateOkfFrontmatter({
+      path: `sources/${source.id}.md`,
+      content: before,
+      updates: {
+        contentRef: {
+          ...contentRef,
+          locator: {
+            ...(contentRef.locator as Record<string, unknown>),
+            path: '../../../outside-source/content.txt',
+          },
+        },
+      },
+    });
     writeFileSync(sourcePath, sourceText);
     const manifestPath = join(exportRoot, WORKSPACE_EXPORT_MANIFEST_FILE);
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
       contentDigest: string;
       contentInventory: Array<{ path: string; digest: string; bytes: number }>;
     };
-    const sourceEntry = manifest.contentInventory.find(
-      (entry) => entry.path === 'records/knowledge-sources.jsonl'
-    );
+    const sourceEntry = manifest.contentInventory.find((entry) => entry.path === pointerPath);
     if (!sourceEntry) {
-      throw new Error('Expected knowledge source inventory entry.');
+      throw new Error('Expected Source pointer inventory entry.');
     }
     sourceEntry.bytes = Buffer.byteLength(sourceText);
     sourceEntry.digest = `sha256:${createHash('sha256').update(sourceText).digest('hex')}`;
@@ -366,7 +426,8 @@ describe('workspace export filesystem boundaries', () => {
         verified: verifyWorkspaceExportTree({ exportRoot }),
         targetWorkspaceId: 'ws_00000000-0000-7a88-ae6e-4c70ca9fabb5',
       })
-    ).toThrow(ZodError);
+    ).toThrow();
+    expect(readFileSync(outsideMaterial, 'utf8')).toBe('external material');
   });
 
   it('requires a fresh real export directory so stale files cannot leak', () => {
@@ -414,11 +475,9 @@ describe('workspace export filesystem boundaries', () => {
     expect(() =>
       writeWorkspaceExportTree({
         ...minimalExportInput(exportRoot),
-        knowledgeSourceMaterials: [
-          { sourceId: 'ks_00000000-0000-7e65-a399-d53a84c98ecb', content: 'partial content' },
-        ],
+        knowledgeSources: [knowledgeSource('ks_00000000-0000-7e65-a399-d53a84c98ecb')],
       })
-    ).toThrow(/references missing source/i);
+    ).toThrow(/canonical Notebook/i);
     expect(existsSync(exportRoot)).toBe(false);
   });
 

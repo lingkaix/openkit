@@ -9,6 +9,7 @@ import {
 import { HARNESS_DEFAULT_MAX_ACTIVE_TURNS } from '@openkit/worker-protocol';
 import { z } from 'zod';
 import { KnowledgeMaintenanceSchema } from './knowledge-maintenance.js';
+import { KnowledgeMountsSchema, validateKnowledgeMountBinding } from './knowledge-mounts.js';
 import { AuthoredConfigRequiredFeaturesSchema } from './schema-evolution.js';
 
 /** Exact HTTP or HTTPS origin accepted by browser-facing server configuration. */
@@ -258,6 +259,7 @@ export const OpenKitConfigSchema = z
   .object({
     /** Fixed scope binding after Knowledge Base creation; parsing never allocates an ID. */
     defaultKnowledgeBaseId: KnowledgeBaseIdSchema.optional(),
+    knowledgeMounts: KnowledgeMountsSchema.optional(),
     knowledgeMaintenance: KnowledgeMaintenanceSchema.optional(),
     appUpdate: OpenKitAppUpdateConfigSchema.optional(),
     channels: OpenKitChannelsConfigSchema.optional(),
@@ -284,6 +286,7 @@ export const OpenKitConfigSchema = z
   })
   .strip()
   .superRefine((config, context) => {
+    validateKnowledgeMountBinding(config, context);
     if (config.channels?.discord && !config.server?.publicBaseUrl?.startsWith('https://'))
       context.addIssue({
         code: 'custom',

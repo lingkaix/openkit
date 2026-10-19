@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { join, posix, relative, sep } from 'node:path';
+import { join, posix, relative, resolve, sep } from 'node:path';
 import {
   type KnowledgeRetrievalResponse,
   KnowledgeRetrievalResponseSchema,
@@ -36,6 +36,7 @@ import {
   stringListFrontmatterField,
   validateKnowledgePageCandidate,
 } from '../knowledge/okf.js';
+import { readSourcePointers } from '../knowledge/source-pointers.js';
 import { OperationError } from '../operation-error.js';
 import {
   admitKnowledgeRetrieval,
@@ -1713,7 +1714,7 @@ function readKnowledgePageIds(pages: ReadonlyMap<string, string>): Set<string> {
 }
 
 /**
- * Reads registered Source ids and digests from the owning Workspace registry.
+ * Reads current Source identities and digests from the sole published Notebook pointer tree.
  *
  * @param workspaceRoot Workspace root path.
  * @param workspaceId Workspace id.
@@ -1723,21 +1724,14 @@ function readRegisteredSources(
   workspaceRoot: string,
   workspaceId: string
 ): Map<string, string | null> {
-  const registryRoot = join(workspaceRoot, 'sources', 'registry');
-  const sources = new Map<string, string | null>();
-
-  for (const fileName of listFiles(registryRoot).filter((name) => name.endsWith('.json'))) {
-    const source = readJsonRecord(join(registryRoot, fileName)) as Record<string, unknown>;
-
-    if (stringField(source, 'workspaceId') === workspaceId) {
-      sources.set(
-        stringField(source, 'id'),
-        typeof source.contentDigest === 'string' ? source.contentDigest : null
-      );
-    }
-  }
-
-  return sources;
+  return new Map(
+    [
+      ...readSourcePointers({
+        dataRoot: resolve(workspaceRoot, '../..'),
+        ownerScope: { kind: 'workspace', workspaceId },
+      }).values(),
+    ].map(({ source }) => [source.id, source.contentDigest])
+  );
 }
 
 /** Checks only exact same-base page bytes in the selected Notebook tree; native retrieval still owns current access. */
@@ -2262,51 +2256,6 @@ function listDirectories(path: string): string[] {
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
     .sort();
-}
-
-/**
- * Lists direct child files in stable order.
- *
- * @param path Parent directory path.
- * @returns File names.
- */
-function listFiles(path: string): string[] {
-  if (!lstatSync(path, { throwIfNoEntry: false })) {
-    return [];
-  }
-  assertCanonicalDirectory(path);
-
-  const entries = readdirSync(path, { withFileTypes: true });
-  const linkedEntry = entries.find((entry) => entry.isSymbolicLink());
-
-  if (linkedEntry) {
-    throw new Error(
-      `Canonical directory must not contain a symbolic link: ${join(path, linkedEntry.name)}.`
-    );
-  }
-
-  return entries
-    .filter((entry) => entry.isFile())
-    .map((entry) => entry.name)
-    .sort();
-}
-
-/**
- * Reads a required string field from a record.
- *
- * @param record Source record.
- * @param field Field name.
- * @returns String field value.
- * @throws Error when the field is missing or not a string.
- */
-function stringField(record: Record<string, unknown>, field: string): string {
-  const value = record[field];
-
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new Error(`Expected string field ${field}.`);
-  }
-
-  return value;
 }
 
 /**

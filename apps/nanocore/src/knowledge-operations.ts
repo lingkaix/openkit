@@ -50,6 +50,7 @@ import {
   parseOkfDocument,
   stringFrontmatterField,
 } from './knowledge/okf.js';
+import { publishCapturedSource } from './knowledge/source-publication.js';
 import {
   checkKnowledgeHealth,
   draftKnowledgeProposal,
@@ -729,6 +730,7 @@ export function createKnowledgeOperationImplementations(
         admitKnowledgeRetrieval(current);
         return response;
       } catch (error) {
+        if (error instanceof NotebookError) notebookCommandFailure(error);
         throw commandFailure(error, 'knowledge_source_list_failed', 404);
       }
     },
@@ -757,26 +759,93 @@ export function createKnowledgeOperationImplementations(
           scope: { workspaceId, title: commandInput.title },
           input: { ...commandInput, workspaceId },
           responseKind: 'knowledge_source',
-          execute: () =>
-            store.createKnowledgeSource(
-              {
-                id: allocateEntityId('ks'),
-                workspaceId,
-                kind: commandInput.kind,
-                title: commandInput.title,
-                uri: commandInput.uri ?? null,
-                contentDigest: `sha256:${createHash('sha256')
-                  .update(commandInput.content)
-                  .digest('hex')}`,
-                originatingThreadId: commandInput.originatingThreadId ?? null,
-                originatingTurnId: commandInput.originatingTurnId ?? null,
-                originatingFileId: commandInput.originatingFileId ?? null,
-                capturedAt: now,
-                createdAt: now,
-                updatedAt: now,
-              },
-              commandInput.content
-            ),
+          execute: async () => {
+            if (
+              !coreDb ||
+              !store.getDataRoot() ||
+              (actor.kind !== 'user' && actor.kind !== 'agent')
+            )
+              throw new OperationError(
+                'knowledge_source_unavailable',
+                'Knowledge Source publication is unavailable.',
+                503
+              );
+            const sourceId = allocateEntityId('ks');
+            const workspaceDb = repositoryWorkspaceDb(workspaceId);
+            try {
+              const source = await publishCapturedSource(
+                {
+                  owner: {
+                    dataRoot: coreDb.dataRoot,
+                    ownerScope: { kind: 'workspace', workspaceId },
+                  },
+                  database: { kind: 'workspace', workspaceDb },
+                  access: current.access,
+                  producer: actor.kind === 'user' ? actor : { ...actor, kind: 'agent' },
+                  requestId: commandInput.requestId,
+                  commandInput: { ...commandInput, workspaceId },
+                  captureChannel: 'knowledge.source.register',
+                  revalidatePublication: () => {
+                    admitKnowledgeRetrieval(current);
+                    const principal = publicOperationActor(context);
+                    if (
+                      !principal ||
+                      !isWorkspaceOperationAuthorized(coreDb, principal, workspaceId, {
+                        mutating: true,
+                        policyOperation: 'knowledge.write',
+                      })
+                    )
+                      throw new OperationError(
+                        'workspace_access_denied',
+                        'Knowledge Source publication denied.',
+                        403
+                      );
+                    if (
+                      commandInput.originatingThreadId &&
+                      !threadReadable(current, commandInput.originatingThreadId)
+                    )
+                      throw new OperationError(
+                        'workspace_access_denied',
+                        'Knowledge Source is unavailable.',
+                        403
+                      );
+                    if (commandInput.originatingTurnId) {
+                      if (!commandInput.originatingThreadId)
+                        throw new OperationError(
+                          'knowledge_source_register_failed',
+                          `Knowledge source turn requires a thread: ${sourceId}`,
+                          404
+                        );
+                      store.getTurn(
+                        workspaceId,
+                        commandInput.originatingThreadId,
+                        commandInput.originatingTurnId
+                      );
+                    }
+                  },
+                },
+                {
+                  id: sourceId,
+                  kind: commandInput.kind,
+                  title: commandInput.title,
+                  uri: commandInput.uri ?? null,
+                  contentDigest: `sha256:${createHash('sha256')
+                    .update(commandInput.content)
+                    .digest('hex')}`,
+                  originatingThreadId: commandInput.originatingThreadId ?? null,
+                  originatingTurnId: commandInput.originatingTurnId ?? null,
+                  originatingFileId: commandInput.originatingFileId ?? null,
+                  capturedAt: now,
+                  createdAt: now,
+                  updatedAt: now,
+                },
+                Buffer.from(commandInput.content)
+              );
+              return { ...source.source, workspaceId };
+            } finally {
+              workspaceDb.sqlite.close();
+            }
+          },
           replay: (record) => store.getKnowledgeSource(workspaceId, record.response.id),
           responseId: (result) => result.id,
         });
@@ -795,14 +864,12 @@ export function createKnowledgeOperationImplementations(
 
         const response = RegisterKnowledgeSourceResponseSchema.parse({
           source,
-          derivedRepresentations: store.listKnowledgeSourceDerivedRepresentations(
-            workspaceId,
-            source.id
-          ),
+          derivedRepresentations: [],
         });
         requireSourceAudience(workspaceId, source.id, context);
         return response;
       } catch (error) {
+        if (error instanceof NotebookError) notebookCommandFailure(error);
         throw commandFailure(error, 'knowledge_source_register_failed');
       }
     },
@@ -818,10 +885,7 @@ export function createKnowledgeOperationImplementations(
         requireSourceAudience(workspaceId, sourceId, context);
         const response = ReadKnowledgeSourceResponseSchema.parse({
           source,
-          derivedRepresentations: store.listKnowledgeSourceDerivedRepresentations(
-            workspaceId,
-            sourceId
-          ),
+          derivedRepresentations: [],
         });
         recordKnowledgeGatewayUsage({
           authorityActor: actor,
@@ -834,11 +898,12 @@ export function createKnowledgeOperationImplementations(
           ...(coreDb ? { coreDb: coreDb } : {}),
         });
 
-        // Derived metadata and its usage accounting must not outlive current disclosure authority.
+        // Source metadata and its usage accounting must not outlive current disclosure authority.
         requireSourceAudience(workspaceId, sourceId, context);
         return response;
       } catch (error) {
         if (error instanceof OperationError) throw error;
+        if (error instanceof NotebookError) notebookCommandFailure(error);
         throw commandFailure(error, 'knowledge_source_not_found', 404);
       }
     },

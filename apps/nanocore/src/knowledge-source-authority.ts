@@ -163,11 +163,8 @@ export function resolveWorkspaceKnowledgeReferenceProofs(input: {
   if (input.notebookRevision !== undefined) notebook.history({ revision, limit: 1 });
   const entries = notebook.inspectRevision(revision).entries;
   const ids = input.pageIds ?? Object.keys(entries).map((path) => path.slice(0, -3));
-  const sources = new Map(
-    input.store
-      .listKnowledgeSources(input.workspaceId)
-      .map((source) => [source.id, source.contentDigest])
-  );
+  // Source-free pages need no Source byte or metadata backend. Resolve only the references actually read.
+  let sources: Map<string, string | null> | undefined;
   const files = notebook.readRevision(
     revision,
     ids.filter((id) => Object.hasOwn(entries, `${id}.md`)).map((id) => `${id}.md`)
@@ -195,19 +192,13 @@ export function resolveWorkspaceKnowledgeReferenceProofs(input: {
       );
       for (const reference of sourceReferences) {
         if (reference.startsWith('source:')) {
+          sources ??= new Map(
+            input.store
+              .listKnowledgeSources(input.workspaceId)
+              .map((source) => [source.id, source.contentDigest])
+          );
           const resolution = resolveRegisteredKnowledgeSourceReference(reference, sources);
-          const source = resolution.targetId
-            ? input.store.getKnowledgeSource(input.workspaceId, resolution.targetId)
-            : null;
-          const material = source
-            ? input.store.readKnowledgeSourceMaterial(input.workspaceId, source.id)
-            : null;
-          if (
-            !resolution.resolved ||
-            !source ||
-            material === null ||
-            sha256(material) !== source.contentDigest
-          )
+          if (!resolution.resolved || !resolution.targetId)
             throw new KnowledgePageValidationError();
           verified.add(reference);
         } else if (reference.startsWith('openkit:')) {

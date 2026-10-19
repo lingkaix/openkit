@@ -3649,7 +3649,7 @@ describe('createCoreClient', () => {
       client.operations['knowledge.source.register']({
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         ...{
-          requestId: 'req_source',
+          requestId,
           kind: 'document',
           title: 'Release notes',
           uri: 'file://release.md',

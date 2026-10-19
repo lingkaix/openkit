@@ -42,7 +42,7 @@ import {
 } from './knowledge/scoped-notebook-owner.js';
 import {
   admitsServerKnowledge,
-  readServerKnowledgeSource,
+  readServerKnowledgeSourceMetadata,
 } from './knowledge/server-knowledge-owner.js';
 import {
   resolveWorkspaceKnowledgeReferenceProofs,
@@ -167,9 +167,9 @@ export function readAuthorizedServerNotebookPages(input: Target) {
           registeredSources
         );
         if (!targetId) return false;
-        const source = readServerKnowledgeSource(context, targetId);
+        const source = readServerKnowledgeSourceMetadata(context, targetId);
         if (!source) return false;
-        registeredSources.set(targetId, source.source.contentDigest);
+        registeredSources.set(targetId, source.contentDigest);
         if (!resolveRegisteredKnowledgeSourceReference(reference, registeredSources).resolved)
           return false;
       } else if (reference.startsWith('openkit:')) {
@@ -597,6 +597,19 @@ export function knowledgeSourceAudienceReadable(
   admitKnowledgeRetrieval(input);
   try {
     const source = input.access.store.getKnowledgeSource(input.workspaceId, sourceId);
+    return knowledgeSourceLineageReadable(input, source);
+  } catch {
+    return false;
+  }
+}
+
+/** Applies the same current audience checks to canonical SourceSummary metadata and Store projections. */
+export function knowledgeSourceLineageReadable(
+  input: Pick<Target, 'workspaceId' | 'access'>,
+  source: { readonly originatingThreadId: string | null; readonly originatingTurnId: string | null }
+): boolean {
+  admitKnowledgeRetrieval(input);
+  try {
     if (source.originatingThreadId && !threadReadable(input, source.originatingThreadId))
       return false;
     if (source.originatingTurnId) {
@@ -712,7 +725,7 @@ function pinnedPageReadable(
   return pinnedSourcesReadable(input, refs ?? [], new Set([...visiting, pageId]));
 }
 
-/** Reuses the completed-work owner, then intersects every source with its current bytes and audience. */
+/** Reuses the completed-work owner, then checks current Source pins and audience without fetching originals. */
 function pinnedSourcesReadable(
   input: PinnedNotebookTarget,
   refs: readonly string[],
@@ -720,9 +733,8 @@ function pinnedSourcesReadable(
 ): boolean {
   admitKnowledgeRetrieval(input);
   const { store } = input.access;
-  const sources = new Map(
-    store.listKnowledgeSources(input.workspaceId).map((source) => [source.id, source.contentDigest])
-  );
+  // Source-free pages do not depend on the Source metadata backend.
+  let sources: ReturnType<typeof store.listKnowledgeSources> | undefined;
   const workspaceDb =
     input.access.coreDb &&
     refs.some((reference) => /^(?:turn|item|context-package):/.test(reference))
@@ -739,13 +751,15 @@ function pinnedSourcesReadable(
     });
     for (const reference of refs) {
       if (reference.startsWith('source:')) {
-        const resolution = resolveRegisteredKnowledgeSourceReference(reference, sources);
+        // Reuse only this synchronous guard's fresh metadata; later disclosure rechecks authority.
+        sources ??= store.listKnowledgeSources(input.workspaceId);
+        const resolution = resolveRegisteredKnowledgeSourceReference(
+          reference,
+          new Map(sources.map((source) => [source.id, source.contentDigest]))
+        );
         if (!resolution.resolved || !resolution.targetId) return false;
-        if (!knowledgeSourceAudienceReadable(input, resolution.targetId)) return false;
-        const source = store.getKnowledgeSource(input.workspaceId, resolution.targetId);
-        const material = store.readKnowledgeSourceMaterial(input.workspaceId, source.id);
-        if (material === null || digest(material) !== source.contentDigest) return false;
-        if (!knowledgeSourceAudienceReadable(input, source.id)) return false;
+        const source = sources.find((source) => source.id === resolution.targetId);
+        if (!source || !knowledgeSourceLineageReadable(input, source)) return false;
       } else if (reference.startsWith('openkit:')) {
         const parsedReference = parseKnowledgePageSourceReference(reference, input.pageScopeId);
         if (!parsedReference) return false;

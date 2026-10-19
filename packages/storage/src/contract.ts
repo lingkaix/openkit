@@ -3,17 +3,17 @@ import type { ContentReference } from '@openkit/protocol';
 /** Captured logical location, without a backend root or access authority. */
 export type StorageLocator = ContentReference['locator'];
 
-/** Current Policy decision supplied by the trusted caller, never a new retained grant. */
-export interface StorageAccess {
-  grantId: string;
+/** Current native admission supplied per request, never a new retained grant. */
+export type StorageAccess = {
   knowledgeBaseId: string;
   ownerScope: StorageLocator['ownerScope'];
   mount: string;
   pathPrefix: string;
   mode: 'read-only' | 'staged-write';
-  expiresAt: string;
-  revoked: boolean;
-}
+} & (
+  | { basis: 'lease'; grantId: string; expiresAt: string; revoked: boolean }
+  | { basis: 'knowledge'; grantId?: never; expiresAt?: never; revoked?: never }
+);
 
 /** Observed byte facts; the existing Source or Artifact record owns their retention. */
 export interface StorageContent {
@@ -44,6 +44,8 @@ export interface LocalStorageMount {
   ownerScope: StorageLocator['ownerScope'];
   name: string;
   root: string;
+  /** True only for the owning Knowledge Base's managed raw root; absent means an external mount. */
+  managed?: boolean;
 }
 
 /** One bounded raw-byte chunk, encoded for a process-independent transport. */

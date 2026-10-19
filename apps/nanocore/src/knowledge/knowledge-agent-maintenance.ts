@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { KnowledgeMaintenanceResponseSchema } from '@openkit/app-api-schemas';
 import { KNOWLEDGE_MANAGER_RUN_DEADLINE_MS } from '@openkit/config-schema';
@@ -41,6 +41,9 @@ import {
   resolveRegisteredKnowledgeSourceReference,
   stringListFrontmatterField,
 } from './okf.js';
+import { readSourcePointers } from './source-pointers.js';
+import { publishCapturedSource } from './source-publication.js';
+import { readManagedSourceText } from './source-reading.js';
 
 type Turn = ReturnType<FsStore['getTurnById']>;
 
@@ -128,7 +131,7 @@ export function prepareKnowledgeMaintenance(
       'notebook.git'
     ),
   });
-  const baseRevision = notebook.publishedRevision();
+  let baseRevision = notebook.publishedRevision();
   input.currentAdmission?.({
     workspaceId: input.workspaceId,
     requestId: input.requestId,
@@ -291,469 +294,529 @@ export function prepareKnowledgeMaintenance(
       store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
       return settled(skipped);
     }
-    const files: Record<string, string> = {};
-    const sourceFiles: Record<string, string> = {};
-    const admittedReferences = new Set<string>();
-    let bytes = 0;
-    const admitBytes = (text: string) => {
-      bytes += Buffer.byteLength(text);
-      if (
-        Buffer.byteLength(text) > NOTEBOOK_EDITING_LIMITS.fileBytes ||
-        bytes > NOTEBOOK_EDITING_LIMITS.workspaceBytes
-      )
-        throw new NotebookError('invalid_request');
-    };
-    const selectedPages = input.pageIds ? new Set([...input.pageIds, 'index']) : undefined;
-    for (const path of Object.keys(notebook.inspectRevision(baseRevision).entries).sort()) {
-      const id = path.slice(0, -3);
-      if (selectedPages && !selectedPages.has(id)) continue;
-      const content = notebook.readRevision(baseRevision, [path]).files[path]!;
-      const parsed = parseOkfDocument({ path, content });
-      if (!parsed.ok) throw new NotebookError('recovery_required');
-      if (
-        !selectedPages &&
-        path !== 'index.md' &&
-        (parsed.document.reserved || parsed.document.frontmatter.openkit_status !== 'active')
-      )
-        continue;
-      const page = readAuthorizedWorkspaceNotebookPages({ ...target, pageIds: [path.slice(0, -3)] })
-        .pages[0];
-      if (!page) throw new NotebookError('invalid_request');
-      admitBytes(content);
-      files[path] = content;
-      for (const ref of stringListFrontmatterField(parsed.document, 'source_refs') ?? [])
-        admittedReferences.add(ref);
-    }
-    // Omitted base files stay immutable; an explicit selection may include non-active pages.
-    for (const id of input.pageIds ?? []) {
-      if (!Object.hasOwn(files, `${id}.md`)) throw new NotebookError('invalid_request');
-    }
-    const sources = new Map<string, KnowledgeSourceRecord>();
-    const readSource = (source: KnowledgeSourceRecord) => {
-      if (!knowledgeSourceAudienceReadable(target, source.id))
-        throw new NotebookError('invalid_request');
-      const text = store.readKnowledgeSourceMaterial(input.workspaceId, source.id);
-      if (
-        text === null ||
-        `sha256:${createHash('sha256').update(text).digest('hex')}` !== source.contentDigest
-      )
-        throw new NotebookError('recovery_required');
-      return text;
-    };
-    const capture = (content: string, threadId: string, turnId: string, title: string) => {
-      if (Buffer.byteLength(content) > NOTEBOOK_EDITING_LIMITS.fileBytes)
-        throw new NotebookError('invalid_request');
-      const digest = `sha256:${createHash('sha256').update(content).digest('hex')}`;
-      const source =
-        store
-          .listKnowledgeSources(input.workspaceId)
-          .find(
-            (entry) =>
-              entry.originatingTurnId === turnId &&
-              entry.originatingThreadId === threadId &&
-              entry.contentDigest === digest
-          ) ??
-        store.createKnowledgeSource(
-          {
-            id: allocateEntityId('ks'),
-            workspaceId: input.workspaceId,
-            kind: 'document',
-            title,
-            uri: null,
-            contentDigest: digest,
-            originatingThreadId: threadId,
-            originatingTurnId: turnId,
-            originatingFileId: null,
-            capturedAt: new Date().toISOString(),
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          },
-          content
-        );
-      sources.set(source.id, source);
-    };
-    const processed = new Set(
-      maintenance
-        .filter((prior) => prior.status === 'completed')
-        .flatMap(
-          (prior) =>
-            prior.internalExecution?.knowledge?.sourceRange.map((range) => range.turnId) ?? []
-        )
-    );
-    const ranges: NonNullable<NonNullable<Turn['internalExecution']>['knowledge']>['sourceRange'] =
-      [];
-    const eligible = all
-      .filter(
-        (prior) =>
-          prior.status === 'completed' &&
-          prior.internalExecution?.roleId !== 'knowledge-manager' &&
-          prior.agentId !== 'knowledge-manager' &&
-          !processed.has(prior.id) &&
-          store.getThread(input.workspaceId, prior.threadId).entryPath !== 'knowledge-manager' &&
-          threadReadable(target, prior.threadId)
-      )
-      .sort((left, right) => (left.completedAt ?? '').localeCompare(right.completedAt ?? ''));
-    for (const prior of eligible.slice(-8)) {
-      // Human expressions are evidence; unreviewed generated replies are never recast as factual Sources.
-      const items = prior.items.filter(
-        (item) =>
-          item.type === 'user-message' && item.actor.kind === 'user' && item.status === 'completed'
-      );
-      if (!items.length) continue;
-      capture(JSON.stringify(items), prior.threadId, prior.id, 'Selected conversation expressions');
-      ranges.push({
-        threadId: prior.threadId,
-        turnId: prior.id,
-        firstItemId: items[0]!.id,
-        lastItemId: items.at(-1)!.id,
-      });
-    }
-    if (input.tellContent)
-      capture(
-        input.tellContent,
-        input.askingThreadId ?? thread.id,
-        input.askingTurnId ?? turn.id,
-        'Supplied knowledge information'
-      );
-    const registered = new Map(
-      store
-        .listKnowledgeSources(input.workspaceId)
-        .map((source) => [source.id, source.contentDigest])
-    );
-    for (const supplied of input.sources) {
-      const resolution = resolveRegisteredKnowledgeSourceReference(
-        supplied.startsWith('source:') ? supplied : `source:${supplied}`,
-        registered
-      );
-      if (!resolution.resolved || !resolution.targetId) throw new NotebookError('invalid_request');
-      sources.set(
-        resolution.targetId,
-        store.getKnowledgeSource(input.workspaceId, resolution.targetId)
-      );
-    }
-    for (const source of sources.values()) {
-      const text = readSource(source);
-      admitBytes(text);
-      sourceFiles[source.id] = text;
-      admittedReferences.add(`source:${source.id}@${source.contentDigest}`);
-    }
-    const historyReads: Array<{ notebookRevision: string; path: string; content: string }> = [];
-    const assertCurrent = () => {
-      input.signal.throwIfAborted();
-      admitKnowledgeRetrieval(target);
-      admission(empty);
-      for (const source of sources.values())
-        if (readSource(source) !== sourceFiles[source.id])
-          throw new NotebookError('recovery_required');
-      for (const path of Object.keys(files))
-        readAuthorizedWorkspaceNotebookPages({ ...target, pageIds: [path.slice(0, -3)] });
-      for (const selection of historyReads) {
-        const page = readAuthorizedWorkspaceNotebookPages({
-          ...target,
-          notebookRevision: selection.notebookRevision,
-          pageIds: [selection.path.slice(0, -3)],
-        }).pages[0];
-        if (page?.content !== selection.content) throw new NotebookError('recovery_required');
-      }
-    };
-    const settings = () =>
-      findWorkspaceConfig(dependencies.runtimeConfigManager.current(), input.workspaceId)?.config
-        .workspace.knowledgeMaintenance ?? { enabled: false, reviewRequiredPageIds: [] };
-    const controller = new AbortController();
-    const editor = createNotebookAgentEditing({
-      notebook,
-      baseRevision,
-      requestId: input.requestId,
-      files,
-      sources: sourceFiles,
-      signal: AbortSignal.any([input.signal, controller.signal]),
-      deadlineMs: Date.now() + KNOWLEDGE_MANAGER_RUN_DEADLINE_MS,
-      revalidate: assertCurrent,
-      submit: async (edit) => {
-        if (edit.changes.length > 4) throw new NotebookError('invalid_request');
-        const request = { ...edit, workspaceId: input.workspaceId };
-        const refs = [
-          ...new Set(
-            edit.changes.flatMap(({ path, content }) =>
-              content === null
-                ? []
-                : (stringListFrontmatterField(
-                    parseOkfDocument({ path, content }).document!,
-                    'source_refs'
-                  ) ?? [])
-            )
-          ),
-        ].sort();
-        if (refs.some((ref) => !admittedReferences.has(ref)))
-          throw new NotebookError('invalid_request');
-        const release = dependencies.workspaceMutationAdmission.enter(input.workspaceId);
-        if (!release) throw new NotebookError('invalid_request');
-        try {
-          const facts = admission(request);
-          const setting = settings();
+  } catch {
+    return settled(fail());
+  }
+  let started = false;
+  return {
+    turnId: turn.id,
+    fail,
+    execute: async () => {
+      if (started || closed) throw new NotebookError('invalid_request');
+      started = true;
+      try {
+        const files: Record<string, string> = {};
+        const sourceFiles: Record<string, string> = {};
+        const admittedReferences = new Set<string>();
+        let bytes = 0;
+        const admitBytes = (text: string) => {
+          bytes += Buffer.byteLength(text);
           if (
-            setting.enabled &&
-            !edit.changes.some(
-              ({ path, content }) =>
-                facts.reviewRequiredPageIds.includes(path.slice(0, -3)) ||
-                (content === null &&
-                  Object.hasOwn(notebook.inspectRevision(baseRevision).entries, path))
-            )
-          ) {
-            try {
-              const published = await publishWorkspaceNotebook(
-                {
-                  store,
-                  workspaceDb,
-                  notebook,
-                  actor,
-                  producer: { kind: 'agent', id: 'knowledge-manager', responsibleUserId: userId },
-                  inflightCommands: dependencies.inflightCommands,
-                  publicationAuthority: {
-                    kind: 'delegated',
-                    settingReference: `workspace:${input.workspaceId}:knowledgeMaintenance:${JSON.stringify(setting)}`,
-                    settingDigest: commandInputHash(setting),
-                  },
-                  revalidate: () => {
-                    assertCurrent();
-                    if (commandInputHash(settings()) !== commandInputHash(setting))
-                      throw new NotebookError('review_required');
-                    return admission(request);
-                  },
-                },
-                request
-              );
-              outcome = response('published', edit.summary, {
-                notebookRevision: published.notebookRevision,
-              });
-              return published;
-            } catch (error) {
-              if (!(error instanceof NotebookError) || error.code !== 'review_required')
-                throw error;
-            }
+            Buffer.byteLength(text) > NOTEBOOK_EDITING_LIMITS.fileBytes ||
+            bytes > NOTEBOOK_EDITING_LIMITS.workspaceBytes
+          )
+            throw new NotebookError('invalid_request');
+        };
+        const sources = new Map<string, KnowledgeSourceRecord>();
+        const sourceOwner = {
+          dataRoot: dependencies.coreDb.dataRoot,
+          ownerScope: { kind: 'workspace' as const, workspaceId: input.workspaceId },
+        };
+        const readSource = async (source: KnowledgeSourceRecord) => {
+          if (!knowledgeSourceAudienceReadable(target, source.id))
+            throw new NotebookError('invalid_request');
+          const pointer = readSourcePointers(sourceOwner).get(source.id);
+          if (!pointer || pointer.source.contentDigest !== source.contentDigest)
+            throw new NotebookError('recovery_required');
+          const delivered = await readManagedSourceText({ owner: sourceOwner, pointer, access });
+          if (
+            delivered.status !== 'ok' ||
+            !knowledgeSourceAudienceReadable(target, source.id) ||
+            store.getKnowledgeSource(input.workspaceId, source.id).contentDigest !==
+              source.contentDigest
+          )
+            throw new NotebookError('recovery_required');
+          return delivered.value;
+        };
+        const capture = async (
+          content: string,
+          threadId: string,
+          turnId: string,
+          title: string
+        ) => {
+          if (Buffer.byteLength(content) > NOTEBOOK_EDITING_LIMITS.fileBytes)
+            throw new NotebookError('invalid_request');
+          const digest = `sha256:${createHash('sha256').update(content).digest('hex')}`;
+          let source = store
+            .listKnowledgeSources(input.workspaceId)
+            .find(
+              (entry) =>
+                entry.originatingTurnId === turnId &&
+                entry.originatingThreadId === threadId &&
+                entry.contentDigest === digest
+            );
+          if (!source) {
+            if (input.actor.kind !== 'user' && input.actor.kind !== 'agent')
+              throw new NotebookError('invalid_request');
+            const now = new Date().toISOString();
+            const metadata = {
+              id: allocateEntityId('ks'),
+              kind: 'document' as const,
+              title,
+              uri: null,
+              contentDigest: digest,
+              originatingThreadId: threadId,
+              originatingTurnId: turnId,
+              originatingFileId: null,
+              capturedAt: now,
+              createdAt: now,
+              updatedAt: now,
+            };
+            const captured = await publishCapturedSource(
+              {
+                owner: sourceOwner,
+                database: { kind: 'workspace', workspaceDb },
+                access,
+                producer:
+                  input.actor.kind === 'user' ? input.actor : { ...input.actor, kind: 'agent' },
+                requestId: randomUUID(),
+                commandInput: { maintenanceRequestId: input.requestId, source: metadata },
+                captureChannel: 'knowledge.source.register',
+                revalidatePublication: () =>
+                  admission({ ...empty, baseRevision: notebook.publishedRevision() }),
+              },
+              metadata,
+              Buffer.from(content)
+            );
+            source = { ...captured.source, workspaceId: input.workspaceId };
           }
-          const external = verifyKnowledgeProposalWorkHistory({
-            coreDb: dependencies.coreDb,
-            workspaceDb,
-            store,
-            workspaceId: input.workspaceId,
-            sourceReferences: refs,
-          }).verifiedExternalReferences;
-          const proposal = store.createKnowledgeProposal({
-            ...edit,
-            workspaceId: input.workspaceId,
-            sourceReferences: refs,
-            verifiedExternalReferences: external,
-            producer: { kind: 'agent', id: 'knowledge-manager', responsibleUserId: userId },
-            createdAt: new Date().toISOString(),
+          sources.set(source.id, source);
+        };
+        const processed = new Set(
+          maintenance
+            .filter((prior) => prior.status === 'completed')
+            .flatMap(
+              (prior) =>
+                prior.internalExecution?.knowledge?.sourceRange.map((range) => range.turnId) ?? []
+            )
+        );
+        const ranges: NonNullable<
+          NonNullable<Turn['internalExecution']>['knowledge']
+        >['sourceRange'] = [];
+        const eligible = all
+          .filter(
+            (prior) =>
+              prior.status === 'completed' &&
+              prior.internalExecution?.roleId !== 'knowledge-manager' &&
+              prior.agentId !== 'knowledge-manager' &&
+              !processed.has(prior.id) &&
+              store.getThread(input.workspaceId, prior.threadId).entryPath !==
+                'knowledge-manager' &&
+              threadReadable(target, prior.threadId)
+          )
+          .sort((left, right) => (left.completedAt ?? '').localeCompare(right.completedAt ?? ''));
+        for (const prior of eligible.slice(-8)) {
+          // Human expressions are evidence; unreviewed generated replies are never recast as factual Sources.
+          const items = prior.items.filter(
+            (item) =>
+              item.type === 'user-message' &&
+              item.actor.kind === 'user' &&
+              item.status === 'completed'
+          );
+          if (!items.length) continue;
+          await capture(
+            JSON.stringify(items),
+            prior.threadId,
+            prior.id,
+            'Selected conversation expressions'
+          );
+          ranges.push({
+            threadId: prior.threadId,
+            turnId: prior.id,
+            firstItemId: items[0]!.id,
+            lastItemId: items.at(-1)!.id,
           });
-          outcome = response('review-required', edit.summary, {
-            candidateRevision: proposal.candidateRevision,
-            proposalId: proposal.id,
-          });
-          return {
-            outcome: 'review_required',
-            proposalId: proposal.id,
-            baseRevision,
-            candidateRevision: proposal.candidateRevision,
-          };
-        } finally {
-          release();
         }
-      },
-    });
-    const tool = (
-      name: string,
-      key: string,
-      execute: (value: Record<string, string>) => Promise<unknown>
-    ): AgentTool => ({
-      name,
-      description:
-        'Use only the admitted notebook snapshot and Sources. Notebook limits: 32 MiB total, 2 MiB per file, four maintenance changes, 64 KiB script/output. Publication needs current authority.',
-      inputSchema: {
-        type: 'object',
-        properties: { [key]: { type: 'string' } },
-        required: [key],
-        additionalProperties: false,
-      },
-      execute: async (value, context) => {
-        if (
-          typeof value !== 'object' ||
-          value === null ||
-          Array.isArray(value) ||
-          Object.keys(value).length !== 1 ||
-          typeof (value as Record<string, unknown>)[key] !== 'string'
-        )
-          throw new NotebookError('invalid_request');
-        const abort = () => controller.abort();
-        if (context.signal.aborted) abort();
-        context.signal.addEventListener('abort', abort, { once: true });
-        try {
-          const result = await execute(value as Record<string, string>);
-          return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-        } finally {
-          context.signal.removeEventListener('abort', abort);
+        if (input.tellContent)
+          await capture(
+            input.tellContent,
+            input.askingThreadId ?? thread.id,
+            input.askingTurnId ?? turn.id,
+            'Supplied knowledge information'
+          );
+        // Native Source capture adds a Git commit. Pin the editor and model only after capture.
+        baseRevision = notebook.publishedRevision();
+        target.notebookRevision = baseRevision;
+        empty.baseRevision = baseRevision;
+        admission(empty);
+        const selectedPages = input.pageIds ? new Set([...input.pageIds, 'index']) : undefined;
+        for (const path of Object.keys(notebook.inspectRevision(baseRevision).entries).sort()) {
+          const id = path.slice(0, -3);
+          if (selectedPages && !selectedPages.has(id)) continue;
+          const content = notebook.readRevision(baseRevision, [path]).files[path]!;
+          const parsed = parseOkfDocument({ path, content });
+          if (!parsed.ok) throw new NotebookError('recovery_required');
+          if (
+            !selectedPages &&
+            path !== 'index.md' &&
+            (parsed.document.reserved || parsed.document.frontmatter.openkit_status !== 'active')
+          )
+            continue;
+          const page = readAuthorizedWorkspaceNotebookPages({
+            ...target,
+            pageIds: [path.slice(0, -3)],
+          }).pages[0];
+          if (!page) throw new NotebookError('invalid_request');
+          admitBytes(content);
+          files[path] = content;
+          for (const ref of stringListFrontmatterField(parsed.document, 'source_refs') ?? [])
+            admittedReferences.add(ref);
         }
-      },
-    });
-    const nativeAuthority = {
-      actorRef: input.actor,
-      assertCurrent,
-      requestActor: input.requestActor,
-    };
-    const history = createAssistantHistory({
-      store,
-      coreDb: dependencies.coreDb,
-      workspaceId: input.workspaceId,
-      threadId: thread.id,
-      turnId: turn.id,
-      nativeAuthority,
-    });
-    const tools: AgentTool[] = [
-      history.tool,
-      tool('knowledge.notebook-workspace.update', 'script', (value) =>
-        editor.workspaceUpdate({ script: value.script! })
-      ),
-      tool('knowledge.notebook.update', 'summary', async (value) => {
-        const result = await editor.notebookUpdate({ summary: value.summary! });
-        if (result.outcome === 'no_change') outcome = response('no-change', value.summary!);
-        recordOutcome();
-        return result;
-      }),
-    ];
-    const previous = maintenance.filter((prior) => prior.status === 'completed').at(-1)
-      ?.internalExecution?.knowledge?.baseRevision;
-    const humanChanges: Array<{ path: string; before: string | null; after: string | null }> = [];
-    let cursor: string | null = baseRevision;
-    let scanned = 0;
-    while (cursor && cursor !== previous && scanned++ < 256) {
-      const revision = notebook.inspectRevision(cursor);
-      const parent = revision.parentRevision
-        ? notebook.inspectRevision(revision.parentRevision)
-        : undefined;
-      if (revision.metadata.producer.kind === 'user')
-        for (const path of new Set([
-          ...Object.keys(revision.entries),
-          ...Object.keys(parent?.entries ?? {}),
-        ])) {
-          if (selectedPages && !selectedPages.has(path.slice(0, -3))) continue;
-          if (revision.entries[path] === parent?.entries[path]) continue;
-          const read = (notebookRevision: string | undefined, exists: boolean) => {
-            if (!notebookRevision || !exists) return null;
-            const content = readAuthorizedWorkspaceNotebookPages({
+        // Omitted base files stay immutable; an explicit selection may include non-active pages.
+        for (const id of input.pageIds ?? []) {
+          if (!Object.hasOwn(files, `${id}.md`)) throw new NotebookError('invalid_request');
+        }
+        const registered = new Map(
+          store
+            .listKnowledgeSources(input.workspaceId)
+            .map((source) => [source.id, source.contentDigest])
+        );
+        for (const supplied of input.sources) {
+          const resolution = resolveRegisteredKnowledgeSourceReference(
+            supplied.startsWith('source:') ? supplied : `source:${supplied}`,
+            registered
+          );
+          if (!resolution.resolved || !resolution.targetId)
+            throw new NotebookError('invalid_request');
+          sources.set(
+            resolution.targetId,
+            store.getKnowledgeSource(input.workspaceId, resolution.targetId)
+          );
+        }
+        for (const source of sources.values()) {
+          const text = await readSource(source);
+          admitBytes(text);
+          sourceFiles[source.id] = text;
+          admittedReferences.add(`source:${source.id}@${source.contentDigest}`);
+        }
+        const historyReads: Array<{ notebookRevision: string; path: string; content: string }> = [];
+        const assertCurrent = () => {
+          input.signal.throwIfAborted();
+          admitKnowledgeRetrieval(target);
+          admission(empty);
+          for (const source of sources.values())
+            if (
+              !knowledgeSourceAudienceReadable(target, source.id) ||
+              store.getKnowledgeSource(input.workspaceId, source.id).contentDigest !==
+                source.contentDigest
+            )
+              throw new NotebookError('recovery_required');
+          for (const path of Object.keys(files))
+            readAuthorizedWorkspaceNotebookPages({ ...target, pageIds: [path.slice(0, -3)] });
+          for (const selection of historyReads) {
+            const page = readAuthorizedWorkspaceNotebookPages({
               ...target,
-              notebookRevision,
-              pageIds: [path.slice(0, -3)],
-            }).pages[0]!.content;
-            admitBytes(content);
-            historyReads.push({ notebookRevision, path, content });
-            return content;
+              notebookRevision: selection.notebookRevision,
+              pageIds: [selection.path.slice(0, -3)],
+            }).pages[0];
+            if (page?.content !== selection.content) throw new NotebookError('recovery_required');
+          }
+        };
+        const settings = () =>
+          findWorkspaceConfig(dependencies.runtimeConfigManager.current(), input.workspaceId)
+            ?.config.workspace.knowledgeMaintenance ?? {
+            enabled: false,
+            reviewRequiredPageIds: [],
           };
-          humanChanges.push({
-            path,
-            before: read(parent?.revision, Boolean(parent?.entries[path])),
-            after: read(revision.revision, Boolean(revision.entries[path])),
-          });
-          if (humanChanges.length > 256) throw new NotebookError('invalid_request');
-        }
-      cursor = revision.parentRevision;
-    }
-    if (cursor && cursor !== previous) throw new NotebookError('invalid_request');
-    const humanEdits = boundedNotebookDiff(humanChanges, false);
-    let remaining = 64 * 1024;
-    const selectedSources = [...sources.values()].map((source) => {
-      const delivered = excerpt(sourceFiles[source.id]!, remaining);
-      remaining -= Buffer.byteLength(delivered.content);
-      return {
-        reference: `source:${source.id}@${source.contentDigest}`,
-        file: `/sources/${source.id}`,
-        ...delivered,
-      };
-    });
-    const runInput: KnowledgeManagerAgentRun = {
-      turn,
-      workspaceDb,
-      signal: input.signal,
-      inputs: {
-        purpose: 'maintenance',
-        ownerScope: { kind: 'workspace', workspaceId: input.workspaceId },
-        baseRevision,
-        trigger: input.trigger,
-        instructions: input.instructions,
-        sourceRange: ranges,
-        ...(input.askingThreadId ? { askingThreadId: input.askingThreadId } : {}),
-        ...(input.askingTurnId ? { askingTurnId: input.askingTurnId } : {}),
-      },
-      tools,
-      assertCurrent,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify({
-                instructions: input.instructions,
-                notebookRevision: baseRevision,
-                files: Object.keys(files),
-                selectedPageIds: input.pageIds ?? [],
-                humanEdits,
-                overview: excerpt(files['index.md'] ?? '', 16 * 1024),
-                sources: selectedSources,
-                sourceHistory:
-                  'Supplied Source content is the authorized retained human input. Source material digests and Turn IDs are not history Item range coordinates. thread.history.read accepts only exact current-run compaction ranges.',
-                omittedEligibleTurns: Math.max(0, eligible.length - 8),
-              }),
-            },
-          ],
-        },
-      ],
-      readEvidence: (items) =>
-        readInternalContextEvidence({
+        const controller = new AbortController();
+        const editor = createNotebookAgentEditing({
+          notebook,
+          baseRevision,
+          requestId: input.requestId,
+          files,
+          sources: sourceFiles,
+          signal: AbortSignal.any([input.signal, controller.signal]),
+          deadlineMs: Date.now() + KNOWLEDGE_MANAGER_RUN_DEADLINE_MS,
+          revalidate: assertCurrent,
+          submit: async (edit) => {
+            if (edit.changes.length > 4) throw new NotebookError('invalid_request');
+            const request = { ...edit, workspaceId: input.workspaceId };
+            const refs = [
+              ...new Set(
+                edit.changes.flatMap(({ path, content }) =>
+                  content === null
+                    ? []
+                    : (stringListFrontmatterField(
+                        parseOkfDocument({ path, content }).document!,
+                        'source_refs'
+                      ) ?? [])
+                )
+              ),
+            ].sort();
+            if (refs.some((ref) => !admittedReferences.has(ref)))
+              throw new NotebookError('invalid_request');
+            const release = dependencies.workspaceMutationAdmission.enter(input.workspaceId);
+            if (!release) throw new NotebookError('invalid_request');
+            try {
+              const facts = admission(request);
+              const setting = settings();
+              if (
+                setting.enabled &&
+                !edit.changes.some(
+                  ({ path, content }) =>
+                    facts.reviewRequiredPageIds.includes(path.slice(0, -3)) ||
+                    (content === null &&
+                      Object.hasOwn(notebook.inspectRevision(baseRevision).entries, path))
+                )
+              ) {
+                try {
+                  const published = await publishWorkspaceNotebook(
+                    {
+                      store,
+                      workspaceDb,
+                      notebook,
+                      actor,
+                      producer: {
+                        kind: 'agent',
+                        id: 'knowledge-manager',
+                        responsibleUserId: userId,
+                      },
+                      inflightCommands: dependencies.inflightCommands,
+                      publicationAuthority: {
+                        kind: 'delegated',
+                        settingReference: `workspace:${input.workspaceId}:knowledgeMaintenance:${JSON.stringify(setting)}`,
+                        settingDigest: commandInputHash(setting),
+                      },
+                      revalidate: () => {
+                        assertCurrent();
+                        if (commandInputHash(settings()) !== commandInputHash(setting))
+                          throw new NotebookError('review_required');
+                        return admission(request);
+                      },
+                    },
+                    request
+                  );
+                  outcome = response('published', edit.summary, {
+                    notebookRevision: published.notebookRevision,
+                  });
+                  return published;
+                } catch (error) {
+                  if (!(error instanceof NotebookError) || error.code !== 'review_required')
+                    throw error;
+                }
+              }
+              const external = verifyKnowledgeProposalWorkHistory({
+                coreDb: dependencies.coreDb,
+                workspaceDb,
+                store,
+                workspaceId: input.workspaceId,
+                sourceReferences: refs,
+              }).verifiedExternalReferences;
+              const proposal = store.createKnowledgeProposal({
+                ...edit,
+                workspaceId: input.workspaceId,
+                sourceReferences: refs,
+                verifiedExternalReferences: external,
+                producer: { kind: 'agent', id: 'knowledge-manager', responsibleUserId: userId },
+                createdAt: new Date().toISOString(),
+              });
+              outcome = response('review-required', edit.summary, {
+                candidateRevision: proposal.candidateRevision,
+                proposalId: proposal.id,
+              });
+              return {
+                outcome: 'review_required',
+                proposalId: proposal.id,
+                baseRevision,
+                candidateRevision: proposal.candidateRevision,
+              };
+            } finally {
+              release();
+            }
+          },
+        });
+        const tool = (
+          name: string,
+          key: string,
+          execute: (value: Record<string, string>) => Promise<unknown>
+        ): AgentTool => ({
+          name,
+          description:
+            'Use only the admitted notebook snapshot and Sources. Notebook limits: 32 MiB total, 2 MiB per file, four maintenance changes, 64 KiB script/output. Publication needs current authority.',
+          inputSchema: {
+            type: 'object',
+            properties: { [key]: { type: 'string' } },
+            required: [key],
+            additionalProperties: false,
+          },
+          execute: async (value, context) => {
+            if (
+              typeof value !== 'object' ||
+              value === null ||
+              Array.isArray(value) ||
+              Object.keys(value).length !== 1 ||
+              typeof (value as Record<string, unknown>)[key] !== 'string'
+            )
+              throw new NotebookError('invalid_request');
+            const abort = () => controller.abort();
+            if (context.signal.aborted) abort();
+            context.signal.addEventListener('abort', abort, { once: true });
+            try {
+              const result = await execute(value as Record<string, string>);
+              return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+            } finally {
+              context.signal.removeEventListener('abort', abort);
+            }
+          },
+        });
+        const nativeAuthority = {
+          actorRef: input.actor,
+          assertCurrent,
+          requestActor: input.requestActor,
+        };
+        const history = createAssistantHistory({
           store,
           coreDb: dependencies.coreDb,
           workspaceId: input.workspaceId,
           threadId: thread.id,
+          turnId: turn.id,
           nativeAuthority,
-          items,
-          strategy: 'compaction',
-        }),
-      resultSchema: {
-        type: 'object',
-        properties: { summary: { type: 'string', minLength: 1 } },
-        required: ['summary'],
-        additionalProperties: false,
-      },
-      validateResult: () => {
-        assertCurrent();
-        if (!outcome)
-          return 'Call knowledge.notebook.update({summary: ...}) first, including when no changes are needed. Then call knowledge.result.';
-        history.assertCurrent();
-        recordOutcome();
-      },
-    };
-    dependencies.pin(runInput);
-    let started = false;
-    return {
-      turnId: turn.id,
-      fail,
-      execute: async () => {
-        if (started || closed) throw new NotebookError('invalid_request');
-        started = true;
-        try {
-          await dependencies.run(runInput);
-          if (!outcome) throw new NotebookError('invalid_request');
-          return outcome;
-        } catch {
-          return fail();
-        } finally {
-          close();
+        });
+        const tools: AgentTool[] = [
+          history.tool,
+          tool('knowledge.notebook-workspace.update', 'script', (value) =>
+            editor.workspaceUpdate({ script: value.script! })
+          ),
+          tool('knowledge.notebook.update', 'summary', async (value) => {
+            const result = await editor.notebookUpdate({ summary: value.summary! });
+            if (result.outcome === 'no_change') outcome = response('no-change', value.summary!);
+            recordOutcome();
+            return result;
+          }),
+        ];
+        const previous = maintenance.filter((prior) => prior.status === 'completed').at(-1)
+          ?.internalExecution?.knowledge?.baseRevision;
+        const humanChanges: Array<{ path: string; before: string | null; after: string | null }> =
+          [];
+        let cursor: string | null = baseRevision;
+        let scanned = 0;
+        while (cursor && cursor !== previous && scanned++ < 256) {
+          const revision = notebook.inspectRevision(cursor);
+          const parent = revision.parentRevision
+            ? notebook.inspectRevision(revision.parentRevision)
+            : undefined;
+          if (revision.metadata.producer.kind === 'user')
+            for (const path of new Set([
+              ...Object.keys(revision.entries),
+              ...Object.keys(parent?.entries ?? {}),
+            ])) {
+              if (selectedPages && !selectedPages.has(path.slice(0, -3))) continue;
+              if (revision.entries[path] === parent?.entries[path]) continue;
+              const read = (notebookRevision: string | undefined, exists: boolean) => {
+                if (!notebookRevision || !exists) return null;
+                const content = readAuthorizedWorkspaceNotebookPages({
+                  ...target,
+                  notebookRevision,
+                  pageIds: [path.slice(0, -3)],
+                }).pages[0]!.content;
+                admitBytes(content);
+                historyReads.push({ notebookRevision, path, content });
+                return content;
+              };
+              humanChanges.push({
+                path,
+                before: read(parent?.revision, Boolean(parent?.entries[path])),
+                after: read(revision.revision, Boolean(revision.entries[path])),
+              });
+              if (humanChanges.length > 256) throw new NotebookError('invalid_request');
+            }
+          cursor = revision.parentRevision;
         }
-      },
-    };
-  } catch {
-    return settled(fail());
-  }
+        if (cursor && cursor !== previous) throw new NotebookError('invalid_request');
+        const humanEdits = boundedNotebookDiff(humanChanges, false);
+        let remaining = 64 * 1024;
+        const selectedSources = [...sources.values()].map((source) => {
+          const delivered = excerpt(sourceFiles[source.id]!, remaining);
+          remaining -= Buffer.byteLength(delivered.content);
+          return {
+            reference: `source:${source.id}@${source.contentDigest}`,
+            file: `/sources/${source.id}`,
+            ...delivered,
+          };
+        });
+        const runInput: KnowledgeManagerAgentRun = {
+          turn,
+          workspaceDb,
+          signal: input.signal,
+          inputs: {
+            purpose: 'maintenance',
+            ownerScope: { kind: 'workspace', workspaceId: input.workspaceId },
+            baseRevision,
+            trigger: input.trigger,
+            instructions: input.instructions,
+            sourceRange: ranges,
+            ...(input.askingThreadId ? { askingThreadId: input.askingThreadId } : {}),
+            ...(input.askingTurnId ? { askingTurnId: input.askingTurnId } : {}),
+          },
+          tools,
+          assertCurrent,
+          messages: [
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'text',
+                  text: JSON.stringify({
+                    instructions: input.instructions,
+                    notebookRevision: baseRevision,
+                    files: Object.keys(files),
+                    selectedPageIds: input.pageIds ?? [],
+                    humanEdits,
+                    overview: excerpt(files['index.md'] ?? '', 16 * 1024),
+                    sources: selectedSources,
+                    sourceHistory:
+                      'Supplied Source content is the authorized retained human input. Source material digests and Turn IDs are not history Item range coordinates. thread.history.read accepts only exact current-run compaction ranges.',
+                    omittedEligibleTurns: Math.max(0, eligible.length - 8),
+                  }),
+                },
+              ],
+            },
+          ],
+          readEvidence: (items) =>
+            readInternalContextEvidence({
+              store,
+              coreDb: dependencies.coreDb,
+              workspaceId: input.workspaceId,
+              threadId: thread.id,
+              nativeAuthority,
+              items,
+              strategy: 'compaction',
+            }),
+          resultSchema: {
+            type: 'object',
+            properties: { summary: { type: 'string', minLength: 1 } },
+            required: ['summary'],
+            additionalProperties: false,
+          },
+          validateResult: () => {
+            assertCurrent();
+            if (!outcome)
+              return 'Call knowledge.notebook.update({summary: ...}) first, including when no changes are needed. Then call knowledge.result.';
+            history.assertCurrent();
+            recordOutcome();
+          },
+        };
+        dependencies.pin(runInput);
+        await dependencies.run(runInput);
+        if (!outcome) throw new NotebookError('invalid_request');
+        return outcome;
+      } catch {
+        return fail();
+      } finally {
+        close();
+      }
+    },
+  };
 }
 
 /** Explicit requests use the same synchronous admission and detached execution boundary as schedules. */

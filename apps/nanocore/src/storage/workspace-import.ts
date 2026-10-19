@@ -114,6 +114,7 @@ import {
 } from '../internal-agents/delegation.js';
 import { remintPortableWorkspaceNotebookPages } from '../knowledge/notebook-workspace-portability.js';
 import { parseOkfDocument, stringFrontmatterField } from '../knowledge/okf.js';
+import { importWorkspaceSources } from '../knowledge/source-workspace-portability.js';
 import type { AgentSession, KnowledgeSourceRecord } from '../lib/store.js';
 import { remintResourcePolicyConfig } from '../policy/resource-policy-portability.js';
 import {
@@ -167,7 +168,6 @@ import { assertWorkspaceArchiveFilePath } from './workspace-archive.js';
 import {
   assertPortableArtifactHistory,
   dryRunWorkspaceImport,
-  type ExportedKnowledgeSourceMaterial,
   parsePortableWorkObservations,
   UNSUPPORTED_WORKSPACE_EXPORT_RECORD_PATHS,
   type VerifiedWorkspaceExportTree,
@@ -178,9 +178,7 @@ import {
   ArtifactReaderSchema,
   artifactContentFileName,
   artifactReferenceItemId,
-  assertSafeWorkspacePathSegment,
   type CaptureCoverageBinding,
-  KnowledgeSourceRecordSchema,
   listUnresolvedUserInputRequestItemIds,
   measureCanonicalFile,
   parseCanonicalWorkspaceHistory,
@@ -601,7 +599,9 @@ export interface WorkspaceImportSnapshot {
   /** Imported knowledge source identity records. */
   knowledgeSources: KnowledgeSourceRecord[];
   /** Imported knowledge source text materials. */
-  knowledgeSourceMaterials: ExportedKnowledgeSourceMaterial[];
+  initialNotebookSources: Readonly<Record<string, string>>;
+  /** Request-local check of copied original bytes before the existing Workspace publication. */
+  verifySourceOriginals: (workspaceRoot: string) => void;
   /** Imported unbound workspace vault references. */
   vaultReferences: ImportedWorkspaceVaultReference[];
   /** Imported non-secret workspace vault grants. */
@@ -1105,6 +1105,8 @@ export function readWorkspaceImportSnapshot(
   };
   const importedCatalog = readImportedAgentResourceCatalog(context.files);
   const artifactPayloadFiles = workResources.artifactPayloadFiles;
+  for (const [path, source] of canonical.sourceTransfer.payloadFiles)
+    artifactPayloadFiles.set(path, source);
   const sourceTurnIds = new Map([...context.turnIds].map(([source, target]) => [target, source]));
   const sourceThreadIds = new Map(
     [...context.threadIds].map(([source, target]) => [target, source])
@@ -1185,7 +1187,8 @@ export function readWorkspaceImportSnapshot(
     agentSessions: canonical.agentSessions,
     turnEvents: workResources.turnEvents,
     knowledgeSources: canonical.knowledgeSources,
-    knowledgeSourceMaterials: canonical.knowledgeSourceMaterials,
+    initialNotebookSources: canonical.sourceTransfer.pointers,
+    verifySourceOriginals: canonical.sourceTransfer.verifyCopies,
     vaultReferences: securityRuntime.vaultReferences,
     vaultGrants: securityRuntime.vaultGrants,
     vaultInjectionPlans: securityRuntime.vaultInjectionPlans,
@@ -1765,38 +1768,32 @@ function readCanonicalImportState(context: ImportRemintContext) {
         })
       ),
   ]);
-  const exportedKnowledgeSources = readOptionalImportJsonl(
-    context.files,
-    'records/knowledge-sources.jsonl'
-  ).map((record) => {
-    const source = KnowledgeSourceRecordSchema.parse(record);
-    assertSafeWorkspacePathSegment(source.id, 'Knowledge source id');
-    return source;
+  const sourceConfig = readRetainedV1(
+    parseJsoncObject(requiredExportFile(context.files, 'workspace-files/config/workspace.jsonc')),
+    (record) => WorkspaceConfigSchema.parse(record)
+  );
+  const sourceTransfer = importWorkspaceSources({
+    files: context.files,
+    payloadFiles: context.payloadFiles,
+    scopeSchemaText: requiredExportFile(
+      context.files,
+      'workspace-files/knowledge/schema/scope-schema.yaml'
+    ),
+    mounts: sourceConfig.workspace.knowledgeMounts,
+    sourceWorkspaceId: report.exportedWorkspaceId,
+    targetWorkspaceId: context.targetWorkspaceId,
+    sourceKnowledgeBaseId: context.sourceKnowledgeBaseId,
+    targetKnowledgeBaseId: context.targetKnowledgeBaseId,
+    threadIds,
+    turnIds,
+    rewriteUri: (uri) =>
+      rewriteWorkspaceReference(uri, report.exportedWorkspaceId, context.targetWorkspaceId),
   });
-  const knowledgeSourceIds = allocateImportedEntityIds(
-    'ks',
-    exportedKnowledgeSources.map((source) => source.id)
-  );
-  const knowledgeSources = exportedKnowledgeSources.map((parsed) =>
-    KnowledgeSourceRecordSchema.parse({
-      ...parsed,
-      id: requiredMapValue(knowledgeSourceIds, parsed.id, 'Knowledge source'),
-      originatingThreadId: parsed.originatingThreadId
-        ? requiredMapValue(threadIds, parsed.originatingThreadId, 'thread')
-        : null,
-      originatingTurnId: parsed.originatingTurnId
-        ? requiredMapValue(turnIds, parsed.originatingTurnId, 'turn')
-        : null,
-      uri: parsed.uri
-        ? rewriteWorkspaceReference(
-            parsed.uri,
-            report.exportedWorkspaceId,
-            context.targetWorkspaceId
-          )
-        : null,
-      workspaceId: context.targetWorkspaceId,
-    })
-  );
+  const exportedKnowledgeSources = sourceTransfer.originalSources;
+  const knowledgeSources = sourceTransfer.sources;
+  const knowledgeSourceIds = sourceTransfer.sourceIds;
+  for (const [source, target] of sourceTransfer.references)
+    context.knowledgePageReferences.set(source, target);
   const knowledge = exportedKnowledge;
   parseCanonicalWorkspaceHistory({
     workspace: exportedWorkspace,
@@ -1818,18 +1815,6 @@ function readCanonicalImportState(context: ImportRemintContext) {
     agentSessions,
     turnEvents,
   });
-  const knowledgeSourceMaterials = exportedKnowledgeSources
-    .map((source): ExportedKnowledgeSourceMaterial | null => {
-      const materialPath = `sources/materials/${source.id}/content.txt`;
-
-      return context.files.has(materialPath)
-        ? {
-            sourceId: requiredMapValue(knowledgeSourceIds, source.id, 'knowledge source'),
-            content: requiredExportFile(context.files, materialPath),
-          }
-        : null;
-    })
-    .filter((material): material is ExportedKnowledgeSourceMaterial => material !== null);
   context.threadIds = threadIds;
   context.turnIds = turnIds;
   context.itemIds = itemIds;
@@ -1852,7 +1837,7 @@ function readCanonicalImportState(context: ImportRemintContext) {
     agentSessions,
     turnEvents,
     knowledgeSources,
-    knowledgeSourceMaterials,
+    sourceTransfer,
     agentEnvironmentPackageSnapshots,
   };
 }
@@ -4676,7 +4661,10 @@ function remintImportedNotebookPages(
     rewriteReferences: (references) =>
       rewritePortableReferences(references, portableReferenceReplacements(context)),
   });
-  context.knowledgePageReferences = new Map(notebook.referenceReplacements);
+  context.knowledgePageReferences = new Map([
+    ...context.knowledgePageReferences,
+    ...notebook.referenceReplacements,
+  ]);
   return notebook.pages;
 }
 
@@ -4782,6 +4770,23 @@ function readPortableFileStateFromExport(
           }
         )
       );
+      const mounts = readRetainedV1(parseJsoncObject(remintedConfig), (record) =>
+        WorkspaceConfigSchema.parse(record)
+      ).workspace.knowledgeMounts;
+      if (mounts)
+        for (let index = 0; index < mounts.length; index += 1)
+          // Remint only authority bindings; preserve authored comments and descriptive extensions.
+          workspaceConfig = applyEdits(
+            workspaceConfig,
+            modify(
+              workspaceConfig,
+              ['workspace', 'knowledgeMounts', index, 'knowledgeBaseId'],
+              context.targetKnowledgeBaseId,
+              { formattingOptions: { insertSpaces: true, tabSize: 2 } }
+            )
+          );
+    } else if (workspacePath.startsWith('knowledge/sources/')) {
+      // Source pointers are validated/reminted with their binary payloads, then enter the first Notebook commit.
     } else if (workspacePath === 'knowledge/schema/scope-schema.yaml') {
       workspaceSchema = content;
     } else if (workspacePath.startsWith('knowledge/pages/')) {

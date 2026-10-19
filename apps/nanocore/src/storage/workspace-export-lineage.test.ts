@@ -393,9 +393,18 @@ function createLineageExportInput(
           name: 'Lineage workspace',
           defaultAgentId: null,
           defaultKnowledgeBaseId: source.knowledgeBaseId,
+          knowledgeMounts: [
+            {
+              name: 'raw',
+              knowledgeBaseId: source.knowledgeBaseId,
+              default: true,
+              backend: 'local',
+              root: 'raw',
+            },
+          ],
         },
       }),
-      workspaceSchema: null,
+      workspaceSchema: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
     },
     threads: [
       {
@@ -1461,6 +1470,15 @@ function createWorkResourceLineageExportInput(
         name: 'Lineage workspace',
         defaultAgentId: null,
         defaultKnowledgeBaseId: source.knowledgeBaseId,
+        knowledgeMounts: [
+          {
+            name: 'raw',
+            knowledgeBaseId: source.knowledgeBaseId,
+            default: true,
+            backend: 'local',
+            root: 'raw',
+          },
+        ],
       },
     }),
     workspaceSchema: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
