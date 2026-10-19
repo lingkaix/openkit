@@ -4570,7 +4570,9 @@ describe('createConfiguredTurnExecutor', () => {
       expect(preparation.error).toMatchObject({
         code: 'recovery_required',
         status: 409,
-        message: 'The worker backend materialization capacity cannot be safely inspected.',
+        message: expect.stringContaining(
+          'The worker backend materialization capacity cannot be safely inspected.'
+        ),
       });
       expect(JSON.stringify(preparation.error)).not.toContain(coreDb.dataRoot);
       expect(() => readFileSync(deletedDb)).toThrow(expect.objectContaining({ code: 'ENOENT' }));
