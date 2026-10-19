@@ -843,7 +843,7 @@ export function createKnowledgeOperationImplementations(
                 },
                 database: { kind: 'workspace', workspaceDb: repositoryWorkspaceDb(workspaceId) },
                 access: current.access,
-                producer: actor,
+                producer: actor.kind === 'user' ? actor : { ...actor, kind: 'agent' },
                 requestId: commandInput.requestId,
                 commandInput: { ...commandInput, workspaceId },
                 captureChannel: 'knowledge.source.register',
