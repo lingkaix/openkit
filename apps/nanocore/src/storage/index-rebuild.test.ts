@@ -23,6 +23,7 @@ import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { knowledgePageFixture } from '../test-support/knowledge-page.js';
 import { FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID } from '../test-support/local-user.js';
 import {
   rebuildExistingWorkspaceDerivedIndexes,
@@ -32,7 +33,6 @@ import {
   retrieveWorkspaceKnowledge,
 } from './index-rebuild.js';
 import { readRetrievalTrace } from './retrieval-traces.js';
-import { serializeUserAuthoredKnowledgePage } from './workspace-file-records.js';
 
 const fixtureRoots: string[] = [];
 afterEach(async () => {
@@ -87,7 +87,6 @@ function sourceReferencePage(knowledgePageId: string, reference: string): string
     'created_at: "2026-10-08T00:00:00.000Z"',
     'updated_at: "2026-10-08T00:00:00.000Z"',
     `openkit_entry_id: ${knowledgePageId}`,
-    'openkit_entry_kind: project-context',
     '---',
     'Registered capture evidence.',
     '',
@@ -125,25 +124,24 @@ function publishedPage(workspaceRoot: string, path: string): string {
   return notebook.readRevision(notebook.publishedRevision(), [path]).files[path]!;
 }
 
-let entrySequence = 0;
-/** Creates a managed-view fixture through the same content serializer and Git owner. */
-function publishEntry(
+let pageSequence = 0;
+/** Publishes canonical fixture bytes through the existing test-owned Git content seam. */
+function publishFixturePage(
   dataRoot: string,
   workspaceId: string,
-  input: Parameters<FsStore['createKnowledgeEntry']>[1]
+  input: Pick<Parameters<typeof knowledgePageFixture>[0], 'title' | 'content' | 'sourceReferences'>
 ) {
-  const entry = {
-    id: `index-fixture-${String(++entrySequence).padStart(4, '0')}`,
-    ...input,
-    createdAt: '2026-10-16T00:00:00.000Z',
-    updatedAt: '2026-10-16T00:00:00.000Z',
-  };
-  publishPage(
-    join(dataRoot, 'workspaces', workspaceId),
-    `${entry.id}.md`,
-    serializeUserAuthoredKnowledgePage(entry, { kind: 'workspace', workspaceId })
+  const page = knowledgePageFixture(
+    {
+      id: `index-fixture-${String(++pageSequence).padStart(4, '0')}`,
+      ...input,
+      createdAt: '2026-10-16T00:00:00.000Z',
+      updatedAt: '2026-10-16T00:00:00.000Z',
+    },
+    { kind: 'workspace', workspaceId }
   );
-  return entry;
+  publishPage(join(dataRoot, 'workspaces', workspaceId), page.path, page.content);
+  return page;
 }
 
 /** Attributes fresh empty notebooks to the actual fixture creator. */
@@ -417,19 +415,16 @@ describe('workspace derived index rebuild', () => {
       },
       'Governed retrieval source.'
     );
-    const selected = publishEntry(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
-      kind: 'project-context',
+    const selected = publishFixturePage(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
       title: 'Selected page',
       content: 'retrievalneedle',
       sourceReferences: [sourceReference],
     });
-    const overflow = publishEntry(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
-      kind: 'project-context',
+    const overflow = publishFixturePage(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
       title: 'Overflow page',
       content: 'retrievalneedle',
     });
-    const zeroScore = publishEntry(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
-      kind: 'project-context',
+    const zeroScore = publishFixturePage(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
       title: 'Unaddressed page',
       content: 'No matching term.',
     });
@@ -491,7 +486,6 @@ describe('workspace derived index rebuild', () => {
         knowledgePageId: selected.id,
         notebookRevision,
         contentDigest: sha256Digest(selectedPageBytes),
-        kind: 'project-context',
         sourceRefs: [sourceReference],
         content: selectedPageBytes,
         title: 'Selected page',
@@ -606,7 +600,6 @@ describe('workspace derived index rebuild', () => {
       'freshness: "current"',
       'created_at: "2026-07-12T00:00:00.000Z"',
       'updated_at: "2026-07-12T00:00:00.000Z"',
-      'openkit_entry_kind: "project-context"',
       `openkit_entry_id: ${JSON.stringify(knowledgePageId)}`,
       '---',
       'Only current owners can authorize this reviewed task proof.',
@@ -689,7 +682,6 @@ describe('workspace derived index rebuild', () => {
       'freshness: "current"',
       'created_at: "2026-07-12T00:00:00.000Z"',
       'updated_at: "2026-07-12T00:00:00.000Z"',
-      'openkit_entry_kind: "project-context"',
       `openkit_entry_id: ${JSON.stringify(knowledgePageId)}`,
       '---',
       'This accepted page must not become retrievable without its authority proof.',
@@ -1009,8 +1001,7 @@ describe('workspace derived index rebuild', () => {
   it('uses the workspace schema when rebuilding extension knowledge pages', () => {
     const dataRoot = createDataRoot();
     createDemoStore({ dataRoot });
-    publishEntry(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
-      kind: 'project-context',
+    publishFixturePage(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
       title: 'Seed knowledge',
       content: 'Seed body.',
     });
@@ -1069,8 +1060,7 @@ describe('workspace derived index rebuild', () => {
   it('does not rebuild knowledge pages when the workspace schema is invalid', () => {
     const dataRoot = createDataRoot();
     createDemoStore({ dataRoot });
-    publishEntry(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
-      kind: 'project-context',
+    publishFixturePage(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
       title: 'Schema blocked knowledge',
       content: 'This body should not be indexed.',
     });
@@ -1098,8 +1088,7 @@ describe('workspace derived index rebuild', () => {
     const store = createDemoStore({ dataRoot });
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     const timestamp = '2026-07-07T00:00:00.000Z';
-    const knowledge = publishEntry(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
-      kind: 'project-context',
+    const knowledge = publishFixturePage(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
       title: 'Registered knowledge',
       content: 'Registered knowledge body.',
     });
@@ -1297,8 +1286,7 @@ describe('workspace derived index rebuild', () => {
     createDemoStore({ dataRoot });
     const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
     const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
-    const target = publishEntry(dataRoot, workspaceId, {
-      kind: 'project-context',
+    const target = publishFixturePage(dataRoot, workspaceId, {
       title: 'Pinned target',
       content: 'Exact target bytes.',
     });
@@ -1324,8 +1312,7 @@ describe('workspace derived index rebuild', () => {
       { reference: unknownReference, targetId: 'unknown-target', resolved: false },
     ].map((testCase) => ({
       ...testCase,
-      page: publishEntry(dataRoot, workspaceId, {
-        kind: 'project-context',
+      page: publishFixturePage(dataRoot, workspaceId, {
         title: 'Page-source proof',
         content: `[Target](${target.id}.md)`,
         sourceReferences: [testCase.reference],
@@ -1377,8 +1364,7 @@ describe('workspace derived index rebuild', () => {
     const store = createDemoStore({ dataRoot });
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     const timestamp = '2026-07-07T00:00:00.000Z';
-    const knowledge = publishEntry(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
-      kind: 'project-context',
+    const knowledge = publishFixturePage(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
       title: 'Registered knowledge',
       content: 'Registered knowledge body.',
     });
@@ -1540,8 +1526,7 @@ describe('workspace derived index rebuild', () => {
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     const timestamp = '2026-07-07T00:00:00.000Z';
 
-    publishEntry(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
-      kind: 'project-context',
+    publishFixturePage(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
       title: 'Seed knowledge',
       content: 'Seed body.',
     });
