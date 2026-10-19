@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: in-progress
+status: implemented
 ---
 # Knowledge Query Search Feedback
 
@@ -21,8 +21,22 @@ The coordinator approved the KM ask diagnosis and bounded fix on 2026-10-19 at05
 
 ## Execution And Evidence
 
-Independent Sol Test Author /root/km_query_recovery_test_author owns only the two Knowledge test files and runs actual RED before runtime/schema changes. The first attempt proved the two query failures and three healthy controls but its native Source fixture failed before the intended assertion. That setup failure is not selector evidence. The corrected native fixture reaches the intended reason mismatch and preserves the actual private Source non-disclosure boundary. Final test commit, exact deciding RED/GREEN, fresh independent review, affected checks and landing evidence are recorded after observation. Only external model transport is doubled; native publication, retrieval and trace boundaries remain real. Full CI stays on main.
+Independent Sol Test Author /root/km_query_recovery_test_author owned only the two Knowledge test files and proved actual RED before runtime/schema changes. The first attempt proved the two query failures and three healthy controls but its native Source fixture failed before the intended assertion. That setup failure is not selector evidence. The corrected native fixture reaches the intended reason mismatch and preserves the actual private Source non-disclosure boundary. The observed test commit, independent review and final checks are recorded below. Only external model transport is doubled; native publication, retrieval and trace boundaries remain real. Full CI stays on main.
 
-Independent test commit `69960dc60` was written by `/root/km_query_recovery_test_author` before production changes. The deciding `km-query-independent-red-source-boundary.log` ended with three intended failures and three healthy existing controls. The final queued confirmation was cancelled before execution because it repeated those established failures; final oracle refinements were inspected and Biome-checked, and still require complete-file GREEN. Initial Source setup refusal and cancelled-run evidence remain separate.
+Independent test commit `69960dc60` was written by `/root/km_query_recovery_test_author` before production changes. The deciding `km-query-independent-red-source-boundary.log` ended with three intended failures and three healthy existing controls. The final queued confirmation was cancelled before execution because it repeated those established failures; final oracle refinements were inspected and Biome-checked before their subsequent complete-file GREEN. Initial Source setup refusal and cancelled-run evidence remain separate.
 
 Fresh source review identified that S39 Item exclusions are a separate retained owner. The unrelated S39 enum addition was removed; the response and referenced Knowledge retrieval trace alone carry selector_mismatch. No S39 reason or package schema change remains.
+
+## Final Change And Verification
+
+KM Tools now explain exact optional selectors and copied admitted page IDs. Literal star shorthand and unselected reads return fixed, safe local feedback; only completed usable retrieval satisfies the uncited absence prerequisite. The existing bounded repair is unchanged. Native metadata mismatches emit `selector_mismatch`, and actual current authorization or Source-policy refusals retain `policy_excluded`. The response, retained trace, generated OpenAPI/CLI and coordinator-authored Web label agree. No Policy implementation, shared loop, native selector widening, identity alias, new retry mechanism or durable field was added.
+
+The first complete Native run at `cb3f77705` recorded 104 passing files and one failed file, with 1281 passing tests and one failure. All three new regressions passed. The remaining existing Worker fixture expected the former generic page-read error. Independent review confirmed that this projection conflicts with the accepted actionable-feedback criterion. The test-only correction preserves all original audience, history, uncertainty, package and trace checks, adds private page/fact/Source/user identity omissions and requires the refused Tool to remain failed. No production correction, skipped check or increased budget followed that run.
+
+The corrected `af21e17da` gate passed the complete Knowledge Agent file with 18 tests, API 467, CLI drift 7, Workspace Web 222, browser 34, Native/Web typechecks, generation and freshness checks. After the C01/C02 main merge, canonical generators resolved only the OpenAPI and CLI conflicts. The exact combined `60ac01d24` gate passed complete Knowledge/storage and native consumers: 106 files and 1303 tests; complete API 463 and Core Client 119; root CLI/surface 103; Workspace Web 206 and browser 34; Native/Web typechecks, builds, contract freshness, documentation/index, Biome and whitespace checks. A clean merge of the landed Memory first-use work then produced `4d75df860`; Native typecheck, canonical generation/freshness and six complete Memory/query consumer files passed, with 47 tests. No unlanded Source branch was used.
+
+Independent source and final merge/generated review is `reviews/L-GO-km-query-recovery-review.md` in the backlog, using fresh Sol context `/root/km_and_corpus_review`, distinct from the test author and builder. Raw evidence remains under backlog `evidence/L-GO/`: `km-query-independent-red-source-boundary.log`, the original failed `km-query-gate.log`, passing `km-query-regate.log`, passing `km-query-final-overlap.log` and passing `km-query-memory-merge.log`. Source setup refusal and cancelled-run logs remain separate. These are actual local publication/retrieval/trace and Worker-dispatch seam checks with only external model transport doubled, not live-model acceptance.
+
+## Acceptance Boundary
+
+The coordinator reruns dev KM steps 8, 14 and 15 after deployment, including the Worker query symptom. That proof remains unverified at implementation closeout. Full CI stays on main. L-AK retains the in-flight Source cutover; the separate Memory tell issue is not claimed as this correction. The approved Goal Task-policy consumer work remains a separate follow-up.
