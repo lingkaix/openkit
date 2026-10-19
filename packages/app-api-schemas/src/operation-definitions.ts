@@ -188,7 +188,7 @@ export const OPERATION_REGISTRY = composeOperationTables(API_OPERATION_DEFINITIO
     crossings: ['dispatch'],
     stages: ['propose', 'decide', 'commit', 'completed'],
     modes: ['observe', 'advise', 'gate', 'transform'],
-    participantKinds: ['deterministic'],
+    participantKinds: ['deterministic', 'agent'],
   } satisfies NativeOperationDefinition,
 });
 

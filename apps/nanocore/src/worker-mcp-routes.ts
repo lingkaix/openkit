@@ -62,7 +62,12 @@ import { readAdmittedPolicyDocument } from './policy/configuration.js';
 import { type InterceptionInput, PolicyInterception } from './policy/interception.js';
 import { recordProductPermissionDecision } from './policy/permission-decisions.js';
 import { readPermissionDecisionRowV1 } from './policy/retained-records-v1.js';
-import { policyDigest, policyProposalDigest, selectPolicyBindings } from './policy/statements.js';
+import {
+  policyDigest,
+  policyProposalDigest,
+  readPolicyAgentPrincipal,
+  selectPolicyBindings,
+} from './policy/statements.js';
 import { findNamedAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import type { PreparedCapturedPendingCall } from './runtime/captured-pending-call.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
@@ -1983,6 +1988,50 @@ function mcpInterceptionInput(
     selectPolicyBindings({ document, proposal, authorCurrent, anchorCurrent, now: Date.now() }).map(
       (binding) => ({ id: binding.id, digest: policyDigest(binding) })
     );
+  const participantAuthorized: InterceptionInput['participantAuthorized'] = (binding) => {
+    if (binding.author.kind !== 'human' || !currentMcpBindingAuthor(input, binding.author.id, true))
+      return false;
+    if (binding.participant.kind !== 'agent') return true;
+    const principal = document.statements.find(
+      (statement) =>
+        statement.kind === 'agent-principal' && statement.agentId === binding.participant.id
+    );
+    return (
+      principal?.kind === 'agent-principal' &&
+      currentMcpBindingAuthor(input, principal.responsibleHumanId, true)
+    );
+  };
+  const agentBindingsCurrent = () => {
+    const bindings = selectPolicyBindings({
+      document,
+      proposal,
+      authorCurrent,
+      anchorCurrent,
+      now: Date.now(),
+    });
+    for (const binding of bindings) {
+      if (binding.participant.kind !== 'agent' || binding.state !== 'active') continue;
+      try {
+        if (
+          binding.author.kind !== 'human' ||
+          !authorCurrent(binding.author.id) ||
+          !participantAuthorized(binding)
+        )
+          return false;
+        readPolicyAgentPrincipal({
+          document,
+          proposal,
+          binding,
+          authorCurrent,
+          anchorCurrent,
+          now: Date.now(),
+        });
+      } catch {
+        return false;
+      }
+    }
+    return true;
+  };
   const authorizationRevision = policyDigest({
     caller: authority.revision,
     bindings: currentBindingRefs(),
@@ -1995,12 +2044,18 @@ function mcpInterceptionInput(
     requiresHumanApproval: input.resolved.approvalRequiredTools.includes(input.toolName),
     authorCurrent,
     anchorCurrent,
-    participantAuthorized: (binding) =>
-      binding.author.kind === 'human' && currentMcpBindingAuthor(input, binding.author.id, true),
+    participantAuthorized,
     finalKernel: () => currentMcpPolicyAuthority(input).kernel,
     stillCurrent: () =>
       !input.signal.aborted &&
       lifecycleCurrent() &&
+      (!document.statements.some(
+        (statement) =>
+          statement.kind === 'binding' &&
+          statement.participant.kind === 'agent' &&
+          statement.state === 'active'
+      ) ||
+        agentBindingsCurrent()) &&
       currentCatalogRevision() === proposal.catalogRevision &&
       policyDigest({
         caller: currentMcpPolicyAuthority(input).revision,
