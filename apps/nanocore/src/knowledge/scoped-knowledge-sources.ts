@@ -246,7 +246,11 @@ export async function registerUserKnowledgeSource(
       },
     });
   } catch (error) {
-    if (error instanceof OperationError || error instanceof IdempotencyKeyConflictError)
+    if (
+      error instanceof OperationError ||
+      error instanceof IdempotencyKeyConflictError ||
+      error instanceof NotebookError
+    )
       throw error;
     return unavailable();
   }
