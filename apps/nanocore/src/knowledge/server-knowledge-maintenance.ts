@@ -271,14 +271,15 @@ export function prepareServerKnowledgeMaintenance(
     return value;
   };
   const fail = () => {
+    const current = store.getServerTurnById(turn.id);
     const value = retain(
       outcome ??
         result(
           'failed',
-          'Server Knowledge maintenance failed. Inspect the retained Turn before a new request.'
+          current.error?.message ??
+            'Server Knowledge maintenance failed. Inspect the retained Turn before a new request.'
         )
     );
-    const current = store.getServerTurnById(turn.id);
     if (current.status === 'running' || current.status === 'pending')
       store.updateServerTurn(turn.id, {
         status: 'failed',
