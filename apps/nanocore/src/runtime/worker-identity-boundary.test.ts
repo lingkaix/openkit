@@ -1,3 +1,4 @@
+import { workspaceIdForOwner } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { ArtifactReviewFollowUpRequestSchema } from '../artifact-reviews.js';
 import { StructuredWorkerDelegationRequestSchema } from '../internal-agents/delegation.js';
@@ -53,7 +54,10 @@ describe('Worker identity admission', () => {
     });
     expect(f.read).not.toHaveBeenCalled();
     expect(
-      f.store.listThreadAgentSessions(f.input.turn.workspaceId, f.input.turn.threadId)
+      f.store.listThreadAgentSessions(
+        workspaceIdForOwner(f.input.turn.owner),
+        f.input.turn.threadId
+      )
     ).toEqual([]);
   });
 
@@ -63,7 +67,7 @@ describe('Worker identity admission', () => {
       code: 'recovery_required',
     });
     expect(f.read).toHaveBeenCalledExactlyOnceWith({
-      workspaceId: f.input.turn.workspaceId,
+      workspaceId: workspaceIdForOwner(f.input.turn.owner),
       threadId: f.input.turn.threadId,
     });
   });

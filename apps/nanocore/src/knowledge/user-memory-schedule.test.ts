@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { workspaceIdForOwner } from '@openkit/protocol';
 import { expect, it, onTestFinished, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
@@ -61,7 +62,7 @@ it('keeps User scheduling off by default and never inherits an unpresented admin
     error: { code: 'memory_maintenance_unavailable' },
   });
   const turn = turns()[0]!;
-  expect(store.getThread(turn.workspaceId, turn.threadId)).toMatchObject({
+  expect(store.getThread(workspaceIdForOwner(turn.owner), turn.threadId)).toMatchObject({
     entryPath: 'knowledge-manager',
     visibility: 'private',
     privateOwnerUserId: userId,

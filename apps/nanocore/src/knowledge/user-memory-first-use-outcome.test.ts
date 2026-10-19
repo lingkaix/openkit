@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ContentReferenceSchema } from '@openkit/protocol';
+import { ContentReferenceSchema, workspaceIdForOwner } from '@openkit/protocol';
 import { expect, it, onTestFinished, vi } from 'vitest';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import type { KnowledgeManagerAgentRun } from '../internal-agents/knowledge-manager-agent.js';
@@ -159,7 +159,7 @@ it('reports native no-change through the recorded result and replay despite a mi
   });
   const turn = store.getTurnById(result.turnId);
   const status = store
-    .listThreadItems(turn.workspaceId, turn.threadId)
+    .listThreadItems(workspaceIdForOwner(turn.owner), turn.threadId)
     .find((item) => item.knowledgeMaintenanceResult);
   expect.soft(status).toMatchObject({
     summary: noChangeSummary,

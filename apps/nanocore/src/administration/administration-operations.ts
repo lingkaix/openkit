@@ -5,7 +5,7 @@ import {
 } from '@openkit/app-api-schemas';
 import type { OpenKitNanoHostConfig } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
-import { deriveEntityId } from '@openkit/protocol';
+import { deriveEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
 import {
@@ -208,7 +208,7 @@ export function createAdministrationOperationImplementations(input: Administrati
               const createdAt = turn.startedAt ?? new Date().toISOString();
               store.createItem({
                 id: deriveEntityId('it', ['administration_user', turn.id]),
-                workspaceId,
+                owner: { kind: 'workspace', workspaceId: workspaceId },
                 threadId: thread.id,
                 turnId: turn.id,
                 type: 'user-message',
@@ -427,7 +427,7 @@ export function createAdministrationOperationImplementations(input: Administrati
                 const completedAt = new Date().toISOString();
                 const item = store.createItem({
                   id: deriveEntityId('it', ['administration_answer', turn.id]),
-                  workspaceId,
+                  owner: { kind: 'workspace', workspaceId: workspaceId },
                   threadId: thread.id,
                   turnId: turn.id,
                   type: 'assistant-message',
@@ -561,7 +561,7 @@ function failedAdministrationTurn(
     const item = store.createItem(
       {
         id: deriveEntityId('it', ['administration_refused', turn.id]),
-        workspaceId: turn.workspaceId,
+        owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
         threadId: turn.threadId,
         turnId: turn.id,
         type: 'status',
@@ -606,9 +606,9 @@ function administrationResponse(
     turn,
     item,
     handoff: null,
-    originatingWorkspaceId: turn.workspaceId,
+    originatingWorkspaceId: workspaceIdForOwner(turn.owner),
     originatingThreadId: turn.threadId,
-    receivingWorkspaceId: turn.workspaceId,
+    receivingWorkspaceId: workspaceIdForOwner(turn.owner),
     receivingThreadId: turn.threadId,
     targetRef: ADMINISTRATION_TARGET_REF,
     logicalModelId,
@@ -631,7 +631,7 @@ function replayAdministrationTurn(
       metadata?.targetRef !== ADMINISTRATION_TARGET_REF ||
       metadata.receivingWorkspaceId !== workspaceId ||
       metadata.receivingThreadId !== threadId ||
-      turn.workspaceId !== workspaceId ||
+      workspaceIdForOwner(turn.owner) !== workspaceId ||
       turn.threadId !== threadId ||
       store.getThread(workspaceId, threadId).entryPath !== 'administration'
     ) {
@@ -648,7 +648,7 @@ function replayAdministrationTurn(
     const consistentUser =
       userItem?.type === 'user-message' &&
       userItem.status === 'completed' &&
-      userItem.workspaceId === workspaceId &&
+      workspaceIdForOwner(userItem.owner) === workspaceId &&
       userItem.threadId === threadId &&
       userItem.turnId === turn.id &&
       userItem.actor.kind === 'user' &&

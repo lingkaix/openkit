@@ -63,7 +63,7 @@ describe('Generative UI App API', () => {
     );
     const sourceItem = store.createItem({
       id: testEntityId('it', `it_${turn.id}_source`),
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: turn.id,
       type: 'assistant-message',

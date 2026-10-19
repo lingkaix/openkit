@@ -3,7 +3,7 @@ import { ThreadSchema } from './models/thread.js';
 
 const thread = {
   id: 'th_00000000-0000-786f-b17e-bf6a02be4df9',
-  workspaceId: 'ws_00000000-0000-7597-ab9d-3fade0b012de',
+  owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7597-ab9d-3fade0b012de' },
   name: 'Example',
   preview: 'Example',
   status: 'active',

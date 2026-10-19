@@ -3,13 +3,16 @@
   "schema": "thread",
   "data": {
     "id": "th_00000000-0000-7162-9ddb-378c8b96b0a3",
-    "workspaceId": "ws_00000000-0000-7667-bedb-3b13951da31a",
     "name": "Round-trip conformance",
     "preview": "Validate protocol fixtures across implementations.",
     "status": "active",
     "entryPath": "conversation",
     "createdAt": "2026-05-15T10:00:00Z",
     "updatedAt": "2026-05-15T10:01:00Z",
-    "visibility": "workspace"
+    "visibility": "workspace",
+    "owner": {
+      "kind": "workspace",
+      "workspaceId": "ws_00000000-0000-7667-bedb-3b13951da31a"
+    }
   }
 }

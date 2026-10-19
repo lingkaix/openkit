@@ -3,6 +3,7 @@ import {
   deriveEntityId,
   type Item,
   isSealedTurnTerminal,
+  workspaceIdForOwner,
 } from '@openkit/protocol';
 import type { Actor } from '../auth/identity.js';
 import {
@@ -123,7 +124,7 @@ export function installPendingRequestAdmission(
 ): void {
   store.setTurnAdmissionHooks({
     onTerminalFact: (turn) => {
-      const db = dependencies.openWorkspace(turn.workspaceId);
+      const db = dependencies.openWorkspace(workspaceIdForOwner(turn.owner));
       try {
         recordTaskTerminalFact(db, turn);
       } finally {
@@ -134,9 +135,9 @@ export function installPendingRequestAdmission(
       const executor = store.getTurnExecutor(turn.id) ?? executorKindForTurn(turn);
       if (!executor) return;
       const now = new Date().toISOString();
-      withWorkspace(dependencies, turn.workspaceId, (sqlite) => {
+      withWorkspace(dependencies, workspaceIdForOwner(turn.owner), (sqlite) => {
         const frozen = freezeReadyOutcomes(sqlite, {
-          workspaceId: turn.workspaceId,
+          workspaceId: workspaceIdForOwner(turn.owner),
           threadId: turn.threadId,
           turnId: turn.id,
           executor,
@@ -151,7 +152,7 @@ export function installPendingRequestAdmission(
     onTerminal(turn) {
       const attempt = dependencies.coreDb
         ? listSchedulerExecutionAttemptsForTurn(dependencies.coreDb, {
-            workspaceId: turn.workspaceId,
+            workspaceId: workspaceIdForOwner(turn.owner),
             threadId: turn.threadId,
             turnId: turn.id,
           }).at(-1)
@@ -163,13 +164,14 @@ export function installPendingRequestAdmission(
         attempt.terminalCause !== 'backend-busy'
       ) {
         refusedOutcomeTurns.add(turn.id);
-        withWorkspace(dependencies, turn.workspaceId, (sqlite) => {
+        withWorkspace(dependencies, workspaceIdForOwner(turn.owner), (sqlite) => {
           releaseFrozenOutcomes(sqlite, turn.id, new Date().toISOString());
         });
       }
       if (refusedOutcomeTurns.has(turn.id)) return;
-      if (store.getThread(turn.workspaceId, turn.threadId).status === 'archived') return;
-      admitNextOutcome(store, dependencies, turn.workspaceId, turn.threadId);
+      if (store.getThread(workspaceIdForOwner(turn.owner), turn.threadId).status === 'archived')
+        return;
+      admitNextOutcome(store, dependencies, workspaceIdForOwner(turn.owner), turn.threadId);
       dependencies.goalTerminal?.(turn);
     },
   });
@@ -1005,7 +1007,7 @@ async function deliverWorkerOutcome(
       if (error instanceof TurnStartValidationError) {
         refusal = error;
         refusedOutcomeTurns.add(turnId);
-        withWorkspace(dependencies, turn.workspaceId, (sqlite) => {
+        withWorkspace(dependencies, workspaceIdForOwner(turn.owner), (sqlite) => {
           releaseFrozenOutcomes(sqlite, turnId, now);
         });
         if (!isSealedTurnTerminal(store.getTurnById(turnId).status))
@@ -1014,10 +1016,15 @@ async function deliverWorkerOutcome(
             completedAt: now,
             error: { code: error.code, message: error.message },
           });
-        closeoutUnavailableRequests(store, dependencies, turn.workspaceId, turn.threadId);
+        closeoutUnavailableRequests(
+          store,
+          dependencies,
+          workspaceIdForOwner(turn.owner),
+          turn.threadId
+        );
         return;
       }
-      withWorkspace(dependencies, turn.workspaceId, (sqlite) => {
+      withWorkspace(dependencies, workspaceIdForOwner(turn.owner), (sqlite) => {
         markFrozenDeliveryUnknown(sqlite, turnId, now);
       });
       if (!isSealedTurnTerminal(store.getTurnById(turnId).status))
@@ -1040,7 +1047,7 @@ async function deliverWorkerOutcome(
     const now = new Date().toISOString();
     try {
       const turn = store.getTurnById(turnId);
-      withWorkspace(dependencies, turn.workspaceId, (sqlite) => {
+      withWorkspace(dependencies, workspaceIdForOwner(turn.owner), (sqlite) => {
         if (refusal) releaseFrozenOutcomes(sqlite, turnId, now);
         else markFrozenDeliveryUnknown(sqlite, turnId, now);
       });
@@ -1082,7 +1089,7 @@ function publishOutcomeItems(
       continue;
     }
     const base = {
-      workspaceId: record.workspaceId,
+      owner: { kind: 'workspace' as const, workspaceId: record.workspaceId },
       threadId: record.threadId,
       turnId,
       status: 'completed' as const,
@@ -1196,7 +1203,7 @@ function publishInvalidationItem(
     store,
     {
       id: pendingRequestItemId(record.requestId, 'invalidation'),
-      workspaceId: record.workspaceId,
+      owner: { kind: 'workspace', workspaceId: record.workspaceId },
       threadId: record.threadId,
       turnId,
       status: 'completed',
@@ -1554,7 +1561,10 @@ function assertPendingAssociations(
       if (!id) continue;
       if (!storeHasTurn(store, id)) throw associationGap();
       const turn = store.getTurnById(id);
-      if (turn.workspaceId !== record.workspaceId || turn.threadId !== record.threadId)
+      if (
+        workspaceIdForOwner(turn.owner) !== record.workspaceId ||
+        turn.threadId !== record.threadId
+      )
         throw associationGap();
     }
   }

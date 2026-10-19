@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { TurnSchema } from '@openkit/protocol';
+import { workspaceIdForOwner } from '@openkit/protocol';
 import type { z } from 'zod';
 import type { FsStore } from '../lib/store.js';
 import {
@@ -56,7 +57,7 @@ export function inspectExternalTriggerAdmission(
       entry.triggerActor.id !== admission.scheduleId ||
       schedulerAdmissionInputHash(entry) !== entry.inputHash ||
       turn.id !== entry.turnId ||
-      turn.workspaceId !== entry.workspaceId ||
+      workspaceIdForOwner(turn.owner) !== entry.workspaceId ||
       turn.threadId !== entry.threadId ||
       turn.agentId !== entry.requestedAgentId ||
       !isDeepStrictEqual(turn.triggerActor, entry.triggerActor) ||

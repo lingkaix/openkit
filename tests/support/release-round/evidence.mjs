@@ -54,7 +54,8 @@ export function runtimeRows(r, issue, p, runtime, refs, binding) {
       'runtime, model and configuration attribution',
       turn && s.submitInput,
       turn?.threadId === r.threadId &&
-        turn?.workspaceId === p.workspaceId &&
+        turn?.owner?.kind === 'workspace' &&
+        turn.owner.workspaceId === p.workspaceId &&
         turn?.agentId === cfg.agentId &&
         turn?.agentProfileId === cfg.profileId &&
         turn?.configVersion === cfg.configurationVersion &&

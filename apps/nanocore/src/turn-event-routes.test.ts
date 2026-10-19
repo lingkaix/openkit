@@ -49,7 +49,7 @@ function createReplayTurn(
   });
   const assistantItem = store.createItem({
     id: testEntityId('it', `it_assistant_${turn.id}`),
-    workspaceId,
+    owner: { kind: 'workspace', workspaceId: workspaceId },
     threadId: thread.id,
     turnId: turn.id,
     type: 'assistant-message',
@@ -194,7 +194,7 @@ describe('turn event routes', () => {
     });
     const assistantItem = store.createItem({
       id: testEntityId('it', `it_assistant_${turn.id}`),
-      workspaceId,
+      owner: { kind: 'workspace', workspaceId: workspaceId },
       threadId: thread.id,
       turnId: turn.id,
       type: 'assistant-message',
@@ -291,7 +291,7 @@ describe('turn event routes', () => {
     const turnId = turn.id;
     store.createItem({
       id: testEntityId('it', `it_assistant_${turnId}`),
-      workspaceId,
+      owner: { kind: 'workspace', workspaceId: workspaceId },
       threadId,
       turnId,
       type: 'assistant-message',

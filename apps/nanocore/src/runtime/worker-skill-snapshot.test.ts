@@ -8,7 +8,7 @@ import {
   type AgentEnvironmentPackage,
   AgentEnvironmentPackageSchema,
 } from '@openkit/config-schema';
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ensureLocalUser } from '../auth/identity.js';
 import {
@@ -88,7 +88,7 @@ describe('exact retained Worker Skill delivery', () => {
 
   /** Publishes a newer exact version without changing the admitted package. */
   function advanceDefault() {
-    const catalog = loadWorkspaceResourceCatalog(coreDb.dataRoot, turn.workspaceId);
+    const catalog = loadWorkspaceResourceCatalog(coreDb.dataRoot, workspaceIdForOwner(turn.owner));
     return importWorkspaceSkill({
       activate: true,
       baseDigest: first.version.digest,
@@ -98,7 +98,7 @@ describe('exact retained Worker Skill delivery', () => {
       expectedRevision: catalog.revision,
       producer: { id: userId, kind: 'user' },
       tree: skillTree(Buffer.concat([SKILL_BODY, Buffer.from('New instructions.\n')])),
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
     });
   }
 
@@ -129,7 +129,7 @@ describe('exact retained Worker Skill delivery', () => {
       expectedRevision: 0,
       producer: { id: userId, kind: 'user' },
       tree: skillTree(),
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
     });
     environmentPackage = resolvePackage();
   }, 60_000);
@@ -145,12 +145,12 @@ describe('exact retained Worker Skill delivery', () => {
     const next = advanceDefault();
     setWorkspaceSkillPin({
       dataRoot: coreDb.dataRoot,
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
       entryId: 'repo-guidelines',
       digest: next.version.digest,
       expectedRevision: next.catalog.revision,
     });
-    const prior = loadWorkspaceResourceCatalog(coreDb.dataRoot, turn.workspaceId);
+    const prior = loadWorkspaceResourceCatalog(coreDb.dataRoot, workspaceIdForOwner(turn.owner));
     const exactSetup = createTestAgentSetup({ skillIds: ['repo-guidelines'] });
     exactSetup.manifest.skills = [{ id: 'repo-guidelines', digest: first.version.digest }];
     const exact = resolvePackage(exactSetup);
@@ -159,7 +159,9 @@ describe('exact retained Worker Skill delivery', () => {
       selectionSource: 'setup',
     });
     await prepare(exact);
-    expect(loadWorkspaceResourceCatalog(coreDb.dataRoot, turn.workspaceId)).toEqual(prior);
+    expect(loadWorkspaceResourceCatalog(coreDb.dataRoot, workspaceIdForOwner(turn.owner))).toEqual(
+      prior
+    );
     expect(resolvePackage().supply.skills[0]?.integrity?.sha256).toBe(next.version.digest);
   });
 
@@ -170,7 +172,7 @@ describe('exact retained Worker Skill delivery', () => {
     if (selection === 'pin') {
       setWorkspaceSkillPin({
         dataRoot: coreDb.dataRoot,
-        workspaceId: turn.workspaceId,
+        workspaceId: workspaceIdForOwner(turn.owner),
         entryId: 'repo-guidelines',
         digest: first.version.digest,
         expectedRevision: first.catalog.revision,
@@ -182,7 +184,7 @@ describe('exact retained Worker Skill delivery', () => {
       expect(resolvePackage().supply.skills[0]?.integrity?.sha256).toBe(first.version.digest);
       setWorkspaceSkillPin({
         dataRoot: coreDb.dataRoot,
-        workspaceId: turn.workspaceId,
+        workspaceId: workspaceIdForOwner(turn.owner),
         entryId: 'repo-guidelines',
         digest: next.version.digest,
         expectedRevision: next.catalog.revision,
@@ -263,7 +265,7 @@ describe('exact retained Worker Skill delivery', () => {
     ] as const)('refuses %s tamper at AEP resolution and native import', async (tamper) => {
       const snapshot = skillSnapshotPath(
         coreDb.dataRoot,
-        turn.workspaceId,
+        workspaceIdForOwner(turn.owner),
         'repo-guidelines',
         first.version.digest
       );
@@ -315,7 +317,7 @@ describe('exact retained Worker Skill delivery', () => {
   it('refuses removed entries while exact bytes remain retained', async () => {
     removeWorkspaceSkill({
       dataRoot: coreDb.dataRoot,
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
       entryId: 'repo-guidelines',
       expectedRevision: first.catalog.revision,
     });
@@ -334,21 +336,29 @@ describe('exact retained Worker Skill delivery', () => {
     ['native', 'inventory', CatalogIntegrityError],
   ] as const)('discards %s bytes when %s changes during the actual read', async (boundary, change, failure) => {
     const source = join(
-      skillSnapshotPath(coreDb.dataRoot, turn.workspaceId, 'repo-guidelines', first.version.digest),
+      skillSnapshotPath(
+        coreDb.dataRoot,
+        workspaceIdForOwner(turn.owner),
+        'repo-guidelines',
+        first.version.digest
+      ),
       'SKILL.md'
     );
     let changed = false;
     const mutate = (path: unknown) => {
       if (String(path) !== source || changed) return;
       changed = true;
-      const catalog = loadWorkspaceResourceCatalog(coreDb.dataRoot, turn.workspaceId);
+      const catalog = loadWorkspaceResourceCatalog(
+        coreDb.dataRoot,
+        workspaceIdForOwner(turn.owner)
+      );
       if (change === 'removed') catalog.skills.entries[0]!.availability = 'removed';
       else if (change === 'purged') catalog.skills.versions[0]!.contentState = 'purged';
       else if (change === 'missing version') catalog.skills.versions = [];
       else catalog.skills.versions[0]!.inventory[0]!.executable = true;
       publishWorkspaceResourceCatalog({
         dataRoot: coreDb.dataRoot,
-        workspaceId: turn.workspaceId,
+        workspaceId: workspaceIdForOwner(turn.owner),
         expectedRevision: catalog.revision,
         catalog,
       });
@@ -375,7 +385,7 @@ describe('exact retained Worker Skill delivery', () => {
     const next = advanceDefault();
     publishWorkspaceResourceCatalog({
       dataRoot: coreDb.dataRoot,
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
       expectedRevision: next.catalog.revision,
       catalog: {
         ...next.catalog,
@@ -410,12 +420,17 @@ describe('exact retained Worker Skill delivery', () => {
           ).toString('base64'),
         },
       ],
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
     });
     const selectedSetup = createTestAgentSetup({ skillIds: ['repo-guidelines', 'second-skill'] });
     environmentPackage = resolvePackage(selectedSetup);
     const source = join(
-      skillSnapshotPath(coreDb.dataRoot, turn.workspaceId, 'second-skill', second.version.digest),
+      skillSnapshotPath(
+        coreDb.dataRoot,
+        workspaceIdForOwner(turn.owner),
+        'second-skill',
+        second.version.digest
+      ),
       'SKILL.md'
     );
     const original = fs.readFileSync;
@@ -426,7 +441,7 @@ describe('exact retained Worker Skill delivery', () => {
         changed = true;
         removeWorkspaceSkill({
           dataRoot: coreDb.dataRoot,
-          workspaceId: turn.workspaceId,
+          workspaceId: workspaceIdForOwner(turn.owner),
           entryId: 'repo-guidelines',
           expectedRevision: second.catalog.revision,
         });
@@ -443,7 +458,7 @@ describe('exact retained Worker Skill delivery', () => {
   it('refuses current selection when its retained version metadata is missing', () => {
     publishWorkspaceResourceCatalog({
       dataRoot: coreDb.dataRoot,
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
       expectedRevision: first.catalog.revision,
       catalog: { ...first.catalog, skills: { ...first.catalog.skills, versions: [] } },
     });
@@ -454,7 +469,7 @@ describe('exact retained Worker Skill delivery', () => {
     const next = advanceDefault();
     const purged = purgeWorkspaceSkillVersion({
       dataRoot: coreDb.dataRoot,
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
       entryId: 'repo-guidelines',
       digest: first.version.digest,
       expectedRevision: next.catalog.revision,
@@ -469,12 +484,12 @@ describe('exact retained Worker Skill delivery', () => {
       expectedRevision: purged.revision,
       producer: { id: userId, kind: 'user' },
       tree: skillTree(),
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
     });
-    const restored = loadWorkspaceResourceCatalog(coreDb.dataRoot, turn.workspaceId);
+    const restored = loadWorkspaceResourceCatalog(coreDb.dataRoot, workspaceIdForOwner(turn.owner));
     publishWorkspaceResourceCatalog({
       dataRoot: coreDb.dataRoot,
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
       expectedRevision: restored.revision,
       catalog: {
         ...restored,
@@ -497,7 +512,7 @@ describe('exact retained Worker Skill delivery', () => {
     admitTestNativeEnvironment(coreDb, agentSetup.manifest);
     const snapshot = skillSnapshotPath(
       coreDb.dataRoot,
-      turn.workspaceId,
+      workspaceIdForOwner(turn.owner),
       'repo-guidelines',
       first.version.digest
     );
@@ -538,6 +553,8 @@ describe('exact retained Worker Skill delivery', () => {
       })
     ).rejects.toThrow(CatalogIntegrityError);
     expect(backendCall).not.toHaveBeenCalled();
-    expect(store.listThreadAgentSessions(turn.workspaceId, turn.threadId)).toEqual([]);
+    expect(store.listThreadAgentSessions(workspaceIdForOwner(turn.owner), turn.threadId)).toEqual(
+      []
+    );
   });
 });

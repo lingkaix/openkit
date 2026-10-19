@@ -289,7 +289,11 @@ function AttentionListRow({
 
 /** Displays one current Task or Goal with its mode-specific destination. */
 function ConversationWorkRow({ item }: { item: ConversationItem }) {
-  const href = conversationThreadPath(item.thread.workspaceId, item.thread.id, item.activity);
+  const threadWorkspaceId =
+    item.thread.owner.kind === 'workspace' ? item.thread.owner.workspaceId : null;
+  const href = threadWorkspaceId
+    ? conversationThreadPath(threadWorkspaceId, item.thread.id, item.activity)
+    : null;
   const title = item.thread.name ?? ACTIVITY_LABEL[item.activity];
 
   return (
@@ -307,13 +311,15 @@ function ConversationWorkRow({ item }: { item: ConversationItem }) {
         {statusLabel(item.state)}
       </StatusChip>
       <div className="flex flex-wrap items-center gap-2">
-        <Link
-          to={href}
-          aria-label={openLabelForHref(href)}
-          className="inline-flex h-7 items-center rounded-full border border-border bg-card px-3 text-xs font-bold text-fg outline-none hover:bg-sunken focus-visible:ring-2 focus-visible:ring-focus"
-        >
-          Open
-        </Link>
+        {href ? (
+          <Link
+            to={href}
+            aria-label={openLabelForHref(href)}
+            className="inline-flex h-7 items-center rounded-full border border-border bg-card px-3 text-xs font-bold text-fg outline-none hover:bg-sunken focus-visible:ring-2 focus-visible:ring-focus"
+          >
+            Open
+          </Link>
+        ) : null}
       </div>
     </ListRow>
   );

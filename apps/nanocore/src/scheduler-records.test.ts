@@ -159,12 +159,7 @@ function observeExecutionAttempts(
 /** Exercises the current attempt closeout owner, never the deleted SessionLease grant action. */
 function completeTerminalAttempt(
   coreDb: ReturnType<typeof openCoreDb>,
-  turn: {
-    readonly id: string;
-    readonly workspaceId: string;
-    readonly threadId: string;
-    readonly status: string;
-  }
+  turn: Parameters<typeof attemptActionOwners.markSchedulerAttemptForTerminalTurn>[1]
 ) {
   return attemptActionOwners.markSchedulerAttemptForTerminalTurn(coreDb, turn);
 }
@@ -960,7 +955,7 @@ describe('scheduler records', () => {
         id: testEntityId('tu', 'turn_cleanup_barrier'),
         status: 'failed',
         threadId: testEntityId('th', 'thread_cleanup_barrier'),
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       });
       expect(['open', 'closing']).toContain(
         observeExecutionAttempts(coreDb).find(
@@ -982,7 +977,7 @@ describe('scheduler records', () => {
         id: testEntityId('tu', 'turn_cleanup_barrier'),
         status: 'failed',
         threadId: testEntityId('th', 'thread_cleanup_barrier'),
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       });
       expect(['open', 'closing']).toContain(
         observeExecutionAttempts(coreDb).find(
@@ -998,7 +993,7 @@ describe('scheduler records', () => {
         id: testEntityId('tu', 'turn_cleanup_barrier'),
         status: 'failed',
         threadId: testEntityId('th', 'thread_cleanup_barrier'),
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       });
       expect(
         await closeOwnedExecutionAttempt(coreDb, {
@@ -1141,7 +1136,7 @@ describe('scheduler records', () => {
       createPreparedAttempt(coreDb, `lease_${suffix}`);
       completeTerminalAttempt(coreDb, {
         id: testEntityId('tu', `turn_${suffix}`),
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: testEntityId('th', `thread_${suffix}`),
         status: turnStatus,
       });
@@ -1184,7 +1179,7 @@ describe('scheduler records', () => {
         try {
           completeTerminalAttempt(coreDb, {
             id: testEntityId('tu', `turn_${suffix}`),
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
             threadId: testEntityId('th', `thread_${suffix}`),
             status: lateStatus,
           });
@@ -1202,7 +1197,7 @@ describe('scheduler records', () => {
           try {
             completeTerminalAttempt(reopened, {
               id: testEntityId('tu', `turn_${suffix}`),
-              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
               threadId: testEntityId('th', `thread_${suffix}`),
               status: lateStatus,
             });
@@ -1226,7 +1221,7 @@ describe('scheduler records', () => {
       createPreparedAttempt(coreDb, 'lease_turn_running');
       completeTerminalAttempt(coreDb, {
         id: testEntityId('tu', 'turn_turn_running'),
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: testEntityId('th', 'thread_turn_running'),
         status: 'running',
       });

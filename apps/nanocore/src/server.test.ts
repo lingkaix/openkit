@@ -62,6 +62,7 @@ import {
   readRetainedV1,
   SseEventEnvelopeSchema,
   ThreadSchema,
+  workspaceIdForOwner,
 } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -1036,13 +1037,13 @@ class FakeTurnExecutor implements TurnExecutor {
     if (!coreDb || !context.attemptId || !context.agentSessionId)
       throw new Error('Worker fixture lacks exact Core preparation.');
     const turn = store.getTurnById(turnId);
-    const db = openWorkspaceDb(coreDb.dataRoot, turn.workspaceId);
+    const db = openWorkspaceDb(coreDb.dataRoot, workspaceIdForOwner(turn.owner));
     try {
       bindWorkerCheckpointToPreparedSession({
         coreDb,
         workspaceDb: db,
         store,
-        workspaceId: turn.workspaceId,
+        workspaceId: workspaceIdForOwner(turn.owner),
         threadId: turn.threadId,
         turnId,
         requestId: context.requestId ?? null,
@@ -1088,7 +1089,7 @@ class FakeTurnExecutor implements TurnExecutor {
           stagingDirectoryRef: `server/runtime/worker-backend-sessions/${environmentPackage.snapshotId}`,
           transientProviderInstanceId: null,
         },
-        lineage: { workspaceId: turn.workspaceId, threadId: turn.threadId, turnId },
+        lineage: { workspaceId: workspaceIdForOwner(turn.owner), threadId: turn.threadId, turnId },
         sandboxBindingRef: requireSchedulerExecutionAttempt(coreDb, context.attemptId).bindingRef!,
       });
       markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId: backendSession.attemptId });
@@ -1096,7 +1097,7 @@ class FakeTurnExecutor implements TurnExecutor {
       const sessionInput = {
         id: context.agentSessionId,
         agentId: turn.agentId!,
-        workspaceId: turn.workspaceId,
+        workspaceId: workspaceIdForOwner(turn.owner),
         threadId: turn.threadId,
         status: 'busy',
         message: null,
@@ -1263,7 +1264,7 @@ class FakeTurnExecutor implements TurnExecutor {
       : store.createAgentSession({
           id: agentSessionId,
           agentId: turn.agentId,
-          workspaceId: turn.workspaceId,
+          workspaceId: workspaceIdForOwner(turn.owner),
           threadId: turn.threadId,
           status: 'busy',
           message: null,
@@ -1274,7 +1275,7 @@ class FakeTurnExecutor implements TurnExecutor {
     store.updateTurn(turnId, { agentSessionId: agentSession.id });
     const userItem = store.createItem({
       id: deriveEntityId('it', ['task-user', turnId]),
-      workspaceId: turn.workspaceId,
+      owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
       threadId: turn.threadId,
       turnId,
       type: 'user-message',
@@ -1287,7 +1288,7 @@ class FakeTurnExecutor implements TurnExecutor {
     const assistantItem = store.createItem({
       // Match the simulator; worker-result belongs to the conversation status Item.
       id: deriveEntityId('it', ['assistant', turnId]),
-      workspaceId: turn.workspaceId,
+      owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
       threadId: turn.threadId,
       turnId,
       type: 'assistant-message',
@@ -1299,7 +1300,7 @@ class FakeTurnExecutor implements TurnExecutor {
     store.emitTurnEvent(turnId, {
       event: 'turn.started',
       requestId,
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
       threadId: turn.threadId,
       turnId,
       data: { type: 'turn-started', turnId, status: 'running' },
@@ -1307,7 +1308,7 @@ class FakeTurnExecutor implements TurnExecutor {
     store.emitTurnEvent(turnId, {
       event: 'item.created',
       requestId,
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
       threadId: turn.threadId,
       turnId,
       data: { type: 'item-created', item: userItem },
@@ -1315,7 +1316,7 @@ class FakeTurnExecutor implements TurnExecutor {
     store.emitTurnEvent(turnId, {
       event: 'item.completed',
       requestId,
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
       threadId: turn.threadId,
       turnId,
       data: { type: 'item-completed', itemId: userItem.id, item: userItem },
@@ -1323,7 +1324,7 @@ class FakeTurnExecutor implements TurnExecutor {
     store.emitTurnEvent(turnId, {
       event: 'agent.session.updated',
       requestId,
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
       threadId: turn.threadId,
       turnId,
       data: { type: 'agent-session-updated', agentSession },
@@ -1331,7 +1332,7 @@ class FakeTurnExecutor implements TurnExecutor {
     store.emitTurnEvent(turnId, {
       event: 'item.created',
       requestId,
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
       threadId: turn.threadId,
       turnId,
       data: { type: 'item-created', item: assistantItem },
@@ -1339,7 +1340,7 @@ class FakeTurnExecutor implements TurnExecutor {
     store.emitTurnEvent(turnId, {
       event: 'item.completed',
       requestId,
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
       threadId: turn.threadId,
       turnId,
       data: { type: 'item-completed', itemId: assistantItem.id, item: assistantItem },
@@ -1357,7 +1358,7 @@ class FakeTurnExecutor implements TurnExecutor {
       {
         event: 'turn.completed',
         requestId,
-        workspaceId: turn.workspaceId,
+        workspaceId: workspaceIdForOwner(turn.owner),
         threadId: turn.threadId,
         turnId,
         data: { type: 'turn-completed', stopReason: 'completed', turn: completedTurn },
@@ -1382,7 +1383,7 @@ class FakeTurnExecutor implements TurnExecutor {
     store.emitTurnEvent(turnId, {
       event: 'turn.completed',
       requestId: context.requestId,
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
       threadId: turn.threadId,
       turnId,
       data: { type: 'turn-completed', stopReason: 'aborted', turn },
@@ -2245,7 +2246,7 @@ describe('nanocore server', () => {
           providerRef: 'nanocore-storage',
           serviceRef: 'workspace-export',
           status: 'succeeded',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         }),
       ]);
       expect(usage.usageRecords).toHaveLength(2);
@@ -2322,7 +2323,7 @@ describe('nanocore server', () => {
           providerRef: 'nanocore-storage',
           serviceRef: 'workspace-import',
           status: 'succeeded',
-          workspaceId: imported.importedWorkspaceId,
+          owner: { kind: 'workspace', workspaceId: imported.importedWorkspaceId },
         }),
       ]);
       expect(usage.usageRecords).toHaveLength(2);
@@ -3541,7 +3542,7 @@ describe('nanocore server', () => {
       status: 'busy',
       threadId: sourceTurn.threadId,
       updatedAt: sourceReview.changeSet.createdAt,
-      workspaceId: sourceTurn.workspaceId,
+      workspaceId: workspaceIdForOwner(sourceTurn.owner),
     });
     const environmentPackage = AgentEnvironmentPackageSchema.parse({
       ...createOpenShellWorkerControlPackage(store, sourceTurn.id),
@@ -3701,7 +3702,7 @@ describe('nanocore server', () => {
       status: 'busy',
       threadId: sourceTurn.threadId,
       updatedAt: sourceReview.changeSet.createdAt,
-      workspaceId: sourceTurn.workspaceId,
+      workspaceId: workspaceIdForOwner(sourceTurn.owner),
     });
     const environmentPackage = AgentEnvironmentPackageSchema.parse({
       ...createOpenShellWorkerControlPackage(store, sourceTurn.id),
@@ -3835,7 +3836,7 @@ describe('nanocore server', () => {
       title: 'Approve source Git push',
       turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
       type: 'approval-request',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     });
     store.createItem({
       approvalRequestId: 'ap_source_repo_push',
@@ -3850,7 +3851,7 @@ describe('nanocore server', () => {
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
       type: 'approval-decision',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     });
     store.updateTurn('tu_00000000-0000-77e3-bfde-66477d556f64', {
       completedAt: '2026-07-06T00:01:01.000Z',
@@ -6065,7 +6066,7 @@ describe('nanocore server', () => {
         const agentSession = runtimeStore.getAgentSession(agentSessionId);
         runtimeStore.createItem({
           id: deriveEntityId('it', ['task-user', turnId]),
-          workspaceId: turn.workspaceId,
+          owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
           threadId: turn.threadId,
           turnId,
           type: 'user-message',
@@ -6091,7 +6092,7 @@ describe('nanocore server', () => {
           {
             event: 'turn.completed',
             requestId: context.requestId ?? null,
-            workspaceId: turn.workspaceId,
+            workspaceId: workspaceIdForOwner(turn.owner),
             threadId: turn.threadId,
             turnId,
             data: { type: 'turn-completed', stopReason: 'error', turn: failedTurn },
@@ -6271,7 +6272,7 @@ describe('nanocore server', () => {
         const agentSession = runtimeStore.getAgentSession(agentSessionId);
         runtimeStore.createItem({
           id: deriveEntityId('it', ['task-user', turnId]),
-          workspaceId: turn.workspaceId,
+          owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
           threadId: turn.threadId,
           turnId,
           type: 'user-message',
@@ -6297,7 +6298,7 @@ describe('nanocore server', () => {
           {
             event: 'turn.completed',
             requestId: context.requestId ?? null,
-            workspaceId: turn.workspaceId,
+            workspaceId: workspaceIdForOwner(turn.owner),
             threadId: turn.threadId,
             turnId,
             data: { type: 'turn-completed', stopReason, turn: terminalTurn },
@@ -7319,7 +7320,7 @@ describe('nanocore server', () => {
       const accepted = StartTaskModeResponseSchema.parse(await res.json());
       await executor.waitForFinished(store);
       expect(store.getTurnById(accepted.turn.id)).toMatchObject({
-        workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+        owner: { kind: 'workspace', workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28' },
         status: 'completed',
       });
       expect(executor.startContexts).toHaveLength(1);
@@ -7343,7 +7344,7 @@ describe('nanocore server', () => {
         const patchDigest = `sha256:${createHash('sha256').update(patchText).digest('hex')}`;
         const artifact = store.createArtifact({
           id: testEntityId('ar', `ar_task_review_${turnId}`),
-          workspaceId: runningTurn.workspaceId,
+          workspaceId: workspaceIdForOwner(runningTurn.owner),
           threadId: runningTurn.threadId,
           turnId,
           kind: 'diff',
@@ -7365,7 +7366,7 @@ describe('nanocore server', () => {
         });
         await super.startTurn(store, turnId, input, context);
         const reviewId = `swr_task_${turnId}`;
-        const workspaceDb = openTestWorkspaceDb(coreDb, runningTurn.workspaceId);
+        const workspaceDb = openTestWorkspaceDb(coreDb, workspaceIdForOwner(runningTurn.owner));
         const item: Parameters<typeof recordWorkspaceSyncReview>[1]['item'] = {
           artifactId: artifact.id,
           changeSet: {
@@ -7387,7 +7388,7 @@ describe('nanocore server', () => {
             redaction: { notes: [], status: 'redacted' },
             resourceId: 'repo_default',
             strategy: 'git',
-            workspaceId: runningTurn.workspaceId,
+            workspaceId: workspaceIdForOwner(runningTurn.owner),
           },
           patchPayload: {
             bytes: Buffer.byteLength(patchText, 'utf8'),
@@ -7410,7 +7411,7 @@ describe('nanocore server', () => {
             status: 'pending',
             updatedAt: timestamp,
             validation: [],
-            workspaceId: runningTurn.workspaceId,
+            workspaceId: workspaceIdForOwner(runningTurn.owner),
           },
         };
 
@@ -9860,7 +9861,7 @@ describe('nanocore server', () => {
         requestId: 'req_aep_readback',
         turn: {
           id: 'tu_00000000-0000-7c61-be6c-f0d572381e42',
-          workspaceId: workspace.id,
+          owner: { kind: 'workspace', workspaceId: workspace.id },
           threadId: thread.id,
           items: [],
           status: 'running',
@@ -10211,7 +10212,7 @@ describe('nanocore server', () => {
         requestId: 'req_foreign_aep_child_lineage',
         turn: {
           id: 'tu_00000000-0000-714a-9b8b-01faad6fe7e3',
-          workspaceId: foreignWorkspace.id,
+          owner: { kind: 'workspace', workspaceId: foreignWorkspace.id },
           threadId: 'th_00000000-0000-7d62-8841-68b28cc26957',
           items: [],
           status: 'running',
@@ -11241,7 +11242,7 @@ describe('nanocore server', () => {
       threadId: turn.threadId,
       turnId: turn.id,
       turnInput: 'Interrupt this running turn',
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
     });
     recordTestExecutionAttempt(coreDb, {
       entry,
@@ -11256,7 +11257,7 @@ describe('nanocore server', () => {
     store.createAgentSession({
       id: 'as_00000000-0000-7b1e-829e-a7d5f9fefd0d',
       agentId: 'agent_codex_host',
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
       threadId: turn.threadId,
       status: 'busy',
       message: null,

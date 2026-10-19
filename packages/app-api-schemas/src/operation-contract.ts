@@ -136,7 +136,8 @@ export type OperationParticipationMode = z.infer<typeof PolicyModeV1Schema>;
 export interface NativeOperationDefinition {
   readonly binding: 'native';
   readonly description: string;
-  readonly inputSchema: z.ZodObject;
+  /** Native variants may select between closed object forms without adding a public route. */
+  readonly inputSchema: z.ZodObject | z.ZodUnion;
   readonly outputSchema: z.ZodType;
   readonly policyOperation: OperationPolicy;
   readonly crossings: readonly OperationCrossing[];

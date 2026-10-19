@@ -64,7 +64,7 @@ function fixture(
   };
   store.createItem({
     id: 'it_00000000-0000-7a40-898b-989ad9a320c9',
-    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     threadId: thread.id,
     turnId: turn.id,
     type: 'approval-request',
@@ -107,7 +107,9 @@ function fixture(
     ];
     store.createItem({
       id: testEntityId('it', `it_${requestId}`),
-      ...common,
+      owner: turn.owner,
+      threadId: thread.id,
+      responsibleUserId: common.responsibleUserId,
       turnId: turn.id,
       type: 'user-input-request',
       status: 'completed',

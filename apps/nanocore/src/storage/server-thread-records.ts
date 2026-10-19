@@ -4,12 +4,12 @@ import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { parseRecordEnvelope } from '@openkit/config-schema';
 import {
+  type Item,
   readRetainedV1,
-  type ServerItem,
-  type ServerThread,
-  type ServerTurn,
   type ServerTurnEventEnvelope,
+  type Thread,
   ThreadIdSchema,
+  type Turn,
   TurnIdSchema,
   writeRetainedV1,
 } from '@openkit/protocol';
@@ -17,13 +17,14 @@ import { z } from 'zod';
 import {
   StoredServerEventPayloadV1Schema,
   StoredServerEventV1Schema,
-  StoredServerItemPayloadV1Schema,
-  StoredServerItemV1Schema,
-  StoredServerThreadPayloadV1Schema,
-  StoredServerTurnPayloadV1Schema,
-  StoredServerTurnSnapshotV1Schema,
-  StoredServerTurnV1Schema,
 } from './retained-server-work-v1.js';
+import {
+  StoredThreadSnapshotV1Schema,
+  StoredTurnPayloadV1Schema,
+  StoredTurnSnapshotV1Schema,
+} from './retained-work-events-v1.js';
+import { StoredItemPayloadV1Schema, StoredItemV1Schema } from './retained-work-items-v1.js';
+import { StoredTurnV1Schema } from './retained-work-metadata-v1.js';
 import {
   appendCanonicalTextFile,
   assertCanonicalDirectory,
@@ -41,15 +42,12 @@ import {
 
 const SERVER_THREAD_FEATURE = 'openkit.server-threads.v1';
 
-/** Canonical Server Turn payloads retain capture declarations without inheriting live wire grammar. */
-export const ServerTurnReaderSchema = StoredServerTurnPayloadV1Schema;
-
 /** Reads canonical Server Turn metadata for current capture and recovery owners. */
 export function readServerTurnRecord(
   dataRoot: string,
   threadId: string,
   turnId: string
-): z.infer<typeof ServerTurnReaderSchema> {
+): z.infer<typeof StoredTurnPayloadV1Schema> {
   ThreadIdSchema.parse(threadId);
   TurnIdSchema.parse(turnId);
   const value: unknown = JSON.parse(
@@ -58,33 +56,39 @@ export function readServerTurnRecord(
     )
   );
   const turn = readRetainedV1(value, (record) =>
-    ServerTurnReaderSchema.parse(StoredServerTurnV1Schema.parse(record))
+    StoredTurnPayloadV1Schema.parse(StoredTurnV1Schema.parse(record))
   );
-  if (turn.id !== turnId || turn.threadId !== threadId || turn.items.length)
+  if (
+    turn.owner.kind !== 'server' ||
+    turn.id !== turnId ||
+    turn.threadId !== threadId ||
+    turn.items.length
+  )
     throw new Error(`Server Turn has invalid lineage: ${turnId}.`);
   return turn;
 }
 
 /** Canonical Server history loaded into the existing FsStore; no separate storage authority. */
 export interface ServerThreadRecords {
-  threads: ServerThread[];
-  turns: ServerTurn[];
-  itemRevisions: ServerItem[];
+  threads: Thread[];
+  turns: Turn[];
+  itemRevisions: Item[];
   turnEvents: Map<string, ServerTurnEventEnvelope[]>;
   turnCaptureCoverage: Map<string, z.infer<typeof CaptureCoverageBindingSchema>>;
 }
 
 /** Hashes the known Thread core; descriptive additions retain their existing bytes. */
-function threadDigest(thread: ServerThread): string {
+function threadDigest(thread: Thread): string {
   return `sha256:${createHash('sha256').update(JSON.stringify(thread)).digest('hex')}`;
 }
 
 /** Reads and verifies one Server Thread envelope before admitting its owner. */
-function readThread(path: string): ServerThread {
+function readThread(path: string): Thread {
   const raw: unknown = JSON.parse(readCanonicalTextFile(path));
   const envelope = parseRecordEnvelope(raw, { supportedFeatures: [SERVER_THREAD_FEATURE] });
-  const thread = StoredServerThreadPayloadV1Schema.parse(raw);
+  const thread = StoredThreadSnapshotV1Schema.parse(raw);
   if (
+    thread.owner.kind !== 'server' ||
     envelope.schemaVersion !== 1 ||
     envelope.recordType !== 'thread' ||
     envelope.ownerScope !== 'server' ||
@@ -129,10 +133,10 @@ export function loadServerThreadRecords(dataRoot: string): ServerThreadRecords {
         throw new Error(`Server Turn has invalid lineage: ${turnId}.`);
       turnIds.add(turnId);
       if (turn.status === 'pending' || turn.status === 'running') activeTurns++;
-      const items = new Map<string, ServerItem>();
+      const items = new Map<string, Item>();
       for (const value of readCanonicalJsonLines(join(turnRoot, 'items.jsonl'))) {
-        const item = readRetainedV1(value, StoredServerItemPayloadV1Schema.parse);
-        if (item.turnId !== turn.id || item.threadId !== thread.id)
+        const item = readRetainedV1(value, StoredItemPayloadV1Schema.parse);
+        if (item.owner.kind !== 'server' || item.turnId !== turn.id || item.threadId !== thread.id)
           throw new Error(`Server Item has invalid lineage: ${item.id}.`);
         const previous = items.get(item.id);
         if (previous) assertServerItemRevision(previous, item);
@@ -141,8 +145,8 @@ export function loadServerThreadRecords(dataRoot: string): ServerThreadRecords {
         items.set(item.id, item);
         records.itemRevisions.push(item);
       }
-      const completeTurn = ServerTurnReaderSchema.parse({ ...turn, items: [...items.values()] });
-      records.turns.push(StoredServerTurnSnapshotV1Schema.parse(completeTurn));
+      const completeTurn = StoredTurnPayloadV1Schema.parse({ ...turn, items: [...items.values()] });
+      records.turns.push(StoredTurnSnapshotV1Schema.parse(completeTurn));
       const events = readServerTurnEvents(dataRoot, completeTurn);
       records.turnEvents.set(turn.id, events);
     }
@@ -153,10 +157,7 @@ export function loadServerThreadRecords(dataRoot: string): ServerThreadRecords {
 }
 
 /** Reads a complete retained Server transcript for an already admitted Turn. */
-export function readServerTurnEvents(
-  dataRoot: string,
-  turn: ServerTurn
-): ServerTurnEventEnvelope[] {
+export function readServerTurnEvents(dataRoot: string, turn: Turn): ServerTurnEventEnvelope[] {
   ThreadIdSchema.parse(turn.threadId);
   TurnIdSchema.parse(turn.id);
   return readCanonicalJsonLines(
@@ -171,7 +172,8 @@ export function readServerTurnEvents(
 }
 
 /** Writes Server Thread metadata through the shared durable directory and atomic-file publisher. */
-export function writeServerThreadRecord(dataRoot: string, thread: ServerThread): void {
+export function writeServerThreadRecord(dataRoot: string, thread: Thread): void {
+  if (thread.owner.kind !== 'server') throw new Error('Server Thread owner mismatch.');
   const ownerRoot = join(dataRoot, 'server');
   const root = join(ownerRoot, 'threads', thread.id);
   ensureCanonicalDirectory(join(ownerRoot, 'threads'));
@@ -219,8 +221,9 @@ export function writeServerThreadRecord(dataRoot: string, thread: ServerThread):
 /** Writes Turn metadata without replacing append-only Item or transcript history. */
 export function writeServerTurnRecord(
   dataRoot: string,
-  turn: z.infer<typeof ServerTurnReaderSchema>
+  turn: z.infer<typeof StoredTurnPayloadV1Schema>
 ): void {
+  if (turn.owner.kind !== 'server') throw new Error('Server Turn owner mismatch.');
   const ownerRoot = join(dataRoot, 'server');
   const turnsRoot = join(ownerRoot, 'threads', turn.threadId, 'turns');
   assertCanonicalDirectory(turnsRoot);
@@ -229,9 +232,11 @@ export function writeServerTurnRecord(
     const path = join(directory, 'turn.json');
     const previous = existsSync(path)
       ? readRetainedV1(JSON.parse(readCanonicalTextFile(path)), (record) =>
-          ServerTurnReaderSchema.parse(StoredServerTurnV1Schema.parse(record))
+          StoredTurnPayloadV1Schema.parse(StoredTurnV1Schema.parse(record))
         )
       : undefined;
+    if (previous && previous.owner.kind !== 'server')
+      throw new Error('Server Turn owner mismatch.');
     if (
       previous?.captureCoverage &&
       turn.captureCoverage &&
@@ -246,7 +251,7 @@ export function writeServerTurnRecord(
         ...(previous?.captureCoverage ? { captureCoverage: previous.captureCoverage } : {}),
         ...(previous?.requiredFeatures ? { requiredFeatures: previous.requiredFeatures } : {}),
       }),
-      z.preprocess((record) => readRetainedV1(record, (value) => value), StoredServerTurnV1Schema)
+      z.preprocess((record) => readRetainedV1(record, (value) => value), StoredTurnV1Schema)
     );
 
     if (!existsSync(join(directory, 'items.jsonl')))
@@ -260,7 +265,7 @@ export function writeServerTurnRecord(
 }
 
 /** Rejects an Item revision that changes immutable identity, lineage or human attribution. */
-export function assertServerItemRevision(previous: ServerItem, next: ServerItem): void {
+export function assertServerItemRevision(previous: Item, next: Item): void {
   if (
     previous.id !== next.id ||
     previous.threadId !== next.threadId ||
@@ -276,8 +281,9 @@ export function assertServerItemRevision(previous: ServerItem, next: ServerItem)
 /** Appends a validated Server record through the existing fsync and disk-admission boundary. */
 export function appendServerThreadRecord(
   dataRoot: string,
-  record: ServerItem | ServerTurnEventEnvelope
+  record: Item | ServerTurnEventEnvelope
 ): void {
+  if (record.owner.kind !== 'server') throw new Error('Server record owner mismatch.');
   const turnRoot = join(dataRoot, 'server', 'threads', record.threadId, 'turns', record.turnId);
   const parts = [
     join(dataRoot, 'server'),
@@ -293,16 +299,15 @@ export function appendServerThreadRecord(
   const stored =
     'event' in record
       ? StoredServerEventV1Schema.parse(writeRetainedV1(record))
-      : StoredServerItemV1Schema.parse(writeRetainedV1(record));
+      : StoredItemV1Schema.parse(writeRetainedV1(record));
   appendCanonicalTextFile(path, `${JSON.stringify(stored)}\n`);
 }
 
 /** Enforces the same containing Turn lineage on Server transcript payloads and their envelope. */
-export function assertServerTurnEventLineage(
-  event: ServerTurnEventEnvelope,
-  turn: ServerTurn
-): void {
+export function assertServerTurnEventLineage(event: ServerTurnEventEnvelope, turn: Turn): void {
   if (
+    event.owner.kind !== 'server' ||
+    turn.owner.kind !== 'server' ||
     event.turnId !== turn.id ||
     event.threadId !== turn.threadId ||
     event.event !== event.data.type.replaceAll('-', '.')
@@ -311,10 +316,15 @@ export function assertServerTurnEventLineage(
   const data = event.data;
   if (
     ('turnId' in data && data.turnId !== turn.id) ||
-    ('turn' in data && (data.turn.id !== turn.id || data.turn.threadId !== turn.threadId)) ||
-    ('thread' in data && data.thread.id !== turn.threadId) ||
+    ('turn' in data &&
+      (data.turn.owner.kind !== 'server' ||
+        data.turn.id !== turn.id ||
+        data.turn.threadId !== turn.threadId)) ||
+    ('thread' in data &&
+      (data.thread.owner.kind !== 'server' || data.thread.id !== turn.threadId)) ||
     ('item' in data &&
-      (data.item.turnId !== turn.id ||
+      (data.item.owner.kind !== 'server' ||
+        data.item.turnId !== turn.id ||
         data.item.threadId !== turn.threadId ||
         !turn.items.some((item) => item.id === data.item.id))) ||
     ('itemId' in data && !turn.items.some((item) => item.id === data.itemId))

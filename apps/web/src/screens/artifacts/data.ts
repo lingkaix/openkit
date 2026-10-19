@@ -346,7 +346,7 @@ export function isAuthoritativeIntroduceItem(
   if (!turn || !input) return false;
   if (turn.status !== 'completed') return false;
   if (turn.id !== result.turnId) return false;
-  if (turn.workspaceId !== input.workspaceId) return false;
+  if (turn.owner.kind !== 'workspace' || turn.owner.workspaceId !== input.workspaceId) return false;
   if (turn.threadId !== input.threadId) return false;
   if (input.requestId !== requestId) return false;
   if (result.artifactId !== input.artifactId) return false;
@@ -359,7 +359,8 @@ export function isAuthoritativeIntroduceItem(
     item.status === 'completed' &&
     item.id === result.itemId &&
     item.turnId === result.turnId &&
-    item.workspaceId === input.workspaceId &&
+    item.owner.kind === 'workspace' &&
+    item.owner.workspaceId === input.workspaceId &&
     item.threadId === input.threadId &&
     item.artifactId === result.artifactId &&
     item.artifactVersion === result.artifactVersion &&

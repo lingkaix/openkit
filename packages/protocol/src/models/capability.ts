@@ -1,5 +1,4 @@
 import { z } from 'zod';
-
 import {
   AgentIdSchema,
   AgentSessionIdSchema,
@@ -8,10 +7,10 @@ import {
   RequestIdSchema,
   ThreadIdSchema,
   TurnIdSchema,
-  WorkspaceIdSchema,
 } from '../common/ids.js';
 import { ReasoningEffortSchema } from '../common/reasoning-effort.js';
 import { TimestampSchema } from '../common/timestamps.js';
+import { WorkOwnerSchema } from './work-owner.js';
 
 /**
  * Product-safe capability call status.
@@ -159,7 +158,8 @@ export type GatewayRouteLineageEntry = z.infer<typeof GatewayRouteLineageEntrySc
  */
 const capabilityCallFieldsSchema = z.object({
   id: CapabilityCallIdSchema,
-  workspaceId: WorkspaceIdSchema,
+  owner: WorkOwnerSchema,
+  workspaceId: z.never().optional(),
   threadId: ThreadIdSchema.nullable(),
   turnId: TurnIdSchema.nullable(),
   itemId: ItemIdSchema.nullable().default(null),
@@ -242,7 +242,7 @@ function validateCapabilityCallLifecycle(
   }
 }
 
-/** Product-visible Workspace capability call with the shared lifecycle constraints. */
+/** Product-visible owner-qualified capability call with the shared lifecycle constraints. */
 export const CapabilityCallSchema = capabilityCallFieldsSchema
   .superRefine(validateCapabilityCallLifecycle)
   .meta(capabilityCallLifecycleProjection);
@@ -251,16 +251,3 @@ export const CapabilityCallSchema = capabilityCallFieldsSchema
  * Product-visible capability call attribution and summary.
  */
 export type CapabilityCall = z.infer<typeof CapabilityCallSchema>;
-
-/** Server-owned capability call in the existing call record family, with no Workspace anchor. */
-export const ServerCapabilityCallSchema = capabilityCallFieldsSchema
-  .omit({ workspaceId: true })
-  .extend({
-    workspaceId: z.never().optional(),
-    owner: z.object({ kind: z.literal('server') }).strict(),
-  })
-  .superRefine(validateCapabilityCallLifecycle)
-  .meta(capabilityCallLifecycleProjection);
-
-/** Server-owned capability call attribution and lifecycle. */
-export type ServerCapabilityCall = z.infer<typeof ServerCapabilityCallSchema>;

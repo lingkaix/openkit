@@ -12,6 +12,7 @@ import {
   TurnIdSchema,
   type TurnSchema,
   UserIdSchema,
+  workspaceIdForOwner,
   writeRetainedV1,
 } from '@openkit/protocol';
 import { z } from 'zod';
@@ -79,7 +80,7 @@ export function feedbackFilePath(store: FsStore, turn: Turn): string {
   return join(
     dataRoot,
     'workspaces',
-    turn.workspaceId,
+    workspaceIdForOwner(turn.owner),
     'threads',
     turn.threadId,
     'turns',

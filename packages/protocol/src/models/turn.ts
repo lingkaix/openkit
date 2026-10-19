@@ -8,15 +8,15 @@ import {
   ItemIdSchema,
   ThreadIdSchema,
   TurnIdSchema,
-  WorkspaceIdSchema,
 } from '../common/ids.js';
 import { ReasoningEffortSchema } from '../common/reasoning-effort.js';
 import { TimestampSchema } from '../common/timestamps.js';
 import { GitFailureExplanationSchema } from '../errors/failure-explanation.js';
 import { ActorRefSchema, responsibleUserIdForActor } from './actor.js';
 import { ArtifactMediaTypeSchema, MAX_ARTIFACT_FILE_BYTES } from './artifact.js';
-import { ItemSchema, ServerItemSchema } from './item.js';
+import { ItemSchema } from './item.js';
 import { KnowledgeOwnerScopeSchema } from './knowledge-notebook.js';
+import { WorkOwnerSchema } from './work-owner.js';
 
 /** Pinned choices and admitted inputs of an existing internal-role Turn, never an execution store. */
 const InternalAgentExecutionSchema = z.object({
@@ -166,7 +166,8 @@ export const TurnSkillSelectionsSchema = z
  */
 const TurnBaseSchema = z.object({
   id: TurnIdSchema,
-  workspaceId: WorkspaceIdSchema,
+  owner: WorkOwnerSchema,
+  workspaceId: z.never().optional(),
   threadId: ThreadIdSchema,
   triggerActor: ActorRefSchema,
   items: z.array(ItemSchema),
@@ -202,14 +203,26 @@ export const TurnRecordSchema = TurnBaseSchema.extend({
  * @param context Zod refinement context.
  */
 function refineTurnItemRelationships(
-  turn: Pick<z.infer<typeof TurnRecordSchema>, 'triggerActor'> & {
-    items: readonly (z.infer<typeof ItemSchema> | z.infer<typeof ServerItemSchema>)[];
+  turn: Pick<z.infer<typeof TurnRecordSchema>, 'triggerActor' | 'owner'> & {
+    items: readonly z.infer<typeof ItemSchema>[];
   },
   context: z.RefinementCtx
 ): void {
   const responsibleUserId = responsibleUserIdForActor(turn.triggerActor);
 
   for (const [index, item] of turn.items.entries()) {
+    if (
+      item.owner.kind !== turn.owner.kind ||
+      (item.owner.kind === 'workspace' &&
+        turn.owner.kind === 'workspace' &&
+        item.owner.workspaceId !== turn.owner.workspaceId)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['items', index, 'owner'],
+        message: 'An Item must inherit its Turn owner.',
+      });
+    }
     if (item.type !== 'user-input-request') {
       continue;
     }
@@ -239,14 +252,5 @@ export const ProductTurnSchema = TurnRecordSchema.omit({ agentSessionId: true })
 /** Ordinary product-surface Turn without AgentSession identity. */
 export type ProductTurn = z.infer<typeof ProductTurnSchema>;
 
-/** Server Turns inherit immutable Server ownership and reuse the ordinary Turn lifecycle. */
-export const ServerTurnSchema = TurnRecordSchema.omit({ workspaceId: true, items: true })
-  .extend({
-    owner: z.object({ kind: z.literal('server') }),
-    workspaceId: z.never().optional(),
-    items: z.array(ServerItemSchema),
-  })
-  .superRefine(refineTurnItemRelationships);
-
-/** Canonical attributable round of Server work. */
-export type ServerTurn = z.infer<typeof ServerTurnSchema>;
+/** Canonical attributable round of work. */
+export type Turn = z.infer<typeof TurnSchema>;

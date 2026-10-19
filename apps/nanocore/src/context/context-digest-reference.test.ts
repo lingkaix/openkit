@@ -171,7 +171,7 @@ function deliveryAuthorities(
   const workspaceId = files.workspaceId;
   const turn = {
     id: turnId,
-    workspaceId,
+    owner: { kind: 'workspace', workspaceId: workspaceId },
     threadId,
     agentSessionId,
     startedAt,
@@ -248,7 +248,7 @@ function deliveryAuthorities(
     readThreadItems: () => [
       {
         id: itemId,
-        workspaceId,
+        owner: { kind: 'workspace', workspaceId: workspaceId },
         threadId,
         turnId,
         type: 'user-message',

@@ -135,7 +135,7 @@ describe('Generative UI commands', () => {
       const text = 'The external source reported 3 matches.';
       const sourceItem = context.store.createItem({
         id: allocateEntityId('it'),
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         type: 'tool-call',
@@ -264,7 +264,7 @@ describe('Generative UI commands', () => {
       );
       const source = context.store.createItem({
         id: allocateEntityId('it'),
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         type: 'tool-call',
@@ -419,7 +419,7 @@ describe('Generative UI commands', () => {
       const text = 'Private Tool result';
       const source = context.store.createItem({
         id: allocateEntityId('it'),
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: privateThread.id,
         turnId: sourceTurn.id,
         type: 'tool-call',
@@ -474,7 +474,7 @@ describe('Generative UI commands', () => {
       );
       const sourceItem = context.store.createItem({
         id: testEntityId('it', `it_${turn.id}_source`),
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         type: 'assistant-message',
@@ -752,7 +752,7 @@ describe('Generative UI commands', () => {
       );
       const sourceItem = context.store.createItem({
         id: testEntityId('it', `it_${turn.id}_source`),
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         type: 'assistant-message',
@@ -804,7 +804,7 @@ describe('Generative UI commands', () => {
       );
       const sourceItem = context.store.createItem({
         id: testEntityId('it', `it_${turn.id}_source`),
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         type: 'assistant-message',
@@ -856,7 +856,7 @@ describe('Generative UI commands', () => {
       );
       const sourceItem = context.store.createItem({
         id: testEntityId('it', `it_${turn.id}_source`),
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: turn.id,
         type: 'assistant-message',

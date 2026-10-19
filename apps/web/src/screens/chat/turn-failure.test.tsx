@@ -1,5 +1,5 @@
 import type { CoreClient } from '@openkit/core-client';
-import { ItemSchema, ProductTurnSchema } from '@openkit/protocol';
+import { ItemSchema, ProductTurnSchema, workspaceIdForOwner } from '@openkit/protocol';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
@@ -15,7 +15,7 @@ const FAILURE_MESSAGE =
 
 const THREAD = {
   id: 'th_00000000-0000-7b47-b9e3-5a516884858f',
-  workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+  owner: { kind: 'workspace' as const, workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' },
   name: 'Failed worker task',
   preview: 'Failed worker task',
   status: 'active' as const,
@@ -25,7 +25,7 @@ const THREAD = {
 
 const USER_MESSAGE = ItemSchema.parse({
   id: 'it_00000000-0000-7d92-88f0-ce053bddd03c',
-  workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+  owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' },
   threadId: 'th_00000000-0000-7b47-b9e3-5a516884858f',
   turnId: 'tu_00000000-0000-7a1a-a69e-d1682e886e7c',
   type: 'user-message',
@@ -38,7 +38,7 @@ const USER_MESSAGE = ItemSchema.parse({
 
 const ACCEPTED_STATUS_ITEM = ItemSchema.parse({
   id: 'it_00000000-0000-76eb-a38d-371253d2bde1',
-  workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+  owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' },
   threadId: 'th_00000000-0000-7b47-b9e3-5a516884858f',
   turnId: 'tu_00000000-0000-7a1a-a69e-d1682e886e7c',
   type: 'status',
@@ -52,7 +52,7 @@ const ACCEPTED_STATUS_ITEM = ItemSchema.parse({
 
 const FAILED_DASHBOARD_TURN = ProductTurnSchema.parse({
   id: 'tu_00000000-0000-7a1a-a69e-d1682e886e7c',
-  workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+  owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' },
   threadId: 'th_00000000-0000-7b47-b9e3-5a516884858f',
   triggerActor: { kind: 'user', id: 'usr_00000000-0000-7968-a053-ad9e71464afe' },
   items: [USER_MESSAGE, ACCEPTED_STATUS_ITEM],
@@ -104,7 +104,7 @@ const LATER_USER_MESSAGE = ItemSchema.parse({
 
 const LATER_ASSISTANT_DONE = ItemSchema.parse({
   id: 'it_00000000-0000-7de6-8bcf-1e4c1f8c9377',
-  workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+  owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' },
   threadId: 'th_00000000-0000-7b47-b9e3-5a516884858f',
   turnId: 'tu_00000000-0000-7d88-a3e7-a916baddc142',
   type: 'assistant-message',
@@ -217,7 +217,10 @@ function makeClient(core: Record<string, unknown> = {}, app: Record<string, unkn
   } as unknown as CoreClient;
 }
 
-function renderTask(client: CoreClient, path = `/tasks/${THREAD.workspaceId}/${THREAD.id}`) {
+function renderTask(
+  client: CoreClient,
+  path = `/tasks/${workspaceIdForOwner(THREAD.owner)}/${THREAD.id}`
+) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const wrapper = (children: ReactNode) => (
     <QueryClientProvider client={queryClient}>
@@ -257,7 +260,7 @@ describe('task runtime activity', () => {
       });
       renderTask(
         client,
-        `/tasks/${THREAD.workspaceId}/${THREAD.id}?turnId=${encodeURIComponent(target)}`
+        `/tasks/${workspaceIdForOwner(THREAD.owner)}/${THREAD.id}?turnId=${encodeURIComponent(target)}`
       );
       if (present) {
         expect(await screen.findByText(`Recorded Turn ${target} · pending`)).toBeInTheDocument();

@@ -175,7 +175,7 @@ function fixture(scope: Scope) {
       run.validateResult('{"summary":"Finished the native notebook operation."}')
     ).toBeUndefined();
     const update = { status: 'completed' as const, completedAt: new Date().toISOString() };
-    if ('workspaceId' in run.turn) store.updateTurn(run.turn.id, update);
+    if (run.turn.owner.kind === 'workspace') store.updateTurn(run.turn.id, update);
     else store.updateServerTurn(run.turn.id, update);
     return { turnId: run.turn.id, text: '{"summary":"Finished the native notebook operation."}' };
   };
@@ -204,7 +204,8 @@ function fixture(scope: Scope) {
         threshold: 64_000,
         knowledge: input.inputs!,
       };
-      if ('workspaceId' in input.turn) store.updateTurn(input.turn.id, { internalExecution });
+      if (input.turn.owner.kind === 'workspace')
+        store.updateTurn(input.turn.id, { internalExecution });
       else store.updateServerTurn(input.turn.id, { internalExecution });
     },
   };

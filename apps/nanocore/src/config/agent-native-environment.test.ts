@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AuthoredAgentConfigSchema } from '@openkit/config-schema';
+import { workspaceIdForOwner } from '@openkit/protocol';
 import { canonicalNativeEnvironment } from '@openkit/worker-protocol';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -215,7 +216,7 @@ describe('Agent public native environment administration', () => {
         agentSessionCompatibilityKey: 'c'.repeat(64),
         effectiveSetupGeneration: 1,
         harnessInstanceId: 'harness-native',
-        workspaceId: thread.workspaceId,
+        workspaceId: workspaceIdForOwner(thread.owner),
         threadId: thread.id,
         nativeEnvironment: {
           agentId: 'agent_native',
@@ -232,7 +233,7 @@ describe('Agent public native environment administration', () => {
         agentSessionCompatibilityKey: 'c'.repeat(64),
         effectiveSetupGeneration: 1,
         harnessInstanceId: 'harness-native',
-        workspaceId: row.workspaceId,
+        workspaceId: workspaceIdForOwner(row.owner),
         threadId: row.id,
         nativeEnvironment: { agentId: 'agent_native', ...environment },
         timestamp: now,

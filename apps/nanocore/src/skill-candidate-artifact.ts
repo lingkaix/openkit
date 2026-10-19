@@ -6,6 +6,7 @@ import {
   ArtifactSchema,
   responsibleUserIdForActor,
   TurnSchema,
+  workspaceIdForOwner,
 } from '@openkit/protocol';
 import type { Actor } from './auth/identity.js';
 import {
@@ -215,7 +216,7 @@ export function readSkillCandidateArtifact(input: {
         input.store.getTurn(selection.workspaceId, version.threadId, version.turnId)
       );
       producingTurn = {
-        workspaceId: turn.workspaceId,
+        workspaceId: workspaceIdForOwner(turn.owner),
         threadId: turn.threadId,
         turnId: turn.id,
         agentId: turn.agentId ?? null,

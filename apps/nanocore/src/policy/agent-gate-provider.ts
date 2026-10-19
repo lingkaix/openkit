@@ -1,3 +1,4 @@
+import { workspaceIdForOwner } from '@openkit/protocol';
 import type { RuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { createInternalAgentGatewayProvider } from '../internal-agents/gateway-provider.js';
 import type { FsStore } from '../lib/store.js';
@@ -28,6 +29,7 @@ export function createAgentPolicyParticipant(deps: {
       const process = input.proposal.subject.process;
       if (!process) throw new Error('The agent gate has no admitted native process.');
       const turn = deps.store.getTurn(process.workspaceId, process.threadId, process.turnId);
+      const workspaceId = workspaceIdForOwner(turn.owner);
       const snapshot = deps.runtimeConfig();
       const declaration = readAdmittedPolicyDocument(
         deps.coreDb,
@@ -64,10 +66,10 @@ export function createAgentPolicyParticipant(deps: {
           ...(deps.providerSubscriptionAccountManager
             ? { providerSubscriptionAccountManager: deps.providerSubscriptionAccountManager }
             : {}),
-          promptCacheScope: { sessionId: turn.threadId, workspaceId: turn.workspaceId },
+          promptCacheScope: { sessionId: turn.threadId, workspaceId: workspaceId },
           usageEndpoint: 'responses',
           callContext: {
-            workspaceId: turn.workspaceId,
+            workspaceId: workspaceId,
             authorityActor: {
               kind: 'agent',
               id: declaration.agentId,

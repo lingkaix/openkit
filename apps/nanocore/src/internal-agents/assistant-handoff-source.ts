@@ -1,4 +1,4 @@
-import { type ActorRef, responsibleUserIdForActor } from '@openkit/protocol';
+import { type ActorRef, responsibleUserIdForActor, workspaceIdForOwner } from '@openkit/protocol';
 import type { FsStore } from '../lib/store.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
 import { requireUsableRecord } from '../runtime/pending-request-flow.js';
@@ -35,7 +35,7 @@ export function readAssistantTaskHandoffSource(
     const userId = responsibleUserIdForActor(worker.triggerActor);
     if (
       !userId ||
-      worker.workspaceId !== receiving.workspaceId ||
+      workspaceIdForOwner(worker.owner) !== receiving.workspaceId ||
       worker.threadId !== receiving.threadId ||
       thread.threadSource !== 'worker' ||
       !thread.parentThreadId ||

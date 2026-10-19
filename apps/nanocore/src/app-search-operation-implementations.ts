@@ -1,4 +1,5 @@
 import type { APP_SEARCH_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
+import { workspaceIdForOwner } from '@openkit/protocol';
 import { listOutputArtifacts } from './artifact-catalog.js';
 import {
   isCurrentDeploymentAdministrator,
@@ -127,7 +128,7 @@ export function createAppSearchOperationImplementations(
               kind: 'thread',
               id: thread.id,
               title: thread.name ?? thread.id,
-              workspaceId: thread.workspaceId,
+              workspaceId: workspaceIdForOwner(thread.owner),
             });
           }
 
@@ -137,7 +138,7 @@ export function createAppSearchOperationImplementations(
                 kind: 'item',
                 id: item.id,
                 title: item.text ?? item.id,
-                workspaceId: item.workspaceId,
+                workspaceId: workspaceIdForOwner(item.owner),
                 threadId: item.threadId,
               });
             }

@@ -271,7 +271,13 @@ Required lifecycle families include:
 
 ## Thread Semantics
 
-A thread is a long-lived work container inside one workspace.
+A Thread is a durable narrative owned by one Workspace or the CoreServer under [Core Concepts](core-concepts.md#thread).
+
+Thread, Turn, Item and CapabilityCall records use one schema family with required `owner: { kind: 'workspace', workspaceId } | { kind: 'server' }`. A top-level `workspaceId` is not a record ownership field. Missing owners, unknown owner kinds and incomplete or contradictory authority fail validation. A Turn and its Items MUST have the same owner. Server visibility applies exactly to Server Threads; private User audiences apply only within Workspace Threads.
+
+Workspace-scoped operation parameters and transport addressing retain their Workspace selectors. Addressing supplies no owner authority. Workspace-only consumers MUST refuse Server-owned records before disclosure or effects. Cross-owner references preserve lineage only; they grant no Workspace membership.
+
+The rc.10 reset admits this single retained shape. No dual reader, converter or migration interprets the retired Workspace record shape. Storage locations and existing creation, update, termination, retry and recovery rules remain with their accepted owners.
 
 Threads support create, list, get, resume, and archive semantics.
 

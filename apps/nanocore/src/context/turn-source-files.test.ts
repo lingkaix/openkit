@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { linkSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, expect, it } from 'vitest';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { turnFilePayloadPath } from '../storage/workspace-file-records.js';
@@ -69,7 +70,7 @@ it('keeps exact original identity and emits only the bounded UTF-8 preview', asy
   expect(source!.source).toEqual({
     kind: 'turn-input',
     reference: {
-      scopeId: `input/turn/${state.input.turn.workspaceId}/${state.input.turn.threadId}/${state.input.turn.id}`,
+      scopeId: `input/turn/${workspaceIdForOwner(state.input.turn.owner)}/${state.input.turn.threadId}/${state.input.turn.id}`,
       objectId: '0',
     },
   });

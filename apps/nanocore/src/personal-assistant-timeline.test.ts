@@ -69,7 +69,7 @@ function retainExchange(store: FsStore, workspaceId: string, threadId: string) {
   ] as const) {
     store.createItem({
       id: allocateEntityId('it'),
-      workspaceId,
+      owner: { kind: 'workspace', workspaceId: workspaceId },
       threadId,
       turnId: turn.id,
       type,
@@ -146,7 +146,7 @@ describe('Personal Assistant Timeline admission', () => {
     const other = await request(app, 'thread.create', { ...input, workspaceId: otherWorkspace.id });
     expect(other.status).toBe(200);
     expect(other.body.id).not.toBe(owner.body.id);
-    expect(other.body.workspaceId).toBe(otherWorkspace.id);
+    expect(other.body.owner).toEqual({ kind: 'workspace', workspaceId: otherWorkspace.id });
   });
 
   it('admits no second ordinary private conversation across distinct commands, concurrent delivery and restart', async () => {
@@ -349,7 +349,7 @@ describe('Personal Assistant Timeline admission', () => {
     expect(created.body.goal).toMatchObject({ workspaceId: home.id, intent: input.intent });
     expect(current.store.getThread(home.id, created.body.goal.threadId)).toMatchObject({
       visibility: 'workspace',
-      workspaceId: home.id,
+      owner: { kind: 'workspace', workspaceId: home.id },
     });
     const replay = await request(current.app, 'goal.create', input);
     expect(replay.status).toBe(200);

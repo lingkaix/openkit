@@ -111,7 +111,7 @@ function fixture(targetWorkspaceId?: string) {
   const timestamp = old.startedAt!;
   store.createItem({
     id: allocateEntityId('it'),
-    workspaceId: workspace.id,
+    owner: { kind: 'workspace', workspaceId: workspace.id },
     threadId: thread.id,
     turnId: old.id,
     type: 'user-message',
@@ -278,7 +278,7 @@ describe('Assistant semantic Task handoff', () => {
     ];
     f.store.createItem({
       id: requestItemId,
-      workspaceId: f.workspace.id,
+      owner: { kind: 'workspace', workspaceId: f.workspace.id },
       threadId: f.thread.id,
       turnId: raising.id,
       type: 'user-input-request',
@@ -333,7 +333,7 @@ describe('Assistant semantic Task handoff', () => {
     ).toHaveLength(1);
     f.store.createItem({
       id: pendingRequestItemId(requestId, 'answer'),
-      workspaceId: f.workspace.id,
+      owner: { kind: 'workspace', workspaceId: f.workspace.id },
       threadId: f.thread.id,
       turnId: source.id,
       type: 'user-input-response',

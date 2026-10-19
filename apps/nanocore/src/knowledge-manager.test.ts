@@ -597,14 +597,14 @@ describe('Knowledge Manager answer operation', () => {
         operation: 'knowledge.source.register',
         serviceRef: 'knowledge-store',
         status: 'succeeded',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       }),
       expect.objectContaining({
         capabilityId: 'knowledge.source.read',
         operation: 'knowledge.source.read',
         serviceRef: 'knowledge-store',
         status: 'succeeded',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       }),
     ]);
     expect(
@@ -934,7 +934,7 @@ describe('Knowledge Manager answer operation', () => {
         providerRef: 'nanocore-knowledge',
         serviceRef: 'knowledge-store',
         status: 'succeeded',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       }),
     ]);
     expect(usage.usageRecords).toEqual([
@@ -1728,7 +1728,7 @@ describe('Knowledge Manager answer operation', () => {
         providerRef: 'nanocore-knowledge',
         serviceRef: 'knowledge-manager',
         status: 'succeeded',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       }),
     ]);
     expect(
@@ -1852,7 +1852,7 @@ describe('Knowledge Manager answer operation', () => {
         providerRef: 'nanocore-knowledge',
         serviceRef: 'knowledge-manager',
         status: 'succeeded',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       }),
     ]);
     expect(

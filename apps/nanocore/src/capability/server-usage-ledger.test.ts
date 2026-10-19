@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ServerCapabilityCallSchema, ServerUsageRecordSchema } from '@openkit/protocol';
+import { CapabilityCallSchema, ServerUsageRecordSchema } from '@openkit/protocol';
 import { expect, it } from 'vitest';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
@@ -81,7 +81,7 @@ it('retains Server calls and measured usage in Core without a Workspace and reco
     });
     const [retained] = listServerCapabilityCalls(coreDb);
     const [usage] = listServerUsageRecords(coreDb);
-    expect(ServerCapabilityCallSchema.parse(retained)).toMatchObject({
+    expect(CapabilityCallSchema.parse(retained)).toMatchObject({
       owner: { kind: 'server' },
       status: 'succeeded',
     });

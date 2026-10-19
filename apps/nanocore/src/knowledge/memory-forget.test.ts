@@ -464,7 +464,7 @@ describe('Item-confirmed self Memory forget', () => {
     const result = prepareMemoryForgetCommand(f.writer, input);
     const turn = f.writer.store.getTurnById(result.turnId);
     expect(turn).toMatchObject({
-      workspaceId: input.workspaceId,
+      owner: { kind: 'workspace', workspaceId: input.workspaceId },
       threadId: f.thread.id,
       status: 'completed',
       triggerActor: { kind: 'user', id: f.writer.actor.userId },

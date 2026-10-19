@@ -312,29 +312,9 @@ Activation supplies the exact resolved candidate, target, configuration revision
 
 After activation, inspect the owner-reported attachment and readiness, then run the requested work to verify the new software and retained data. Image availability and successful configuration writes do not prove an active environment. Old native files do not authorize automatic conversation resume, and compatible mounts do not prove older software can read a newer native data format. Preserve unknown outcomes without replaying external effects. Normal close, image replacement and App update retain storage; whole-storage deletion is a separate exact-reference operation with explicit administrator confirmation and the owner's retention checks.
 
-## Classify Predecessor Thread Visibility
+## Thread Record Reset Boundary
 
-PR #55 requires every durable Thread to carry `visibility` / `privateOwnerUserId` and `openkit.thread-visibility.v1`. Restart cutover classifies owner-bound Quick Chat as private and formal Task/Goal or agent-inception history as workspace. Ambiguous project history fails closed and blocks NanoCore startup until an authorized operator classifies it.
-
-Use this stopped-process migrator before deploying a build that enforces the visibility feature against a Data Root that still has predecessor Thread envelopes:
-
-1. Stop NanoCore and prove the Data Root has no other writer.
-2. Choose an external backup destination outside the Data Root.
-3. Dry-run classification, then apply with an explicit ambiguous default when dogfood or other reviewed history should become workspace-visible.
-
-```bash
-pnpm --filter @openkit/nanocore run thread-visibility:migrate -- \
-  --data-root /absolute/path/to/openkit-data \
-  --backup-root /absolute/path/to/thread-visibility-backup \
-  --dry-run
-
-pnpm --filter @openkit/nanocore run thread-visibility:migrate -- \
-  --data-root /absolute/path/to/openkit-data \
-  --backup-root /absolute/path/to/thread-visibility-backup \
-  --ambiguous-default workspace
-```
-
-The migrator acquires the ordinary data-root lock, copies each rewritten `thread.json` into the backup root, and writes canonical envelopes with `openkit.thread-visibility.v1`. Without `--ambiguous-default`, ambiguous Threads remain unchanged and the command exits blocked. The only supported ambiguous default is `workspace`. Do not invent private owners for project history. Restore from the external backup only onto a stopped target when rolling back the classification writes.
+The rc.10 work-owner change requires current Thread envelopes with an explicit Workspace or Server owner. NanoCore refuses predecessor records without rewriting them. There is no Thread visibility migration command. The release reset re-creates retained data under the accepted pre-stable continuity decision; these instructions do not authorize a reset or a host action.
 
 ## Clean Missing-Turn Task Checkpoints
 

@@ -26,7 +26,7 @@ import {
   type OAuthCredential,
   type StreamOptions,
 } from '@earendil-works/pi-ai';
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { createRuntimeConfigManager, loadRuntimeConfig } from '../config/runtime-config.js';
@@ -4882,7 +4882,7 @@ async function createObservedInferenceRouteFixture(
   ensureLocalUser(fixture.coreDb);
   recordWorkspaceOwnerMembership({
     coreDb: fixture.coreDb,
-    workspaceId: turn.workspaceId,
+    workspaceId: workspaceIdForOwner(turn.owner),
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
   });
   let workerControlGateway: WorkerControlGateway | undefined;
@@ -4914,7 +4914,7 @@ async function createObservedInferenceRouteFixture(
       requestId: 'req_observed_worker',
       triggerActor: environmentPackage.scope.triggerActor,
       serverAdminTokenId: null,
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
       threadId: turn.threadId,
       turnId: turn.id,
       turnInput: 'Inference observation regression',
@@ -5054,7 +5054,7 @@ describe('inference route same-credential rejection', () => {
                       metadata: {
                         openkit: {
                           requestId: randomUUID(),
-                          workspaceId: f.turn.workspaceId,
+                          workspaceId: workspaceIdForOwner(f.turn.owner),
                           threadId: f.turn.threadId,
                           turnId: f.turn.id,
                         },
@@ -5114,9 +5114,9 @@ describe('inference route same-credential rejection', () => {
           });
         else expect(account).not.toHaveProperty('inferenceObservation');
         expect(fetchSpy).not.toHaveBeenCalled();
-        const db = openWorkspaceDb(f.fixture.dataRoot, f.turn.workspaceId);
+        const db = openWorkspaceDb(f.fixture.dataRoot, workspaceIdForOwner(f.turn.owner));
         try {
-          const calls = listWorkspaceCapabilityCalls(db, f.turn.workspaceId);
+          const calls = listWorkspaceCapabilityCalls(db, workspaceIdForOwner(f.turn.owner));
           // Codex native admission excludes public metadata; Worker scope supplies its durable attribution.
           if (!route.worker && subscriptionProviderId === 'openai-codex') {
             expect(calls).toHaveLength(0);
@@ -5204,9 +5204,9 @@ describe('subscription refresh inference ownership', () => {
       'vault_00000000-0000-799d-848e-914aef612c73:2'
     );
     expect(await f.fixture.manager.getStatus(f.pair)).not.toHaveProperty('inferenceObservation');
-    const db = openWorkspaceDb(f.fixture.dataRoot, f.turn.workspaceId);
+    const db = openWorkspaceDb(f.fixture.dataRoot, workspaceIdForOwner(f.turn.owner));
     try {
-      const calls = listWorkspaceCapabilityCalls(db, f.turn.workspaceId);
+      const calls = listWorkspaceCapabilityCalls(db, workspaceIdForOwner(f.turn.owner));
       expect(calls).toHaveLength(1);
       expect(calls[0]).toMatchObject({ status: 'failed', providerRef: null });
       expect(calls[0]!.extensions?.['openkit.gateway/routeLineage']?.entries).toEqual([

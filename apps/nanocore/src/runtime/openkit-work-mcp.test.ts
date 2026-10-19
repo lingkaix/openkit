@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { createCanvas, loadImage } from '@napi-rs/canvas';
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { decideArtifactReview, getArtifactReview } from '../artifact-reviews.js';
 import * as threadVisibility from '../auth/thread-visibility.js';
@@ -803,7 +803,7 @@ describe('submission publication and handled rollback', () => {
       type: 'assistant-message',
       status: 'completed',
       text: 'Keep existing history.',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: fixture.turn.id,
       createdAt: '2026-10-05T00:00:00.000Z',
@@ -938,7 +938,7 @@ async function sourceToolFixture(
       createdAt: '2026-10-17T00:00:00.000Z',
       updatedAt: '2026-10-17T00:00:00.000Z',
     },
-    { kind: 'workspace', workspaceId: fixture.turn.workspaceId }
+    { kind: 'workspace', workspaceId: workspaceIdForOwner(fixture.turn.owner) }
   );
   /** Publishes test-owned bytes through the real commit owner; this fixture does not claim native command admission. */
   const publishKnowledge = (content: string) => {
@@ -979,7 +979,7 @@ async function sourceToolFixture(
           {
             knowledgeBaseId: readDefaultKnowledgeBaseId({
               dataRoot: fixture.dataRoot,
-              scope: { kind: 'workspace', workspaceId: fixture.turn.workspaceId },
+              scope: { kind: 'workspace', workspaceId: workspaceIdForOwner(fixture.turn.owner) },
             }),
             knowledgePageId: 'selected',
             notebookRevision,
@@ -1303,7 +1303,7 @@ it('searches only the selected current exact PDF text through the real Worker To
 it('refuses changed or missing canonical original bytes without using delivered package bytes', async () => {
   const f = await sourceToolFixture(Buffer.from('Exact admitted original\n'), 'text/plain');
   const path = artifactFilePayloadPath(
-    join(f.dataRoot, 'workspaces', f.turn.workspaceId),
+    join(f.dataRoot, 'workspaces', workspaceIdForOwner(f.turn.owner)),
     f.artifactId,
     1
   );
@@ -1326,7 +1326,7 @@ it('refuses changed or missing canonical original bytes without using delivered 
 
 it('reads the selected retained Artifact version after the current metadata head advances', async () => {
   const f = await sourceToolFixture(Buffer.from('Selected version\n'), 'text/plain');
-  f.store.getArtifact(f.turn.workspaceId, f.artifactId).version += 1;
+  f.store.getArtifact(workspaceIdForOwner(f.turn.owner), f.artifactId).version += 1;
   const result = await dispatchOpenkitWorkTool(f.input, 'work_source_read', {
     path: f.packagePath,
   });
@@ -1379,7 +1379,7 @@ it('reads the exact immutable Material revision after a later canonical save', a
   });
   const revision = getWorkspaceMaterialRevision(f.workspaceDb, materialId, revisionId);
   const prepared = await prepareMaterialSourceInput({
-    workspaceId: f.turn.workspaceId,
+    workspaceId: workspaceIdForOwner(f.turn.owner),
     selection: {
       ...revision,
       sensitivity: 'internal',
@@ -1431,7 +1431,7 @@ it('reads the selected canonical Turn input ordinal when an unrelated original i
     Buffer.from('Unrelated input'),
     Buffer.from('Exact ordinal one\n'),
   ]);
-  const workspaceRoot = join(f.dataRoot, 'workspaces', f.turn.workspaceId);
+  const workspaceRoot = join(f.dataRoot, 'workspaces', workspaceIdForOwner(f.turn.owner));
   const source = (
     await prepareTurnFileSourceInputs({
       workspaceRoot,
@@ -1469,7 +1469,7 @@ it('withholds a vision image after same-size canonical original corruption', asy
   const bytes = await createCanvas(2, 2).encode('png');
   const f = await sourceToolFixture(bytes, 'image/png');
   const path = artifactFilePayloadPath(
-    join(f.dataRoot, 'workspaces', f.turn.workspaceId),
+    join(f.dataRoot, 'workspaces', workspaceIdForOwner(f.turn.owner)),
     f.artifactId,
     1
   );

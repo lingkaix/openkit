@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { FsStore } from './lib/store.js';
 import { closeRetrievalServices, getRetrievalService } from './retrieval-service.js';
@@ -220,7 +221,7 @@ describe('canonical product retrieval adapters', () => {
 function message(store: FsStore, turn: ReturnType<FsStore['createTurn']>, text: string): void {
   store.createItem({
     id: testEntityId('it', `it_${turn.id}`),
-    workspaceId: turn.workspaceId,
+    owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
     threadId: turn.threadId,
     turnId: turn.id,
     type: 'user-message',

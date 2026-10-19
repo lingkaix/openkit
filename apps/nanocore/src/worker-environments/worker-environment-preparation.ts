@@ -20,7 +20,7 @@ import {
   AuthoredAgentConfigSchema,
   AuthoredAgentRuntimeSchema,
 } from '@openkit/config-schema';
-import { deriveEntityId, isSealedTurnTerminal } from '@openkit/protocol';
+import { deriveEntityId, isSealedTurnTerminal, workspaceIdForOwner } from '@openkit/protocol';
 import { type ParseError, parse } from 'jsonc-parser';
 import type { z } from 'zod';
 
@@ -612,7 +612,7 @@ export function createWorkerEnvironmentPreparation(
       title: 'Preparing Worker environment',
       turnId: turn.id,
       type: 'status',
-      workspaceId: input.workspaceId,
+      owner: { kind: 'workspace', workspaceId: input.workspaceId },
     });
     return turn;
   }
@@ -626,7 +626,11 @@ export function createWorkerEnvironmentPreparation(
       return await run();
     } catch (error) {
       if (!context.administrationTurnId) {
-        const current = dependencies.store.getTurn(turn.workspaceId, turn.threadId, turn.id);
+        const current = dependencies.store.getTurn(
+          workspaceIdForOwner(turn.owner),
+          turn.threadId,
+          turn.id
+        );
         if (current.status === 'running') {
           dependencies.store.updateTurn(current.id, { completedAt: now(), status: 'failed' });
         }

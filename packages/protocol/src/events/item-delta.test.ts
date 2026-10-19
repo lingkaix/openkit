@@ -13,7 +13,7 @@ const baseDelta = {
 
 const baseItem = {
   id: 'it_00000000-0000-7a80-9e75-ec0915e1f8ca',
-  workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+  owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
   threadId: 'th_00000000-0000-7000-8000-000000000001',
   turnId: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
   status: 'in_progress',

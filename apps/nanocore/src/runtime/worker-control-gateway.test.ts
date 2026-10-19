@@ -7,6 +7,7 @@ import {
   type AgentEnvironmentPackage,
   AgentEnvironmentPackageSchema,
 } from '@openkit/config-schema';
+import { workspaceIdForOwner } from '@openkit/protocol';
 import type {
   WorkerCanonicalEventRecord,
   WorkerCapabilityCallSummary,
@@ -94,7 +95,7 @@ function createWorkerControlFixture(
     store.createAgentSession({
       id: testEntityId('as', `as_control_${suffix}`),
       agentId: environmentPackage.agent.agentId,
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
       threadId: turn.threadId,
       status: 'busy',
       message: null,

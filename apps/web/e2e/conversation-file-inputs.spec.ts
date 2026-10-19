@@ -5,6 +5,7 @@ import {
   ListAuthorizedWorkspacesResponseSchema,
   SubmitConversationResponseSchema,
 } from '@openkit/app-api-schemas';
+import { workspaceIdForOwner } from '@openkit/protocol';
 import { expect, test } from '@playwright/test';
 import { type IsolatedWebStack, startIsolatedWebStack } from './_lib/servers.js';
 
@@ -92,7 +93,9 @@ test('keeps files as local drafts and publishes exact originals only on the rece
   const response = await accepted;
   expect(response.status(), await response.text()).toBe(202);
   const result = SubmitConversationResponseSchema.parse(await response.json());
-  expect(result.turn.workspaceId).toBe(workspaceId);
+  expect(result.turn.owner.kind).toBe('workspace');
+  expect(result.turn.owner.workspaceId).toBe(workspaceId);
+  const turnWorkspaceId = workspaceIdForOwner(result.turn.owner);
   expect(result.turn.fileInputs).toEqual(
     originals.map((file) => ({
       name: file.name,
@@ -106,7 +109,7 @@ test('keeps files as local drafts and publishes exact originals only on the rece
       join(
         stack.dataRoot,
         'workspaces',
-        result.turn.workspaceId,
+        turnWorkspaceId,
         'threads',
         result.turn.threadId,
         'turns',

@@ -140,7 +140,7 @@ export function scanUserMemoryMaintenance(input: {
         const completedAt = new Date().toISOString();
         store.createItem({
           id: allocateEntityId('it'),
-          workspaceId,
+          owner: { kind: 'workspace', workspaceId: workspaceId },
           threadId: thread.id,
           turnId: turn.id,
           type: 'status',

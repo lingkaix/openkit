@@ -9,6 +9,7 @@ import {
   ProductTurnSchema,
   TurnReadProjectionSchema,
   TurnSchema,
+  workspaceIdForOwner,
 } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import type { AgentManifest } from './agents/manifest.js';
@@ -161,7 +162,7 @@ class RecordingTurnExecutor implements TurnExecutor {
     store.createAgentSession({
       id: context.agentSessionId,
       agentId: turn.agentId!,
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
       threadId: turn.threadId,
       status: 'busy',
       message: null,
@@ -203,7 +204,7 @@ class RecordingTurnExecutor implements TurnExecutor {
       {
         event: 'turn.completed',
         requestId: context.requestId,
-        workspaceId: turn.workspaceId,
+        workspaceId: workspaceIdForOwner(turn.owner),
         threadId: turn.threadId,
         turnId,
         data: { type: 'turn-completed', stopReason: 'completed', turn },
@@ -216,7 +217,7 @@ class RecordingTurnExecutor implements TurnExecutor {
   protected async releaseModeledTurn(store: FsStore, turnId: string): Promise<void> {
     const turn = store.getTurnById(turnId);
     for (const attempt of listSchedulerExecutionAttemptsForTurn(this.coreDb!, {
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
       threadId: turn.threadId,
       turnId,
     })) {
@@ -612,7 +613,7 @@ describe('generic turn routes', () => {
             requestId: '00000000-0000-4000-8000-000000000306',
             threadId: turn.threadId,
             turnId: turn.id,
-            workspaceId: turn.workspaceId,
+            workspaceId: workspaceIdForOwner(turn.owner),
           }),
           headers: { 'content-type': 'application/json' },
         }
@@ -625,7 +626,7 @@ describe('generic turn routes', () => {
       executorCalls: executor.interruptCalls,
       responseCode: payload.code,
       responseStatus: response.status,
-      turnStatus: store.getTurn(turn.workspaceId, turn.threadId, turn.id).status,
+      turnStatus: store.getTurn(workspaceIdForOwner(turn.owner), turn.threadId, turn.id).status,
     }).toEqual({
       commandRecords: 0,
       executorCalls: 0,
@@ -674,7 +675,7 @@ describe('generic turn routes', () => {
               requestId: '00000000-0000-4000-8000-000000000307',
               threadId: turn.threadId,
               turnId: turn.id,
-              workspaceId: turn.workspaceId,
+              workspaceId: workspaceIdForOwner(turn.owner),
             }),
             headers: { 'content-type': 'application/json' },
           }
@@ -687,7 +688,7 @@ describe('generic turn routes', () => {
         executorCalls: executor.interruptCalls,
         responseCode: payload.code,
         responseStatus: response.status,
-        turnStatus: store.getTurn(turn.workspaceId, turn.threadId, turn.id).status,
+        turnStatus: store.getTurn(workspaceIdForOwner(turn.owner), turn.threadId, turn.id).status,
       }).toEqual({
         commandRecords: before.length,
         executorCalls: 0,
@@ -730,14 +731,14 @@ describe('generic turn routes', () => {
             requestId: '00000000-0000-4000-8000-000000000308',
             threadId: turn.threadId,
             turnId: turn.id,
-            workspaceId: turn.workspaceId,
+            workspaceId: workspaceIdForOwner(turn.owner),
           }),
           headers: { 'content-type': 'application/json' },
         }
       )
     );
     const payload = (await response.json()) as { readonly code?: string };
-    const storedTurn = store.getTurn(turn.workspaceId, turn.threadId, turn.id);
+    const storedTurn = store.getTurn(workspaceIdForOwner(turn.owner), turn.threadId, turn.id);
 
     expect({
       commandRecords: store.listCommandRequests().length,
@@ -789,7 +790,7 @@ describe('generic turn routes', () => {
       const acceptedAt = turn.startedAt ?? new Date().toISOString();
       const requestItem = fixture.store.createItem({
         id: testEntityId('it', `it_responsible_user_${turn.id}`),
-        workspaceId: turn.workspaceId,
+        owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
         threadId: turn.threadId,
         turnId: turn.id,
         type: 'user-input-request',

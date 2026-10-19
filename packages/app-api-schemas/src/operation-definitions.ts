@@ -1,4 +1,9 @@
-import { PolicyWriteOutcomeV1Schema, PolicyWriteProposalV1Schema } from '@openkit/protocol';
+import {
+  PolicyPermissionV1Schema,
+  PolicyWriteOutcomeV1Schema,
+  PolicyWriteProposalV1Schema,
+  ThreadIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 import { ACCESS_TOKEN_OPERATION_DEFINITIONS } from './access-token-operations.js';
 import { ADMINISTRATION_ENTRY_OPERATION_DEFINITIONS } from './administration-operations.js';
@@ -155,19 +160,45 @@ export const PRODUCT_OPERATION_DEFINITIONS = composeOperationTables(
 );
 
 /** Static composition of the implemented families; this is not a registration surface. */
-const API_OPERATION_DEFINITIONS = composeOperationTables(
+const API_OPERATION_DEFINITIONS: typeof PRODUCT_OPERATION_DEFINITIONS &
+  typeof ADMINISTRATION_OPERATION_DEFINITIONS &
+  typeof ACCESS_TOKEN_OPERATION_DEFINITIONS = composeOperationTables(
   PRODUCT_OPERATION_DEFINITIONS,
   ADMINISTRATION_OPERATION_DEFINITIONS,
   ACCESS_TOKEN_OPERATION_DEFINITIONS
 );
-/** The shared registry includes native dispatch without publishing a transport projection. */
-export const OPERATION_REGISTRY = composeOperationTables(API_OPERATION_DEFINITIONS, {
+/** Native selection names a Task; the Goal owner restores all current authority and lineage. */
+export const GoalTaskPolicyWriteInputSchema = z
+  .object({
+    taskThreadId: ThreadIdSchema,
+    expectedPolicyRevision: PolicyWriteProposalV1Schema.shape.baseRevision,
+    grant: z
+      .object({
+        id: PolicyPermissionV1Schema.shape.id,
+        scope: PolicyPermissionV1Schema.shape.scope,
+        lifetime: PolicyPermissionV1Schema.shape.lifetime,
+        rationale: PolicyWriteProposalV1Schema.shape.rationale,
+      })
+      .strict(),
+  })
+  .strict();
+
+/** The existing writer returns its admitted permission and compare-and-swap revision. */
+export const GoalTaskPolicyWriteOutputSchema = z
+  .object({
+    statement: PolicyPermissionV1Schema,
+    policyRevision: PolicyWriteProposalV1Schema.shape.baseRevision,
+  })
+  .strict();
+
+/** Named native declarations keep exact registry types within declaration-emission limits. */
+const NATIVE_OPERATION_DEFINITIONS = {
   'policy.write': {
     binding: 'native',
     description:
-      'Apply one exact human-confirmed Policy candidate through the configuration owner.',
-    inputSchema: PolicyWriteProposalV1Schema,
-    outputSchema: PolicyWriteOutcomeV1Schema,
+      'Apply an exact human-confirmed Policy candidate or a bounded Goal Coordinator Task grant through the existing configuration owner.',
+    inputSchema: z.union([PolicyWriteProposalV1Schema, GoalTaskPolicyWriteInputSchema]),
+    outputSchema: z.union([PolicyWriteOutcomeV1Schema, GoalTaskPolicyWriteOutputSchema]),
     policyOperation: 'workspace.configure',
     crossings: ['administration'],
     stages: ['propose', 'decide', 'commit', 'completed'],
@@ -192,7 +223,14 @@ export const OPERATION_REGISTRY = composeOperationTables(API_OPERATION_DEFINITIO
     modes: ['observe', 'advise', 'gate', 'transform'],
     participantKinds: ['deterministic', 'agent'],
   } satisfies NativeOperationDefinition,
-});
+} as const;
+
+/** The shared registry includes native dispatch without publishing a transport projection. */
+export const OPERATION_REGISTRY: typeof API_OPERATION_DEFINITIONS &
+  typeof NATIVE_OPERATION_DEFINITIONS = composeOperationTables(
+  API_OPERATION_DEFINITIONS,
+  NATIVE_OPERATION_DEFINITIONS
+);
 
 /** Existing API projections are selected from the single composed registry. */
 export const OPERATION_DEFINITIONS = Object.fromEntries(

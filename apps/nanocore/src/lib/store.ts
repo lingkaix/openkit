@@ -44,18 +44,14 @@ import {
   parseReferenceUri,
   RequestIdSchema,
   responsibleUserIdForActor,
-  type ServerItem,
-  ServerItemSchema,
-  type ServerThread,
-  ServerThreadSchema,
-  type ServerTurn,
   type ServerTurnEventEnvelope,
   ServerTurnEventEnvelopeSchema,
-  ServerTurnSchema,
   SseEventEnvelopeSchema,
   ThreadSchema,
   TurnSchema,
   type TurnStatus,
+  WorkOwnerSchema,
+  workspaceIdForOwner,
 } from '@openkit/protocol';
 import { parse as parseJsonc } from 'jsonc-parser';
 import { resolveDataRoot } from '../config/data-root.js';
@@ -643,7 +639,7 @@ export type CreateServerTurnOptions = Pick<
   | 'triggerSource'
   | 'agentId'
   | 'captureCoverage'
-> & { status?: ServerTurn['status']; completedAt?: string };
+> & { status?: Turn['status']; completedAt?: string };
 
 const SERVER_TURN_UPDATE_FIELDS = [
   'agentId',
@@ -661,7 +657,7 @@ const SERVER_TURN_UPDATE_FIELDS = [
 /** Existing mutable Turn lifecycle fields for Server-owned history. */
 export type ServerTurnUpdate = Partial<
   Pick<
-    ServerTurn,
+    Turn,
     | 'agentId'
     | 'agentProfileId'
     | 'agentSessionId'
@@ -793,7 +789,7 @@ function eventAgreesWithSealedTurnOutcome(turn: Turn, event: TurnEventInput): bo
     stopReason?: unknown;
     turn?: {
       id?: unknown;
-      workspaceId?: unknown;
+      owner?: unknown;
       threadId?: unknown;
       status?: unknown;
       error?: unknown;
@@ -806,9 +802,11 @@ function eventAgreesWithSealedTurnOutcome(turn: Turn, event: TurnEventInput): bo
   if (!carried || typeof carried !== 'object') {
     return false;
   }
+  const owner = WorkOwnerSchema.safeParse(carried.owner);
   if (
+    !owner.success ||
+    !alreadyDecidedPublicationBytesEqual(owner.data, turn.owner) ||
     carried.id !== turn.id ||
-    carried.workspaceId !== turn.workspaceId ||
     carried.threadId !== turn.threadId ||
     carried.status !== turn.status
   ) {
@@ -1205,9 +1203,9 @@ export class FsStore {
     | ((workspaceId: string) => PolicyDocumentV1 | null)
     | null = null;
   private workspaceAgentCatalogProjection: (() => RuntimeAgent[]) | null = null;
-  private serverThreads = new Map<string, ServerThread>();
-  private serverTurns = new Map<string, ServerTurn>();
-  private serverItems = new Map<string, ServerItem>();
+  private serverThreads = new Map<string, Thread>();
+  private serverTurns = new Map<string, Turn>();
+  private serverItems = new Map<string, Item>();
   private serverStreams = new Map<
     string,
     {
@@ -1503,13 +1501,13 @@ export class FsStore {
           const producingTurn = turns.get(lineage.turnId);
           if (
             !producingTurn ||
-            producingTurn.workspaceId !== artifact.workspaceId ||
+            workspaceIdForOwner(producingTurn.owner) !== artifact.workspaceId ||
             producingTurn.threadId !== lineage.threadId ||
             !isDeepStrictEqual(producingTurn.triggerActor, lineage.actor) ||
             !itemRevisions.some(
               (item) =>
                 item.type === 'artifact-reference' &&
-                item.workspaceId === artifact.workspaceId &&
+                workspaceIdForOwner(item.owner) === artifact.workspaceId &&
                 item.threadId === lineage.threadId &&
                 item.turnId === lineage.turnId &&
                 item.artifactId === artifact.id &&
@@ -1687,7 +1685,7 @@ export class FsStore {
     const workspace = this.getWorkspace(workspaceId);
     const turnIds = new Set(
       [...this.turns.values()]
-        .filter((turn) => turn.workspaceId === workspaceId)
+        .filter((turn) => workspaceIdForOwner(turn.owner) === workspaceId)
         .map((turn) => turn.id)
     );
 
@@ -1698,8 +1696,12 @@ export class FsStore {
         workspace,
         knowledge: this.getWorkspaceResources(workspaceId).knowledge,
         threads: this.listThreads(workspaceId),
-        turns: [...this.turns.values()].filter((turn) => turn.workspaceId === workspaceId),
-        itemRevisions: this.itemRevisions.filter((item) => item.workspaceId === workspaceId),
+        turns: [...this.turns.values()].filter(
+          (turn) => workspaceIdForOwner(turn.owner) === workspaceId
+        ),
+        itemRevisions: this.itemRevisions.filter(
+          (item) => workspaceIdForOwner(item.owner) === workspaceId
+        ),
         artifacts: this.listArtifacts(workspaceId),
         knowledgeProposals: [...this.knowledgeProposals.values()].filter(
           (proposal) => proposal.workspaceId === workspaceId
@@ -2502,14 +2504,14 @@ export class FsStore {
   public evictWorkspace(workspaceId: string): void {
     const turnIds = new Set(
       [...this.turns.values()]
-        .filter((turn) => turn.workspaceId === workspaceId)
+        .filter((turn) => workspaceIdForOwner(turn.owner) === workspaceId)
         .map((turn) => turn.id)
     );
 
     this.workspaces.delete(workspaceId);
     this.workspaceResources.delete(workspaceId);
     for (const [threadId, thread] of this.threads) {
-      if (thread.workspaceId === workspaceId) {
+      if (workspaceIdForOwner(thread.owner) === workspaceId) {
         this.threads.delete(threadId);
       }
     }
@@ -2525,11 +2527,13 @@ export class FsStore {
       }
     }
     for (const [itemId, item] of this.items) {
-      if (item.workspaceId === workspaceId) {
+      if (workspaceIdForOwner(item.owner) === workspaceId) {
         this.items.delete(itemId);
       }
     }
-    this.itemRevisions = this.itemRevisions.filter((item) => item.workspaceId !== workspaceId);
+    this.itemRevisions = this.itemRevisions.filter(
+      (item) => workspaceIdForOwner(item.owner) !== workspaceId
+    );
     for (const [artifactId, artifact] of this.artifacts) {
       if (artifact.workspaceId === workspaceId) {
         this.artifacts.delete(artifactId);
@@ -2814,7 +2818,7 @@ export class FsStore {
   }
 
   /** Lists Server narratives for a caller already admitted by the Server authority owner. */
-  public listServerThreads(): ServerThread[] {
+  public listServerThreads(): Thread[] {
     return [...this.serverThreads.values()];
   }
 
@@ -2822,9 +2826,9 @@ export class FsStore {
   public createServerThread(
     title: string,
     threadId?: string,
-    entryPath: ServerThread['entryPath'] = 'knowledge-manager'
-  ): ServerThread {
-    const thread = ServerThreadSchema.parse({
+    entryPath: Thread['entryPath'] = 'knowledge-manager'
+  ): Thread {
+    const thread = ThreadSchema.parse({
       id: threadId ?? allocateEntityId('th'),
       owner: { kind: 'server' },
       visibility: 'server',
@@ -2844,7 +2848,7 @@ export class FsStore {
   }
 
   /** Reads one canonical Server narrative after current Server authority admission. */
-  public getServerThread(threadId: string): ServerThread {
+  public getServerThread(threadId: string): Thread {
     const thread = this.serverThreads.get(threadId);
     if (!thread) throw new StoreRecordNotFoundError(`Server Thread not found: ${threadId}`);
     return thread;
@@ -2853,13 +2857,13 @@ export class FsStore {
   /** Changes only mutable narrative metadata; placement, entry and lineage remain fixed. */
   public updateServerThread(
     threadId: string,
-    input: Partial<Pick<ServerThread, 'name' | 'status'>>
-  ): ServerThread {
+    input: Partial<Pick<Thread, 'name' | 'status'>>
+  ): Thread {
     const thread = this.getServerThread(threadId);
     for (const key of Object.keys(input))
       if (!['name', 'status'].includes(key))
         throw new Error(`Server Thread update cannot change field: ${key}`);
-    const updated = ServerThreadSchema.parse({ ...thread, ...input, updatedAt: now() });
+    const updated = ThreadSchema.parse({ ...thread, ...input, updatedAt: now() });
     if (this.dataRoot) writeServerThreadRecord(this.dataRoot, updated);
     this.serverThreads.set(threadId, updated);
     return updated;
@@ -2872,7 +2876,7 @@ export class FsStore {
     triggerActor: ActorRef,
     configVersion: number | null = null,
     options: CreateServerTurnOptions = {}
-  ): ServerTurn {
+  ): Turn {
     const thread = this.getServerThread(threadId);
     if (thread.status === 'archived') throw new Error(`Server Thread is archived: ${threadId}`);
     const terminal = isSealedTurnTerminal(options.status ?? 'running');
@@ -2884,7 +2888,7 @@ export class FsStore {
     )
       throw new Error(`Server Thread has a Turn in flight: ${threadId}`);
     const timestamp = options.startedAt ?? now();
-    const turn = ServerTurnSchema.parse({
+    const turn = TurnSchema.parse({
       ...options,
       id: options.turnId ?? allocateEntityId('tu'),
       owner: { kind: 'server' },
@@ -2920,7 +2924,7 @@ export class FsStore {
   }
 
   /** Reads one Turn only within its exact Server Thread. */
-  public getServerTurn(threadId: string, turnId: string): ServerTurn {
+  public getServerTurn(threadId: string, turnId: string): Turn {
     const turn = this.getServerTurnById(turnId);
     if (turn.threadId !== threadId)
       throw new StoreRecordNotFoundError(`Server Turn not found: ${turnId}`);
@@ -2928,14 +2932,14 @@ export class FsStore {
   }
 
   /** Reads a Server Turn by its opaque identity after Server authority admission. */
-  public getServerTurnById(turnId: string): ServerTurn {
+  public getServerTurnById(turnId: string): Turn {
     const turn = this.serverTurns.get(turnId);
     if (!turn) throw new StoreRecordNotFoundError(`Server Turn not found: ${turnId}`);
     return turn;
   }
 
   /** Lists Server Turns in their canonical chronological order. */
-  public listServerThreadTurns(threadId: string): ServerTurn[] {
+  public listServerThreadTurns(threadId: string): Turn[] {
     this.getServerThread(threadId);
     return [...this.serverTurns.values()]
       .filter((turn) => turn.threadId === threadId)
@@ -2943,12 +2947,12 @@ export class FsStore {
   }
 
   /** Updates the existing closed lifecycle without changing immutable Server owner or admission facts. */
-  public updateServerTurn(turnId: string, input: ServerTurnUpdate): ServerTurn {
+  public updateServerTurn(turnId: string, input: ServerTurnUpdate): Turn {
     const turn = this.getServerTurnById(turnId);
     for (const key of Object.keys(input))
       if (!SERVER_TURN_UPDATE_FIELDS.includes(key))
         throw new Error(`Server Turn update cannot change field: ${key}`);
-    const updated = ServerTurnSchema.parse({
+    const updated = TurnSchema.parse({
       ...turn,
       ...input,
       durationMs:
@@ -2970,11 +2974,9 @@ export class FsStore {
   }
 
   /** Appends a full Item revision to its Server Turn before publishing its in-memory projection. */
-  public createServerItem(
-    input: ServerItem,
-    admission?: AlreadyDecidedPublicationAdmission
-  ): ServerItem {
-    const item = ServerItemSchema.parse(input);
+  public createServerItem(input: Item, admission?: AlreadyDecidedPublicationAdmission): Item {
+    const item = ItemSchema.parse(input);
+    if (item.owner.kind !== 'server') throw new Error('Server Item requires Server ownership.');
     const turn = this.getServerTurn(item.threadId, item.turnId);
     const existing = this.serverItems.get(item.id);
     if (this.items.has(item.id)) throw new Error(`Item already exists: ${item.id}`);
@@ -2984,7 +2986,7 @@ export class FsStore {
       if (admission?.category !== 'already-decided-publication' || existing)
         throw terminalTurnWriteRejected(turn.id);
     }
-    const updatedTurn = ServerTurnSchema.parse({
+    const updatedTurn = TurnSchema.parse({
       ...turn,
       items: existing
         ? turn.items.map((candidate) => (candidate.id === item.id ? item : candidate))
@@ -2997,22 +2999,22 @@ export class FsStore {
   }
 
   /** Reads an Item within Server history after Server authority admission. */
-  public getServerItemById(itemId: string): ServerItem {
+  public getServerItemById(itemId: string): Item {
     const item = this.serverItems.get(itemId);
     if (!item) throw new StoreRecordNotFoundError(`Server Item not found: ${itemId}`);
     return item;
   }
 
   /** Updates a Server Item through the same immutable identity and append boundary as creation. */
-  public updateServerItem(itemId: string, input: Partial<ServerItem>): ServerItem {
+  public updateServerItem(itemId: string, input: Partial<Item>): Item {
     const item = this.getServerItemById(itemId);
-    const updated = ServerItemSchema.parse({ ...item, ...input });
+    const updated = ItemSchema.parse({ ...item, ...input });
     assertServerItemRevision(item, updated);
     return this.createServerItem(updated);
   }
 
   /** Lists current Server Item projections in chronological order. */
-  public listServerThreadItems(threadId: string): ServerItem[] {
+  public listServerThreadItems(threadId: string): Item[] {
     this.getServerThread(threadId);
     return [...this.serverItems.values()]
       .filter((item) => item.threadId === threadId)
@@ -3093,7 +3095,9 @@ export class FsStore {
   }
 
   public listThreads(workspaceId: string): Thread[] {
-    return [...this.threads.values()].filter((thread) => thread.workspaceId === workspaceId);
+    return [...this.threads.values()].filter(
+      (thread) => workspaceIdForOwner(thread.owner) === workspaceId
+    );
   }
 
   /** Creates formal shared work by default; conversation entrypoints supply the authenticated private audience explicitly. */
@@ -3127,13 +3131,13 @@ export class FsStore {
       throw new Error('A receiving Thread must differ from its parent.');
     const thread = ThreadSchema.parse({
       id,
-      workspaceId,
       name: title,
       preview: title,
       status: 'active',
       entryPath,
       threadSource: 'conversation',
       ...audience,
+      owner: { kind: 'workspace', workspaceId },
       createdAt: now(),
       updatedAt: now(),
     });
@@ -3156,6 +3160,7 @@ export class FsStore {
     threadId: string,
     input: Partial<Pick<Thread, 'name' | 'status'>>
   ): Thread {
+    if ('owner' in input) throw new Error('Thread update cannot change field: owner');
     const thread = this.getThread(workspaceId, threadId);
     const updated: Thread = {
       ...thread,
@@ -3182,7 +3187,7 @@ export class FsStore {
   public getThread(workspaceId: string, threadId: string): Thread {
     const thread = this.threads.get(threadId);
 
-    if (!thread || thread.workspaceId !== workspaceId) {
+    if (!thread || workspaceIdForOwner(thread.owner) !== workspaceId) {
       throw new StoreRecordNotFoundError(`Thread not found: ${threadId}`);
     }
 
@@ -3219,7 +3224,7 @@ export class FsStore {
     const thread = this.getThread(workspaceId, threadId);
     const turn = TurnSchema.parse({
       id: turnId,
-      workspaceId,
+      owner: { kind: 'workspace', workspaceId },
       threadId,
       triggerActor,
       items: [],
@@ -3351,7 +3356,7 @@ export class FsStore {
   public getTurn(workspaceId: string, threadId: string, turnId: string): Turn {
     const turn = this.turns.get(turnId);
 
-    if (!turn || turn.workspaceId !== workspaceId || turn.threadId !== threadId) {
+    if (!turn || workspaceIdForOwner(turn.owner) !== workspaceId || turn.threadId !== threadId) {
       throw new StoreRecordNotFoundError(`Turn not found: ${turnId}`);
     }
 
@@ -3361,7 +3366,7 @@ export class FsStore {
   /** Returns only the opaque Turn's canonical Workspace and Thread selectors before content admission. */
   public getTurnLineage(turnId: string): { workspaceId: string; threadId: string } | null {
     const turn = this.turns.get(turnId);
-    return turn ? { workspaceId: turn.workspaceId, threadId: turn.threadId } : null;
+    return turn ? { workspaceId: workspaceIdForOwner(turn.owner), threadId: turn.threadId } : null;
   }
 
   public getTurnById(turnId: string): Turn {
@@ -3384,7 +3389,9 @@ export class FsStore {
   public listThreadTurns(workspaceId: string, threadId: string): Turn[] {
     this.getThread(workspaceId, threadId);
     return [...this.turns.values()]
-      .filter((turn) => turn.workspaceId === workspaceId && turn.threadId === threadId)
+      .filter(
+        (turn) => workspaceIdForOwner(turn.owner) === workspaceId && turn.threadId === threadId
+      )
       .sort((left, right) => (left.startedAt ?? '').localeCompare(right.startedAt ?? ''));
   }
 
@@ -3471,7 +3478,7 @@ export class FsStore {
     if (!isSealedTurnTerminal(turn.status) && isSealedTurnTerminal(updated.status))
       this.turnAdmissionHooks?.onTerminalFact?.(updated);
     this.turns.set(turnId, updated);
-    this.persist(turn.workspaceId);
+    this.persist(workspaceIdForOwner(turn.owner));
     if (updated.status === 'completed' && !turn.completedAt && updated.completedAt) {
       ensureTurnFeedback(this, updated, updated.agentId ?? null);
     }
@@ -3512,7 +3519,10 @@ export class FsStore {
     if (this.serverItems.has(item.id)) throw new Error(`Item already exists: ${item.id}`);
     const existing = this.items.get(item.id);
     const turn = this.getTurnById(item.turnId);
-    if (turn.workspaceId !== item.workspaceId || turn.threadId !== item.threadId) {
+    if (
+      workspaceIdForOwner(turn.owner) !== workspaceIdForOwner(item.owner) ||
+      turn.threadId !== item.threadId
+    ) {
       throw new Error(`Item has invalid turn lineage: ${item.id}`);
     }
     if (
@@ -3553,7 +3563,7 @@ export class FsStore {
     }
     if (
       existing &&
-      (existing.workspaceId !== item.workspaceId ||
+      (workspaceIdForOwner(existing.owner) !== workspaceIdForOwner(item.owner) ||
         existing.threadId !== item.threadId ||
         existing.turnId !== item.turnId ||
         existing.type !== item.type ||
@@ -3571,7 +3581,7 @@ export class FsStore {
         : [...turn.items, item],
     };
     if (this.dataRoot) {
-      appendWorkspaceItemRevision(this.workspaceRootPath(item.workspaceId), item);
+      appendWorkspaceItemRevision(this.workspaceRootPath(workspaceIdForOwner(item.owner)), item);
     }
     this.itemRevisions.push(item);
     this.items.set(item.id, item);
@@ -3638,7 +3648,7 @@ export class FsStore {
     const updated = ItemSchema.parse({ ...item, ...patch });
     if (
       updated.id !== item.id ||
-      updated.workspaceId !== item.workspaceId ||
+      workspaceIdForOwner(updated.owner) !== workspaceIdForOwner(item.owner) ||
       updated.threadId !== item.threadId ||
       updated.turnId !== item.turnId ||
       updated.type !== item.type ||
@@ -3653,7 +3663,10 @@ export class FsStore {
     };
 
     if (this.dataRoot) {
-      appendWorkspaceItemRevision(this.workspaceRootPath(updated.workspaceId), updated);
+      appendWorkspaceItemRevision(
+        this.workspaceRootPath(workspaceIdForOwner(updated.owner)),
+        updated
+      );
     }
     this.itemRevisions.push(updated);
     this.items.set(itemId, updated);
@@ -3671,7 +3684,9 @@ export class FsStore {
   public listThreadItems(workspaceId: string, threadId: string): Item[] {
     this.getThread(workspaceId, threadId);
     return [...this.items.values()]
-      .filter((item) => item.workspaceId === workspaceId && item.threadId === threadId)
+      .filter(
+        (item) => workspaceIdForOwner(item.owner) === workspaceId && item.threadId === threadId
+      )
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }
 
@@ -3683,7 +3698,7 @@ export class FsStore {
    */
   public listWorkspaceItemRevisions(workspaceId: string): Item[] {
     this.getWorkspace(workspaceId);
-    return this.itemRevisions.filter((item) => item.workspaceId === workspaceId);
+    return this.itemRevisions.filter((item) => workspaceIdForOwner(item.owner) === workspaceId);
   }
 
   /**
@@ -3965,7 +3980,7 @@ export class FsStore {
       }
       reference = ItemSchema.parse({
         id: itemId,
-        workspaceId: artifact.workspaceId,
+        owner: { kind: 'workspace', workspaceId: artifact.workspaceId },
         threadId: producingTurn.threadId,
         turnId: producingTurn.id,
         type: 'artifact-reference',
@@ -4077,7 +4092,7 @@ export class FsStore {
     if (
       !this.workspaces.has(input.workspaceId) ||
       !thread ||
-      thread.workspaceId !== input.workspaceId
+      workspaceIdForOwner(thread.owner) !== input.workspaceId
     ) {
       throw new ArtifactAuthorityError('stale', 'The requested Workspace or Thread is absent.');
     }
@@ -4115,7 +4130,7 @@ export class FsStore {
     const matchingReference = [...this.items.values()].find(
       (item) =>
         item.type === 'artifact-reference' &&
-        item.workspaceId === input.workspaceId &&
+        workspaceIdForOwner(item.owner) === input.workspaceId &&
         item.threadId === input.threadId &&
         item.artifactId === input.artifactId &&
         (item.turnId === input.turnId || item.lastMutationRequestId === input.requestId)
@@ -4134,7 +4149,7 @@ export class FsStore {
     if (
       [...this.turns.values()].some(
         (turn) =>
-          turn.workspaceId === input.workspaceId &&
+          workspaceIdForOwner(turn.owner) === input.workspaceId &&
           turn.threadId === input.threadId &&
           !isSealedTurnTerminal(turn.status)
       )
@@ -4147,7 +4162,7 @@ export class FsStore {
 
     const reference = ItemSchema.parse({
       id: itemId,
-      workspaceId: input.workspaceId,
+      owner: { kind: 'workspace', workspaceId: input.workspaceId },
       threadId: input.threadId,
       turnId: input.turnId,
       type: 'artifact-reference',
@@ -4162,7 +4177,7 @@ export class FsStore {
     }) as Extract<Item, { type: 'artifact-reference' }>;
     const turn = TurnSchema.parse({
       id: input.turnId,
-      workspaceId: input.workspaceId,
+      owner: { kind: 'workspace', workspaceId: input.workspaceId },
       threadId: input.threadId,
       triggerActor: input.triggerActor,
       items: [reference],
@@ -4386,7 +4401,7 @@ export class FsStore {
     });
     const item = ItemSchema.parse({
       id: itemId,
-      workspaceId: input.workspaceId,
+      owner: { kind: 'workspace', workspaceId: input.workspaceId },
       threadId: input.threadId,
       turnId,
       type: 'artifact-reference',
@@ -4401,7 +4416,7 @@ export class FsStore {
     });
     const turn = TurnSchema.parse({
       id: turnId,
-      workspaceId: input.workspaceId,
+      owner: { kind: 'workspace', workspaceId: input.workspaceId },
       threadId: input.threadId,
       triggerActor: input.actor,
       status: 'completed',
@@ -5019,7 +5034,7 @@ export class FsStore {
     });
 
     if (
-      envelope.workspaceId !== turn.workspaceId ||
+      envelope.workspaceId !== workspaceIdForOwner(turn.owner) ||
       envelope.threadId !== turn.threadId ||
       envelope.turnId !== turn.id
     ) {
@@ -5027,7 +5042,7 @@ export class FsStore {
     }
     assertTurnEventPayloadLineage(
       envelope,
-      turn.workspaceId,
+      workspaceIdForOwner(turn.owner),
       turn.threadId,
       turn.id,
       new Set(turn.items.map((item) => item.id))
@@ -5073,7 +5088,7 @@ export class FsStore {
   public getTurnEventsForExport(turnId: string): SseEventEnvelope[] {
     const turn = this.getTurnById(turnId);
     return this.dataRoot
-      ? readWorkspaceTurnEvents(this.workspaceRootPath(turn.workspaceId), turn)
+      ? readWorkspaceTurnEvents(this.workspaceRootPath(workspaceIdForOwner(turn.owner)), turn)
       : this.getTurnEvents(turnId);
   }
 

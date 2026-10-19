@@ -28,6 +28,7 @@ import {
   isSealedTurnTerminal,
   readRetainedV1,
   responsibleUserIdForActor,
+  workspaceIdForOwner,
 } from '@openkit/protocol';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import type { Hono } from 'hono';
@@ -79,6 +80,7 @@ import {
 } from './policy/statements.js';
 import { findNamedAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import type { PreparedCapturedPendingCall } from './runtime/captured-pending-call.js';
+import { advanceGoalRevision } from './runtime/goal-owner.js';
 import { readGoalTaskPolicyContext } from './runtime/goal-task-policy-context.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
 import {
@@ -182,6 +184,8 @@ interface WorkerMcpToolCallInput {
 export interface RegisterWorkerMcpRoutesInput {
   /** Native Goal-domain composition; linked Tasks cannot omit their mandatory Policy class. */
   readonly goalTaskPolicy?: (db: WorkspaceDb, responsibleUserId: string) => GoalTaskPolicyService;
+  /** Reuses the existing Goal wake after its durable change marker advances. */
+  readonly goalWake?: (workspaceId: string, goalId: string) => void;
   /** Deterministic pilot participant injected by the native composition or tests. */
   readonly interception?: PolicyInterception;
   readonly automationStore?: OperationInvocationDependencies['automationStore'];
@@ -949,7 +953,7 @@ function mcpBootDecidedPublicationEqual(
   const reconstructed = candidate as unknown as Record<string, unknown>;
   return (
     existing.id === candidate.id &&
-    existing.workspaceId === candidate.workspaceId &&
+    workspaceIdForOwner(existing.owner) === workspaceIdForOwner(candidate.owner) &&
     existing.threadId === candidate.threadId &&
     existing.turnId === candidate.turnId &&
     existing.type === candidate.type &&
@@ -1090,7 +1094,7 @@ function decidedMcpPublicationItem(
     tool: row.service_ref.slice('mcp-tool:'.length),
     turnId: row.turn_id,
     type: 'tool-call',
-    workspaceId,
+    owner: { kind: 'workspace', workspaceId: workspaceId },
   });
 }
 
@@ -1433,6 +1437,42 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
     policyInput = mcpInterceptionInput(input, call);
     const policyDecision = await input.interception.decide(policyInput);
     if (policyDecision.result === 'allow') policyInput.useDecision(policyDecision);
+    if (policyDecision.result === 'require_escalation' && policyDecision.escalation) {
+      if (!policyInput.stillCurrent())
+        throw new WorkerControlGatewayError(
+          'mcp-policy-stale',
+          'Goal Task authority changed before Coordinator escalation.',
+          409
+        );
+      const escalation = policyDecision.escalation;
+      // Commit the Goal-scoped gap and its wake marker together before notifying the owner.
+      input.workspaceDb.sqlite
+        .transaction(() => {
+          finishCapabilityCall({
+            callId: call.id,
+            errorCode: 'policy_requires_escalation',
+            status: 'denied',
+            workspaceDb: input.workspaceDb,
+          });
+          advanceGoalRevision(input.workspaceDb, escalation.goalId);
+        })
+        .immediate();
+      terminalCommitted = true;
+      status = 'declined';
+      input.input.goalWake?.(
+        policyDecision.escalation.workspaceId,
+        policyDecision.escalation.goalId
+      );
+      return {
+        isError: true,
+        content: [
+          {
+            type: 'text' as const,
+            text: 'The Goal Coordinator must authorize this Task capability within its approved domain. No upstream effect occurred. A later request requires full current evaluation.',
+          },
+        ],
+      };
+    }
     if (
       policyDecision.result === 'require_escalation' ||
       policyDecision.result === 'require_approval'
@@ -1476,7 +1516,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
       if (!input.input.store.listAllItems().some((item) => item.id === raised.requestItemId))
         input.input.store.createItem({
           id: raised.requestItemId,
-          workspaceId: raised.workspaceId,
+          owner: { kind: 'workspace', workspaceId: raised.workspaceId },
           threadId: raised.threadId,
           turnId: raised.raisingTurnId,
           status: 'completed',
@@ -1965,6 +2005,7 @@ function currentMcpPolicyAuthority(input: WorkerMcpToolCallInput, decision?: Pol
   return {
     subject,
     kernel: task?.kernel ?? captured.decision,
+    goalTask: task,
     revision: task
       ? policyDigest({ caller: captured, goalTask: task.authorizationRevision })
       : policyDigest(captured),
@@ -2149,7 +2190,10 @@ function mcpInterceptionInput(
     authorCurrent,
     anchorCurrent,
     participantAuthorized,
-    finalKernel: () => currentMcpPolicyAuthority(input).kernel,
+    finalKernel: () => {
+      const current = currentMcpPolicyAuthority(input);
+      return current.goalTask ?? current.kernel;
+    },
     stillCurrent: () =>
       !input.signal.aborted &&
       lifecycleCurrent() &&
@@ -2900,7 +2944,7 @@ function publishWorkerMcpItem(input: {
       tool: input.toolName,
       turnId: input.environmentPackage.scope.turnId,
       type: 'tool-call',
-      workspaceId: input.environmentPackage.scope.workspaceId,
+      owner: { kind: 'workspace', workspaceId: input.environmentPackage.scope.workspaceId },
     },
     ALREADY_DECIDED_PUBLICATION_ADMISSION
   );
@@ -3021,7 +3065,7 @@ function hasMcpCapabilityTurnAdmission(
 ): boolean {
   const turn = store.getTurnById(environmentPackage.scope.turnId);
   return (
-    turn.workspaceId === environmentPackage.scope.workspaceId &&
+    workspaceIdForOwner(turn.owner) === environmentPackage.scope.workspaceId &&
     turn.threadId === environmentPackage.scope.threadId &&
     turn.status === 'running'
   );

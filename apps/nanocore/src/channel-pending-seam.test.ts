@@ -91,7 +91,7 @@ function fixture(kind: 'approval' | 'user-input' = 'approval') {
     if (kind === 'approval') {
       store.createItem({
         id: itemId,
-        workspaceId: DEMO_WORKSPACE_ID,
+        owner: { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID },
         threadId: thread.id,
         turnId: turn.id,
         type: 'approval-request',
@@ -126,7 +126,7 @@ function fixture(kind: 'approval' | 'user-input' = 'approval') {
       ];
       store.createItem({
         id: itemId,
-        workspaceId: DEMO_WORKSPACE_ID,
+        owner: { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID },
         threadId: thread.id,
         turnId: turn.id,
         responsibleUserId: actor.userId,

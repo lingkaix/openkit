@@ -40,7 +40,7 @@ export function seedDemoWorkspaceDataRoot(dataRoot) {
   };
   const thread = {
     id: 'th_00000000-0000-7000-8000-000000000001',
-    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     name: 'Protocol design review',
     preview: 'Review the UI-first workspace protocol slice and tighten payload boundaries.',
     status: 'active',
@@ -86,7 +86,7 @@ export function seedDemoWorkspaceDataRoot(dataRoot) {
         schemaVersion: 1,
         recordType: 'thread',
         ownerScope: 'workspace',
-        lineage: { workspaceId: thread.workspaceId, threadId: thread.id },
+        lineage: { workspaceId: thread.owner.workspaceId, threadId: thread.id },
         contentDigest: `sha256:${createHash('sha256').update(JSON.stringify(thread)).digest('hex')}`,
         redactionLevel: 'none',
         sensitivity: 'workspace',

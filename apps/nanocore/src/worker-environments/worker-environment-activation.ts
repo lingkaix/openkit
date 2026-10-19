@@ -12,7 +12,7 @@ import {
   workerEnvironmentActivationConfirmation,
 } from '@openkit/app-api-schemas';
 import { AuthoredAgentConfigSchema } from '@openkit/config-schema';
-import { deriveEntityId, isSealedTurnTerminal } from '@openkit/protocol';
+import { deriveEntityId, isSealedTurnTerminal, workspaceIdForOwner } from '@openkit/protocol';
 import { applyEdits, modify, type ParseError, parse } from 'jsonc-parser';
 import type { Actor } from '../auth/identity.js';
 import { isWorkspaceOperationAuthorized } from '../auth/operation-authorizer.js';
@@ -536,7 +536,9 @@ function contributorIsAuthorized(
     return false;
   }
   try {
-    return store.getThread(workspaceId, contributor.threadId).workspaceId === workspaceId;
+    return (
+      workspaceIdForOwner(store.getThread(workspaceId, contributor.threadId).owner) === workspaceId
+    );
   } catch {
     return false;
   }
@@ -545,7 +547,8 @@ function contributorIsAuthorized(
 /** Requires one current source Thread without disclosing foreign lineage. */
 function requireSourceThread(store: FsStore, workspaceId: string, threadId: string): void {
   try {
-    if (store.getThread(workspaceId, threadId).workspaceId !== workspaceId) throw new Error();
+    if (workspaceIdForOwner(store.getThread(workspaceId, threadId).owner) !== workspaceId)
+      throw new Error();
   } catch {
     throw new WorkerEnvironmentOperationError(
       'workspace_access_denied',
@@ -748,7 +751,7 @@ function createActivationTurn(
     title: 'Activating Worker environment',
     turnId: turn.id,
     type: 'status',
-    workspaceId: home.workspaceId,
+    owner: { kind: 'workspace', workspaceId: home.workspaceId },
   });
   return turn;
 }
