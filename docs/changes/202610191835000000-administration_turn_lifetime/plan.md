@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: in-progress
+status: implemented
 date: 2026-10-19
 branch: lane/go-admin-lifetime
 ---
@@ -11,6 +11,10 @@ branch: lane/go-admin-lifetime
 On 2026-10-19 the engineer assigned the Administration setup blocker and confirmed three rulings. An admitted Turn must survive loss of its submitting connection. Only explicit interruption or the admitted deadline cancels execution. An ordinary answer timeout must not claim that continuation summary production timed out. Investigate the observed 120-second failure and propose any different bound from evidence, rather than increasing it without diagnosis.
 
 A fresh Administration Thread also failed at exactly 120 seconds with a 300-second client timeout. Thus prior Thread history is not necessary to reproduce the deadline. The operator will supply retained execution metadata and capability timing. Public Turn detail does not expose all of that evidence. No agent in this implementation may access dev.
+
+## Intent Revision 2
+
+The engineer approved 600 seconds as the shared Assistant profile default for both Administration and ordinary Assistant. Five observed worst-case rounds take about 413 seconds. Knowledge Manager remains at 300 seconds; other roles are unchanged. Explicit configured limits, model selection and both count fuses remain binding. The ordinary Assistant and its Knowledge Manager journeys need the same headroom, so a separate Administration default would move the failure. Update the owning default in this same landing.
 
 ## Owners And Boundary
 
@@ -36,4 +40,6 @@ Base is accepted main `75747a7a248843614ca6f351b6fbe6411d839ab0`. Independent au
 
 The operator's retained evidence places 119.7 seconds of each 120.1-second failed Turn inside model calls. A fresh Thread has no prior Items, and completed model calls take 4–83 seconds. The proposed 600-second default fits five calls at that observed maximum with about 187 seconds left for Tools and publication. The count fuses remain 16 model calls and 48 Tool calls.
 
-Administration and ordinary Assistant consume the same profile, whose reader supplies 120 seconds when limits are omitted. Ordinary Assistant can call the Knowledge Manager with a separately admitted 300-second budget; its no-profile fallback is only 30 seconds. The engineer requested a ruling before expanding ordinary Assistant scope. That scope decision, and whether dev explicitly authors its profile limits, remain pending. No default has changed. Do not land the two completed corrections alone; the requested cut contains lifetime, diagnostics and the effective bound together.
+The engineer settled the shared-default scope in Intent Revision 2. Independent author commits `4d5a30251` and `ff638e3f5` add parsed/exported schema checks and real Administration/ordinary Assistant admission checks. The actual RED retains three schema failures and four entry-default failures; explicit 4000 ms controls pass. The implementation uses one shared Assistant deadline constant in the disjoint profile schema and all three fallback admissions. KM, other roles, explicit limits and both count fuses remain unchanged.
+
+The requested landing contains lifetime, diagnostics and the effective default together. Complete qualification and a fresh review remain required; no live-account success is inferred. Final named gate and containing-main evidence are retained by the execution checkpoint.

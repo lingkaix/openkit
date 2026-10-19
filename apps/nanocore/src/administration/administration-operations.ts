@@ -3,7 +3,7 @@ import {
   type SubmitAdministrationConversationResponse,
   SubmitAdministrationConversationResponseSchema,
 } from '@openkit/app-api-schemas';
-import type { OpenKitNanoHostConfig } from '@openkit/config-schema';
+import { ASSISTANT_RUN_DEADLINE_MS, type OpenKitNanoHostConfig } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
 import { deriveEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import { z } from 'zod';
@@ -56,7 +56,11 @@ import { createAdministrationNanoHostRuntimeTargetTool } from './nanohost-runtim
 
 const ADMINISTRATION_AGENT_ID = 'assistant';
 const ADMINISTRATION_TARGET_REF = 'internal-role:administration';
-const DEFAULT_LIMITS = { maxModelTurns: 16, maxToolCalls: 48, deadlineMs: 120_000 } as const;
+const DEFAULT_LIMITS = {
+  maxModelTurns: 16,
+  maxToolCalls: 48,
+  deadlineMs: ASSISTANT_RUN_DEADLINE_MS,
+} as const;
 
 // Live interruption handles belong to this entry; retained Turns never resume inference after restart.
 const activeAdministrationRuns = new WeakMap<
