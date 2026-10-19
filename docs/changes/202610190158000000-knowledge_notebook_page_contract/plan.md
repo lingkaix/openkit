@@ -19,6 +19,9 @@ The engineer confirmed F5 cleanup on 2026-10-19 at approximately 01:5xZ. The coo
 - Removing openkit_entry_kind is necessary because it can disagree with the existing typed OKF type. Consumers read an existing OKF type only when their present behavior requires it; otherwise the redundant label is removed.
 - Updating live clients, CLI, docs, runbooks and tests together is necessary because a retired operation or metadata producer would otherwise remain reachable after reset.
 
+- The early existing receipt/in-flight input check is necessary so create path or delete digest preconditions cannot replace the required same-request changed-input conflict with an unrelated content conflict; it adds no receipt or replay owner.
+- The internal base/candidate traversal qualifier is necessary so removal checks the removed page's original dependency graph under current Source authority while a simultaneous candidate edit is checked against its resulting tree; otherwise deletion skips Source checks or a valid joint change is falsely refused. It adds no retained field or resolver.
+
 ## Execution And Evidence
 
 Independent Test Author /root/f5_notebook_test_author owns only two new contract test files. It derives intended failures from the accepted owners and ruling before production implementation. A real existing publisher/read control must establish a valid fixture. Source review uses a separate fresh Sol context, followed by L-AK's bounded owner review. Normal main merge and affected suites plus Native typecheck precede the coordinator-authorized direct fix-forward landing. Full tests stay on shared main. Test commit, RED/GREEN logs, source verdict and exact landing head will be recorded when observed.
