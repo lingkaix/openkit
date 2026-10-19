@@ -118,6 +118,12 @@ export const REQUIRED_FEATURE_REGISTRY = {
     description:
       'Workspace export includes inert recurring definitions and exact occurrence and expired-range history.',
   },
+  'recurring-history-v1': {
+    id: 'recurring-history-v1',
+    status: 'active',
+    description:
+      'Workspace deletion closures retain the inert recurring definitions and exact occurrence and expired-range history.',
+  },
   'workspace.generative-kernel.v1': {
     id: 'workspace.generative-kernel.v1',
     status: 'active',
