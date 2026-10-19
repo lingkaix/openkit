@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from 'node:util';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { isSealedTurnTerminal, workspaceIdForOwner } from '@openkit/protocol';
 import { recordServerAuditEvent } from '../audit-events.js';
+import { isScopeAdmitted } from '../bootstrap/readiness.js';
 import {
   DISPLAY_PROJECTION_REFRESH_FIELDS,
   type FsStore,
@@ -84,6 +85,7 @@ export async function classifyNanoHostAttemptsAfterRestart(
   const errors: unknown[] = [];
   const timestamp = input.now?.() ?? new Date().toISOString();
   for (const attempt of listOpenSchedulerExecutionAttempts(coreDb)) {
+    if (!isScopeAdmitted(coreDb.dataRoot, 'workspace', attempt.workspaceId)) continue;
     if (!attempt.operationId) continue;
     try {
       const session = getWorkerBackendSession(coreDb, attempt.attemptId);
@@ -157,6 +159,7 @@ export async function runNanoHostAttemptRecoveryMaintenance(
   const now = input.now ?? (() => new Date().toISOString());
   const errors: unknown[] = [];
   for (const attempt of listOpenSchedulerExecutionAttempts(coreDb)) {
+    if (!isScopeAdmitted(coreDb.dataRoot, 'workspace', attempt.workspaceId)) continue;
     try {
       let session = getWorkerBackendSession(coreDb, attempt.attemptId);
       if (!session || !attempt.agentSessionId || !attempt.inputRef) continue;
@@ -353,6 +356,7 @@ export async function runNanoHostAttemptRecoveryMaintenance(
   }
   // Closed attempts can retain idle native bindings. No incoming Turn or synthetic attempt owns their retirement.
   for (const session of listWorkerBackendSessions(coreDb)) {
+    if (!isScopeAdmitted(coreDb.dataRoot, 'workspace', session.workspaceId)) continue;
     if (session.state === 'cleaned') continue;
     try {
       const owner = requireSchedulerExecutionAttempt(coreDb, session.attemptId);
@@ -409,6 +413,7 @@ export async function runNanoHostAttemptRecoveryMaintenance(
       >
     >;
     for (const attempt of failedStarts) {
+      if (!isScopeAdmitted(coreDb.dataRoot, 'workspace', attempt.workspaceId)) continue;
       try {
         await settleTerminalFailedStart(coreDb, attempt.attemptId, input.store, input, timestamp);
       } catch (error) {

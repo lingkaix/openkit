@@ -19,6 +19,7 @@ import {
 
 import { allocateEntityId, isEntityId } from '@openkit/protocol';
 
+import { assertScopeAdmitted, isScopeAdmitted, refuseScope } from '../bootstrap/readiness.js';
 import { ensureEncryptedFileVaultStoreDirectory } from '../vault/vault-store-directory.js';
 
 const CONFIG_TEMPLATE_SUFFIXES = {
@@ -335,6 +336,7 @@ export function recordDataRootDeploymentMove(
  * @returns Paths created for the user subtree.
  */
 export function ensureUserLayout(root: string, userId: string): UserLayoutPaths {
+  assertScopeAdmitted(root, 'user', userId);
   const userRoot = resolveDataRootPath(root, 'users', userId);
   const paths: UserLayoutPaths = {
     root: userRoot,
@@ -362,6 +364,7 @@ export function ensureUserLayout(root: string, userId: string): UserLayoutPaths 
  * @returns Paths created for the workspace subtree.
  */
 export function ensureWorkspaceLayout(root: string, workspaceId: string): WorkspaceLayoutPaths {
+  assertScopeAdmitted(root, 'workspace', workspaceId);
   ensureLayoutDirectory(root, true);
   ensureLayoutDirectory(resolveDataRootPath(root, 'workspaces'));
   return ensureWorkspaceLayoutRoot(resolveDataRootPath(root, 'workspaces', workspaceId));
@@ -621,21 +624,25 @@ function verifyCanonicalRecordEnvelopeSupport(root: string): void {
       continue;
     }
 
-    let envelope: ReturnType<typeof parseRecordEnvelope>;
     try {
-      envelope = parseRecordEnvelope(record, {
+      const envelope = parseRecordEnvelope(record, {
         supportedFeatures: Object.keys(REQUIRED_FEATURE_REGISTRY) as RequiredFeatureId[],
       });
+      if (!DATA_ROOT_SUPPORTED_CANONICAL_RECORD_TYPES.has(envelope.recordType)) {
+        throw new Error(`Unsupported canonical record family: ${envelope.recordType}`);
+      }
     } catch (error) {
-      throw new Error(
-        `DATA_ROOT unsupported requiredFeatures in ${reportPath}: ${errorMessage(error)}`
-      );
-    }
-
-    if (!DATA_ROOT_SUPPORTED_CANONICAL_RECORD_TYPES.has(envelope.recordType)) {
-      throw new Error(
-        `DATA_ROOT unsupported canonical record family in ${reportPath}: ${envelope.recordType}`
-      );
+      const owner = /^(workspaces|users)\/([^/]+)\//.exec(reportPath);
+      if (!owner) {
+        throw new Error(
+          `DATA_ROOT unsupported requiredFeatures or canonical record family in ${reportPath}: ${errorMessage(error)}`
+        );
+      }
+      refuseScope(root, {
+        scope: owner[1] === 'workspaces' ? 'workspace' : 'user',
+        id: owner[2]!,
+        check: 'layout',
+      });
     }
   }
 }
@@ -771,7 +778,7 @@ function listChildDirectories(path: string): string[] {
  * @param path Root path to scan.
  * @returns Descendant file paths.
  */
-function listDescendantFiles(path: string): string[] {
+function listDescendantFiles(path: string, dataRoot: string = path): string[] {
   const files: string[] = [];
 
   for (const entry of readLayoutDirectory(path).sort((left, right) =>
@@ -783,7 +790,18 @@ function listDescendantFiles(path: string): string[] {
       throw new Error(`DATA_ROOT layout must not contain a symbolic link: ${childPath}`);
     }
     if (entry.isDirectory()) {
-      files.push(...listDescendantFiles(childPath));
+      const owner = /^(workspaces|users)\/([^/]+)$/.exec(toDataRootReportPath(dataRoot, childPath));
+      const scope = owner?.[1] === 'workspaces' ? 'workspace' : 'user';
+      if (owner && !isScopeAdmitted(dataRoot, scope, owner[2]!)) continue;
+      try {
+        files.push(...listDescendantFiles(childPath, dataRoot));
+      } catch (error) {
+        // Known-scope I/O loss is local. Unsafe topology and cross-owner violations still escape.
+        const code = (error as NodeJS.ErrnoException).code;
+        if (!owner || !['EACCES', 'EPERM', 'EIO', 'ENOENT', 'ENOTDIR'].includes(code ?? ''))
+          throw error;
+        refuseScope(dataRoot, { scope, id: owner[2]!, check: 'layout' });
+      }
       continue;
     }
     if (entry.isFile()) {

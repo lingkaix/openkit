@@ -6,6 +6,7 @@ import {
   isWorkspaceOperationAuthorized,
 } from './auth/operation-authorizer.js';
 import { isThreadVisible } from './auth/thread-visibility.js';
+import { isScopeAdmitted } from './bootstrap/readiness.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
 import { type FamilyImplementations, publicOperationActor } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
@@ -33,9 +34,10 @@ export function createAppSearchOperationImplementations(
       );
       if (context.scope.kind !== 'authorized-workspace-set')
         throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
-      const workspaces = context.scope.workspaceIds.map((workspaceId) =>
-        store.getWorkspace(workspaceId)
-      );
+      const dataRoot = store.getDataRoot();
+      const workspaces = context.scope.workspaceIds
+        .filter((workspaceId) => !dataRoot || isScopeAdmitted(dataRoot, 'workspace', workspaceId))
+        .map((workspaceId) => store.getWorkspace(workspaceId));
       const matches = (value: string | null | undefined) => value?.toLowerCase().includes(query);
       const items: Array<{
         kind: 'workspace' | 'thread' | 'knowledge' | 'artifact' | 'item';

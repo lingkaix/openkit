@@ -436,6 +436,12 @@ def unrelated_unit_diagnostic(line, unit):
                     r'(?:\.d/[^\s:]+)?(?=[:\s]|$)', line) is not None
 
 
+def ignored_restart_step_diagnostic(line, unit_path):
+    """Accepts only stock older-manager warnings for the two optional backoff keys."""
+    source = r'(?:' + re.escape(str(unit_path)) + '|' + re.escape(unit_path.name) + ')'
+    return re.fullmatch(source + r":\d+: Unknown (?:key name|lvalue) '(?:RestartSteps|RestartMaxDelaySec)' in section 'Service', ignoring\.", line) is not None
+
+
 def observe(entry, root, release):
     """Collects bounded non-secret capability facts; equality with a qualified host is never required."""
     probe, predicate = entry['probe'], entry['predicate']
@@ -454,8 +460,9 @@ def observe(entry, root, release):
         unit = read_regular(root / predicate['unit']).decode()
         status, output, errors = command_result(['/usr/bin/systemd-analyze', 'verify', '--man=no', '--generators=no', str(root / predicate['unit'])])
         expected_absence = predicate['unit'] + ': Command /usr/lib/openkit/nanohost is not executable: No such file or directory'
-        output = '\n'.join(line for line in output.splitlines() if not unrelated_unit_diagnostic(line, predicate['unit']))
-        errors = '\n'.join(line for line in errors.splitlines() if not unrelated_unit_diagnostic(line, predicate['unit']))
+        unit_path = root / predicate['unit']
+        output = '\n'.join(line for line in output.splitlines() if not unrelated_unit_diagnostic(line, predicate['unit']) and not ignored_restart_step_diagnostic(line, unit_path))
+        errors = '\n'.join(line for line in errors.splitlines() if not unrelated_unit_diagnostic(line, predicate['unit']) and not ignored_restart_step_diagnostic(line, unit_path))
         unexpected = [line for line in errors.splitlines() if line != expected_absence]
         if any('Permission denied' in line or 'Failed to open' in line or 'unrecognized option' in line for line in unexpected + output.splitlines()):
             raise ValueError('unit inspection unavailable')

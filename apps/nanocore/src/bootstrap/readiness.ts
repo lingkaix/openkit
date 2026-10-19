@@ -1,5 +1,90 @@
 import { randomUUID } from 'node:crypto';
+import { resolve } from 'node:path';
 import type { BootReadinessSnapshot } from '@openkit/app-api-schemas';
+import { OperationError } from '../operation-error.js';
+
+/** A refused authority or unavailable projection; never persisted or used as replacement truth. */
+export interface ScopeAdmissionFailure {
+  readonly scope: 'workspace' | 'user';
+  readonly id: string;
+  readonly check: 'layout' | 'database' | 'records' | 'recovery' | 'index';
+}
+
+// Boot and ordinary callers share the same refusal until process restart revalidates authority.
+const scopeFailures = new Map<string, Map<string, ScopeAdmissionFailure>>();
+
+/** Records the first failed check in its owning scope without changing retained bytes. */
+export function refuseScope(dataRoot: string, failure: ScopeAdmissionFailure): void {
+  const root = resolve(dataRoot);
+  let failures = scopeFailures.get(root);
+  if (!failures) {
+    failures = new Map();
+    scopeFailures.set(root, failures);
+  }
+  const key = `${failure.scope}:${failure.id}:${failure.check === 'index' ? 'index' : 'authority'}`;
+  if (!failures.has(key)) failures.set(key, failure);
+}
+
+/** Returns bounded, owner-authored diagnoses for the existing authorized readiness projection. */
+export function scopeAdmissionFailures(dataRoot: string): readonly ScopeAdmissionFailure[] {
+  return [...(scopeFailures.get(resolve(dataRoot))?.values() ?? [])];
+}
+
+/** Tests admission without opening or reconstructing a refused scope. */
+export function isScopeAdmitted(
+  dataRoot: string,
+  scope: ScopeAdmissionFailure['scope'],
+  id: string
+): boolean {
+  return !scopeFailures.get(resolve(dataRoot))?.has(`${scope}:${id}:authority`);
+}
+
+/** Refuses dependent operations while leaving other scopes and server authority available. */
+export function assertScopeAdmitted(
+  dataRoot: string,
+  scope: ScopeAdmissionFailure['scope'],
+  id: string
+): void {
+  if (!isScopeAdmitted(dataRoot, scope, id)) {
+    const failure = scopeFailures.get(resolve(dataRoot))!.get(`${scope}:${id}:authority`)!;
+    throw new OperationError(
+      'recovery_required',
+      `storage: ${scope} ${id} quarantined; check=${failure.check}; stage=scope-admission.`,
+      409
+    );
+  }
+}
+
+/** Adds scope-local degradation without making a healthy sibling globally unready. */
+export function withScopeAdmissionReadiness(
+  snapshot: BootReadinessSnapshot,
+  dataRoot: string
+): BootReadinessSnapshot {
+  const failures = scopeAdmissionFailures(dataRoot);
+  if (failures.length === 0) return snapshot;
+  const subsystems = { ...snapshot.subsystems };
+  for (const name of ['storage', 'knowledgeIndex'] as const) {
+    const reasons = failures
+      .filter((failure) =>
+        name === 'knowledgeIndex' ? failure.check === 'index' : failure.check !== 'index'
+      )
+      .map((failure) => ({
+        code: failure.check === 'index' ? 'storage.index-unavailable' : 'storage.scope-quarantined',
+        message: `storage: ${failure.scope} ${failure.id}; check=${failure.check}; stage=scope-admission.`,
+        blocks: [`${failure.scope}:${failure.id}${failure.check === 'index' ? ':index' : ''}`],
+      }));
+    if (reasons.length > 0)
+      subsystems[name] = {
+        state: subsystems[name].state === 'failed' ? 'failed' : 'degraded',
+        reasons: [...subsystems[name].reasons, ...reasons],
+      };
+  }
+  return {
+    ...snapshot,
+    overall: snapshot.overall === 'failed' ? 'failed' : 'degraded',
+    subsystems,
+  };
+}
 
 type BootSubsystemName = keyof BootReadinessSnapshot['subsystems'];
 

@@ -54,6 +54,7 @@ import {
 } from '@openkit/worker-protocol';
 import { applyEdits, modify } from 'jsonc-parser';
 import { z } from 'zod';
+import { isScopeAdmitted, refuseScope } from '../bootstrap/readiness.js';
 import { parseJsoncObject } from '../config/jsonc.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import {
@@ -965,54 +966,52 @@ export function readPublishedAgentSessionIds(
 }
 
 /**
- * Loads every published workspace from canonical file records.
+ * Loads admitted published Workspaces from canonical file records, refusing invalid scopes in place.
  *
  * @param dataRoot Data root that owns the Workspace tree.
- * @returns Canonical workspace records in workspace-directory order.
- * @throws Error when record lineage is invalid or a global id collides.
+ * @returns Valid records in directory order; disputed global identities exclude both owners.
+ * @throws When the shared container or a Workspace identity is unsafe rather than an attributable record failure.
  */
 export function loadWorkspaceFileRecords(dataRoot: string): WorkspaceFileRecords[] {
   const workspacesRoot = ensureLayoutDirectories(dataRoot).workspaces;
   assertCanonicalDirectory(workspacesRoot);
-  const records = listDirectoryNames(workspacesRoot)
-    .filter((name) => name !== '.staging')
-    .map((workspaceId) => {
-      assertSafeWorkspacePathSegment(workspaceId, 'Workspace id');
-      return loadWorkspace(join(workspacesRoot, workspaceId), workspaceId);
-    });
-  const threadIds = new Set<string>();
-  const turnIds = new Set<string>();
-  const itemIds = new Set<string>();
-  const artifactIds = new Set<string>();
-  const proposalIds = new Set<string>();
-  const sourceIds = new Set<string>();
-  const agentSessionIds = new Set<string>();
-
-  for (const workspaceRecords of records) {
-    for (const thread of workspaceRecords.threads) {
-      claimGlobalId(threadIds, thread.id, 'thread');
-    }
-    for (const turn of workspaceRecords.turns) {
-      claimGlobalId(turnIds, turn.id, 'turn');
-      for (const item of turn.items) {
-        claimGlobalId(itemIds, item.id, 'item');
-      }
-    }
-    for (const artifact of workspaceRecords.artifacts) {
-      claimGlobalId(artifactIds, artifact.id, 'artifact');
-    }
-    for (const proposal of workspaceRecords.knowledgeProposals) {
-      claimGlobalId(proposalIds, proposal.id, 'knowledge proposal');
-    }
-    for (const source of workspaceRecords.knowledgeSources) {
-      claimGlobalId(sourceIds, source.id, 'knowledge source');
-    }
-    for (const session of workspaceRecords.agentSessions) {
-      claimGlobalId(agentSessionIds, session.id, 'AgentSession');
+  const records: WorkspaceFileRecords[] = [];
+  for (const workspaceId of listDirectoryNames(workspacesRoot).filter(
+    (name) => name !== '.staging'
+  )) {
+    assertSafeWorkspacePathSegment(workspaceId, 'Workspace id');
+    if (!isScopeAdmitted(dataRoot, 'workspace', workspaceId)) continue;
+    try {
+      records.push(loadWorkspace(join(workspacesRoot, workspaceId), workspaceId));
+    } catch {
+      refuseScope(dataRoot, { scope: 'workspace', id: workspaceId, check: 'records' });
     }
   }
 
-  return records;
+  // A collision disputes both owners, not whichever one happened to load second.
+  const owners = new Map<string, string>();
+  for (const record of records) {
+    const workspaceId = record.workspace.id;
+    const identities = [
+      ...record.threads.map(({ id }) => `thread:${id}`),
+      ...record.turns.flatMap((turn) => [
+        `turn:${turn.id}`,
+        ...turn.items.map(({ id }) => `item:${id}`),
+      ]),
+      ...record.artifacts.map(({ id }) => `artifact:${id}`),
+      ...record.knowledgeProposals.map(({ id }) => `proposal:${id}`),
+      ...record.knowledgeSources.map(({ id }) => `source:${id}`),
+      ...record.agentSessions.map(({ id }) => `session:${id}`),
+    ];
+    for (const identity of identities) {
+      const previous = owners.get(identity);
+      if (previous !== undefined) {
+        refuseScope(dataRoot, { scope: 'workspace', id: previous, check: 'records' });
+        refuseScope(dataRoot, { scope: 'workspace', id: workspaceId, check: 'records' });
+      } else owners.set(identity, workspaceId);
+    }
+  }
+  return records.filter((record) => isScopeAdmitted(dataRoot, 'workspace', record.workspace.id));
 }
 
 /** Discards abandoned private staging at Store startup, before any live admission. Read-only canonical inspection must never delete a concurrent capture. */
