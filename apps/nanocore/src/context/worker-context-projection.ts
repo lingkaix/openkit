@@ -202,9 +202,16 @@ function readVerifiedThreadWorkerContextTraces(
     return [];
   }
 
+  // Record only the native boundary reached; exception text can contain private paths or bytes.
+  let failedCheck:
+    | 'createWorkerContextPackageAuthorityReader'
+    | 'assertCanonicalDirectory'
+    | 'readPortableWorkerContextPackageTrace'
+    | 'turn.startedAt' = 'createWorkerContextPackageAuthorityReader';
   try {
     const authorities = createWorkerContextPackageAuthorityReader(input);
     return turnsWithTrace.map((turn) => {
+      failedCheck = 'assertCanonicalDirectory';
       for (const directory of [
         workspaceRoot,
         join(workspaceRoot, 'threads'),
@@ -214,6 +221,7 @@ function readVerifiedThreadWorkerContextTraces(
       ]) {
         assertCanonicalDirectory(directory);
       }
+      failedCheck = 'readPortableWorkerContextPackageTrace';
       const verified = readPortableWorkerContextPackageTrace({
         authorities,
         workspaceId,
@@ -221,13 +229,16 @@ function readVerifiedThreadWorkerContextTraces(
         turnId: turn.id,
         workspaceRoot,
       });
+      failedCheck = 'turn.startedAt';
       if (!turn.startedAt) {
         throw new Error('Worker Context Package Turn lacks its start time.');
       }
       return { startedAt: turn.startedAt, ...verified };
     });
   } catch {
-    throw recoveryRequired('Worker Context Package authority is inconsistent.');
+    throw recoveryRequired(
+      `Worker Context Package verification failed: owner=worker-context-projection; check=${failedCheck}; stage=thread-material-read.`
+    );
   }
 }
 
