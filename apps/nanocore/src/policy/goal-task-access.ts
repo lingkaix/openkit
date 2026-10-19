@@ -32,6 +32,13 @@ export interface GoalTaskAccessInput {
 /** Current Kernel result and non-retained scope/revision projections for the native caller. */
 export interface GoalTaskAccessResult {
   readonly kernel: PolicyDecision;
+  /** Native refusal destination only; it supplies no authority or permission to dispatch. */
+  readonly escalation?: {
+    readonly kind: 'coordinator';
+    readonly workspaceId: string;
+    readonly goalId: string;
+    readonly agentId: string;
+  };
   /** Scope membership only; this is not permission or evidence that no prohibition exists. */
   readonly inGoalEnvelope: boolean;
   /** Include in existing currentness checks; do not create another retained revision owner. */
@@ -102,6 +109,23 @@ export function evaluateGoalTaskAccess(input: GoalTaskAccessInput): GoalTaskAcce
   return {
     kernel,
     inGoalEnvelope,
+    ...(domain &&
+    inGoalEnvelope &&
+    !selectedByTask &&
+    !permission &&
+    input.humanKernel.effect === 'allow' &&
+    kernel.effect === 'deny' &&
+    kernel.reasons.length > 0 &&
+    kernel.reasons.every(({ code }) => code === 'missing-privilege')
+      ? {
+          escalation: {
+            kind: 'coordinator' as const,
+            workspaceId: domain.source.workspaceId,
+            goalId: domain.source.goalId,
+            agentId: domain.delegate.id,
+          },
+        }
+      : {}),
     ...(permission ? { permission } : {}),
     authorizationRevision: policyDigest({
       domain: domain ? { id: domain.id, digest: policyDigest(domain) } : null,
