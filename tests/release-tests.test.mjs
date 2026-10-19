@@ -44,14 +44,17 @@ test('inventory equality preserves duplicate counts and refuses lost cases', () 
 });
 test('admission collects both variants and routine execution runs coverage once', () => {
   const calls = [],
+    environments = [],
     owner = { name: 'synthetic', cwd: '/example' };
   const seams = {
-    spawn: (_exe, args) => {
+    spawn: (_exe, args, options) => {
       calls.push(args);
+      environments.push(options.env);
       return { status: 0, stdout: JSON.stringify(inventory) };
     },
-    run: ({ command }) => {
+    run: ({ command, env }) => {
       calls.push(command);
+      environments.push(env);
       return [];
     },
   };
@@ -63,6 +66,14 @@ test('admission collects both variants and routine execution runs coverage once'
   assert.equal(calls.length, 3);
   assert(!calls[0].includes('--coverage'));
   assert(calls[1].includes('--coverage'));
+  for (const args of calls.slice(0, 2)) assert(args.includes('--maxWorkers=4'));
+  assert(!calls[2].some((arg) => arg.startsWith('--maxWorkers')));
+  for (const env of environments)
+    assert.equal(
+      (env ?? process.env).VITEST_MAX_WORKERS,
+      process.env.VITEST_MAX_WORKERS,
+      'other owners preserve inherited worker settings'
+    );
   assert(
     calls[2].includes('run') &&
       calls[2].includes('--coverage') &&
@@ -224,7 +235,7 @@ test('actual single coverage execution refuses a deliberate undeclared Vitest sk
 /** A partition receipt preserves repeated case names while files remain disjoint. */
 function partitionReceipt(index, file, names = ['case', 'case']) {
   return {
-    partition: { index, count: 2 },
+    partition: { index, count: 4 },
     expected: names.map((name) => ({ file, name })),
     report: {
       success: true,
@@ -240,19 +251,21 @@ function partitionReceipt(index, file, names = ['case', 'case']) {
 }
 test('coverage partition union rejects every missing, overlapping, extra and non-passing member', () => {
   const a = partitionReceipt(1, '/one.test.js'),
-    b = partitionReceipt(2, '/two.test.js');
-  const files = [{ file: '/one.test.js' }, { file: '/two.test.js' }];
-  assert.equal(verifyCoveragePartitions([a, b], files, 2).length, 4);
+    b = partitionReceipt(2, '/two.test.js'),
+    c = partitionReceipt(3, '/three.test.js'),
+    d = partitionReceipt(4, '/four.test.js');
+  const files = ['one', 'two', 'three', 'four'].map((name) => ({ file: `/${name}.test.js` }));
+  assert.equal(verifyCoveragePartitions([a, b, c, d], files, 4).length, 8);
   for (const members of [
-    [a],
-    [a, b, b],
-    [a, a],
-    [a, { ...b, partition: { index: 2, count: 3 } }],
-    [a, partitionReceipt(2, '/one.test.js')],
-    [a, partitionReceipt(2, '/extra.test.js')],
-    [a, { ...b, expected: b.expected.slice(1) }],
-    [a, { ...b, expected: [] }],
-    [a, { ...b, report: { ...b.report, success: false } }],
+    [a, b, c],
+    [a, b, c, d, d],
+    [a, b, c, c],
+    [a, { ...b, partition: { index: 2, count: 3 } }, c, d],
+    [a, partitionReceipt(2, '/one.test.js'), c, d],
+    [a, partitionReceipt(2, '/extra.test.js'), c, d],
+    [a, { ...b, expected: b.expected.slice(1) }, c, d],
+    [a, { ...b, expected: [] }, c, d],
+    [a, { ...b, report: { ...b.report, success: false } }, c, d],
     [
       a,
       {
@@ -270,29 +283,34 @@ test('coverage partition union rejects every missing, overlapping, extra and non
           ],
         },
       },
+      c,
+      d,
     ],
   ])
-    assert.throws(() => verifyCoveragePartitions(members, files, 2));
+    assert.throws(() => verifyCoveragePartitions(members, files, 4));
 });
-test('partition admission collects cases with both recipes and defers only partial coverage thresholds', (t) => {
+test('NanoCore partition admission caps collection and execution at two workers and defers only partial thresholds', (t) => {
   const dir = mkdtempSync(path.join(tmpdir(), 'release-partition-command-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const reportFile = path.join(dir, 'one-execution.report'),
     blobFile = path.join(dir, 'blobs/one.json');
-  const calls = [];
+  const calls = [],
+    environments = [];
   const expected = [{ file: '/subject.test.js', name: 'case' }];
   const result = coveredSuite(
-    { name: 'fixture', cwd: dir },
+    { name: '@openkit/nanocore', cwd: dir },
     {
-      partition: { index: 1, count: 2 },
+      partition: { index: 1, count: 4 },
       reportFile,
       blobFile,
-      spawn: (_exe, args) => {
+      spawn: (_exe, args, options) => {
         calls.push(args);
+        environments.push(options.env);
         return { status: 0, stdout: JSON.stringify(expected) };
       },
-      run: ({ command }) => {
+      run: ({ command, env }) => {
         calls.push(command);
+        environments.push(env);
         writeFileSync(
           reportFile,
           JSON.stringify({
@@ -308,14 +326,19 @@ test('partition admission collects cases with both recipes and defers only parti
   );
   assert.equal(result.cases, 1);
   assert.equal(calls.length, 3);
-  for (const args of calls) assert(args.includes('--shard=1/2'));
+  for (const args of calls) {
+    assert(args.includes('--shard=1/4'));
+    assert(args.includes('--maxWorkers=2'));
+  }
+  // Vitest's inherited environment overrides its CLI worker flag. Both must agree.
+  for (const env of environments) assert.equal(env?.VITEST_MAX_WORKERS, '2');
   for (const args of calls.slice(0, 2)) assert(!args.includes('--filesOnly'));
   assert(!calls[0].includes('--coverage'));
   assert(calls[1].includes('--coverage'));
   assert(calls[2].includes('--reporter=blob'));
   assert(calls[2].includes('--coverage.thresholds.lines=0'));
   assert.deepEqual(JSON.parse(readFileSync(`${reportFile}.inventory`)), {
-    partition: { index: 1, count: 2 },
+    partition: { index: 1, count: 4 },
     expected,
   });
   assert.throws(
@@ -334,6 +357,8 @@ test('merged coverage preserves original thresholds and propagates the deciding 
   for (const [index, name] of [
     [1, 'one'],
     [2, 'two'],
+    [3, 'three'],
+    [4, 'four'],
   ]) {
     const entry = partitionReceipt(index, `/${name}.test.js`);
     writeFileSync(
@@ -343,21 +368,29 @@ test('merged coverage preserves original thresholds and propagates the deciding 
     writeFileSync(path.join(dir, `${name}-execution.report`), JSON.stringify(entry.report));
     writeFileSync(path.join(dir, 'blobs', `${name}.json`), '{}');
   }
-  let command;
+  let command, collectionCommand;
+  const environments = [];
   assert.throws(
     () =>
       mergeCoveredSuite(
-        { name: 'fixture', cwd: dir },
+        { name: '@openkit/nanocore', cwd: dir },
         {
           directory: dir,
-          count: 2,
+          count: 4,
           reportFile: path.join(dir, 'merged.report'),
-          spawn: () => ({
-            status: 0,
-            stdout: JSON.stringify([{ file: '/one.test.js' }, { file: '/two.test.js' }]),
-          }),
-          run: ({ command: args }) => {
+          spawn: (_exe, args, options) => {
+            collectionCommand = args;
+            environments.push(options.env);
+            return {
+              status: 0,
+              stdout: JSON.stringify(
+                ['one', 'two', 'three', 'four'].map((name) => ({ file: `/${name}.test.js` }))
+              ),
+            };
+          },
+          run: ({ command: args, env }) => {
             command = args;
+            environments.push(env);
             return ['original threshold failed'];
           },
         }
@@ -365,45 +398,58 @@ test('merged coverage preserves original thresholds and propagates the deciding 
     /original threshold failed/
   );
   assert(command.includes('--coverage'));
+  assert(collectionCommand.includes('--maxWorkers=2'));
+  assert(command.includes('--maxWorkers=2'));
+  for (const env of environments) assert.equal(env?.VITEST_MAX_WORKERS, '2');
   assert(command.some((arg) => arg.startsWith('--merge-reports=')));
   assert(!command.some((arg) => arg.startsWith('--coverage.thresholds')));
 });
-test('actual partition blobs merge to original coverage and a stricter original threshold refuses', (t) => {
-  const owner = vitestFixture(t, 'test("true branch",()=>expect(value(true)).toBe(1));');
+test('four actual partition blobs merge to original coverage and unchanged thresholds refuse lost coverage', (t) => {
+  const owner = vitestFixture(
+    t,
+    'test("first branch",()=>{ expect(process.env.VITEST_MAX_WORKERS).toBe("2"); expect(value(1)).toBe(1); });'
+  );
+  owner.name = '@openkit/nanocore';
   const directory = path.join(owner.cwd, 'receipts');
   mkdirSync(directory);
   writeFileSync(
     path.join(owner.cwd, 'subject.js'),
-    'export function value(input) { if (input) return 1; return 2; }'
+    'export function value(input) { if (input === 1) return 1; if (input === 2) return 2; if (input === 3) return 3; return 4; }'
   );
-  writeFileSync(
-    path.join(owner.cwd, 'other.test.js'),
-    'import {value} from "./subject.js"; test("false branch",()=>expect(value(false)).toBe(2));'
-  );
+  for (const [file, input] of [
+    ['other', 2],
+    ['third', 3],
+    ['fourth', 4],
+  ])
+    writeFileSync(
+      path.join(owner.cwd, `${file}.test.js`),
+      `import {value} from './subject.js'; test('branch ${input}',()=>expect(value(${input})).toBe(${input}));`
+    );
   const config = (threshold) =>
     `export default {test:{globals:true,maxWorkers:1,pool:"threads",include:["*.test.js"],coverage:{provider:"v8",reporter:["text"],include:["subject.js"],thresholds:{lines:${threshold},branches:${threshold},functions:${threshold},statements:${threshold}}}}};`;
   writeFileSync(path.join(owner.cwd, 'vitest.config.js'), config(100));
-  for (const index of [1, 2]) {
+  for (const index of [1, 2, 3, 4]) {
     const prefix = `part-${index}`;
     const result = runAdmissionFixture(
-      `coveredSuite(${JSON.stringify(owner)},${JSON.stringify({ partition: { index, count: 2 }, reportFile: path.join(directory, `${prefix}-execution.report`), blobFile: path.join(directory, 'blobs', `${prefix}.json`) })});`
+      `coveredSuite(${JSON.stringify(owner)},${JSON.stringify({ partition: { index, count: 4 }, reportFile: path.join(directory, `${prefix}-execution.report`), blobFile: path.join(directory, 'blobs', `${prefix}.json`) })});`
     );
     assert.equal(result.status, 0, result.stdout + result.stderr);
   }
-  const call = `mergeCoveredSuite(${JSON.stringify(owner)},${JSON.stringify({ directory, count: 2, reportFile: path.join(directory, 'merged.report') })});`;
+  const call = `mergeCoveredSuite(${JSON.stringify(owner)},${JSON.stringify({ directory, count: 4, reportFile: path.join(directory, 'merged.report') })});`;
   const complete = runAdmissionFixture(call);
   assert.equal(complete.status, 0, complete.stdout + complete.stderr);
   const report = JSON.parse(readFileSync(path.join(directory, 'merged.report')));
-  assert.equal(report.numPassedTests, 2);
-  // Keep the original 100% threshold. Both successful tests now cover the same branch.
+  assert.equal(report.numPassedTests, 4);
+  assert.equal(report.testResults.length, 4);
+  // Keep the original 100% thresholds and four passing tests, but leave the final branch uncovered.
   writeFileSync(
-    path.join(owner.cwd, 'other.test.js'),
-    'import {value} from "./subject.js"; test("false branch",()=>expect(value(true)).toBe(1));'
+    path.join(owner.cwd, 'fourth.test.js'),
+    'import {value} from "./subject.js"; test("branch 4",()=>expect(value(1)).toBe(1));'
   );
-  for (const index of [1, 2]) {
+  for (const index of [1, 2, 3, 4]) {
     const prefix = `part-${index}`;
     const result = runAdmissionFixture(
-      `coveredSuite(${JSON.stringify(owner)},${JSON.stringify({ partition: { index, count: 2 }, reportFile: path.join(directory, `${prefix}-execution.report`), blobFile: path.join(directory, 'blobs', `${prefix}.json`) })});`
+      `coveredSuite(${JSON.stringify(owner)},${JSON.stringify({ partition: { index, count: 4 }, reportFile: path.join(directory, `${prefix}-execution.report`), blobFile: path.join(directory, 'blobs', `${prefix}.json`) })});`
     );
     assert.equal(result.status, 0, result.stdout + result.stderr);
   }

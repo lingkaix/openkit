@@ -13,6 +13,7 @@ import { readWorkspaceDeletionRequest } from '../workspace-deletion-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { openCoreDb } from './db.js';
+import { ensureLayout } from './fs-layout.js';
 import { applyMigrations } from './migrate.js';
 
 it('seals the complete recurring graph before deletion removes its Core rows and Audit', async () => {
@@ -101,6 +102,8 @@ it('seals the complete recurring graph before deletion removes its Core rows and
     );
     const manifest = JSON.parse(readFileSync(join(root, 'workspace-closure.json'), 'utf8'));
     expect(manifest.requiredFeatures).toContain('recurring-history-v1');
+    // The next boot scans every canonical envelope under the data root, including this closure.
+    expect(() => ensureLayout(dataRoot)).not.toThrow();
     const history = JSON.parse(
       readFileSync(join(root, 'records', 'recurring-history.jsonl'), 'utf8')
     );
