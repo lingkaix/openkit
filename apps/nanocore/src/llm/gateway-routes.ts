@@ -2870,6 +2870,8 @@ export function registerLlmGatewayRoutes({
    */
   function recordLlmGatewayPolicyDecision(input: {
     action: 'llm.gateway.chat_completions' | 'llm.gateway.responses';
+    /** Actual native-assigned call whose dispatch requires this decision. */
+    capabilityCallId?: string;
     providerId?: string | null;
     reasonCode: 'gateway_allowed' | 'gateway_disabled' | 'gateway_provider_not_allowed';
     result: 'allow' | 'deny';
@@ -2882,6 +2884,8 @@ export function registerLlmGatewayRoutes({
     try {
       recordGatewayPolicyDecision({ coreDb, ...input });
     } catch (error) {
+      // The opened call must settle through its existing failure handler before any dispatch.
+      if (input.capabilityCallId !== undefined) throw error;
       console.warn(
         `Failed to record gateway policy decision: ${error instanceof Error ? error.message : String(error)}`
       );
@@ -3001,14 +3005,6 @@ export function registerLlmGatewayRoutes({
 
       const logicalModel = requireLogicalModel(input.model);
 
-      recordLlmGatewayPolicyDecision({
-        action: 'llm.gateway.chat_completions',
-        providerId: logicalModel.routes[0]?.providerProfileId ?? null,
-        reasonCode: 'gateway_allowed',
-        result: 'allow',
-        route: '/v1/chat/completions',
-      });
-
       const request = {
         ...input,
         messages: input.messages.map((message): OpenAICompatibleChatMessage => {
@@ -3026,6 +3022,14 @@ export function registerLlmGatewayRoutes({
         request,
       });
       try {
+        recordLlmGatewayPolicyDecision({
+          action: 'llm.gateway.chat_completions',
+          ...(durableCall ? { capabilityCallId: durableCall.call.id } : {}),
+          providerId: logicalModel.routes[0]?.providerProfileId ?? null,
+          reasonCode: 'gateway_allowed',
+          result: 'allow',
+          route: '/v1/chat/completions',
+        });
         const recordedEffort = recordedEffortForCall(durableCall);
         const result = await dispatchLogicalModel<Response>({
           ...(durableCall ? { ledger: durableCall } : {}),
@@ -3173,14 +3177,6 @@ export function registerLlmGatewayRoutes({
 
       const logicalModel = requireLogicalModel(input.model);
 
-      recordLlmGatewayPolicyDecision({
-        action: 'llm.gateway.responses',
-        providerId: logicalModel.routes[0]?.providerProfileId ?? null,
-        reasonCode: 'gateway_allowed',
-        result: 'allow',
-        route: '/v1/responses',
-      });
-
       const request = {
         ...input,
         stream: input.stream ?? false,
@@ -3195,6 +3191,14 @@ export function registerLlmGatewayRoutes({
         request,
       });
       try {
+        recordLlmGatewayPolicyDecision({
+          action: 'llm.gateway.responses',
+          ...(durableCall ? { capabilityCallId: durableCall.call.id } : {}),
+          providerId: logicalModel.routes[0]?.providerProfileId ?? null,
+          reasonCode: 'gateway_allowed',
+          result: 'allow',
+          route: '/v1/responses',
+        });
         const recordedEffort = recordedEffortForCall(durableCall);
         const result = await dispatchLogicalModel<Response>({
           ...(durableCall ? { ledger: durableCall } : {}),
