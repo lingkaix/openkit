@@ -302,8 +302,8 @@ describe('Workspace child lineage', () => {
           expectedContentDigest: fixture.foreignKnowledgeDigest,
           confirmRemoval: true,
         },
-        409,
-        'conflict',
+        400,
+        'invalid_request',
       ],
       [
         'knowledge.source.read',

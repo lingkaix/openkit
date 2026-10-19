@@ -19,7 +19,10 @@ import {
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { testEntityId } from './test-support/entity-ids.js';
-import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
+import {
+  knowledgePageFixture,
+  serializeKnowledgePageFixture,
+} from './test-support/knowledge-page.js';
 import { notebookImportFixture } from './test-support/notebook-import.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
@@ -280,14 +283,18 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
 
   // Fresh attributed import of 1001 Git pages measured 81s; this is fixture setup, not a retrieval deadline.
   it('returns a typed failure and writes no trace when lexical enumeration exceeds 1000 matches', async () => {
-    const initialKnowledge = Array.from({ length: 1001 }, (_, index) => ({
-      id: `bulk-${String(index).padStart(4, '0')}`,
-      kind: 'project-context' as const,
-      title: `Bulk ${index}`,
-      content: 'enumeration-overflow',
-      createdAt: NOW,
-      updatedAt: NOW,
-    }));
+    const initialKnowledge = Array.from({ length: 1001 }, (_, index) =>
+      knowledgePageFixture(
+        {
+          id: `bulk-${String(index).padStart(4, '0')}`,
+          title: `Bulk ${index}`,
+          content: 'enumeration-overflow',
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+        { kind: 'workspace', workspaceId: testEntityId('ws', 'enumeration-incomplete') }
+      )
+    );
     const fixture = createFixture('enumeration-incomplete', initialKnowledge);
     const traceThread = fixture.store.createThread(fixture.workspaceId, 'Enumeration trace owner');
     fixture.access.outputThreadId = traceThread.id;
