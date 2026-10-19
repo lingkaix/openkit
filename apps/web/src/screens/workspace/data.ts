@@ -916,9 +916,7 @@ export function useSelectMcpVersion() {
 /** Exact MCP binding change bound to one Workspace revision. */
 export type UpdateMcpBindingCommand = {
   allowedTools: string[];
-  approvalRequiredTools: string[];
   bindingRevision: number;
-  deniedTools: string[];
   enabled: boolean;
   expectedRevision: number;
   mcpId: string;
@@ -937,9 +935,7 @@ export function useUpdateMcpBinding() {
         workspaceId: command.workspaceId,
         mcpId: command.mcpId,
         allowedTools: command.allowedTools,
-        approvalRequiredTools: command.approvalRequiredTools,
         bindingRevision: command.bindingRevision,
-        deniedTools: command.deniedTools,
         enabled: command.enabled,
         expectedRevision: command.expectedRevision,
         requestId: createRequestId(),

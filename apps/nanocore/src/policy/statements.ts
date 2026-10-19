@@ -176,6 +176,31 @@ export function validatePolicyDocument(input: unknown): PolicyDocumentV1 {
       // root suspends this permission; it must not prevent that root's withdrawal.
       continue;
     }
+    if (
+      statement.kind === 'permission' &&
+      statement.grant.kind === 'ordinary' &&
+      statement.authority.kind === 'human'
+    ) {
+      const anchor = statement.lifetime.anchor;
+      const workspaceId = anchor.owner.kind === 'workspace' ? anchor.owner.workspaceId : null;
+      if (
+        !['prohibit', 'require_approval'].includes(statement.effect) ||
+        statement.author.kind !== 'human' ||
+        statement.author.id !== statement.authority.userId ||
+        anchor.owner.kind !== 'workspace' ||
+        anchor.kind !== 'workspace' ||
+        anchor.id !== anchor.owner.workspaceId ||
+        statement.lifetime.uses !== undefined ||
+        statement.scope.actions.some((action) => action !== 'tool.use') ||
+        statement.scope.resources.some(
+          (resource) => resource.kind !== 'mcp-tool' || resource.workspaceId !== workspaceId
+        )
+      )
+        throw new Error(
+          'Human Tool conditions require exact Workspace Tool scope without finite uses.'
+        );
+      continue;
+    }
     // Other forms stay declarations until their native authority consumer exists.
     if (statement.kind !== 'binding') throw new Error('This Policy form must remain inactive.');
     const definition = OPERATION_REGISTRY[statement.operation as keyof typeof OPERATION_REGISTRY];

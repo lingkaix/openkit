@@ -605,9 +605,7 @@ export function CatalogScreen() {
                         if (!workspaceId) return;
                         updateBinding.mutate({
                           allowedTools: server.allowedTools,
-                          approvalRequiredTools: server.approvalRequiredTools,
                           bindingRevision: server.bindingRevision,
-                          deniedTools: server.deniedTools,
                           enabled: !server.enabled,
                           expectedRevision: revision,
                           mcpId: server.id,

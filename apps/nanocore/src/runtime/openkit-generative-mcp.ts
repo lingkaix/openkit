@@ -1,19 +1,7 @@
 import { createHash } from 'node:crypto';
-import {
-  composeOperationTables,
-  GENERATIVE_UI_OPERATION_DEFINITIONS,
-  KERNEL_OPERATION_DEFINITIONS,
-  KERNEL_REMAINING_OPERATION_DEFINITIONS,
-  LIGHT_APP_DEFINITION_OPERATION_DEFINITIONS,
-  OPERATION_DEFINITIONS,
-  operationMcpEligible,
-  operationModelInput,
-  operationToolName,
-  VAULT_OPERATION_DEFINITIONS,
-} from '@openkit/app-api-schemas';
+import { OPERATION_DEFINITIONS, operationMcpEligible } from '@openkit/app-api-schemas';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { type ActorRef, RequestIdSchema } from '@openkit/protocol';
-import { z } from 'zod';
 import type { FsStore } from '../lib/store.js';
 import { createOperationInvocation } from '../operation-composition.js';
 import { OperationError } from '../operation-error.js';
@@ -21,81 +9,19 @@ import type { InflightIdempotentCommand } from '../runtime/idempotent-command.js
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import type { VaultUnlockState } from '../vault/vault-unlock-state.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
+import {
+  OPENKIT_GENERATIVE_OPERATION_DEFINITIONS as definitions,
+  OPENKIT_GENERATIVE_TOOL_OPERATIONS,
+} from './openkit-generative-supply.js';
 import { MCP_RESULT_TOO_LARGE_MESSAGE } from './worker-mcp-gateway.js';
 
-/** Reserved built-in Worker MCP server id. */
-export const OPENKIT_GENERATIVE_MCP_ID = 'openkit-generative';
-
-const definitions = composeOperationTables(
-  KERNEL_OPERATION_DEFINITIONS,
-  KERNEL_REMAINING_OPERATION_DEFINITIONS,
-  LIGHT_APP_DEFINITION_OPERATION_DEFINITIONS,
-  GENERATIVE_UI_OPERATION_DEFINITIONS,
-  {
-    'vault.grant-request': VAULT_OPERATION_DEFINITIONS['vault.grant-request'],
-    'vault.grant-request-list': VAULT_OPERATION_DEFINITIONS['vault.grant-request-list'],
-  }
-);
-
-function mcpInputSchema(schema: z.ZodType): Record<string, unknown> {
-  const projection = z.toJSONSchema(schema, { target: 'draft-2020-12' }) as Record<string, unknown>;
-  delete projection.$schema;
-  return projection;
-}
-
-/** Built-in tool descriptors used for ListTools and catalog digest. */
-export const OPENKIT_GENERATIVE_TOOLS = Object.entries(definitions)
-  .filter(([, definition]) => operationMcpEligible(definition))
-  .map(([id, definition]) => ({
-    name: operationToolName(id),
-    description: definition.description,
-    inputSchema: mcpInputSchema(
-      operationModelInput(definition.inputSchema, [
-        'workspaceId',
-        'requestId',
-        'threadId',
-        'turnId',
-      ])
-    ),
-  }));
-
-/** Definition-derived admission key for each supplied built-in Tool. */
-export const OPENKIT_GENERATIVE_TOOL_OPERATIONS: Readonly<
-  Record<string, keyof typeof definitions>
-> = Object.fromEntries(Object.keys(definitions).map((id) => [operationToolName(id), id])) as Record<
-  string,
-  keyof typeof definitions
->;
-
-// A derived spelling is valid only when it cannot collide with another supplied Tool.
-if (
-  new Set(OPENKIT_GENERATIVE_TOOLS.map((tool) => tool.name)).size !==
-  OPENKIT_GENERATIVE_TOOLS.length
-) {
-  throw new Error('Generative Tool spelling collision.');
-}
-
-/** SHA-256 digest of the built-in tool-schema descriptor. */
-export const OPENKIT_GENERATIVE_CATALOG_DIGEST = `sha256:${createHash('sha256')
-  .update(JSON.stringify(OPENKIT_GENERATIVE_TOOLS))
-  .digest('hex')}`;
-
-/**
- * Builds the built-in MCP supply entry for a Worker environment package.
- *
- * @returns Catalog-compatible supply entry.
- */
-export function createOpenkitGenerativeMcpSupply(): AgentEnvironmentPackage['supply']['mcpServers'][number] {
-  return {
-    id: OPENKIT_GENERATIVE_MCP_ID,
-    catalogDigest: OPENKIT_GENERATIVE_CATALOG_DIGEST,
-    allowedTools: OPENKIT_GENERATIVE_TOOLS.map((tool) => tool.name),
-    deniedTools: [],
-    approvalRequiredTools: [],
-    schemaPolicy: 'pinned',
-    pinnedSchemaSnapshotId: null,
-  };
-}
+export {
+  createOpenkitGenerativeMcpSupply,
+  OPENKIT_GENERATIVE_CATALOG_DIGEST,
+  OPENKIT_GENERATIVE_MCP_ID,
+  OPENKIT_GENERATIVE_TOOL_OPERATIONS,
+  OPENKIT_GENERATIVE_TOOLS,
+} from './openkit-generative-supply.js';
 
 /** In-process built-in MCP dispatch context. */
 export interface OpenkitGenerativeMcpContext {

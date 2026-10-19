@@ -13,6 +13,7 @@ import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { withHumanMcpApproval } from '../test-support/mcp-tool-policy.js';
 import { preparePolicyConfiguration, readAdmittedPolicyDocument } from './configuration.js';
 import { PolicyInterception } from './interception.js';
 import {
@@ -555,7 +556,7 @@ describe('agent gate at native I16', () => {
         },
       }).decide({
         ...input,
-        requiresHumanApproval: humanRequired,
+        document: humanRequired ? withHumanMcpApproval(input) : input.document,
         finalKernel: () => {
           calls.push('kernel');
           return kernel(humanRequired);

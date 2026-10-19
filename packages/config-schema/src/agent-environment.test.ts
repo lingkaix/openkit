@@ -129,8 +129,6 @@ function openshellPackageFixture(): unknown {
           id: 'github',
           catalogDigest: `sha256:${'a'.repeat(64)}`,
           allowedTools: ['repos.get', 'issues.list'],
-          deniedTools: [],
-          approvalRequiredTools: ['issues.list'],
           schemaPolicy: 'tracking',
           pinnedSchemaSnapshotId: null,
         },
@@ -1017,7 +1015,6 @@ describe('agent environment package schema', () => {
     expect(parsed.supply.mcpServers[0]).toMatchObject({
       id: 'github',
       allowedTools: ['repos.get', 'issues.list'],
-      approvalRequiredTools: ['issues.list'],
       catalogDigest: `sha256:${'a'.repeat(64)}`,
       schemaPolicy: 'tracking',
     });

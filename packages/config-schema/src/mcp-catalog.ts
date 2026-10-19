@@ -77,8 +77,6 @@ export const WorkspaceMcpServerSchema = z
     ]),
     credentialBindings: z.array(WorkspaceMcpCredentialBindingSchema).default([]),
     allowedTools: z.array(WorkspaceMcpToolNameSchema).min(1),
-    deniedTools: z.array(WorkspaceMcpToolNameSchema).default([]),
-    approvalRequiredTools: z.array(WorkspaceMcpToolNameSchema).default([]),
     timeoutMs: z.number().int().positive().max(2_147_483_647).default(60_000),
     schemaPolicy: z.enum(['pinned', 'tracking']),
     pinnedSchemaSnapshotId: z.string().min(1).nullable().default(null),
@@ -99,8 +97,6 @@ export const WorkspaceMcpServerSchema = z
       });
     }
     addDuplicateIssues(server.allowedTools, context, ['allowedTools']);
-    addDuplicateIssues(server.deniedTools, context, ['deniedTools']);
-    addDuplicateIssues(server.approvalRequiredTools, context, ['approvalRequiredTools']);
     addDuplicateIssues(
       server.credentialBindings.map((binding) => binding.slot),
       context,
@@ -116,26 +112,6 @@ export const WorkspaceMcpServerSchema = z
       ['credentialBindings']
     );
 
-    const allowed = new Set(server.allowedTools);
-    const denied = new Set(server.deniedTools);
-    for (const tool of server.approvalRequiredTools) {
-      if (!allowed.has(tool) || denied.has(tool)) {
-        context.addIssue({
-          code: 'custom',
-          message: `Approval-required MCP tool is not allowed: ${tool}.`,
-          path: ['approvalRequiredTools'],
-        });
-      }
-    }
-    for (const tool of denied) {
-      if (allowed.has(tool)) {
-        context.addIssue({
-          code: 'custom',
-          message: `MCP tool cannot be both allowed and denied: ${tool}.`,
-          path: ['deniedTools'],
-        });
-      }
-    }
     for (const [index, binding] of server.credentialBindings.entries()) {
       const compatible =
         server.transport.kind === 'stdio'

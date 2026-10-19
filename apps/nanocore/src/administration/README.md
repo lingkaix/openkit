@@ -27,3 +27,5 @@ The fourth fixed configuration Tool, `administration.configuration.dispatch`, ac
 The private apply Tool preserves the existing unknown-effect boundary after CAS or publication failure. Untyped application failures and typed recovery results return `configuration_recovery_required` with receipt, start status Item, outcome Artifact, source revision and loaded-state inspection. Read/proposal refusal text cannot claim that an uncertain application was rejected or advise another proposal. The real-owner regression in `../config/delegated-worker-git-read.test.ts` injects outcome and receipt publication faults after the actual write and exercises the fourth Tool, including same-request fencing.
 
 Administration environment Tools use their `worker-environment.*` operation IDs. The fixed assembly retains the current administrator check on every call; a name match does not remove that authority check.
+
+Server MCP binding authoring controls selected allowedTools supply only. Per-Tool prohibit and require_approval use the existing human full Policy candidate and confirmation, with exact Workspace selectors; no second MCP permission writer exists.

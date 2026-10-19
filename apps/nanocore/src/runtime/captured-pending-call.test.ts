@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import {
   type AgentEnvironmentPackage,
   resolveWorkspaceMcpServer,
@@ -10,22 +11,37 @@ import {
   allocateEntityId,
   deriveEntityId,
   type PolicyDecisionV1,
+  PolicyDocumentV1Schema,
   workspaceIdForOwner,
 } from '@openkit/protocol';
+import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
+import { readAdmittedPolicyDocument, recordPolicyWriteDecision } from '../policy/configuration.js';
+import { PolicyInterception } from '../policy/interception.js';
 import {
   listExportableWorkspacePermissionDecisions,
   readPolicyStatementUseCount,
   recordProductPermissionDecision,
 } from '../policy/permission-decisions.js';
+import {
+  EMPTY_POLICY_DOCUMENT,
+  policyDigest,
+  preparePolicyDocument,
+} from '../policy/statements.js';
+import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { testEntityId } from '../test-support/entity-ids.js';
+import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import * as workerMcpRoutes from '../worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
+import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { resolveAgentEnvironmentPackage } from './agent-environment.js';
 import {
   admitCapturedPendingCall,
@@ -35,6 +51,10 @@ import {
   prepareCapturedPendingCall,
 } from './captured-pending-call.js';
 import {
+  acceptSchedulerExecutionObservation,
+  schedulerExecutionCorrelation,
+} from './execution-attempt-records.js';
+import {
   importMcpToolSchemaSnapshots,
   listExportableMcpToolSchemaSnapshots,
   mcpToolArgumentsContentDigest,
@@ -42,6 +62,7 @@ import {
 } from './mcp-tool-schema-snapshots.js';
 import { raiseRecordedPendingRequest, respondRecordedApproval } from './pending-request-flow.js';
 import { executionCallIdForRequest, readPendingRequest } from './pending-requests.js';
+import type { WorkerControlGateway } from './worker-control-gateway.js';
 import type { WorkerMcpGateway } from './worker-mcp-gateway.js';
 
 /** Upstream Tool fixture with retained input schema and independent top-level metadata. */
@@ -81,9 +102,12 @@ afterEach(() => {
 function fixture(
   schemaPolicy: 'tracking' | 'pinned' = 'tracking',
   credentialRequired = false,
-  mediated = false,
+  mediated?: boolean,
   sourceResult: 'require_approval' | 'require_escalation' = 'require_escalation'
 ) {
+  const reviewByDefault = mediated === undefined;
+  mediated ??= true;
+  let policyCurrent = true;
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-captured-schema-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -111,8 +135,6 @@ function fixture(
         id: 'echo-server',
         enabled: true,
         allowedTools: ['echo', 'allowed-other'],
-        deniedTools: ['excluded-other'],
-        approvalRequiredTools: mediated && sourceResult !== 'require_approval' ? [] : ['echo'],
         credentialBindings: credentialRequired
           ? [
               {
@@ -277,6 +299,32 @@ function fixture(
     closeWorkspace: vi.fn().mockResolvedValue(undefined),
     getServerHealth: () => 'ready',
   };
+  const fixtureReview =
+    (current: () => boolean = () => policyCurrent, changes: Partial<PolicyDecisionV1> = {}) =>
+    async () => {
+      const decisionId = allocateEntityId('pd');
+      const mediation = { ...sourceMediation, ...changes };
+      recordProductPermissionDecision({
+        ...decisionBase,
+        policySnapshotId: digest,
+        decisionId,
+        result: 'allow',
+        mediation,
+        contextSummary: {
+          humanApprovalRequestId: record.requestId,
+          approvalSourceDecisionId: sourceDecisionId,
+          humanApprovalDeciderId: 'usr_00000000-0000-7000-8000-000000000001',
+          capabilityCallId: executionCallIdForRequest(record.requestId),
+          threadId: record.threadId,
+          turnId: record.raisingTurnId,
+        },
+        ...(mediation.consumedStatements.length
+          ? { uses: mediation.consumedStatements.map((statement) => ({ statement, limit: 1 })) }
+          : {}),
+      });
+      return { decisionId, current };
+    };
+
   const grant = (
     afterPreparation?: () => void | Promise<void>,
     reviewPolicy?: Parameters<typeof prepareCapturedPendingCall>[0]['reviewPolicy']
@@ -297,7 +345,11 @@ function fixture(
       prepare: async () => {
         prepared = await prepareCapturedPendingCall({
           actor: { userId: 'usr_00000000-0000-7000-8000-000000000001' },
-          ...(reviewPolicy ? { reviewPolicy } : {}),
+          ...(reviewPolicy
+            ? { reviewPolicy }
+            : reviewByDefault
+              ? { reviewPolicy: fixtureReview() }
+              : {}),
           record,
           catalog,
           coreDb,
@@ -337,6 +389,10 @@ function fixture(
     });
   };
   return {
+    store,
+    environmentPackage,
+    gateway,
+    setup,
     db,
     coreDb,
     record,
@@ -345,31 +401,10 @@ function fixture(
     callTool,
     sourceDecisionId,
     sourceMediation,
-    reviewPolicy:
-      (current: () => boolean = () => true, changes: Partial<PolicyDecisionV1> = {}) =>
-      async () => {
-        const decisionId = allocateEntityId('pd');
-        const mediation = { ...sourceMediation, ...changes };
-        recordProductPermissionDecision({
-          ...decisionBase,
-          policySnapshotId: digest,
-          decisionId,
-          result: 'allow',
-          mediation,
-          contextSummary: {
-            humanApprovalRequestId: record.requestId,
-            approvalSourceDecisionId: sourceDecisionId,
-            humanApprovalDeciderId: 'usr_00000000-0000-7000-8000-000000000001',
-            capabilityCallId: executionCallIdForRequest(record.requestId),
-            threadId: record.threadId,
-            turnId: record.raisingTurnId,
-          },
-          ...(mediation.consumedStatements.length
-            ? { uses: mediation.consumedStatements.map((statement) => ({ statement, limit: 1 })) }
-            : {}),
-        });
-        return { decisionId, current };
-      },
+    reviewPolicy: fixtureReview,
+    invalidatePolicy: () => {
+      policyCurrent = false;
+    },
     setCatalog: (next: WorkspaceMcpServerCatalog) => {
       catalog = next;
     },
@@ -399,6 +434,327 @@ function expectNoExecution(f: ReturnType<typeof fixture>) {
 }
 
 describe('captured pending MCP schema identity at grant', () => {
+  it('blocks a captured human grant when current Policy prohibits an otherwise supplied Tool', async () => {
+    const f = fixture('tracking', false, true);
+    const scope = f.environmentPackage.scope;
+    const userId = f.record.responsibleUserId;
+    const principal = { kind: 'human' as const, id: userId };
+    const resource = {
+      kind: 'mcp-tool' as const,
+      workspaceId: scope.workspaceId,
+      serverId: 'echo-server',
+      toolName: 'echo',
+    };
+    const policyScope = { subjects: [principal], actions: ['tool.use'], resources: [resource] };
+    const lifetime = {
+      anchor: {
+        owner: { kind: 'workspace' as const, workspaceId: scope.workspaceId },
+        kind: 'workspace',
+        id: scope.workspaceId,
+      },
+    };
+    let document = EMPTY_POLICY_DOCUMENT;
+    const admit = (prohibited = false) => {
+      const prepared = preparePolicyDocument({
+        current: document,
+        userId,
+        now: new Date().toISOString(),
+        proposed: PolicyDocumentV1Schema.parse({
+          schemaVersion: 1,
+          statements: [
+            {
+              id: 'capture-gate',
+              kind: 'binding',
+              author: principal,
+              authority: { kind: 'human', userId },
+              authoredAt: new Date().toISOString(),
+              scope: policyScope,
+              lifetime,
+              state: 'active',
+              operation: 'mcp.call-tool',
+              stage: 'decide',
+              mode: 'gate',
+              participant: {
+                kind: 'deterministic',
+                id: 'captured-current-policy',
+                version: `sha256:${'c'.repeat(64)}`,
+              },
+              inputDisclosure: policyScope,
+              order: 0,
+              timeoutMs: 10000,
+              circuit: { failures: 1, recoveryAfterMs: 1 },
+            },
+            ...(prohibited
+              ? [
+                  {
+                    id: 'human-prohibition',
+                    kind: 'permission',
+                    effect: 'prohibit',
+                    grant: { kind: 'ordinary' },
+                    author: principal,
+                    authority: { kind: 'human', userId },
+                    authoredAt: new Date().toISOString(),
+                    scope: policyScope,
+                    lifetime,
+                    state: 'active',
+                  },
+                ]
+              : []),
+          ],
+        }),
+      });
+      recordPolicyWriteDecision({
+        coreDb: f.coreDb,
+        actor: { kind: 'local', userId },
+        candidate: {
+          artifactId: allocateEntityId('ar'),
+          contentDigest: policyDigest(prepared.document),
+        },
+        proposal: {
+          schemaVersion: 1,
+          proposer: principal,
+          rationale: 'Govern the captured exact Tool.',
+          baseRevision: policyDigest(document),
+          proposed: prepared.document,
+          diff: prepared.diff,
+          classification: prepared.classification,
+          validation: 'valid',
+        },
+        requestId: 'captured-policy-write',
+        threadId: scope.threadId,
+        turnId: scope.turnId,
+      });
+      document = prepared.document;
+      expect(readAdmittedPolicyDocument(f.coreDb, document)).toEqual(document);
+    };
+    admit();
+    f.store.createAgentSession({
+      id: scope.agentSessionId,
+      agentId: f.environmentPackage.agent.agentId,
+      workspaceId: scope.workspaceId,
+      threadId: scope.threadId,
+      status: 'busy',
+      message: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    f.store.updateTurn(scope.turnId, {
+      agentSessionId: scope.agentSessionId,
+      agentId: f.environmentPackage.agent.agentId,
+      status: 'running',
+    });
+    const entry = createSchedulerAdmissionEntry(f.coreDb, {
+      backendId: 'nanohost',
+      queueEntryId: 'capture-policy-queue',
+      requestId: scope.requestId,
+      triggerActor: scope.triggerActor,
+      workspaceId: scope.workspaceId,
+      threadId: scope.threadId,
+      turnId: scope.turnId,
+      turnInput: 'Capture echo',
+      requestedAgentId: f.environmentPackage.agent.agentId,
+    });
+    const attempt = recordTestExecutionAttempt(f.coreDb, {
+      entry,
+      attemptId: testEntityId('attempt', 'captured-current-policy'),
+      agentSessionId: scope.agentSessionId,
+      inputRef: f.environmentPackage.snapshotId,
+      bindingRef: 'captured-policy-binding',
+      sessionCompatibilityKey: 'captured-policy',
+      now: () => new Date().toISOString(),
+      operationId: 'captured-policy-submit',
+    });
+    expect(
+      acceptSchedulerExecutionObservation(f.coreDb, {
+        ...schedulerExecutionCorrelation(attempt),
+        disposition: 'accepted',
+        execution: 'running',
+        fenceRef: null,
+        outcomeRef: null,
+      })
+    ).not.toBeNull();
+    recordAgentEnvironmentPackageSnapshot(f.db, {
+      environmentPackage: f.environmentPackage,
+      createdAt: new Date().toISOString(),
+    });
+    vi.mocked(f.gateway.listTools).mockResolvedValue({
+      serverVersion: 'captured-policy',
+      tools: tools(),
+    });
+    let gate: 'escalate' | 'allow' = 'escalate';
+    const interception = new PolicyInterception({
+      id: 'captured-current-policy',
+      version: `sha256:${'c'.repeat(64)}`,
+      invoke: async () => ({ decision: gate }),
+    });
+    const baseConfig = createInMemoryRuntimeConfigSnapshot({
+      dataRoot: f.store.getDataRoot()!,
+      agentManifests: [f.setup.manifest],
+    });
+    const app = new Hono();
+    const routes = {
+      app,
+      coreDb: f.coreDb,
+      store: f.store,
+      interception,
+      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      workerMcpGateway: f.gateway,
+      workerControlGateway: {
+        authenticatePackageToken: () => f.environmentPackage,
+      } as unknown as WorkerControlGateway,
+      runtimeConfig: () =>
+        createInMemoryRuntimeConfigSnapshot({
+          dataRoot: f.store.getDataRoot()!,
+          agentManifests: [f.setup.manifest],
+          openKitConfig: {
+            ...baseConfig.openKitConfig,
+            policy: { ...baseConfig.openKitConfig.policy, mediation: document },
+          },
+          workspaceMcpServerCatalogs: [
+            { workspaceId: scope.workspaceId, path: 'fixture-catalog', catalog: f.catalog() },
+          ],
+        }),
+    };
+    workerMcpRoutes.registerWorkerMcpRoutes(routes);
+    const client = new Client({ name: 'captured-current-policy', version: '1.0.0' });
+    try {
+      await client.connect(
+        new StreamableHTTPClientTransport(
+          new URL('http://nanocore.test/api/worker-capabilities/mcp/echo-server'),
+          {
+            fetch: (request, init) => app.fetch(new Request(request, init)),
+            requestInit: { headers: { authorization: 'Bearer captured-package' } },
+          }
+        )
+      );
+      await client.listTools();
+      const pending = await client.callTool({
+        name: 'echo',
+        arguments: { message: 'current-policy-captured' },
+      });
+      expect(pending).toMatchObject({
+        isError: true,
+        structuredContent: { status: 'pending-approval' },
+      });
+      const record = readPendingRequest(f.db.sqlite, String(pending.structuredContent!.requestId))!;
+      expect(record).toMatchObject({
+        claim: 'unclaimed',
+        policyDecisionId: expect.any(String),
+        canonicalArgumentsJson: JSON.stringify({ message: 'current-policy-captured' }),
+      });
+      const review = () =>
+        workerMcpRoutes.reviewCapturedMcpPolicy({
+          record,
+          actor: { userId },
+          workspaceDb: f.db,
+          routes,
+          catalog: f.catalog(),
+          interception,
+        });
+      gate = 'allow';
+      // A current real review succeeds before the human adds the prohibition.
+      expect(await review()).not.toBeNull();
+      const catalogRevision = resolveWorkspaceMcpServer({
+        catalog: f.catalog(),
+        serverId: 'echo-server',
+      }).catalogDigest;
+      expect(
+        resolveWorkspaceMcpServer({ catalog: f.catalog(), serverId: 'echo-server' }).catalogDigest
+      ).toBe(catalogRevision);
+      expect(
+        evaluateCapturedPendingCall({
+          manifest: f.setup.manifest,
+          catalog: f.catalog(),
+          coreDb: f.coreDb,
+          record,
+          sqlite: f.db.sqlite,
+        })
+      ).toMatchObject({ toolInSupply: true, schemaCurrent: true });
+      const credentials = vi.spyOn(workerMcpRoutes, 'resolveWorkerMcpCredentials');
+      let prepared: PreparedCapturedPendingCall | undefined;
+      let executionCall: ReturnType<typeof admitCapturedPendingCall> | undefined;
+      const result = await respondRecordedApproval({
+        store: f.store,
+        sqlite: f.db.sqlite,
+        workspaceId: scope.workspaceId,
+        threadId: scope.threadId,
+        approvalRequestId: record.requestId,
+        decision: 'granted',
+        actorId: userId,
+        coreDb: f.coreDb,
+        requestActor: { kind: 'local', userId },
+        dependencies: { coreDb: f.coreDb, openWorkspace: () => f.db },
+        prepare: async () => {
+          prepared = await prepareCapturedPendingCall({
+            actor: { userId },
+            record,
+            catalog: f.catalog(),
+            coreDb: f.coreDb,
+            vaultBackend: undefined,
+            workerMcpGateway: f.gateway,
+            workspaceDb: f.db,
+            reviewPolicy: review,
+          });
+          expect(prepared.failed).toBe(false);
+          // Change current Policy after a real review and credential preparation.
+          // The unchanged supply and captured source cannot authorize the later claim.
+          admit(true);
+          expect(
+            resolveWorkspaceMcpServer({ catalog: f.catalog(), serverId: 'echo-server' })
+              .catalogDigest
+          ).toBe(catalogRevision);
+        },
+        evaluate: () =>
+          evaluateCapturedPendingCall({
+            manifest: f.setup.manifest,
+            catalog: f.catalog(),
+            coreDb: f.coreDb,
+            record,
+            sqlite: f.db.sqlite,
+            prepared,
+          }),
+        admitExecution: () => {
+          executionCall = admitCapturedPendingCall(
+            record,
+            f.db,
+            '00000000-0000-4000-8000-000000000118',
+            prepared
+          );
+        },
+        execute: (claimed) =>
+          executeCapturedPendingCall({
+            catalog: f.catalog(),
+            coreDb: f.coreDb,
+            record: claimed,
+            workerMcpGateway: f.gateway,
+            workspaceDb: f.db,
+            prepared,
+            executionCall,
+          }),
+      });
+      expect(result).toMatchObject({
+        disposition: 'denied-not-executed',
+        dispositionReason: 'policy-changed',
+      });
+      expect(credentials).toHaveBeenCalledTimes(1);
+      expect(f.callTool).not.toHaveBeenCalled();
+      expect(readPendingRequest(f.db.sqlite, record.requestId)).toMatchObject({
+        claim: 'unclaimed',
+        executionCallId: null,
+      });
+      expect(
+        f.db.sqlite
+          .prepare('SELECT call_id FROM capability_calls WHERE call_id = ?')
+          .get(executionCallIdForRequest(record.requestId))
+      ).toBeUndefined();
+      expect(f.db.sqlite.prepare('SELECT COUNT(*) AS count FROM usage_records').get()).toEqual({
+        count: 0,
+      });
+    } finally {
+      await client.close();
+    }
+  });
+
   it('blocks a mediated source without a reviewer before credential resolution', async () => {
     const f = fixture('tracking', true, true);
     const credentials = vi.spyOn(workerMcpRoutes, 'resolveWorkerMcpCredentials');
@@ -722,7 +1078,8 @@ describe('captured pending MCP schema identity at grant', () => {
             "UPDATE users SET status = 'disabled', disabled_at = ? WHERE id = 'usr_00000000-0000-7000-8000-000000000001'"
           )
           .run(new Date().toISOString());
-      if (guard === 'catalog' || guard === 'eligibility' || guard === 'policy') {
+      if (guard === 'policy') f.invalidatePolicy();
+      if (guard === 'catalog' || guard === 'eligibility') {
         const catalog = f.catalog();
         f.setCatalog({
           ...catalog,
@@ -730,7 +1087,6 @@ describe('captured pending MCP schema identity at grant', () => {
             ...server,
             ...(guard === 'catalog' ? { timeoutMs: server.timeoutMs + 1 } : {}),
             ...(guard === 'eligibility' ? { allowedTools: ['allowed-other'] } : {}),
-            ...(guard === 'policy' ? { approvalRequiredTools: [] } : {}),
           })),
         });
       }

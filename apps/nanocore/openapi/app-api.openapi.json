@@ -102529,20 +102529,6 @@
                     "minLength": 1
                   }
                 },
-                "approvalRequiredTools": {
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                },
-                "deniedTools": {
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                },
                 "schemaPolicy": {
                   "anyOf": [
                     {
@@ -102628,8 +102614,6 @@
                 "enabled",
                 "id",
                 "allowedTools",
-                "approvalRequiredTools",
-                "deniedTools",
                 "schemaPolicy",
                 "timeoutMs",
                 "transportKind",
@@ -104632,20 +104616,6 @@
                     "minLength": 1
                   }
                 },
-                "approvalRequiredTools": {
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                },
-                "deniedTools": {
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                },
                 "schemaPolicy": {
                   "anyOf": [
                     {
@@ -104731,8 +104701,6 @@
                 "enabled",
                 "id",
                 "allowedTools",
-                "approvalRequiredTools",
-                "deniedTools",
                 "schemaPolicy",
                 "timeoutMs",
                 "transportKind",
@@ -104834,20 +104802,6 @@
                   "minLength": 1
                 }
               },
-              "approvalRequiredTools": {
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "deniedTools": {
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
               "schemaPolicy": {
                 "anyOf": [
                   {
@@ -104933,8 +104887,6 @@
               "enabled",
               "id",
               "allowedTools",
-              "approvalRequiredTools",
-              "deniedTools",
               "schemaPolicy",
               "timeoutMs",
               "transportKind",
@@ -105010,14 +104962,6 @@
         "properties": {
           "allowedTools": {
             "minItems": 1,
-            "type": "array",
-            "items": {
-              "type": "string",
-              "minLength": 1
-            }
-          },
-          "approvalRequiredTools": {
-            "default": [],
             "type": "array",
             "items": {
               "type": "string",
@@ -105117,14 +105061,6 @@
               "additionalProperties": false
             }
           },
-          "deniedTools": {
-            "default": [],
-            "type": "array",
-            "items": {
-              "type": "string",
-              "minLength": 1
-            }
-          },
           "enabled": {
             "type": "boolean"
           },
@@ -105157,9 +105093,7 @@
         },
         "required": [
           "allowedTools",
-          "approvalRequiredTools",
           "bindingRevision",
-          "deniedTools",
           "enabled",
           "expectedRevision",
           "schemaPolicy",
@@ -105687,20 +105621,6 @@
                     "minLength": 1
                   }
                 },
-                "approvalRequiredTools": {
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                },
-                "deniedTools": {
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                },
                 "schemaPolicy": {
                   "anyOf": [
                     {
@@ -105786,8 +105706,6 @@
                 "enabled",
                 "id",
                 "allowedTools",
-                "approvalRequiredTools",
-                "deniedTools",
                 "schemaPolicy",
                 "timeoutMs",
                 "transportKind",
@@ -105864,20 +105782,6 @@
                 "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
               },
               "allowedTools": {
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "approvalRequiredTools": {
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "deniedTools": {
                 "type": "array",
                 "items": {
                   "type": "string",
@@ -105969,8 +105873,6 @@
               "enabled",
               "id",
               "allowedTools",
-              "approvalRequiredTools",
-              "deniedTools",
               "schemaPolicy",
               "timeoutMs",
               "transportKind",
@@ -106297,20 +106199,6 @@
                   "minLength": 1
                 }
               },
-              "approvalRequiredTools": {
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "deniedTools": {
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
               "schemaPolicy": {
                 "anyOf": [
                   {
@@ -106396,8 +106284,6 @@
               "enabled",
               "id",
               "allowedTools",
-              "approvalRequiredTools",
-              "deniedTools",
               "schemaPolicy",
               "timeoutMs",
               "transportKind",
@@ -106509,20 +106395,6 @@
                   "minLength": 1
                 }
               },
-              "approvalRequiredTools": {
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
-              "deniedTools": {
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1
-                }
-              },
               "schemaPolicy": {
                 "anyOf": [
                   {
@@ -106608,8 +106480,6 @@
               "enabled",
               "id",
               "allowedTools",
-              "approvalRequiredTools",
-              "deniedTools",
               "schemaPolicy",
               "timeoutMs",
               "transportKind",
@@ -106680,14 +106550,6 @@
         "properties": {
           "allowedTools": {
             "minItems": 1,
-            "type": "array",
-            "items": {
-              "type": "string",
-              "minLength": 1
-            }
-          },
-          "approvalRequiredTools": {
-            "default": [],
             "type": "array",
             "items": {
               "type": "string",
@@ -106787,14 +106649,6 @@
               "additionalProperties": false
             }
           },
-          "deniedTools": {
-            "default": [],
-            "type": "array",
-            "items": {
-              "type": "string",
-              "minLength": 1
-            }
-          },
           "enabled": {
             "type": "boolean"
           },
@@ -106834,9 +106688,7 @@
         },
         "required": [
           "allowedTools",
-          "approvalRequiredTools",
           "bindingRevision",
-          "deniedTools",
           "enabled",
           "expectedRevision",
           "schemaPolicy",
@@ -108127,20 +107979,6 @@
                     "minLength": 1
                   }
                 },
-                "approvalRequiredTools": {
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                },
-                "deniedTools": {
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "minLength": 1
-                  }
-                },
                 "schemaPolicy": {
                   "anyOf": [
                     {
@@ -108232,8 +108070,6 @@
                 "enabled",
                 "id",
                 "allowedTools",
-                "approvalRequiredTools",
-                "deniedTools",
                 "schemaPolicy",
                 "timeoutMs",
                 "transportKind",
@@ -115506,27 +115342,11 @@
                                   "type": "string",
                                   "minLength": 1
                                 }
-                              },
-                              "deniedTools": {
-                                "type": "array",
-                                "items": {
-                                  "type": "string",
-                                  "minLength": 1
-                                }
-                              },
-                              "approvalRequiredTools": {
-                                "type": "array",
-                                "items": {
-                                  "type": "string",
-                                  "minLength": 1
-                                }
                               }
                             },
                             "required": [
                               "id",
-                              "allowedTools",
-                              "deniedTools",
-                              "approvalRequiredTools"
+                              "allowedTools"
                             ],
                             "additionalProperties": false
                           }
@@ -150408,5 +150228,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:c8ed9e3091ac2cb3d5509096dc4a3ff297284b552233193f6d2db395071918f1"
+  "x-openkit-source-digest": "sha256:a813b1cbe1858e66ead7411535b92ded97aecbd983df30825ccd1eea659e510c"
 }

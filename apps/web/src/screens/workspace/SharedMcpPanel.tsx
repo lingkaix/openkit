@@ -108,12 +108,6 @@ export function SharedMcpPanel({
                   <p className="text-xs text-fg-muted">
                     Allowed tools: {entry.allowedTools.join(', ') || 'none'}
                   </p>
-                  <p className="text-xs text-fg-muted">
-                    Approval required: {entry.approvalRequiredTools.join(', ') || 'none'}
-                  </p>
-                  <p className="text-xs text-fg-muted">
-                    Denied tools: {entry.deniedTools.join(', ') || 'none'}
-                  </p>
                   {entry.shadowed ? (
                     <p className="text-xs text-fg-muted">
                       A local configuration or retained removal suppresses this shared server.
