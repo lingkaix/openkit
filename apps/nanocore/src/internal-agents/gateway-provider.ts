@@ -22,6 +22,7 @@ import type { PiAiFailure, PiAiFailureKind } from '../llm/pi-ai-failure.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import type { ProviderSubscriptionAccountManager } from '../llm/provider-subscription-accounts.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
+import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import type {
   AgentAssistantMessage,
   AgentMessage,
@@ -87,7 +88,7 @@ export function createInternalAgentGatewayProvider(
     }
     const { canonicalToAlias, aliasToCanonical, providerInput, providerTools } =
       projectInternalAgentRequest(request);
-    const workspaceDb = options.capture.workspaceDb;
+    const captureDb = options.capture.workspaceDb;
     const context = options.callContext;
     const lineage = {
       providerRef: null,
@@ -97,33 +98,41 @@ export function createInternalAgentGatewayProvider(
     // The database and attribution must have the same admitted immutable owner.
     if (
       context &&
-      (workspaceDb.scope === 'core'
+      (captureDb.scope === 'core'
         ? !('owner' in context) || context.owner.kind !== 'server'
-        : 'owner' in context || context.workspaceId !== workspaceDb.workspaceId)
+        : 'owner' in context || context.workspaceId !== captureDb.workspaceId)
     )
       throw new ModelCaptureError();
-    const call = context
-      ? workspaceDb.scope === 'core' && 'owner' in context
-        ? startCapabilityCall({
-            ...context,
-            ...lineage,
-            workspaceDb,
-            ...(options.auditLineage ? { auditLineage: options.auditLineage } : {}),
-          })
-        : workspaceDb.scope === 'workspace' && !('owner' in context)
+    // The bounded role can release capture before the cancelled Provider finishes unwinding.
+    // Keep the existing ledger connection alive through this call's own terminal write.
+    const workspaceDb = !context
+      ? captureDb
+      : captureDb.scope === 'core'
+        ? openCoreDb(captureDb.dataRoot)
+        : openWorkspaceDb(captureDb.dataRoot, captureDb.workspaceId);
+    let call: ReturnType<typeof startCapabilityCall> | undefined;
+    let callFinished = false;
+    let failurePhase: InternalGatewayFailurePhase = 'pre-transport';
+    let observedStatus: number | undefined;
+    let dispatchCorrelation: { corr: string; attempt: number } | undefined;
+    try {
+      call = context
+        ? workspaceDb.scope === 'core' && 'owner' in context
           ? startCapabilityCall({
               ...context,
               ...lineage,
               workspaceDb,
               ...(options.auditLineage ? { auditLineage: options.auditLineage } : {}),
             })
-          : undefined
-      : undefined;
-    let callFinished = false;
-    let failurePhase: InternalGatewayFailurePhase = 'pre-transport';
-    let observedStatus: number | undefined;
-    let dispatchCorrelation: { corr: string; attempt: number } | undefined;
-    try {
+          : workspaceDb.scope === 'workspace' && !('owner' in context)
+            ? startCapabilityCall({
+                ...context,
+                ...lineage,
+                workspaceDb,
+                ...(options.auditLineage ? { auditLineage: options.auditLineage } : {}),
+              })
+            : undefined
+        : undefined;
       const logicalModel = options.resolveLogicalModel(options.logicalModel.id);
       if (!logicalModel) throw new LogicalModelRoutesExhaustedError();
       const selected = await dispatchLogicalModel({
@@ -336,6 +345,8 @@ export function createInternalAgentGatewayProvider(
         // Optional diagnostics must preserve the original product failure and closeout.
       }
       throw error;
+    } finally {
+      if (context) workspaceDb.sqlite.close();
     }
   };
 }
