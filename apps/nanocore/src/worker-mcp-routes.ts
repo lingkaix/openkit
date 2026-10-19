@@ -59,8 +59,14 @@ import type { OperationInvocationDependencies } from './operation-composition.js
 import { OperationError, projectOperationError } from './operation-error.js';
 import { preflightPendingToolRequest } from './pending-request-operations.js';
 import { readAdmittedPolicyDocument } from './policy/configuration.js';
-import { type InterceptionInput, PolicyInterception } from './policy/interception.js';
+import type { GoalTaskPolicyService } from './policy/goal-task-policy.js';
 import {
+  type InterceptionDecision,
+  type InterceptionInput,
+  PolicyInterception,
+} from './policy/interception.js';
+import {
+  type PolicyUseDecision,
   readPolicyStatementUseCount,
   recordProductPermissionDecision,
 } from './policy/permission-decisions.js';
@@ -73,6 +79,7 @@ import {
 } from './policy/statements.js';
 import { findNamedAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import type { PreparedCapturedPendingCall } from './runtime/captured-pending-call.js';
+import { readGoalTaskPolicyContext } from './runtime/goal-task-policy-context.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
 import {
   mcpToolArgumentsContentDigest,
@@ -173,6 +180,8 @@ interface WorkerMcpToolCallInput {
 
 /** Dependencies for the private worker-facing Streamable HTTP MCP endpoint. */
 export interface RegisterWorkerMcpRoutesInput {
+  /** Native Goal-domain composition; linked Tasks cannot omit their mandatory Policy class. */
+  readonly goalTaskPolicy?: (db: WorkspaceDb, responsibleUserId: string) => GoalTaskPolicyService;
   /** Deterministic pilot participant injected by the native composition or tests. */
   readonly interception?: PolicyInterception;
   readonly automationStore?: OperationInvocationDependencies['automationStore'];
@@ -1398,7 +1407,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
   let cancelled = false;
   let publishTerminalItem = true;
   let observedCredentials: WorkerMcpGatewayCredentials | undefined;
-  let policyInput: InterceptionInput | undefined;
+  let policyInput: ReturnType<typeof mcpInterceptionInput> | undefined;
 
   try {
     if (
@@ -1423,6 +1432,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
     }
     policyInput = mcpInterceptionInput(input, call);
     const policyDecision = await input.interception.decide(policyInput);
+    if (policyDecision.result === 'allow') policyInput.useDecision(policyDecision);
     if (
       policyDecision.result === 'require_escalation' ||
       policyDecision.result === 'require_approval'
@@ -1593,6 +1603,18 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
     }
     terminalCommitted = true;
     status = 'completed';
+    let resultCurrent = false;
+    try {
+      resultCurrent = policyInput.stillCurrent();
+    } catch {
+      // Unavailable current authority withholds content without rewriting a settled effect.
+    }
+    if (!resultCurrent)
+      throw new ProtocolError(
+        ProtocolErrorCode.InvalidRequest,
+        'MCP call completed; current authority does not permit result delivery.',
+        { code: 'mcp-policy-stale' }
+      );
     if (policyInput) {
       // A failed completed observation must not rewrite the settled upstream call.
       try {
@@ -1818,23 +1840,29 @@ export async function reviewCapturedMcpPolicy(input: {
   const resolved = resolveWorkspaceMcpServer({ catalog: input.catalog, serverId: record.serverId });
   if (resolved.catalogDigest !== record.catalogRevision) return null;
   const argumentsValue = JSON.parse(record.canonicalArgumentsJson) as Record<string, unknown>;
-  const proposalInput = mcpInterceptionInput(
-    {
-      arguments: argumentsValue,
-      environmentPackage,
-      input: input.routes,
-      interception: input.interception,
-      protocolRequestId: record.requestId,
-      resolved,
-      selected,
-      serverId: record.serverId,
-      signal: new AbortController().signal,
-      toolName: record.toolName,
-      workspaceDb,
-    },
-    { id: executionCallIdForRequest(record.requestId) },
-    () => input.routes.store.getThread(record.workspaceId, record.threadId).status !== 'archived'
-  );
+  let proposalInput: ReturnType<typeof mcpInterceptionInput>;
+  try {
+    proposalInput = mcpInterceptionInput(
+      {
+        arguments: argumentsValue,
+        environmentPackage,
+        input: input.routes,
+        interception: input.interception,
+        protocolRequestId: record.requestId,
+        resolved,
+        selected,
+        serverId: record.serverId,
+        signal: new AbortController().signal,
+        toolName: record.toolName,
+        workspaceDb,
+      },
+      { id: executionCallIdForRequest(record.requestId) },
+      () => input.routes.store.getThread(record.workspaceId, record.threadId).status !== 'archived'
+    );
+  } catch {
+    // Missing current Goal/Task facts cannot claim or execute the captured human response.
+    return null;
+  }
   if (
     policyProposalDigest(proposalInput.proposal) !== source.mediation.proposalDigest ||
     policyDigest(proposalInput.document) !== source.policySnapshotId ||
@@ -1856,6 +1884,7 @@ export async function reviewCapturedMcpPolicy(input: {
     },
   });
   if (decision.result !== 'allow') return null;
+  proposalInput.useDecision(decision);
   return {
     decisionId: decision.decisionId,
     current: proposalInput.stillCurrent,
@@ -1864,7 +1893,7 @@ export async function reviewCapturedMcpPolicy(input: {
 }
 
 /** Captures actual current Kernel facts through the existing Worker admission owner. */
-function currentMcpPolicyAuthority(input: WorkerMcpToolCallInput) {
+function currentMcpPolicyAuthority(input: WorkerMcpToolCallInput, decision?: PolicyUseDecision) {
   let evaluated: { decision: PolicyDecision; facts: unknown } | null = null;
   currentWorkerLineageWorkspaceAuthority(
     input.input.coreDb!,
@@ -1880,7 +1909,67 @@ function currentMcpPolicyAuthority(input: WorkerMcpToolCallInput) {
   );
   const captured = evaluated as { decision: PolicyDecision; facts: unknown } | null;
   if (!captured) throw new Error('Current MCP authority was unavailable before Kernel evaluation.');
-  return { kernel: captured.decision, revision: policyDigest(captured) };
+  const scope = input.environmentPackage.scope;
+  const lineage = { ...scope, packageSnapshotId: input.environmentPackage.snapshotId };
+  const context = readGoalTaskPolicyContext({
+    coreDb: input.input.coreDb!,
+    store: input.input.store,
+    db: input.workspaceDb,
+    lineage,
+  });
+  const responsibleHumanId =
+    context?.responsibleUserId ?? responsibleUserIdForActor(scope.triggerActor);
+  if (!responsibleHumanId) throw mcpDeniedError();
+  const subject = {
+    principal: context
+      ? { kind: 'agent' as const, id: context.agentId }
+      : { kind: 'human' as const, id: responsibleHumanId },
+    onBehalfOf: null,
+    actor: {
+      kind: 'agent' as const,
+      id: input.environmentPackage.agent.agentId,
+      responsibleUserId: responsibleHumanId,
+    },
+    process: { workspaceId: scope.workspaceId, threadId: scope.threadId, turnId: scope.turnId },
+    credentialKind: 'worker-package' as const,
+    responsibleHumanId,
+  };
+  const taskPolicy = context
+    ? input.input.goalTaskPolicy?.(input.workspaceDb, responsibleHumanId)
+    : null;
+  if (context && !taskPolicy) throw mcpDeniedError();
+  const taskInput = {
+    workspaceDb: input.workspaceDb,
+    lineage,
+    subject,
+    operation: 'tool.use',
+    resource: {
+      kind: 'mcp-tool' as const,
+      workspaceId: scope.workspaceId,
+      serverId: input.serverId,
+      toolName: input.toolName,
+    },
+    humanKernel: captured.decision,
+  };
+  let task: ReturnType<GoalTaskPolicyService['readTaskDecision']> = null;
+  let authorizationUses: InterceptionInput['authorizationUses'] = [];
+  if (taskPolicy) {
+    if (decision) task = taskPolicy.readTaskDecision({ ...taskInput, decision });
+    else {
+      const evaluatedTask = taskPolicy.evaluateTask(taskInput);
+      task = evaluatedTask;
+      authorizationUses = evaluatedTask?.authorizationUses ?? [];
+    }
+  }
+  if (context && !task) throw mcpDeniedError();
+  return {
+    subject,
+    kernel: task?.kernel ?? captured.decision,
+    revision: task
+      ? policyDigest({ caller: captured, goalTask: task.authorizationRevision })
+      : policyDigest(captured),
+    authorizationUses,
+  };
 }
 
 /** Human binding authority uses current native owners, never its retained historical decision. */
@@ -1935,11 +2024,10 @@ function mcpInterceptionInput(
   call: Pick<StartedCapabilityCall, 'id'>,
   lifecycleCurrent = () =>
     hasMcpCapabilityTurnAdmission(input.input.store, input.environmentPackage)
-): InterceptionInput {
+): InterceptionInput & { readonly useDecision: (decision: InterceptionDecision) => void } {
   const scope = input.environmentPackage.scope;
-  const responsibleHumanId = responsibleUserIdForActor(scope.triggerActor);
-  if (!responsibleHumanId) throw new Error('MCP responsible human is unavailable.');
   const authority = currentMcpPolicyAuthority(input);
+  let ownDecision: PolicyUseDecision | undefined;
   const document = readAdmittedPolicyDocument(
     input.input.coreDb!,
     input.input.runtimeConfig().openKitConfig.policy?.mediation
@@ -1957,18 +2045,7 @@ function mcpInterceptionInput(
     // a mandatory post-allow dispatch precondition under its existing owner.
     schemaDigest: null,
     capabilityCallId: call.id,
-    subject: {
-      principal: { kind: 'human' as const, id: responsibleHumanId },
-      onBehalfOf: null,
-      actor: {
-        kind: 'agent' as const,
-        id: input.environmentPackage.agent.agentId,
-        responsibleUserId: responsibleHumanId,
-      },
-      process: { workspaceId: scope.workspaceId, threadId: scope.threadId, turnId: scope.turnId },
-      credentialKind: 'worker-package' as const,
-      responsibleHumanId,
-    },
+    subject: authority.subject,
   };
   const authorCurrent = (userId: string) => currentMcpBindingAuthor(input, userId);
   const anchorCurrent: InterceptionInput['anchorCurrent'] = (anchor) => {
@@ -2061,6 +2138,13 @@ function mcpInterceptionInput(
     document,
     proposal,
     authorizationRevision,
+    authorizationUses: authority.authorizationUses,
+    // Only the exact final allow may recognize its own already-consumed use at dispatch/readback.
+    useDecision: (decision) => {
+      if (decision.result !== 'allow')
+        throw new Error('MCP dispatch requires an allowing decision.');
+      ownDecision = decision;
+    },
     requiresHumanApproval: input.resolved.approvalRequiredTools.includes(input.toolName),
     authorCurrent,
     anchorCurrent,
@@ -2072,7 +2156,7 @@ function mcpInterceptionInput(
       agentBindingsCurrent() &&
       currentCatalogRevision() === proposal.catalogRevision &&
       policyDigest({
-        caller: currentMcpPolicyAuthority(input).revision,
+        caller: currentMcpPolicyAuthority(input, ownDecision).revision,
         bindings: currentBindingRefs(),
       }) === authorizationRevision &&
       policyDigest(
@@ -2106,7 +2190,16 @@ function mcpApprovalEffect(
   input: WorkerMcpToolCallInput,
   schemaSnapshotId: string
 ): McpApprovalEffect {
-  const responsibleUserId = responsibleUserIdForActor(input.environmentPackage.scope.triggerActor);
+  const responsibleUserId =
+    readGoalTaskPolicyContext({
+      coreDb: input.input.coreDb!,
+      store: input.input.store,
+      db: input.workspaceDb,
+      lineage: {
+        ...input.environmentPackage.scope,
+        packageSnapshotId: input.environmentPackage.snapshotId,
+      },
+    })?.responsibleUserId ?? responsibleUserIdForActor(input.environmentPackage.scope.triggerActor);
   if (!responsibleUserId) {
     throw new WorkerControlGatewayError('mcp-denied', 'MCP tool call was denied.', 403);
   }
