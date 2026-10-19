@@ -394,7 +394,12 @@ describe('knowledge proposal authority', () => {
       'knowledge.proposal.decide',
       decisionInput(f, proposal, 'accepted', `review-${name}`)
     );
-    expect(decision.proposal.status).toBe('accepted');
+    expect(decision.review.decision).toBe('accepted');
+    expect(decision.application).toMatchObject({
+      knowledgePageId: proposal.knowledgePageId,
+      present: true,
+      notebookRevision: proposal.candidateRevision,
+    });
     expect(f.store.listKnowledgeProposalReviewDecisions(f.workspaceId)).toHaveLength(1);
     expect(currentPage(f, proposal.knowledgePageId)).toBeDefined();
     expect(

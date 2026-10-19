@@ -37,7 +37,11 @@ import {
   startCapabilityCall,
 } from '../capability/usage-ledger.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
-import { parseOkfDocument, updateOkfFrontmatter } from '../knowledge/okf.js';
+import {
+  DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
+  parseOkfDocument,
+  updateOkfFrontmatter,
+} from '../knowledge/okf.js';
 import { FsStore } from '../lib/store.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoWorkspaceForUser } from '../test-support/demo-store.js';
@@ -85,6 +89,7 @@ function minimalExportInput(
   workspaceId = 'ws_00000000-0000-7000-8000-000000000001',
   exportId = 'wsexp_00000000-0000-7693-ae39-6c3f6020c3c4'
 ): Parameters<typeof writeWorkspaceExportTree>[0] {
+  const knowledgeBaseId = allocateEntityId('kb');
   return {
     exportRoot,
     exportId,
@@ -122,10 +127,13 @@ function minimalExportInput(
         workspace: {
           name: 'Boundary workspace',
           defaultAgentId: null,
-          defaultKnowledgeBaseId: allocateEntityId('kb'),
+          defaultKnowledgeBaseId: knowledgeBaseId,
+          knowledgeMounts: [
+            { knowledgeBaseId, name: 'default', backend: 'local', root: 'raw', default: true },
+          ],
         },
       }),
-      workspaceSchema: null,
+      workspaceSchema: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
     },
   };
 }
@@ -357,27 +365,24 @@ describe('workspace export filesystem boundaries', () => {
         updatedAt: timestamp,
       },
     });
-    const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
-    applyScopedMigrations(workspaceDb);
-    let exported: Awaited<ReturnType<typeof createVerifiedWorkspaceExport>>;
-    try {
-      exported = await createVerifiedWorkspaceExport({
-        authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
-        authorityActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-        requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
-        coreDb,
-        dataRoot,
-        store,
-        workspaceId: workspace.id,
-        repositoryWorkspaceDb: () => workspaceDb,
-      });
-    } finally {
-      workspaceDb.sqlite.close();
-    }
+    const exported = await createVerifiedWorkspaceExport({
+      authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      authorityActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+      requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
+      coreDb,
+      dataRoot,
+      store,
+      workspaceId: workspace.id,
+      repositoryWorkspaceDb: () => {
+        const db = openWorkspaceDb(dataRoot, workspace.id);
+        applyScopedMigrations(db);
+        return db;
+      },
+    });
     const exportRoot = existingWorkspaceExportRoot(
       dataRoot,
       workspace.id,
-      exported!.verified.manifest.id
+      exported.verified.manifest.id
     );
     const pointerPath = `workspace-files/knowledge/sources/${source.id}.md`;
     const sourcePath = join(exportRoot, pointerPath);

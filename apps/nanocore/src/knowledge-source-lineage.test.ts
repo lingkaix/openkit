@@ -525,6 +525,11 @@ describe('direct Knowledge saved-source lineage', () => {
         sourceReferences: [reference],
       };
       const entry = await f.client.operations['knowledge.create'](command);
+      const before = await f.client.operations['knowledge.list']({
+        workspaceId: DEMO_WORKSPACE_ID,
+      });
+      const saved = before.items.find((item) => item.id === entry.id)!;
+      expect(saved).toMatchObject(entry);
       const path = join(
         f.dataRoot,
         'workspaces',
@@ -551,7 +556,7 @@ describe('direct Knowledge saved-source lineage', () => {
       const retained = await f.client.operations['knowledge.list']({
         workspaceId: DEMO_WORKSPACE_ID,
       });
-      expect(retained.items.find((item) => item.id === entry.id)).toEqual(entry);
+      expect(retained.items.find((item) => item.id === entry.id)).toEqual(saved);
       const indexes = await f.client.operations['knowledge.indexes']({
         workspaceId: DEMO_WORKSPACE_ID,
       });
