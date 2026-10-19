@@ -538,9 +538,13 @@ it('chooses an accepted Material candidate after whole-revision apply advances i
       artifactMediaType: 'text/plain',
     });
     const before = getArtifactReview(db, artifactId, 1);
+    const effectAuthority = db.sqlite.prepare(`SELECT decision, decision_actor_id,
+      decision_request_id, feedback, decided_at, follow_up_turn_id, applied_material_revision_id
+      FROM artifact_reviews`);
+    const effectBefore = effectAuthority.get();
     const materials = db.sqlite.prepare('SELECT * FROM workspace_material_revisions').all();
     const turns = db.sqlite.prepare('SELECT * FROM worker_turn_checkpoints').all();
-    const choice = selectArtifactReviewCandidate(db, {
+    const selectionInput = {
       actorId: actor.id,
       artifactId,
       artifactVersion: 1,
@@ -548,9 +552,29 @@ it('chooses an accepted Material candidate after whole-revision apply advances i
       requestId: 'choose',
       reason: 'Use the accepted candidate.',
       selectedAt: timestamp,
-    });
+    };
+    const choice = selectArtifactReviewCandidate(db, selectionInput);
+    expect(effectAuthority.get()).toEqual(effectBefore);
+    const selectionJudgement = {
+      schemaVersion: 1,
+      workspaceId: db.workspaceId,
+      actor,
+      requestId: 'choose',
+      recordedAt: timestamp,
+      kind: 'select',
+      target: {
+        kind: 'artifact-version',
+        artifactId,
+        artifactVersion: 1,
+        contentDigest: contentDigest('Candidate.'),
+      },
+      choice: { artifactId, artifactVersion: 1, contentDigest: contentDigest('Candidate.') },
+      note: 'Use the accepted candidate.',
+      extensions: {},
+    };
     expect(choice).toMatchObject({
       ...before,
+      judgements: [selectionJudgement],
       candidateSelections: [
         {
           actorId: actor.id,
@@ -564,8 +588,25 @@ it('chooses an accepted Material candidate after whole-revision apply advances i
       materials
     );
     expect(db.sqlite.prepare('SELECT * FROM worker_turn_checkpoints').all()).toEqual(turns);
-  } finally {
+    const row = db.sqlite.prepare('SELECT judgements FROM artifact_reviews').get() as {
+      judgements: string;
+    };
+    expect(JSON.parse(row.judgements)).toEqual([selectionJudgement]);
+    const snapshot = authoritySnapshot(db);
+    expect(selectArtifactReviewCandidate(db, selectionInput, true)).toEqual(choice);
+    expect(authoritySnapshot(db)).toEqual(snapshot);
     db.sqlite.close();
+    const reopened = openWorkspaceDb(db.dataRoot, db.workspaceId);
+    try {
+      applyScopedMigrations(reopened);
+      expect(getArtifactReview(reopened, artifactId, 1)).toEqual(choice);
+      expect(selectArtifactReviewCandidate(reopened, selectionInput, true)).toEqual(choice);
+      expect(authoritySnapshot(reopened)).toEqual(snapshot);
+    } finally {
+      reopened.sqlite.close();
+    }
+  } finally {
+    if (db.sqlite.open) db.sqlite.close();
   }
 });
 
@@ -596,53 +637,70 @@ function retainedReviewFixture(): {
 }
 
 describe('retained Artifact Review SQL format', () => {
-  it('writes v1 and retains descriptive choice annotations without rewriting a read', () => {
+  it('keeps single-version choices only in the Review judgement column after full migration', () => {
+    const { db } = retainedReviewFixture();
+    const columns = db.sqlite.prepare('PRAGMA table_info(artifact_reviews)').all() as {
+      name: string;
+    }[];
+    expect(columns.map((column) => column.name)).not.toContain('candidate_selections');
+    expect(columns.map((column) => column.name)).toContain('judgements');
+  });
+
+  it('writes v1 and retains descriptive judgement annotations without rewriting a read', () => {
     const { db, input } = retainedReviewFixture();
-    const choices = JSON.stringify([
-      {
-        actorId: 'reviewer',
-        requestId: 'selection',
-        reason: null,
-        selectedAt: '2026-07-19T00:00:01.000Z',
-        note: 'Retained description',
+    const actorId = 'usr_00000000-0000-7000-8000-000000000001';
+    const judgement = {
+      schemaVersion: 1,
+      workspaceId: db.workspaceId,
+      actor: { kind: 'user', id: actorId },
+      requestId: 'selection',
+      recordedAt: '2026-07-19T00:00:01.000Z',
+      kind: 'select',
+      target: {
+        kind: 'artifact-version',
+        artifactId: input.artifactId,
+        artifactVersion: input.artifactVersion,
+        contentDigest: input.contentDigest,
       },
-    ]);
-    db.sqlite.prepare('UPDATE artifact_reviews SET candidate_selections=?').run(choices);
+      choice: {
+        artifactId: input.artifactId,
+        artifactVersion: input.artifactVersion,
+        contentDigest: input.contentDigest,
+      },
+      note: null,
+      extensions: {},
+      description: 'Retained description',
+    };
+    db.sqlite.prepare('UPDATE artifact_reviews SET judgements=?').run(JSON.stringify([judgement]));
     const before = db.sqlite.prepare('SELECT * FROM artifact_reviews').get();
     expect(before).toMatchObject({ schema_version: 1 });
     const review = getArtifactReview(db, input.artifactId, input.artifactVersion);
-    expect(review.candidateSelections[0]).toMatchObject({
-      requestId: 'selection',
-    });
-    expect(review.candidateSelections[0]).not.toHaveProperty('note');
-    expect(listExportableArtifactReviews(db)[0]?.candidateSelections[0]).toMatchObject({
-      note: 'Retained description',
+    expect(review.candidateSelections).toEqual([
+      { actorId, requestId: 'selection', reason: null, selectedAt: judgement.recordedAt },
+    ]);
+    expect(review.judgements[0]).not.toHaveProperty('description');
+    expect(listExportableArtifactReviews(db)[0]?.judgements[0]).toMatchObject({
+      description: 'Retained description',
     });
     expect(db.sqlite.prepare('SELECT * FROM artifact_reviews').get()).toEqual(before);
     selectArtifactReviewCandidate(db, {
-      actorId: 'reviewer',
+      actorId,
       artifactId: input.artifactId,
       artifactVersion: input.artifactVersion,
       contentDigest: input.contentDigest,
       requestId: 'selection-next',
       selectedAt: '2026-07-19T00:00:02.000Z',
     });
-    expect(
-      JSON.parse(
-        (
-          db.sqlite.prepare('SELECT candidate_selections FROM artifact_reviews').get() as {
-            candidate_selections: string;
-          }
-        ).candidate_selections
-      )[0]
-    ).toMatchObject({ note: 'Retained description' });
+    const row = db.sqlite.prepare('SELECT judgements FROM artifact_reviews').get() as {
+      judgements: string;
+    };
+    expect(JSON.parse(row.judgements)).toHaveLength(2);
+    expect(JSON.parse(row.judgements)[0]).toEqual(judgement);
   });
 
   it('refuses an unknown row format before JSON decoding or replacement', () => {
     const { db, input } = retainedReviewFixture();
-    db.sqlite
-      .prepare("UPDATE artifact_reviews SET schema_version=2, candidate_selections='{invalid'")
-      .run();
+    db.sqlite.prepare("UPDATE artifact_reviews SET schema_version=2, judgements='{invalid'").run();
     const before = db.sqlite.prepare('SELECT * FROM artifact_reviews').get();
     expect(() => getArtifactReview(db, input.artifactId, input.artifactVersion)).toThrow(
       'Unsupported retained record format'

@@ -252,9 +252,6 @@ const ImportedArtifactReviewSchema = StoredArtifactReviewV1Schema.safeExtend({
     .strip()
     .nullable()
     .optional(),
-  candidateSelections: z
-    .array(StoredArtifactReviewV1Schema.shape.candidateSelections.unwrap().element.strip())
-    .default([]),
   decisionRequestId: z.string().min(1).nullable(),
 }).strip();
 
@@ -3434,10 +3431,6 @@ function readWorkResourceImportState(
       materialProposal,
       rangeFeedback:
         review.rangeFeedback == null ? null : remapReviewRange(context, review.rangeFeedback),
-      candidateSelections: review.candidateSelections.map((selection) => ({
-        ...selection,
-        requestId: importRequestLineage(context, selection.requestId),
-      })),
       decisionRequestId: review.decisionRequestId
         ? importRequestLineage(context, review.decisionRequestId)
         : null,

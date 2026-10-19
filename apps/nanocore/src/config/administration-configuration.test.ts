@@ -287,6 +287,7 @@ describe('administration catalog configuration', () => {
     };
     const access = policyConfiguration.readStorageLeaseAccess(input);
     expect(access).toMatchObject({
+      basis: 'lease',
       knowledgeBaseId,
       ownerScope,
       mount: 'local',
