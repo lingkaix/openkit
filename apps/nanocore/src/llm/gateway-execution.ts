@@ -160,33 +160,32 @@ export async function executeGatewayPlan<T>(input: {
     committed = active;
   }, GATEWAY_PRECOMMIT_DEADLINE_MS);
   let active = false;
-  /** Extends this plan once, without reopening its deadline or revisiting failover targets. */
-  async function* selections(): AsyncGenerator<GatewaySelection> {
-    for (const selection of input.selections) {
-      if (!input.autoFailover && lastFailure) break;
-      yield selection;
-    }
-    if (
-      quotaSelection &&
-      input.recoverSettledQuota &&
-      !committed &&
-      !expired &&
-      !input.signal.aborted &&
-      clock.now() < deadline
-    ) {
-      const recovered = await input.recoverSettledQuota(quotaSelection, {
-        signal: input.signal,
-        deadline,
-      });
-      input.signal.throwIfAborted();
-      if (recovered && !committed && !expired && clock.now() < deadline) {
-        resetRetry = true;
-        yield quotaSelection;
-      }
-    }
-  }
+  let attemptedRecovery = false;
   try {
-    for await (const selection of selections()) {
+    for (let index = 0; ; index++) {
+      let selection = !input.autoFailover && lastFailure ? undefined : input.selections[index];
+      // Extend this same plan once; do not introduce an await before its first admitted attempt.
+      if (!selection) {
+        if (
+          attemptedRecovery ||
+          !quotaSelection ||
+          !input.recoverSettledQuota ||
+          committed ||
+          expired ||
+          input.signal.aborted ||
+          clock.now() >= deadline
+        )
+          break;
+        attemptedRecovery = true;
+        const recovered = await input.recoverSettledQuota(quotaSelection, {
+          signal: input.signal,
+          deadline,
+        });
+        input.signal.throwIfAborted();
+        if (!recovered || committed || expired || clock.now() >= deadline) break;
+        resetRetry = true;
+        selection = quotaSelection;
+      }
       if (!selection.selected) continue;
       for (let retryIndex = 0; ; retryIndex++) {
         input.signal.throwIfAborted();

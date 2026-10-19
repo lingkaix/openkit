@@ -160,28 +160,28 @@ export function createProviderSubscriptionOperationImplementations(
       runAccountOperation(manager(), context, async () => {
         const pair = requirePair(input);
         await manager().reconcileAccount(pair);
+        if (pair.subscriptionProviderId === 'openai-codex') {
+          const { quota, observedAt } = await manager().getCodexQuota(pair, context.signal, true);
+          return {
+            accountSlotId: pair.accountSlotId,
+            observedAt,
+            ...(quota ?? { availability: 'temporarily_unavailable' as const }),
+            subscriptionProviderId: pair.subscriptionProviderId,
+          };
+        }
         const handle = await manager().getPairHandle(pair);
         const version = await handle.getCredentialVersion();
         const verifyVersion = async () =>
           version !== undefined && (await handle.getCredentialVersion()) === version;
-        if (pair.subscriptionProviderId === 'xai') {
-          const quota = await readXaiQuota(handle.models, now, verifyVersion);
-          if (version !== undefined && quota && quota.availability !== 'authentication_required') {
-            await handle.observeQuota(version, quota.availability, true, context.signal);
-          }
-          return {
-            accountSlotId: pair.accountSlotId,
-            observedAt: now(),
-            subscriptionProviderId: pair.subscriptionProviderId,
-            ...(quota ?? { availability: 'temporarily_unavailable' as const }),
-          };
+        const quota = await readXaiQuota(handle.models, now, verifyVersion);
+        if (version !== undefined && quota && quota.availability !== 'authentication_required') {
+          await handle.observeQuota(version, quota.availability, true, context.signal);
         }
-        const { quota, observedAt } = await manager().getCodexQuota(pair, context.signal, true);
         return {
           accountSlotId: pair.accountSlotId,
-          observedAt,
-          ...(quota ?? { availability: 'temporarily_unavailable' as const }),
+          observedAt: now(),
           subscriptionProviderId: pair.subscriptionProviderId,
+          ...(quota ?? { availability: 'temporarily_unavailable' as const }),
         };
       }),
     'provider-subscription.account-auto-topup': (input, context) =>

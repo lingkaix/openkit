@@ -151,9 +151,9 @@ export interface ProviderSubscriptionAccountPair {
 
 /** Optional Codex account controls; absence means on, on and off respectively. */
 export interface CodexSubscriptionSettings {
-  readonly codexAutoUseWeeklyReset?: boolean;
-  readonly codexAutoUseExpiringReset?: boolean;
-  readonly codexUseCredits?: boolean;
+  readonly codexAutoUseWeeklyReset?: boolean | undefined;
+  readonly codexAutoUseExpiringReset?: boolean | undefined;
+  readonly codexUseCredits?: boolean | undefined;
 }
 
 /** One current-material observation, reused for at most one minute. */
@@ -638,7 +638,7 @@ export class ProviderSubscriptionAccountManager {
     pair: ProviderSubscriptionAccountPair,
     redeemRequestId: string,
     options: {
-      readonly signal?: AbortSignal;
+      readonly signal?: AbortSignal | undefined;
       readonly trigger?: 'manual' | 'weekly' | 'expiring';
       readonly weeklyResetsAt?: string;
     } = {}
@@ -652,11 +652,23 @@ export class ProviderSubscriptionAccountManager {
       const record = inspection.record;
       const prefix = codexResetResourcePrefix(exactPair);
       const prior = this.coreDb.sqlite
-        .prepare(`SELECT request_id AS requestId, resource, action, outcome, error_code AS errorCode FROM audit_events
+        .prepare(`SELECT rowid AS sequence, request_id AS requestId, resource, action, outcome, error_code AS errorCode FROM audit_events
         WHERE request_id = ? AND action IN (${CODEX_RESET_ACTIONS.map(() => '?').join(',')}) ORDER BY rowid DESC LIMIT 1`)
         .get(redeemRequestId, ...CODEX_RESET_ACTIONS) as CodexResetAuditRow | undefined;
       if (prior && !prior.resource.startsWith(prefix)) throw codexRequestError();
       if (prior && prior.outcome !== 'unknown') return resetAuditResult(exactPair, prior);
+      if (prior) {
+        // A later account/credential lifecycle cannot borrow the previous effect's retry identity.
+        const replaced = this.coreDb.sqlite
+          .prepare(`SELECT 1 FROM audit_events WHERE rowid > ? AND resource = ?
+          AND action IN ('provider_subscription.credential.store', 'provider_subscription.credential.rotate',
+            'provider_subscription.credential.revoke', 'provider_subscription.account.delete', 'provider_subscription.account.create') LIMIT 1`)
+          .get(
+            prior.sequence,
+            `provider-subscription:${exactPair.subscriptionProviderId}:${exactPair.accountSlotId}`
+          );
+        if (replaced) throw resetConflictError();
+      }
       const pending = this.coreDb.sqlite
         .prepare(`SELECT a.request_id AS requestId FROM audit_events a
         WHERE a.action IN (${CODEX_RESET_ACTIONS.map(() => '?').join(',')}) AND a.resource LIKE ? AND a.outcome = 'unknown'
@@ -717,11 +729,11 @@ export class ProviderSubscriptionAccountManager {
           return { ...exactPair, redeemRequestId, outcome: 'no_credit' };
         if (!credit) {
           const absent = { ...exactPair, redeemRequestId, outcome: 'no_credit' as const };
-          this.recordCodexReset(exactPair, `${prefix}:`, redeemRequestId, trigger, absent);
+          this.recordCodexReset(`${prefix}:`, redeemRequestId, trigger, absent);
           return absent;
         }
         resource = `${prefix}${encodeURIComponent(credit.id)}:${trigger === 'weekly' ? encodeURIComponent(weekly!.resetsAt) : ''}`;
-        this.recordCodexReset(exactPair, resource, redeemRequestId, trigger);
+        this.recordCodexReset(resource, redeemRequestId, trigger);
       }
       options.signal?.throwIfAborted();
       const creditId = decodeURIComponent(resource.slice(prefix.length).split(':')[0]!);
@@ -741,7 +753,7 @@ export class ProviderSubscriptionAccountManager {
       const originalTrigger = prior
         ? (prior.action.slice('provider_subscription.reset.'.length) as typeof trigger)
         : trigger;
-      this.recordCodexReset(exactPair, resource, redeemRequestId, originalTrigger, outcome);
+      this.recordCodexReset(resource, redeemRequestId, originalTrigger, outcome);
       return outcome;
     });
   }
@@ -795,7 +807,6 @@ export class ProviderSubscriptionAccountManager {
 
   /** Records only non-secret exact reset identity in the existing Server Audit fields. */
   private recordCodexReset(
-    pair: ProviderSubscriptionAccountPair,
     resource: string,
     redeemRequestId: string,
     trigger: 'manual' | 'weekly' | 'expiring',
@@ -2585,6 +2596,7 @@ const CODEX_RESET_ACTIONS = [
 
 /** Only existing Audit columns carry reset identity; no parallel reset store exists. */
 interface CodexResetAuditRow {
+  readonly sequence: number;
   readonly requestId: string;
   readonly resource: string;
   readonly action: string;
