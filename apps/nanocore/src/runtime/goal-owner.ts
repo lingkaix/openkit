@@ -3,8 +3,6 @@ import {
   GOAL_OPERATION_DEFINITIONS,
   type GoalCard,
   GoalCardSchema,
-  GoalCommitmentSchema,
-  GoalCompletionCandidateSchema,
   type GoalPlanVersion,
   GoalPlanVersionSchema,
   type GoalRecord,
@@ -18,7 +16,9 @@ import {
   deriveEntityId,
   isSealedTurnTerminal,
   PolicyDelegationV1Schema,
+  readRetainedV1,
   type TurnSchema,
+  writeRetainedV1,
 } from '@openkit/protocol';
 import type { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
@@ -33,6 +33,15 @@ import type { FsStore } from '../lib/store.js';
 import type { GoalDomainPolicyService } from '../policy/goal-domains.js';
 import { policyDigest } from '../policy/statements.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
+import {
+  StoredGoalCardTaskV1Schema,
+  StoredGoalCardV1Schema,
+  StoredGoalCommitmentV1Schema,
+  StoredGoalCompletionCandidateV1Schema,
+  StoredGoalPlanVersionV1Schema,
+  StoredGoalV1Schema,
+  StoredTaskTerminalFactV1Schema,
+} from './goal-retained-v1.js';
 import {
   commandInputHash,
   type InflightIdempotentCommand,
@@ -124,10 +133,10 @@ function readRecord<T>(
   id: string,
   schema: z.ZodType<T>
 ): T | null {
-  const row = db.sqlite.prepare(`SELECT payload_json FROM ${table} WHERE ${key} = ?`).get(id) as
-    | { payload_json: string }
-    | undefined;
-  return row ? schema.parse(JSON.parse(row.payload_json)) : null;
+  const row = db.sqlite
+    .prepare(`SELECT schema_version AS schemaVersion,payload_json FROM ${table} WHERE ${key} = ?`)
+    .get(id) as { schemaVersion: unknown; payload_json: string } | undefined;
+  return row ? readRetainedV1(row, () => schema.parse(JSON.parse(row.payload_json))) : null;
 }
 /** Goal eligibility stays with its effect owner before either public approval surface records a grant. */
 export function checkGoalCommandIntent(
@@ -141,7 +150,7 @@ export function checkGoalCommandIntent(
     'goals',
     'goal_id',
     String(request.governedIntent?.goalId),
-    GoalRecordSchema
+    StoredGoalV1Schema
   );
   if (
     !goal ||
@@ -158,7 +167,7 @@ export function checkGoalCommandIntent(
       'goal_plan_versions',
       'plan_version_id',
       String(exact.planVersionId),
-      GoalPlanVersionSchema
+      StoredGoalPlanVersionV1Schema
     );
     const active = goal.activePlanVersionId
       ? readRecord(
@@ -166,7 +175,7 @@ export function checkGoalCommandIntent(
           'goal_plan_versions',
           'plan_version_id',
           goal.activePlanVersionId,
-          GoalPlanVersionSchema
+          StoredGoalPlanVersionV1Schema
         )
       : null;
     if (
@@ -189,15 +198,21 @@ export function checkGoalCommandIntent(
 }
 /** Writes only the already validated owning record. */
 function saveGoal(db: WorkspaceDb, goal: GoalRecord): void {
+  const previous = readRecord(db, 'goals', 'goal_id', goal.goalId, StoredGoalV1Schema);
   db.sqlite
     .prepare(
-      'INSERT INTO goals VALUES (?, ?, ?) ON CONFLICT(goal_id) DO UPDATE SET payload_json=excluded.payload_json'
+      'INSERT INTO goals (goal_id,thread_id,payload_json,schema_version) VALUES (?, ?, ?, ?) ON CONFLICT(goal_id) DO UPDATE SET payload_json=excluded.payload_json,schema_version=excluded.schema_version'
     )
-    .run(goal.goalId, goal.threadId, JSON.stringify(GoalRecordSchema.parse(goal)));
+    .run(
+      goal.goalId,
+      goal.threadId,
+      JSON.stringify(StoredGoalV1Schema.parse({ ...previous, ...goal })),
+      writeRetainedV1({}).schemaVersion
+    );
 }
 /** Advances the existing two-field marker in the caller's fact transaction. */
 export function advanceGoalRevision(db: WorkspaceDb, goalId: string): void {
-  const goal = readRecord(db, 'goals', 'goal_id', goalId, GoalRecordSchema);
+  const goal = readRecord(db, 'goals', 'goal_id', goalId, StoredGoalV1Schema);
   if (goal) saveGoal(db, { ...goal, changeRevision: goal.changeRevision + 1, updatedAt: now() });
 }
 /** Advances Goals addressed by this Thread or linked to its ordinary Task, inside the source commit. */
@@ -206,15 +221,25 @@ export function advanceGoalForThread(
   threadId: string
 ): void {
   for (const row of sqlite
+    .prepare('SELECT schema_version AS schemaVersion FROM goal_card_tasks WHERE thread_id=?')
+    .all(threadId)) {
+    readRetainedV1(row, () => undefined);
+  }
+  for (const row of sqlite
     .prepare(
-      'SELECT goal_id,payload_json FROM goals WHERE thread_id=? OR goal_id IN (SELECT goal_id FROM goal_card_tasks WHERE thread_id=?)'
+      'SELECT schema_version AS schemaVersion,goal_id,payload_json FROM goals WHERE thread_id=? OR goal_id IN (SELECT goal_id FROM goal_card_tasks WHERE thread_id=?)'
     )
-    .all(threadId, threadId) as { goal_id: string; payload_json: string }[]) {
-    const goal = GoalRecordSchema.parse(JSON.parse(row.payload_json));
+    .all(threadId, threadId) as {
+    schemaVersion: unknown;
+    goal_id: string;
+    payload_json: string;
+  }[]) {
+    const goal = readRetainedV1(row, () => StoredGoalV1Schema.parse(JSON.parse(row.payload_json)));
     sqlite
-      .prepare('UPDATE goals SET payload_json=? WHERE goal_id=?')
+      .prepare('UPDATE goals SET payload_json=?,schema_version=? WHERE goal_id=?')
       .run(
         JSON.stringify({ ...goal, changeRevision: goal.changeRevision + 1, updatedAt: now() }),
+        writeRetainedV1({}).schemaVersion,
         row.goal_id
       );
   }
@@ -222,28 +247,56 @@ export function advanceGoalForThread(
 /** Lists only the new owner records addressing an ordinary Coordinator Thread. */
 export function listGoalsForThread(db: WorkspaceDb, threadId: string): GoalRecord[] {
   return (
-    db.sqlite.prepare('SELECT payload_json FROM goals WHERE thread_id=?').all(threadId) as {
+    db.sqlite
+      .prepare('SELECT schema_version AS schemaVersion,payload_json FROM goals WHERE thread_id=?')
+      .all(threadId) as {
+      schemaVersion: unknown;
       payload_json: string;
     }[]
-  ).map((row) => GoalRecordSchema.parse(JSON.parse(row.payload_json)));
+  ).map((row) => readRetainedV1(row, () => StoredGoalV1Schema.parse(JSON.parse(row.payload_json))));
 }
-/** Derives admission and state from ordinary Task Turns; retained citations alone prove neither. */
-export function readGoalView(store: FsStore, db: WorkspaceDb, goalId: string): GoalView {
-  const goal = readRecord(db, 'goals', 'goal_id', goalId, GoalRecordSchema);
-  if (!goal) return { goal: null, cards: [], versions: [], tasks: [], requests: [] };
-  const rows = (table: string) =>
+/** Captures native Goal and Task history for export; an unsupported SQL format never becomes current import input. */
+export function listExportableGoalState(db: WorkspaceDb) {
+  const readFamily = <T>(table: string, schema: z.ZodType<T>): T[] =>
     (
-      db.sqlite.prepare(`SELECT payload_json FROM ${table} WHERE goal_id=?`).all(goalId) as {
+      db.sqlite
+        .prepare(`SELECT schema_version AS schemaVersion,payload_json FROM ${table}`)
+        .all() as {
+        schemaVersion: unknown;
         payload_json: string;
       }[]
-    ).map((row) => JSON.parse(row.payload_json) as unknown);
+    ).map((row) => readRetainedV1(row, () => schema.parse(JSON.parse(row.payload_json))));
   return {
-    goal,
-    cards: rows('goal_cards').map((row) => GoalCardSchema.parse(row)),
-    versions: rows('goal_plan_versions')
+    goals: readFamily('goals', StoredGoalV1Schema),
+    cards: readFamily('goal_cards', StoredGoalCardV1Schema),
+    versions: readFamily('goal_plan_versions', StoredGoalPlanVersionV1Schema),
+    tasks: readFamily('goal_card_tasks', StoredGoalCardTaskV1Schema),
+    terminalFacts: readFamily('task_turn_terminal_facts', StoredTaskTerminalFactV1Schema),
+  };
+}
+
+/** Derives admission and state from ordinary Task Turns; retained citations alone prove neither. */
+export function readGoalView(store: FsStore, db: WorkspaceDb, goalId: string): GoalView {
+  const goal = readRecord(db, 'goals', 'goal_id', goalId, StoredGoalV1Schema);
+  if (!goal) return { goal: null, cards: [], versions: [], tasks: [], requests: [] };
+  const rows = <T>(table: string, schema: z.ZodType<T>) =>
+    (
+      db.sqlite
+        .prepare(
+          `SELECT schema_version AS schemaVersion,payload_json FROM ${table} WHERE goal_id=?`
+        )
+        .all(goalId) as {
+        schemaVersion: unknown;
+        payload_json: string;
+      }[]
+    ).map((row) => readRetainedV1(row, () => schema.parse(JSON.parse(row.payload_json))));
+  return {
+    goal: GoalRecordSchema.parse(goal),
+    cards: rows('goal_cards', StoredGoalCardV1Schema).map((row) => GoalCardSchema.parse(row)),
+    versions: rows('goal_plan_versions', StoredGoalPlanVersionV1Schema)
       .map((row) => GoalPlanVersionSchema.parse(row))
       .sort((a, b) => a.sequence - b.sequence),
-    tasks: rows('goal_card_tasks').map((row) => {
+    tasks: rows('goal_card_tasks', StoredGoalCardTaskV1Schema).map((row) => {
       const link = GoalTaskLinkSchema.parse(row);
       const missing = !store
         .listThreads(goal.workspaceId)
@@ -315,7 +368,7 @@ export function requireCoordinatorGoal(
   db: WorkspaceDb,
   binding: { actor: Actor; goalId: string; workspaceId: string; threadId: string; turnId: string }
 ): GoalRecord {
-  const goal = requireOpen(readRecord(db, 'goals', 'goal_id', binding.goalId, GoalRecordSchema));
+  const goal = requireOpen(readRecord(db, 'goals', 'goal_id', binding.goalId, StoredGoalV1Schema));
   if (
     goal.workspaceId !== binding.workspaceId ||
     goal.threadId !== binding.threadId ||
@@ -444,7 +497,7 @@ function consumeGrant(
       'goal_plan_versions',
       'plan_version_id',
       String(exact.planVersionId),
-      GoalPlanVersionSchema
+      StoredGoalPlanVersionV1Schema
     );
     if (
       !version ||
@@ -462,7 +515,7 @@ function consumeGrant(
           'goal_plan_versions',
           'plan_version_id',
           goal.activePlanVersionId,
-          GoalPlanVersionSchema
+          StoredGoalPlanVersionV1Schema
         )
       : null;
     if (goal.activePlanVersionId && !active)
@@ -470,7 +523,7 @@ function consumeGrant(
     if (version && active && active.sequence > version.sequence)
       reason ??= 'An obsolete proposal cannot replace a later active version.';
   } else if (exact?.operation === 'goal.completion.accept') {
-    const candidate = GoalCompletionCandidateSchema.parse(exact.candidate);
+    const candidate = StoredGoalCompletionCandidateV1Schema.parse(exact.candidate);
     if (
       candidate.intent !== goal.intent ||
       candidate.intentRevision !== goal.intentRevision ||
@@ -542,7 +595,7 @@ function consumeGrant(
           ...goal,
           disposition: {
             kind: 'accepted',
-            candidate: GoalCompletionCandidateSchema.parse(exact?.candidate),
+            candidate: StoredGoalCompletionCandidateV1Schema.parse(exact?.candidate),
             pendingRequestId: request.requestId,
             actorId: request.decidingActor!.id,
             at: now(),
@@ -575,7 +628,7 @@ export async function executeGoalOperation<K extends GoalOperationId>(
       : id === 'goal.read'
         ? (listGoalsForThread(db, input.threadId)[0]?.goalId ?? 'absent')
         : `g_${input.requestId}`;
-  let goal = readRecord(db, 'goals', 'goal_id', goalId, GoalRecordSchema);
+  let goal: GoalRecord | null = readRecord(db, 'goals', 'goal_id', goalId, StoredGoalV1Schema);
   if (
     goal &&
     (('threadId' in input && goal.threadId !== input.threadId) ||
@@ -771,7 +824,7 @@ export async function executeGoalOperation<K extends GoalOperationId>(
             return readGoalView(store, db, goalId);
           goal = consumeGrant(store, db, goal, request, services);
         } else {
-          goal = requireOpen(readRecord(db, 'goals', 'goal_id', goalId, GoalRecordSchema));
+          goal = requireOpen(readRecord(db, 'goals', 'goal_id', goalId, StoredGoalV1Schema));
           if (id === 'goal.intent.revise' && 'intent' in input && 'expectedRevision' in input) {
             checkRevision(goal.intentRevision, input.expectedRevision);
             const at = now();
@@ -803,10 +856,23 @@ export async function executeGoalOperation<K extends GoalOperationId>(
               updatedAt: now(),
             };
             db.sqlite
-              .prepare('INSERT INTO goal_cards VALUES (?,?,?)')
-              .run(card.cardId, goalId, JSON.stringify(card));
+              .prepare(
+                'INSERT INTO goal_cards (card_id,goal_id,payload_json,schema_version) VALUES (?,?,?,?)'
+              )
+              .run(
+                card.cardId,
+                goalId,
+                JSON.stringify(StoredGoalCardV1Schema.parse(card)),
+                writeRetainedV1({}).schemaVersion
+              );
           } else if ((id === 'goal.card.edit' || id === 'goal.card.cancel') && 'cardId' in input) {
-            const card = readRecord(db, 'goal_cards', 'card_id', input.cardId, GoalCardSchema);
+            const card = readRecord(
+              db,
+              'goal_cards',
+              'card_id',
+              input.cardId,
+              StoredGoalCardV1Schema
+            );
             if (!card || card.goalId !== goalId)
               throw new GoalCommandError('not_found', 'Card not found.', 404);
             checkRevision(card.revision, input.expectedRevision);
@@ -829,11 +895,15 @@ export async function executeGoalOperation<K extends GoalOperationId>(
                     updatedAt: now(),
                   };
             db.sqlite
-              .prepare('UPDATE goal_cards SET payload_json=? WHERE card_id=?')
-              .run(JSON.stringify(next), card.cardId);
+              .prepare('UPDATE goal_cards SET payload_json=?,schema_version=? WHERE card_id=?')
+              .run(
+                JSON.stringify(StoredGoalCardV1Schema.parse(next)),
+                writeRetainedV1({}).schemaVersion,
+                card.cardId
+              );
           } else if (id === 'goal.plan.propose' && 'commitment' in input) {
             checkRevision(goal.changeRevision, input.expectedRevision);
-            const commitment = GoalCommitmentSchema.parse(input.commitment);
+            const commitment = StoredGoalCommitmentV1Schema.parse(input.commitment);
             const versions = readGoalView(store, db, goalId).versions;
             const bytes = JSON.stringify(commitment);
             const version: GoalPlanVersion = {
@@ -856,8 +926,15 @@ export async function executeGoalOperation<K extends GoalOperationId>(
               true
             );
             db.sqlite
-              .prepare('INSERT INTO goal_plan_versions VALUES (?,?,?)')
-              .run(version.planVersionId, goalId, JSON.stringify(version));
+              .prepare(
+                'INSERT INTO goal_plan_versions (plan_version_id,goal_id,payload_json,schema_version) VALUES (?,?,?,?)'
+              )
+              .run(
+                version.planVersionId,
+                goalId,
+                JSON.stringify(StoredGoalPlanVersionV1Schema.parse(version)),
+                writeRetainedV1({}).schemaVersion
+              );
             saveGoal(db, { ...goal, proposedPlanVersionId: version.planVersionId });
             raiseIntent(
               store,
@@ -909,7 +986,7 @@ export async function executeGoalOperation<K extends GoalOperationId>(
               {
                 operation: 'goal.completion.accept',
                 goalId,
-                candidate: GoalCompletionCandidateSchema.parse(input.candidate),
+                candidate: StoredGoalCompletionCandidateV1Schema.parse(input.candidate),
               },
               `ap_${commandInput.requestId}`,
               'Accept exact Goal completion'

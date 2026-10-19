@@ -1,13 +1,48 @@
+import { RETAINED_FORMAT_VERSION } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 
 import {
   AuthoredAgentProviderSchema,
+  AuthoredProviderProfileSchema,
   getConfigSchemaCatalog,
   OpenKitProviderInstanceSchema,
   ProviderProfileSchema,
 } from './index.js';
 
 describe('provider config schema', () => {
+  it('admits authored Provider format v1 without adding storage fields to logical profiles', () => {
+    const profile = {
+      id: 'fixture-provider',
+      displayName: 'Fixture Provider',
+      kind: 'direct',
+      models: ['fixture-model'],
+    };
+    expect(
+      AuthoredProviderProfileSchema.parse({
+        ...profile,
+        schemaVersion: RETAINED_FORMAT_VERSION,
+        futureNote: 'retained description',
+      })
+    ).toEqual({ ...profile, schemaVersion: RETAINED_FORMAT_VERSION });
+    expect(ProviderProfileSchema.parse(profile)).toEqual(profile);
+    expect(
+      getConfigSchemaCatalog().find((entry) => entry.kind === 'provider')?.schema.required
+    ).toContain('schemaVersion');
+  });
+
+  it('refuses missing or unknown authored Provider format versions', () => {
+    const profile = {
+      id: 'fixture-provider',
+      displayName: 'Fixture Provider',
+      kind: 'direct',
+      models: ['fixture-model'],
+    };
+    expect(AuthoredProviderProfileSchema.safeParse(profile).success).toBe(false);
+    expect(AuthoredProviderProfileSchema.safeParse({ ...profile, schemaVersion: 2 }).success).toBe(
+      false
+    );
+  });
+
   it('derives server provider fields from the canonical profile schema', () => {
     const sharedFields = [
       'baseUrl',

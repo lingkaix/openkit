@@ -10,6 +10,8 @@ import {
   KnowledgeBaseIdSchema,
   type KnowledgeOwnerScope,
   KnowledgeOwnerScopeSchema,
+  readRetainedV1,
+  writeRetainedV1,
 } from '@openkit/protocol';
 import { applyEdits, modify } from 'jsonc-parser';
 import { NotebookError } from '../knowledge/notebook.js';
@@ -51,13 +53,15 @@ function configurationOwner(input: KnowledgeBaseOwner, workspaceRoot?: string) {
     sourcesRoot: join(dirname(notebookRoot), 'sources'),
     member: ['defaultKnowledgeBaseId'],
     schema: scope.kind === 'user' ? UserConfigSchema : OpenKitConfigSchema,
-    empty: scope.kind === 'user' ? '{"schemaVersion":1}\n' : '{}\n',
+    empty: `${JSON.stringify(writeRetainedV1({}))}\n`,
   };
 }
 
 /** Reads only the retained binding from a validated owner configuration. */
 function readBinding(owner: ReturnType<typeof configurationOwner>, source: string): unknown {
-  let value: unknown = owner.schema.parse(parseJsoncObject(source));
+  let value: unknown = readRetainedV1(parseJsoncObject(source), (record) =>
+    owner.schema.parse(record)
+  );
   for (const member of owner.member) {
     value =
       value && typeof value === 'object' ? (value as Record<string, unknown>)[member] : undefined;

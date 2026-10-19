@@ -22,10 +22,16 @@ import {
   deriveEntityId,
   type Item,
   isSealedTurnTerminal,
+  readRetainedV1,
   responsibleUserIdForActor,
+  writeRetainedV1,
 } from '@openkit/protocol';
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
-import { isThreadIdVisible, isThreadVisible } from '../auth/thread-visibility.js';
+import {
+  canDiscloseThreadToAudience,
+  isThreadIdVisible,
+  isThreadVisible,
+} from '../auth/thread-visibility.js';
 import {
   getLightApp,
   type KernelCommandContext,
@@ -59,6 +65,7 @@ export interface GenerativeUiCommandContext extends KernelCommandContext {
 
 /** SQLite row for one retained presentation. */
 interface PresentationRow {
+  schema_version: number;
   presentation_id: string;
   workspace_id: string;
   thread_id: string;
@@ -174,6 +181,7 @@ export async function publishGenerativePresentation(
       const itemId = allocateEntityId('it');
       const createdAt = new Date().toISOString();
       const row: PresentationRow = {
+        schema_version: writeRetainedV1(input).schemaVersion,
         presentation_id: presentationId,
         workspace_id: context.workspaceId,
         thread_id: input.threadId,
@@ -614,12 +622,13 @@ function insertPresentation(workspaceDb: WorkspaceDb, row: PresentationRow): voi
     workspaceDb.sqlite
       .prepare(
         `INSERT INTO generative_presentations (
-          presentation_id, workspace_id, thread_id, turn_id, item_id, created_at, actor_json,
+          schema_version, presentation_id, workspace_id, thread_id, turn_id, item_id, created_at, actor_json,
           request_id, origin_request_id, semantic_input_hash, title, fallback_text, protocol_version,
           catalog_id, messages_json, content_digest, source_json, actions_json, observed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
+        row.schema_version,
         row.presentation_id,
         row.workspace_id,
         row.thread_id,
@@ -657,9 +666,11 @@ function findPresentationByRequest(
   workspaceId: string,
   requestId: string
 ): PresentationRow | undefined {
-  return workspaceDb.sqlite
+  const row = workspaceDb.sqlite
     .prepare(`SELECT * FROM generative_presentations WHERE workspace_id = ? AND request_id = ?`)
     .get(workspaceId, requestId) as PresentationRow | undefined;
+  if (row) readRetainedV1({ schemaVersion: row.schema_version }, () => undefined);
+  return row;
 }
 
 function requirePresentationRow(
@@ -675,6 +686,7 @@ function requirePresentationRow(
   if (!row) {
     throw new KernelCommandError('not_found', 'Presentation was not found.');
   }
+  readRetainedV1({ schemaVersion: row.schema_version }, () => undefined);
   return row;
 }
 
@@ -986,11 +998,7 @@ function assertItemSourcePublishable(
   }
   const sourceThread = context.store.getThread(item.workspaceId, item.threadId);
   // Administrator read eligibility does not authorize disclosure into a different audience.
-  if (
-    sourceThread.visibility === 'private' &&
-    (destThread.visibility !== 'private' ||
-      destThread.privateOwnerUserId !== sourceThread.privateOwnerUserId)
-  ) {
+  if (!canDiscloseThreadToAudience(context.store, sourceThread, destThread)) {
     throw new KernelCommandError('not_found', 'Thread not found.');
   }
 }
@@ -1022,6 +1030,7 @@ function assertActionMessageSize(event: GenerativeUiA2uiAction): void {
 }
 
 function projectExportRow(row: PresentationRow): Record<string, unknown> {
+  readRetainedV1({ schemaVersion: row.schema_version }, () => undefined);
   return {
     schemaVersion: 1,
     recordType: 'generative-presentation',

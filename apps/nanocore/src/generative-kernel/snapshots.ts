@@ -10,10 +10,24 @@ import {
   rmSync,
 } from 'node:fs';
 import { join } from 'node:path';
-import { type LightAppSnapshot, LightAppSnapshotSchema } from '@openkit/app-api-schemas';
+import type { LightAppSnapshot } from '@openkit/app-api-schemas';
+import { readRetainedV1, TimestampSchema, writeRetainedV1 } from '@openkit/protocol';
 import type Database from 'better-sqlite3';
+import { z } from 'zod';
 import { type AppDb, lightAppRoot, writeDurableFile } from '../storage/app-db.js';
 import { KernelCommandError } from './errors.js';
+
+// Recovery metadata versions its own grammar, independently of the API and copied SQLite format.
+const StoredLightAppSnapshotV1Schema = z.object({
+  snapshotId: z.string().uuid(),
+  createdAt: TimestampSchema,
+  reason: z.enum(['definition-migration', 'kernel-format-migration']),
+  appRevision: z.number().int().positive(),
+  schemaRevision: z.number().int().positive(),
+  definitionVersion: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  kernelFormatVersion: z.number().int().positive(),
+  digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+});
 
 /**
  * Publishes a complete consistent SQLite copy before changing definition or format.
@@ -61,7 +75,10 @@ export function snapshotLightApp(
       closeSync(parent);
     }
     writeDurableFile(path, bytes);
-    writeDurableFile(join(root, `${metadata.snapshotId}.json`), `${JSON.stringify(metadata)}\n`);
+    writeDurableFile(
+      join(root, `${metadata.snapshotId}.json`),
+      `${JSON.stringify(writeRetainedV1(metadata))}\n`
+    );
   } catch (error) {
     if (existsSync(path)) rmSync(path, { force: true });
     const metadataPath = join(root, `${metadata.snapshotId}.json`);
@@ -89,8 +106,8 @@ export function readLightAppSnapshots(
   return readdirSync(root)
     .filter((name) => /^[a-f0-9-]{36}\.json$/.test(name))
     .map((name) => {
-      const metadata = LightAppSnapshotSchema.parse(
-        JSON.parse(readFileSync(join(root, name), 'utf8'))
+      const metadata = readRetainedV1(JSON.parse(readFileSync(join(root, name), 'utf8')), (value) =>
+        StoredLightAppSnapshotV1Schema.parse(value)
       );
       if (`${metadata.snapshotId}.json` !== name) {
         throw new KernelCommandError(

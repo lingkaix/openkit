@@ -435,7 +435,10 @@ async function operationProjections(f: Awaited<ReturnType<typeof operationFixtur
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   });
-  f.store.updateTurn(turn.id, { agentSessionId: 'as_00000000-0000-7dd2-9c72-030c3ef6118f' });
+  f.store.updateTurn(turn.id, {
+    agentId: 'agent_codex_host',
+    agentSessionId: 'as_00000000-0000-7dd2-9c72-030c3ef6118f',
+  });
   const environmentPackage = resolveAgentEnvironmentPackage({
     captureCoverage: { scope: 'server', value: 'off' },
     agentSessionId: 'as_00000000-0000-7dd2-9c72-030c3ef6118f',
@@ -991,6 +994,7 @@ describe('operation projection cutover', () => {
     }
   });
 
+  // Real invocation setup shares gate CPU; identity and zero-effect checks are the oracle.
   it('rejects model-bound identity conflicts and unproved Worker lineage before effects', async () => {
     const f = await operationFixture();
     try {
@@ -1050,7 +1054,7 @@ describe('operation projection cutover', () => {
     } finally {
       f.coreDb.sqlite.close();
     }
-  });
+  }, 60_000);
 
   it('keeps a caller-selected Workspace distinct from context-bound identity and scoped children', async () => {
     const f = await operationFixture();

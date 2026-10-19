@@ -319,6 +319,8 @@ A reopened presentation shows historical values. Use its Refresh action to read 
 
 Open Catalog in the selected Workspace and use Light App definitions. Import a declarative JSON definition with a display name and catalog ID, or import an exported history. History shows each immutable version, its parent, actor and time. Export carries definitions and history, without app business data. A source default or pin selects a version for a later explicit action; changing it does not migrate a running app. Imported history does not automatically select or pin its source version.
 
+Use the definition's `references` list for exact pinned Knowledge page/raw and Skill targets supplied by their owners. Omit it only when authoring an empty list; the admitted version retains an explicit list. Purpose and descriptions are labels, not verified reusable meaning. A reference grants no access, and an unavailable meaning target does not remove access to valid local app records. Inspect the exact target through its owner before relying on that meaning; do not replace it with a current default or generated explanation.
+
 Use Create app to instantiate the selected version, or select an existing app and use Apply definition with current app and schema revisions. Supported changes are new collections, new optional fields, rename with retained IDs, and field removal. Field removal deletes those values from the current app. Every definition or kernel format migration first takes a consistent SQLite snapshot. No user script or down migration runs.
 
 Select a recovery snapshot and confirm Restore only when replacing later data is intended. New Restore and Upgrade requests require an active app and do not reactivate retired apps. Restore replaces the data file and its definition and format markers; later app writes are lost. A snapshot with an older supported kernel format remains unavailable until explicit Upgrade. Snapshot recovery files stay local; the logical Workspace export contains current admitted schema and records plus catalog history, while a deployment data-root backup includes local snapshots. Errors do not repair authority or replay a mutation automatically. Refresh and inspect current state before a new explicit request.
@@ -354,6 +356,14 @@ Remove only attempt-owned temporary resources when cleanup is requested and safe
 Use the Artifact screen to import an arbitrary file as an immutable original. The limit is 1,000,000,000 decimal bytes per upload submission; available disk capacity can refuse an earlier upload. File-backed inspection shows its media type, byte length and SHA-256 digest. **Download original** selects that exact version and checks current access. A failed or uncertain import retains its request identity for **Try again**; do not infer acceptance from a selected filename or an upload progress indicator. Existing text, Markdown and JSON Artifacts retain their original stored representations.
 
 The raw App API binding for `artifact.import` sends bounded query metadata with the original byte body and `X-OpenKit-Request-Id`. `artifact.download` streams one exact id and version. Binary bodies do not belong in JSON operation or model Tool payloads. Use the Web screen or the Core Client `artifactFiles` methods for this binding. `server.fileReserveBytes` in server configuration sets the shared Data Root free-space reserve, default 1,000,000,000 bytes. Current uploads, publication and pending file writes share that reserve. Reducing it changes later admission only and does not remove accepted originals.
+
+## Inspect and publish Artifact versions
+
+Open an Artifact and select a version in Version history. Inspect its parent, actor, publication conversation, time and digest. Download original returns that exact version. Selecting an older version keeps its content visible when a newer head appears.
+
+To publish a revision, inspect the current head and select Create next version. Edit the text or choose a replacement file. Select an eligible idle publishing conversation, then select Save new version. Saving starts no Agent work and preserves the earlier versions. If another version wins first, refresh the current head and explicitly choose the new parent before saving the retained draft. If the result is uncertain, inspect it or use the offered same-request retry.
+
+Discover `artifact.version-list`, `artifact.version-read`, `artifact.version-commit` and `artifact.version-file-commit` for the corresponding API operations. Use the streamed-file binding for arbitrary original bytes. Current access and source availability apply to every read and publication.
 
 ## Give exact Review feedback and use a candidate
 

@@ -75,6 +75,8 @@ Successor selection takes the native pair and retainedStorage fact from the same
 
 Existing records remain readable when the attachment fact is absent, without treating absence as fresh-conversation permission. No permanent legacy lookup or second continuity registry is introduced. Recovery of a ready proof still held by an exact surviving runtime binding must preserve its attachment fact before retiring that binding; missing or conflicting proof stays explicit.
 
+For an idle binding proved physically absent by the current fresh, ready and predecessor-fenced Epoch, capacity inspection and whole-Sandbox retirement do not repeat proof handoff when the owning AgentSession already records the exact native digest, retained-storage attachment and original package snapshot. This retirement does not decode or execute the historical AEP and preserves its bytes and recorded proof. Live bindings and missing or conflicting recorded proof keep complete handoff validation; this rule does not relax native resume or current package admission.
+
 An AgentSession belongs to exactly one Thread for its whole life. A Thread has zero or more historical AgentSessions and at most one current AgentSession. The protocol's non-terminal statuses identify current continuity; `interrupted`, `failed`, and `closed` are terminal historical states and cannot be reopened. A later Turn in another Thread never reuses it, even when Workspace, Agent, profile, Sandbox, Harness, or native runtime family match.
 
 The baseline has three permitted continuity outcomes:

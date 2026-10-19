@@ -62,6 +62,8 @@ export interface NotebookPublication<
 
 /** Current admission facts supplied only by the native scope/source/policy owners. */
 export interface NotebookPublicationAdmission {
+  /** Exact retained local base admitted by the native owner, never a page-supplied scope. */
+  readonly pageScopeId?: string;
   readonly reviewRequiredPageIds: readonly string[];
   readonly scopeSchemaText: string;
   readonly registeredSources: ReadonlyMap<string, string | null>;

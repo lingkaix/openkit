@@ -1,5 +1,6 @@
 import type { ReasoningEffort } from '@openkit/protocol';
-import { index, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { writeRetainedV1 } from '@openkit/protocol';
+import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 /** Durable scheduler admission statuses. */
 export type SchedulerAdmissionStatus = 'queued' | 'admitted' | 'denied' | 'cancelled' | 'expired';
@@ -11,6 +12,8 @@ export type SchedulerAdmissionDenialReason = 'queue-full' | 'authority-denied' |
 export const schedulerAdmissionEntries = sqliteTable(
   'scheduler_admission_entries',
   {
+    /** Retained JSON payload format; native DDL versions scalar columns separately. */
+    schemaVersion: integer('schema_version').notNull().default(writeRetainedV1({}).schemaVersion),
     /** Configured backend identity captured when the request is accepted. */
     backendId: text('backend_id').notNull(),
     /** Exact normalized command and provenance hash for idempotent replay. */

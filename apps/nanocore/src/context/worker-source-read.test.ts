@@ -1,11 +1,15 @@
 // openkit-test-platform: posix
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { constants, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, expect, it, vi } from 'vitest';
-import type { WorkerContextPackageSourceFile } from './worker-context-package.js';
+import type {
+  WorkerContextPackageSourceFile,
+  WorkerContextPackageSourceFileInput,
+} from './worker-context-package.js';
 import { readWorkerSourceSnapshot, workerSourceOriginal } from './worker-source-read.js';
 
 const roots: string[] = [];
@@ -14,9 +18,10 @@ afterEach(() => {
 });
 const digest = (bytes: Uint8Array) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 
-it('supplies only exact retained original bytes in bounded chunks and rechecks current access during consumption', async () => {
+it('supplies only exact admitted original bytes in bounded chunks and rechecks current access during consumption', async () => {
   const f = fixture(Buffer.from(Array.from({ length: 70_000 }, (_, index) => index % 256)));
   f.source.mediaType = 'image/png';
+  f.input.currentSource.mediaType = 'image/png';
   const original = workerSourceOriginal(f.input);
   expect(original.originalDigest).toBe(digest(f.bytes));
   const chunks: Buffer[] = [];
@@ -33,7 +38,7 @@ it('supplies only exact retained original bytes in bounded chunks and rechecks c
   await expect(reader.next()).rejects.toThrow('Revoked.');
 });
 
-/** Real immutable files; only the caller's current authorization predicate is controlled. */
+/** Real no-follow files isolate bounded stream consumption; the Work MCP suite covers canonical owners and scheduler admission. */
 function fixture(bytes = Buffer.from('界'.repeat(40_000))) {
   const workspaceRoot = mkdtempSync(join(tmpdir(), 'worker-source-read-'));
   roots.push(workspaceRoot);
@@ -58,7 +63,6 @@ function fixture(bytes = Buffer.from('界'.repeat(40_000))) {
     originalDigest: digest(bytes),
     byteLength: bytes.length,
     mediaType: 'text/plain',
-    originalSnapshotPath,
     packagePath: `sources/artifacts/${artifactId}/1.txt`,
     projection: {
       kind: 'excerpt',
@@ -71,19 +75,42 @@ function fixture(bytes = Buffer.from('界'.repeat(40_000))) {
       byteLength: 2046,
       truncated: true,
       availability: 'incomplete',
-      originalSnapshotPath,
     },
   };
   const assertCurrent = vi.fn();
+  const currentSource: WorkerContextPackageSourceFileInput = {
+    ...source,
+    deliveredBytes: bytes.subarray(0, 2046),
+    assertUnchanged: () => assertCurrent(),
+    async *open(signal) {
+      signal.throwIfAborted();
+      const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        const stat = await file.stat();
+        if (!stat.isFile() || stat.nlink !== 1 || stat.size !== source.byteLength)
+          throw new Error('Unavailable original.');
+        let offset = 0;
+        while (offset < stat.size) {
+          const chunk = Buffer.alloc(Math.min(65_536, stat.size - offset));
+          const { bytesRead } = await file.read(chunk, 0, chunk.length, offset);
+          if (!bytesRead) throw new Error('Original ended.');
+          offset += bytesRead;
+          yield chunk.subarray(0, bytesRead);
+        }
+      } finally {
+        await file.close();
+      }
+    },
+  };
   return {
     source,
     path,
     bytes,
-    input: { workspaceRoot, threadId, turnId, source, assertCurrent },
+    input: { workspaceRoot, threadId, turnId, source, currentSource, assertCurrent },
   };
 }
 
-it('reads an exact retained UTF-8 snapshot through preview, range continuation and EOF with a bounded envelope', async () => {
+it('reads an exact current UTF-8 original through preview, range continuation and EOF with a bounded envelope', async () => {
   const f = fixture();
   const preview = await readWorkerSourceSnapshot(f.input);
   expect(preview).toMatchObject({
@@ -108,42 +135,19 @@ it('reads an exact retained UTF-8 snapshot through preview, range continuation a
   expect(Buffer.concat(buffers)).toEqual(f.bytes);
 });
 
-it('reads the retained PDF representation and preserves incomplete page coverage rather than decoding its binary original', async () => {
+it('refuses a current PDF representation whose captured recipe cannot be verified', async () => {
   const f = fixture(Buffer.from([0, 255, 128]));
-  const text = Buffer.from('Page one\n\f');
-  const relative = `representations/artifacts/${f.source.source.reference.objectId}/1/pdf-text-layer.txt`;
-  const packageRoot = f.path.slice(0, -f.source.originalSnapshotPath.length);
-  mkdirSync(dirname(join(packageRoot, relative)), { recursive: true });
-  writeFileSync(join(packageRoot, relative), text);
   f.source.mediaType = 'application/pdf';
-  f.source.projection = {
-    ...f.source.projection,
-    byteLength: text.length,
-    deliveredDigest: digest(text),
-    ranges: [{ start: 0, end: text.length }],
-    truncated: false,
-    representationSnapshotPath: relative,
-    representationId: 'pdf-text-layer:fixture',
-    representationDigest: digest(text),
-    representationByteLength: text.length,
-    pdfTextLayer: {
-      coverage: {
-        kind: 'pdf-text-layer',
-        complete: false,
-        provesCompleteBodyAbsence: false,
-        totalPages: 2,
-        processedPages: 1,
-        pagesWithoutText: [],
-        reason: 'page-limit',
-      },
-    } as NonNullable<WorkerContextPackageSourceFile['projection']['pdfTextLayer']>,
+  f.source.projection.representationId = 'pdf-text-layer:changed';
+  const currentSource = {
+    ...f.input.currentSource,
+    openRepresentation: async function* () {
+      yield Buffer.from('Changed text');
+    },
   };
-  expect(await readWorkerSourceSnapshot(f.input)).toMatchObject({
-    status: 'ready',
-    text: text.toString(),
-    eof: true,
-    coverage: { complete: false, reason: 'page-limit' },
-    sourceByteLength: 3,
+  expect(await readWorkerSourceSnapshot({ ...f.input, currentSource })).toEqual({
+    status: 'unavailable',
+    reason: 'unavailable',
   });
 });
 
@@ -218,6 +222,7 @@ it('continues exact selected Notebook bytes and withholds all output after canon
     assertCurrent: () => {},
     readKnowledge,
     knowledge: {
+      knowledgeBaseId: 'kb_0190f4c8-0000-7000-8000-000000000001',
       knowledgePageId: 'pinned',
       notebookRevision: 'selected-notebook-commit',
       contentDigest: digest(bytes),
@@ -249,8 +254,24 @@ it('continues exact selected Notebook bytes and withholds all output after canon
   if (continued.status !== 'ready') throw new Error('Expected continuation.');
   expect(continued.identity.revision).toBe('selected-notebook-commit');
   expect(continued.text).not.toContain('\ufffd');
+  expect(
+    await readWorkerSourceSnapshot({
+      ...input,
+      mode: 'read',
+      cursor: preview.cursor,
+      knowledge: { ...input.knowledge, knowledgeBaseId: 'kb_0190f4c8-0000-7000-8000-000000000002' },
+    })
+  ).toEqual({ status: 'unavailable', reason: 'stale' });
   admitted = false;
   expect(
     await readWorkerSourceSnapshot({ ...input, mode: 'read', cursor: preview.cursor })
   ).toEqual({ status: 'unavailable', reason: 'unavailable' });
+});
+
+it('requires a current canonical supplier even when a package still contains original bytes', async () => {
+  const f = fixture();
+  expect(await readWorkerSourceSnapshot({ ...f.input, currentSource: undefined })).toEqual({
+    status: 'unavailable',
+    reason: 'unavailable',
+  });
 });

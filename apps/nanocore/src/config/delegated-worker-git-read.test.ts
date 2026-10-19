@@ -126,6 +126,7 @@ function fixture(repositoryCount = 1) {
   writeFileSync(
     join(dataRoot, 'config/providers/local.provider.jsonc'),
     JSON.stringify({
+      schemaVersion: 1,
       id: 'agent-openrouter',
       vendor: 'openai',
       kind: 'local',

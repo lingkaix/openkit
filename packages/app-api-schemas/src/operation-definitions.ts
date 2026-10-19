@@ -39,6 +39,7 @@ import { composeOperationTables, type NativeOperationDefinition } from './operat
 import { PENDING_REQUEST_OPERATION_DEFINITIONS } from './pending-request-operations.js';
 import { PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS } from './provider-subscription-operations.js';
 import { RECOVERY_OPERATION_DEFINITIONS } from './recovery-operations.js';
+import { RESOURCE_POLICY_OPERATION_DEFINITIONS } from './resource-policy-operations.js';
 import { RUNTIME_CONFIG_OPERATION_DEFINITIONS } from './runtime-config-operations.js';
 import { SCHEDULER_OPERATION_DEFINITIONS } from './scheduler-operations.js';
 import { SERVER_MCP_OPERATION_DEFINITIONS } from './server-mcp-operations.js';
@@ -121,6 +122,7 @@ export const PRODUCT_OPERATION_DEFINITIONS = composeOperationTables(
   KERNEL_REMAINING_OPERATION_DEFINITIONS,
   GENERATIVE_UI_OPERATION_DEFINITIONS,
   WORKSPACE_OPERATION_DEFINITIONS,
+  RESOURCE_POLICY_OPERATION_DEFINITIONS,
   WORKSPACE_TRANSFER_OPERATION_DEFINITIONS,
   WORKSPACE_ARCHIVE_OPERATION_DEFINITIONS,
   WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS,

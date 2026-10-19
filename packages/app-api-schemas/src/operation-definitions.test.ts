@@ -313,3 +313,18 @@ it('registers native MCP dispatch without exposing an API or model operation', (
   ).toBe(false);
   assertOperationNames(Object.keys(OPERATION_REGISTRY));
 });
+
+it('publishes the named-resource request and distinct confirmed apply contracts', () => {
+  expect(OPERATION_DEFINITIONS['workspace.resource-access-request'].policyOperation).toBe(
+    'workspace.write'
+  );
+  expect(OPERATION_DEFINITIONS['workspace.resource-access-apply'].policyOperation).toBe(
+    'workspace.configure'
+  );
+  expect(OPERATION_DEFINITIONS['workspace.resource-access-apply'].inputSchema.shape).toHaveProperty(
+    'approvalRequestId'
+  );
+  expect(
+    OPERATION_DEFINITIONS['workspace.resource-access-apply'].inputSchema.shape
+  ).not.toHaveProperty('requestId');
+});

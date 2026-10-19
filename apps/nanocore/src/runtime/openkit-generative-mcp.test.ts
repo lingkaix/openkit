@@ -110,6 +110,10 @@ describe('openkit-generative MCP', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
+    store.updateTurn(turn.id, {
+      agentId: 'agent_codex_host',
+      agentSessionId: testEntityId('as', 'session_demo'),
+    });
     const coreDb = workerAuthority(dataRoot, turn.id);
     const supply = createOpenkitGenerativeMcpSupply();
     expect(supply.id).toBe(OPENKIT_GENERATIVE_MCP_ID);
@@ -235,6 +239,10 @@ describe('openkit-generative MCP', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
+    store.updateTurn(turn.id, {
+      agentId: 'agent_codex_host',
+      agentSessionId: testEntityId('as', 'session_demo'),
+    });
     const coreDb = workerAuthority(dataRoot, turn.id);
     const sourceItem = store.createItem({
       id: testEntityId('it', `it_${turn.id}_source`),

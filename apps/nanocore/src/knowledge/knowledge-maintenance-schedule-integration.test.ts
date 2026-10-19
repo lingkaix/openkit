@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { operationToolName } from '@openkit/app-api-schemas';
+import { applyEdits, modify } from 'jsonc-parser';
 import { expect, it, onTestFinished } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
@@ -90,22 +91,36 @@ it('keeps scheduling off by default and retains a visible unavailable-model outc
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const directory = join(dataRoot, 'workspaces', workspace.id, 'config');
   mkdirSync(directory, { recursive: true });
-  const configure = (enabled: boolean) =>
+  const configure = (enabled: boolean) => {
+    const path = join(directory, 'workspace.jsonc');
+    // Change policy without replacing the established Knowledge Base binding or other settings.
+    const currentConfig = readFileSync(path, 'utf8');
+    const configuredRole = applyEdits(
+      currentConfig,
+      modify(
+        currentConfig,
+        ['workspace', 'internalRoles'],
+        [{ roleId: 'knowledge-manager', profileId: 'missing-knowledge-profile' }],
+        {}
+      )
+    );
     writeFileSync(
-      join(directory, 'workspace.jsonc'),
-      JSON.stringify({
-        schemaVersion: 1,
-        workspace: {
-          name: workspace.name,
-          internalRoles: [{ roleId: 'knowledge-manager', profileId: 'missing-knowledge-profile' }],
-          knowledgeMaintenance: {
+      path,
+      applyEdits(
+        configuredRole,
+        modify(
+          configuredRole,
+          ['workspace', 'knowledgeMaintenance'],
+          {
             enabled: false,
             reviewRequiredPageIds: [],
             ...(enabled ? { schedule: { enabled: true } } : {}),
           },
-        },
-      })
+          {}
+        )
+      )
     );
+  };
   let scan!: (instant: string) => void;
   const boot = () =>
     createApp({

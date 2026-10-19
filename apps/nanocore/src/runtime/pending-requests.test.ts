@@ -1,7 +1,7 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION, FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
@@ -38,6 +38,7 @@ import {
 import {
   answerPendingRequest,
   canonicalJsonText,
+  deletePendingRequest,
   freezeReadyOutcomes,
   frozenPendingOutcomeInput,
   type PendingRequestRecord,
@@ -46,6 +47,8 @@ import {
   type RaisePendingRequestInput,
   raisePendingRequest,
   readPendingRequest,
+  readPendingRequestLineage,
+  releaseFrozenOutcomes,
   settleUnfinishedClaims,
   validateCanonicalLoad,
 } from './pending-requests.js';
@@ -222,6 +225,146 @@ function approvalRaise(
 }
 
 describe('pending requests', () => {
+  it('retains v1 handoff meaning and original annotations across replay and reopen', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-pending-request-v1-'));
+    onTestFinished(() => rmSync(dataRoot, { force: true, recursive: true }));
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const db = openWorkspaceDb(dataRoot, workspaceId);
+    const input = {
+      workspaceId,
+      threadId: testEntityId('th', 'pending_v1_thread'),
+      raisingTurnId: testEntityId('tu', 'pending_v1_turn'),
+      requestId: 'uq_retained_v1',
+      requestItemId: pendingRequestItemId('uq_retained_v1', 'request'),
+      kind: 'user-input',
+      requesterKind: 'assistant',
+      responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      questions: [{ id: 'q', question: 'Start the selected work?' }],
+      assistantHandoff: {
+        kind: 'task',
+        targetWorkspaceId: workspaceId,
+        input: 'Keep the exact selected work.',
+        agentId: 'agent_fixture',
+        modelId: 'model_fixture',
+      },
+      now: NOW,
+    } satisfies RaisePendingRequestInput;
+    let retainedRow: unknown;
+    try {
+      applyScopedMigrations(db);
+      expect(raisePendingRequest(db.sqlite, input).created).toBe(true);
+      expect(
+        db.sqlite.prepare('SELECT schema_version AS schemaVersion FROM pending_requests').get()
+      ).toEqual({ schemaVersion: 1 });
+      db.sqlite
+        .prepare('UPDATE pending_requests SET assistant_handoff_json = ? WHERE request_id = ?')
+        .run(
+          JSON.stringify({
+            ...input.assistantHandoff,
+            description: 'Retained handoff annotation.',
+          }),
+          input.requestId
+        );
+      retainedRow = db.sqlite
+        .prepare(`SELECT schema_version AS schemaVersion,
+        assistant_handoff_json FROM pending_requests`)
+        .get();
+      expect(raisePendingRequest(db.sqlite, input)).toMatchObject({
+        created: false,
+        record: { assistantHandoff: input.assistantHandoff },
+      });
+      expect(readPendingRequest(db.sqlite, input.requestId)?.assistantHandoff).toEqual(
+        input.assistantHandoff
+      );
+    } finally {
+      db.sqlite.close();
+    }
+    const reopened = openWorkspaceDb(dataRoot, workspaceId);
+    try {
+      expect(readPendingRequest(reopened.sqlite, input.requestId)?.assistantHandoff).toEqual(
+        input.assistantHandoff
+      );
+      expect(
+        reopened.sqlite
+          .prepare(`SELECT schema_version AS schemaVersion,
+        assistant_handoff_json FROM pending_requests`)
+          .get()
+      ).toEqual(retainedRow);
+    } finally {
+      reopened.sqlite.close();
+    }
+  });
+
+  it('refuses an unknown request version before JSON, direct mutation or bulk delivery effects', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-pending-request-version-'));
+    onTestFinished(() => rmSync(dataRoot, { force: true, recursive: true }));
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const db = openWorkspaceDb(dataRoot, workspaceId);
+    const requestId = 'uq_unknown_version';
+    const deliveryTurnId = testEntityId('tu', 'pending_unknown_delivery');
+    try {
+      applyScopedMigrations(db);
+      raisePendingRequest(db.sqlite, {
+        requestId,
+        workspaceId,
+        threadId: testEntityId('th', 'pending_unknown_thread'),
+        raisingTurnId: testEntityId('tu', 'pending_unknown_turn'),
+        requestItemId: pendingRequestItemId(requestId, 'request'),
+        kind: 'user-input',
+        requesterKind: 'assistant',
+        responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        questions: [{ id: 'q', question: 'Keep the retained request unchanged?' }],
+        now: NOW,
+      });
+      db.sqlite
+        .prepare(`UPDATE pending_requests SET schema_version = 2, questions_json = '{',
+        delivery = 'frozen', delivery_turn_id = ? WHERE request_id = ?`)
+        .run(deliveryTurnId, requestId);
+      db.sqlite.exec(`CREATE TRIGGER refuse_unsupported_pending_update BEFORE UPDATE ON pending_requests
+        BEGIN SELECT RAISE(FAIL, 'Unsupported request reached an UPDATE'); END`);
+      db.sqlite.exec(`CREATE TRIGGER refuse_unsupported_pending_delete BEFORE DELETE ON pending_requests
+        BEGIN SELECT RAISE(FAIL, 'Unsupported request reached a DELETE'); END`);
+
+      expect(() => readPendingRequest(db.sqlite, requestId)).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(() => readPendingRequestLineage(db.sqlite, requestId)).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(() => deletePendingRequest(db.sqlite, requestId)).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(() =>
+        answerPendingRequest(
+          db.sqlite,
+          requestId,
+          { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+          { q: ['Yes'] },
+          NOW
+        )
+      ).toThrow('Unsupported retained record format.');
+      expect(() => releaseFrozenOutcomes(db.sqlite, deliveryTurnId, NOW)).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(() => proveFrozenDelivery(db.sqlite, deliveryTurnId, NOW)).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(
+        db.sqlite
+          .prepare(`SELECT schema_version AS schemaVersion, state, delivery,
+        questions_json FROM pending_requests`)
+          .get()
+      ).toEqual({
+        schemaVersion: 2,
+        state: 'pending',
+        delivery: 'frozen',
+        questions_json: '{',
+      });
+    } finally {
+      db.sqlite.close();
+    }
+  });
+
   it.each([
     'denied',
     'withdrawn',
@@ -1659,6 +1802,7 @@ describe('pending requests', () => {
     }
   });
 
+  // Real delivery setup shares gate CPU; the grant, no execution and one Turn remain the oracle.
   it.each([
     'echo',
     'openkit-repository',
@@ -1802,7 +1946,7 @@ describe('pending requests', () => {
       execution.mockRestore();
       coreDb.sqlite.close();
     }
-  });
+  }, 60_000);
 
   it('answers once, rejects a changed map and a secret question before a write, and withdraws', async () => {
     const { app, coreDb, store } = openPendingApp();

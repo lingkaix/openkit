@@ -3,10 +3,11 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as schemas from '@openkit/app-api-schemas';
-import { RetrievalTraceReferenceSchema } from '@openkit/protocol';
+import { formatReferenceUri, RetrievalTraceReferenceSchema } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createCoreClient } from '../../../packages/core-client/src/index.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
+import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { createTaskKnowledgePreparation } from './knowledge-operations.js';
 import { createOperationInvocation } from './operation-composition.js';
@@ -29,6 +30,11 @@ function fixture(member = true, citedAnswer = false) {
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = createDemoStore({ dataRoot });
+  const knowledgeBaseId = readDefaultKnowledgeBaseId({
+    dataRoot,
+    scope: { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID },
+  });
+  const pageScopeId = `page/workspace/${DEMO_WORKSPACE_ID}/${knowledgeBaseId}`;
   if (!member)
     coreDb.sqlite
       .prepare(
@@ -45,7 +51,7 @@ function fixture(member = true, citedAnswer = false) {
   const plan = citedAnswer
     ? {
         query: 'cutover lesson',
-        pageId: `page/workspace/${DEMO_WORKSPACE_ID}/cutover-lesson`,
+        pageId: formatReferenceUri({ scopeId: pageScopeId, objectId: 'cutover-lesson' }),
         answer: 'Source traced cutover lesson.',
         uncertainty: null,
       }
@@ -73,6 +79,8 @@ function fixture(member = true, citedAnswer = false) {
     store,
     dependencies,
     dataRoot,
+    knowledgeBaseId,
+    pageScopeId,
     answerPlans,
     close: async () => {
       await closeRetrievalServices();
@@ -374,7 +382,9 @@ describe('Knowledge operation definition cutover', () => {
       await compare('knowledge.claim.list', {});
       const conflict = await compare('knowledge.conflict.record', {
         requestId: randomUUID(),
-        subjectReferences: ['knowledge:cutover-lesson'],
+        subjectReferences: [
+          formatReferenceUri({ scopeId: f.pageScopeId, objectId: 'cutover-lesson' }),
+        ],
         summary: 'Competing lesson',
         producer: 'usr_00000000-0000-7000-8000-000000000001',
       });
@@ -401,6 +411,7 @@ describe('Knowledge operation definition cutover', () => {
         candidateRevision: draft.proposal.candidateRevision,
       });
       const reviewed = await compare('knowledge.list', {});
+      expect(reviewed.knowledgeBaseId).toBe(f.knowledgeBaseId);
       expect(reviewed.items.find(({ id }) => id === 'cutover-lesson')?.content).toContain(
         'Source traced'
       );
@@ -645,7 +656,7 @@ describe('Knowledge operation definition cutover', () => {
             sourceScope: 'server',
             pinnedReferences: [
               {
-                scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+                scopeId: f.pageScopeId,
                 objectId: 'release-plan',
               },
             ],
@@ -755,7 +766,7 @@ describe('Knowledge operation definition cutover', () => {
                 ? {
                     pinnedReferences: [
                       {
-                        scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+                        scopeId: f.pageScopeId,
                         objectId: entry.id,
                       },
                     ],
@@ -787,7 +798,7 @@ describe('Knowledge operation definition cutover', () => {
               );
               expect(selection.excluded).toContainEqual(
                 expect.objectContaining({
-                  reference: { scopeId: `page/workspace/${DEMO_WORKSPACE_ID}`, objectId: entry.id },
+                  reference: { scopeId: f.pageScopeId, objectId: entry.id },
                   contentDigest: null,
                   sourceReferences: [],
                   reason: 'sensitive_content',
@@ -818,7 +829,7 @@ describe('Knowledge operation definition cutover', () => {
                 excluded: [
                   {
                     reference: {
-                      scopeId: 'page/workspace/ws_00000000-0000-7000-8000-000000000001',
+                      scopeId: f.pageScopeId,
                       objectId: entry.id,
                     },
                     contentDigest: null,

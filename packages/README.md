@@ -19,6 +19,7 @@ This directory holds reusable libraries, shared configuration packages, internal
 ## Current packages
 
 - `@openkit/protocol`: stable Core protocol schemas and generated JSON Schema outputs.
+- `@openkit/storage`: process-agnostic bounded byte access, Policy-admitted local mounts, exact content references and temporary staged output; no publication or media processing.
 - `@openkit/app-api-schemas`: shared NanoCore App API payload schemas for dashboards, diagnostics, runtime config, OAuth, auth, automations, quick chat, search, feedback, Agent Catalog wrappers, and Action Center read models.
 - `@openkit/core-client`: composed typed HTTP and SSE client for the SPA and protocol integration tests.
 - `@openkit/config-schema`: shared OpenKit config schemas, policy metadata, and workspace root materialization helpers.

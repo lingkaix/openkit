@@ -994,7 +994,10 @@ describe('worker MCP routes', () => {
       updatedAt: '2026-09-03T00:00:00.000Z',
       workspaceId: turn.workspaceId,
     });
-    store.updateTurn(turn.id, { agentSessionId: testEntityId('as', 'as_mcp_era') });
+    store.updateTurn(turn.id, {
+      agentId: 'agent_codex_host',
+      agentSessionId: testEntityId('as', 'as_mcp_era'),
+    });
     const environmentPackage = resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agentSessionId: testEntityId('as', 'as_mcp_era'),
@@ -2246,6 +2249,31 @@ describe('worker MCP routes', () => {
             new Set([`mcpsnap_echo_${mcpToolSchemaContentDigest(expected)}`])
           );
         }
+        const prior = db.sqlite
+          .prepare(
+            "SELECT call_id FROM capability_calls WHERE turn_id = ? AND family = 'mcp' AND schema_snapshot_id IS NOT NULL ORDER BY started_at, call_id LIMIT 1"
+          )
+          .get(environmentPackage.scope.turnId) as { call_id: string };
+        db.sqlite
+          .prepare(
+            'UPDATE capability_calls SET schema_version = 2, extensions_json = ? WHERE call_id = ?'
+          )
+          .run('{', prior.call_id);
+        const retainedCall = db.sqlite
+          .prepare('SELECT * FROM capability_calls WHERE call_id = ?')
+          .get(prior.call_id);
+        const retainedSchemas = db.sqlite
+          .prepare('SELECT * FROM mcp_tool_schema_snapshots ORDER BY snapshot_id')
+          .all();
+        const contacts = vi.mocked(workerMcpGateway.listTools).mock.calls.length;
+        expect(await request('tools/list')).toHaveProperty('error');
+        expect(workerMcpGateway.listTools).toHaveBeenCalledTimes(contacts);
+        expect(
+          db.sqlite.prepare('SELECT * FROM capability_calls WHERE call_id = ?').get(prior.call_id)
+        ).toEqual(retainedCall);
+        expect(
+          db.sqlite.prepare('SELECT * FROM mcp_tool_schema_snapshots ORDER BY snapshot_id').all()
+        ).toEqual(retainedSchemas);
       } finally {
         db.sqlite.close();
       }
@@ -2323,6 +2351,10 @@ describe('worker MCP routes', () => {
       workspaceCwd: '/workspace',
       workspaceMcpServerCatalog: catalog,
       workspaceRoots: [],
+    });
+    store.updateTurn(turn.id, {
+      agentId: environmentPackage.agent.agentId,
+      agentSessionId: environmentPackage.scope.agentSessionId,
     });
     recordMcpWorkerLineage(coreDb, environmentPackage, 'token_mcp_admin');
     const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
@@ -3261,6 +3293,7 @@ describe('worker MCP routes', () => {
     const workerLifecycleRuntime = createConfiguredWorkerLifecycleRuntime({
       fileAdmission,
       coreDb,
+      readRuntimeConfig: () => runtimeConfigManager.current(),
       env: {},
       nanoHostSessionDispatch,
       store,

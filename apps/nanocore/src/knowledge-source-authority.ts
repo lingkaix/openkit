@@ -1,11 +1,13 @@
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
+import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { createWorkerContextPackageAuthorityReader } from './context/worker-context-authorities.js';
 import { readPortableWorkerContextPackageTrace } from './context/worker-context-package.js';
 import { KnowledgeNotebook, NotebookError } from './knowledge/notebook.js';
 import {
   type KnowledgePageReferenceProof,
   KnowledgePageValidationError,
+  parseKnowledgePageSourceReference,
   parseOkfDocument,
   resolveRegisteredKnowledgeSourceReference,
   stringListFrontmatterField,
@@ -149,6 +151,11 @@ export function resolveWorkspaceKnowledgeReferenceProofs(input: {
   const referenceProofs = new Map<string, KnowledgePageReferenceProof>();
   const dataRoot = input.store.getDataRoot();
   if (!dataRoot) return referenceProofs;
+  const knowledgeBaseId = readDefaultKnowledgeBaseId({
+    dataRoot,
+    scope: { kind: 'workspace', workspaceId: input.workspaceId },
+  });
+  const pageScopeId = `page/workspace/${input.workspaceId}/${knowledgeBaseId}`;
   const notebook = new KnowledgeNotebook({
     repositoryPath: join(dataRoot, 'workspaces', input.workspaceId, 'knowledge', 'notebook.git'),
   });
@@ -203,14 +210,17 @@ export function resolveWorkspaceKnowledgeReferenceProofs(input: {
           )
             throw new KnowledgePageValidationError();
           verified.add(reference);
-        } else if (reference.startsWith('knowledge:')) {
-          const match = /^knowledge:([^@]+)(?:@(sha256:[a-f0-9]{64}))?$/.exec(reference);
-          if (!match || !Object.hasOwn(entries, `${match[1]}.md`))
+        } else if (reference.startsWith('openkit:')) {
+          const parsedReference = parseKnowledgePageSourceReference(reference, pageScopeId);
+          if (!parsedReference) throw new KnowledgePageValidationError();
+          const sourcePath = `${parsedReference.reference.objectId}.md`;
+          if (!Object.hasOwn(entries, sourcePath)) throw new KnowledgePageValidationError();
+          const source = notebook.readRevision(revision, [sourcePath]).files[sourcePath]!;
+          if (
+            parsedReference.contentDigest !== undefined &&
+            sha256(source) !== parsedReference.contentDigest
+          )
             throw new KnowledgePageValidationError();
-          const source = notebook.readRevision(revision, [`${match[1]}.md`]).files[
-            `${match[1]}.md`
-          ]!;
-          if (match[2] && sha256(source) !== match[2]) throw new KnowledgePageValidationError();
           verified.add(reference);
         } else if (!verified.has(reference)) throw new KnowledgePageValidationError();
       }

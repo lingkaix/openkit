@@ -67,6 +67,8 @@ describe('scoped storage databases', () => {
         'user_0001_thread_read_receipts',
         'user_0002_notebook_admission',
         'user_0003_policy_audit_v1',
+        'user_0004_retained_record_formats',
+        'user_0005_audit_authentication',
       ]);
     } finally {
       userDb.sqlite.close();
@@ -154,6 +156,8 @@ describe('scoped storage databases', () => {
         'workspace_0002_notebook_admission',
         'workspace_0003_exact_review_feedback',
         'workspace_0004_policy_audit_v1',
+        'workspace_0005_retained_record_formats',
+        'workspace_0006_audit_authentication',
       ]);
     } finally {
       workspaceDb.sqlite.close();
@@ -341,12 +345,16 @@ describe('scoped storage databases', () => {
         'workspace_0002_notebook_admission',
         'workspace_0003_exact_review_feedback',
         'workspace_0004_policy_audit_v1',
+        'workspace_0005_retained_record_formats',
+        'workspace_0006_audit_authentication',
       ]);
       expect(listMigrationIds(migratedUserDb.sqlite, 'user')).toEqual([
         'user_0000_setup',
         'user_0001_thread_read_receipts',
         'user_0002_notebook_admission',
         'user_0003_policy_audit_v1',
+        'user_0004_retained_record_formats',
+        'user_0005_audit_authentication',
       ]);
     } finally {
       workspaceDb.sqlite.close();
@@ -535,11 +543,13 @@ describe('scoped storage databases', () => {
         'goal_id',
         'thread_id',
         'payload_json',
+        'schema_version',
       ]);
       expect(tableColumns(workspaceDb.sqlite, 'goal_cards')).toEqual([
         'card_id',
         'goal_id',
         'payload_json',
+        'schema_version',
       ]);
     } finally {
       workspaceDb.sqlite.close();
@@ -649,6 +659,8 @@ process.kill(process.pid, 'SIGKILL');`,
         'user_0001_thread_read_receipts',
         'user_0002_notebook_admission',
         'user_0003_policy_audit_v1',
+        'user_0004_retained_record_formats',
+        'user_0005_audit_authentication',
       ]);
       expect(listMigrationIds(workspaceDb.sqlite, 'workspace')).toEqual([
         'workspace_0000_setup',
@@ -656,6 +668,8 @@ process.kill(process.pid, 'SIGKILL');`,
         'workspace_0002_notebook_admission',
         'workspace_0003_exact_review_feedback',
         'workspace_0004_policy_audit_v1',
+        'workspace_0005_retained_record_formats',
+        'workspace_0006_audit_authentication',
       ]);
     } finally {
       userDb.sqlite.close();

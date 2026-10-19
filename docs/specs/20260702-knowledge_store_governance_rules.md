@@ -151,7 +151,7 @@ Field behavior:
 - `freshness` MUST distinguish evergreen, time-bound, stale, expired, and unknown material.
 - `created_at` and `updated_at` MUST be machine-readable timestamps.
 
-Reusable base types are `SourceSummary`, `KnowledgePage`, `Entity`, `Topic`, `Observation`, `Claim`, `Procedure`, `Decision`, `Lesson`, `Proposal`, `Index`, and `Log`.
+Governed reusable base types are `SourceSummary`, `KnowledgePage`, `Entity`, `Topic`, `Observation`, `Claim`, `Decision`, `Lesson`, `Proposal`, `Index`, and `Log`. The [information consolidation contract](20261018-nanocore_interception_and_information_consolidation.md#information-and-record-authority) retires competing `Procedure` page authority: Skills own solidified reusable procedures, and governed ScopeSchema/page admission refuses that type. Generic external OKF parsing remains permissive for `Procedure`; descriptive Topic/context pages and exact references to selected Skill versions remain valid Knowledge.
 
 Scope Schemas MAY add domain types, but consumers MUST preserve the base governance fields even when they do not understand an extension. OpenKit Knowledge Profile v4 uses `openkit_status`; the standard OKF lifecycle does not add a second state machine, retry policy, or recovery owner. Unknown nested YAML metadata is retained as data, including provenance, trust, and Attested Computation fields; reading or saving it never executes code, performs attestation, accesses a network, or grants authority. Secret-like field and value rejection applies recursively, including arrays; cyclic or excessive alias expansion is rejected before traversal.
 

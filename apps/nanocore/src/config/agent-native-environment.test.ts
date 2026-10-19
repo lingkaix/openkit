@@ -315,6 +315,14 @@ describe('Agent public native environment administration', () => {
         matchesDesired: false,
       },
     ]);
+    f.db.sqlite
+      .prepare(
+        "UPDATE agent_session_runtime_bindings SET schema_version = 2, native_environment_json = '{' WHERE thread_id = ?"
+      )
+      .run(thread.id);
+    const retained = f.db.sqlite.serialize();
+    expect(() => f.service.view(actor, f.fileId)).toThrow('Unsupported retained record format.');
+    expect(f.db.sqlite.serialize().equals(retained)).toBe(true);
   });
 
   it('publishes typed private runtime environment operations and refuses non-administrators before reading values', async () => {

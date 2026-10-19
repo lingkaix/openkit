@@ -231,7 +231,8 @@ it('skips equal JSON cores but reserves retained additive fields when the core c
     )
   ).not.toThrow();
   const before = readFileSync(target);
-  records.artifacts[0]!.title = 'Changed known title';
+  // Lifecycle status is mutable without changing the retained content version.
+  records.artifacts[0]!.status = 'archived';
   expect(() =>
     withCanonicalFileWriteAdmission(admission, () =>
       writeWorkspaceFileRecords(f.workspaceRoot, records)

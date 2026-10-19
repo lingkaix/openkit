@@ -1,20 +1,24 @@
 import { createHash } from 'node:crypto';
 import { constants, copyFileSync, lstatSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { dirname, join, relative, sep } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import {
   parseWorkspaceDataSourceCatalog,
   parseWorkspaceExportManifest,
   type RequiredFeatureId,
   WORKSPACE_EXPORT_FORMAT_VERSION,
+  WORKSPACE_RESOURCE_POLICY_FEATURE,
   WorkspaceConfigSchema,
   type WorkspaceExportManifest,
 } from '@openkit/config-schema';
 import {
+  type ArtifactVersionRecord,
   deriveEntityId,
-  ItemSchema,
+  type ItemSchema,
   KnowledgeEntrySchema,
+  readRetainedV1,
   ThreadSchema,
-  TurnSchema,
+  type TurnSchema,
   writeRetainedV1,
 } from '@openkit/protocol';
 import { z } from 'zod';
@@ -26,13 +30,17 @@ import {
   type WorkspaceCatalogExportProjection,
 } from '../catalog/catalog-portability.js';
 import { parseJsoncObject } from '../config/jsonc.js';
-import { WorkerContextPackageManifestSchema } from '../context/worker-context-package.js';
+import { assertPortableResourcePolicy } from '../policy/resource-policy-portability.js';
 import { retainPermissionDecision } from '../policy/retained-records-v1.js';
 import {
   assertWorkspaceDeletionRecoveryExportAuthority,
   type WorkspaceDeletionRecoveryExportContext,
 } from '../workspace-deletion-request.js';
-import { artifactFilePayloadPath, verifyArtifactFilePayload } from './artifacts/file-records.js';
+import {
+  artifactVersionRecordPath,
+  readArtifactVersionRecord,
+} from './artifacts/artifact-version-records.js';
+import { artifactFilePayloadPath } from './artifacts/file-records.js';
 import { reserveCanonicalFileWrite } from './canonical-write-capacity.js';
 import {
   RECURRING_PORTABLE_FEATURE,
@@ -41,6 +49,8 @@ import {
   readRecurringPortableFiles,
   readRecurringPortableHistory,
 } from './recurring-portable-history.js';
+import { StoredTurnSnapshotV1Schema } from './retained-work-events-v1.js';
+import { StoredItemPayloadV1Schema } from './retained-work-items-v1.js';
 import {
   isSupportedWorkObservationType,
   parseWorkObservationRecord,
@@ -49,6 +59,7 @@ import {
 import { assertWorkspaceArchiveFilePath } from './workspace-archive.js';
 import {
   artifactContentFileName,
+  artifactReferenceItemId,
   assertSafeWorkspacePathSegment,
   type CaptureCoverageBinding,
   CaptureCoverageBindingSchema,
@@ -391,9 +402,12 @@ export function writeWorkspaceExportTree(
   if (!portableFileState?.workspaceConfig) {
     throw new Error('Workspace export requires config/workspace.jsonc.');
   }
-  const workspaceConfig = WorkspaceConfigSchema.parse(
-    parseJsoncObject(portableFileState.workspaceConfig, 'config/workspace.jsonc')
+  const workspaceConfig = readRetainedV1(
+    parseJsoncObject(portableFileState.workspaceConfig, 'config/workspace.jsonc'),
+    (record) => WorkspaceConfigSchema.parse(record)
   );
+  const resourceAccess = workspaceConfig.workspace.policy?.resourceAccess ?? [];
+  assertPortableResourcePolicy(resourceAccess, history.threads);
   if (workspaceConfig.workspace.name !== history.workspace.name) {
     throw new Error('Workspace config name does not match the public Workspace projection.');
   }
@@ -441,20 +455,20 @@ export function writeWorkspaceExportTree(
     }
     writeJson(
       join(recordsRoot, 'workspace-record.json'),
-      projectWorkspaceSystemRecord(history.workspace)
+      writeRetainedV1(projectWorkspaceSystemRecord(history.workspace))
     );
     writeJsonl(join(recordsRoot, 'threads.jsonl'), history.threads);
     writeJsonl(
       join(recordsRoot, 'turns.jsonl'),
       history.turns.map((turn) => {
         const binding = input.turnCaptureCoverage?.get(turn.id);
-        return {
+        return writeRetainedV1({
           ...turn,
           ...(binding ? { captureCoverage: CaptureCoverageBindingSchema.parse(binding) } : {}),
           ...(input.turnObservations?.has(turn.id)
             ? { requiredFeatures: ['openkit.work-observations.v1'] }
             : {}),
-        };
+        });
       })
     );
     for (const turn of history.turns) {
@@ -503,7 +517,11 @@ export function writeWorkspaceExportTree(
       writeFileAtomic(path, rows.length ? text.slice(0, text.lastIndexOf('\n') + 1) : '');
     }
     writeJsonl(join(recordsRoot, 'knowledge.jsonl'), knowledge);
-    writeJsonl(join(recordsRoot, 'item-revisions.jsonl'), history.itemRevisions, true);
+    writeJsonl(
+      join(recordsRoot, 'item-revisions.jsonl'),
+      history.itemRevisions.map((item) => writeRetainedV1(item)),
+      true
+    );
     writeJsonl(join(recordsRoot, 'artifact-reviews.jsonl'), input.artifactReviews);
     writeJsonl(join(recordsRoot, 'thread-material-bindings.jsonl'), input.threadMaterialBindings);
     writeJsonl(
@@ -514,63 +532,65 @@ export function writeWorkspaceExportTree(
     // Portable history cannot carry source-deployment attachment authority.
     writeJsonl(
       join(recordsRoot, 'agent-sessions.jsonl'),
-      history.agentSessions.map((session) => ({ ...session, retainedStorage: null }))
+      history.agentSessions.map((session) => writeRetainedV1({ ...session, retainedStorage: null }))
     );
     writeJsonl(
       join(recordsRoot, 'turn-events.jsonl'),
-      history.turnEvents.flatMap(([, events]) => events)
+      history.turnEvents.flatMap(([, events]) => events.map((event) => writeRetainedV1(event)))
     );
     writeWorkspacePortableExportState(input.exportRoot, portableFileState);
-    for (const [path, text] of portableFileState?.workerContextPackageFiles ?? []) {
-      if (!path.endsWith('/context-package/package.json')) continue;
-      const manifest = WorkerContextPackageManifestSchema.parse(JSON.parse(text));
-      const packageRoot = path.slice(0, -'/package.json'.length);
-      for (const original of manifest.sourceFiles ?? []) {
-        if (!input.sourceWorkspaceRoot)
-          throw new Error('Context Package original source is unavailable.');
-        const relativePath = `${packageRoot}/${original.originalSnapshotPath}`;
-        assertWorkspaceArchiveFilePath(relativePath);
-        const sourcePath = join(input.sourceWorkspaceRoot, relativePath);
-        const measured = measureCanonicalFile(sourcePath);
-        if (
-          measured.byteLength !== original.byteLength ||
-          measured.contentDigest !== original.originalDigest
+    const artifactVersions: ArtifactVersionRecord[] = [];
+    for (const artifact of history.artifacts) {
+      if (!input.sourceWorkspaceRoot) throw new Error('Artifact history source is unavailable.');
+      const versionRoot = dirname(
+        dirname(artifactVersionRecordPath(input.sourceWorkspaceRoot, artifact.id, 1))
+      );
+      if (
+        readdirSync(versionRoot).some(
+          (name) =>
+            /^\d+$/.test(name) &&
+            (String(Number(name)) !== name || Number(name) < 1 || Number(name) > artifact.version)
         )
-          throw new Error('Context Package original source integrity is inconsistent.');
-        const target = join(input.exportRoot, 'workspace-files', relativePath);
+      ) {
+        throw new Error('Artifact export has an unacknowledged version.');
+      }
+      for (let version = 1; version <= artifact.version; version += 1) {
+        const record = readArtifactVersionRecord(input.sourceWorkspaceRoot, artifact.id, version);
+        artifactVersions.push(record);
+        const source = artifactFilePayloadPath(input.sourceWorkspaceRoot, artifact.id, version);
+        const target = artifactFilePayloadPath(input.exportRoot, artifact.id, version);
         mkdirSync(dirname(target), { recursive: true });
-        copyPortableOriginal(sourcePath, target, original.byteLength);
+        copyPortableOriginal(source, target, measureCanonicalFile(source).byteLength);
+        writeFileAtomic(
+          artifactVersionRecordPath(input.exportRoot, artifact.id, version),
+          readCanonicalTextFile(
+            artifactVersionRecordPath(input.sourceWorkspaceRoot, artifact.id, version)
+          )
+        );
       }
     }
-
+    assertPortableArtifactHistory(
+      history.artifacts,
+      artifactVersions,
+      history.turns,
+      history.itemRevisions
+    );
     for (const artifact of history.artifacts) {
       const artifactRoot = join(input.exportRoot, 'artifacts', artifact.id);
       if (artifact.content.format === 'file') {
-        if (!input.sourceWorkspaceRoot) throw new Error('Artifact payload source is unavailable.');
-        verifyArtifactFilePayload({
-          workspaceRoot: input.sourceWorkspaceRoot,
-          artifactId: artifact.id,
-          version: artifact.version,
-          byteLength: artifact.content.byteLength,
-          contentDigest: artifact.contentDigest,
-        });
-        const target = artifactFilePayloadPath(input.exportRoot, artifact.id, artifact.version);
-        mkdirSync(dirname(target), { recursive: true });
-        copyPortableOriginal(
-          artifactFilePayloadPath(input.sourceWorkspaceRoot, artifact.id, artifact.version),
-          target,
-          artifact.content.byteLength
-        );
-        writeJson(join(artifactRoot, 'artifact.json'), artifact);
+        writeJson(join(artifactRoot, 'artifact.json'), writeRetainedV1(artifact));
         continue;
       }
       const filesRoot = join(artifactRoot, 'files');
 
       mkdirSync(filesRoot, { recursive: true });
-      writeJson(join(artifactRoot, 'artifact.json'), {
-        ...artifact,
-        content: { format: artifact.content.format },
-      });
+      writeJson(
+        join(artifactRoot, 'artifact.json'),
+        writeRetainedV1({
+          ...artifact,
+          content: { format: artifact.content.format },
+        })
+      );
       writeFileAtomic(
         join(filesRoot, artifactContentFileName(artifact.content.format)),
         artifact.content.body
@@ -848,6 +868,7 @@ export function writeWorkspaceExportTree(
       WORKSPACE_EXPORT_CATALOG_FEATURE,
       RECURRING_PORTABLE_FEATURE,
     ];
+    if (resourceAccess.length) requiredFeatures.push(WORKSPACE_RESOURCE_POLICY_FEATURE);
     if (
       input.lightApps?.length ||
       input.lightAppDefinitions?.length ||
@@ -890,6 +911,7 @@ export function writeWorkspaceExportTree(
       supportedFeatures: [
         WORKSPACE_EXPORT_CATALOG_FEATURE,
         RECURRING_PORTABLE_FEATURE,
+        WORKSPACE_RESOURCE_POLICY_FEATURE,
         'workspace.generative-kernel.v1',
         'workspace.generative-ui.native-v1',
         'openkit.work-observations.v1',
@@ -898,6 +920,68 @@ export function writeWorkspaceExportTree(
   } catch (error) {
     rmSync(input.exportRoot, { recursive: true, force: true });
     throw error;
+  }
+}
+
+/** Proves complete retained history against the acknowledged head and exact publication Items. */
+export function assertPortableArtifactHistory(
+  artifacts: readonly ArtifactVersionRecord['artifact'][],
+  versions: readonly ArtifactVersionRecord[],
+  turns: readonly z.infer<typeof TurnSchema>[],
+  items: readonly z.infer<typeof ItemSchema>[]
+): void {
+  for (const artifact of artifacts) {
+    const history = versions.filter((record) => record.artifact.id === artifact.id);
+    if (history.length !== artifact.version) {
+      throw new Error('Artifact export history is incomplete.');
+    }
+    for (const [index, record] of history.entries()) {
+      const publication = record.version;
+      if (
+        record.artifact.version !== index + 1 ||
+        record.artifact.workspaceId !== artifact.workspaceId ||
+        record.artifact.threadId !== artifact.threadId ||
+        record.artifact.turnId !== artifact.turnId ||
+        record.artifact.createdAt !== artifact.createdAt ||
+        !isDeepStrictEqual(record.artifact.origin, artifact.origin)
+      ) {
+        throw new Error('Artifact export immutable lineage is contradictory.');
+      }
+      if (publication.turnId !== null) {
+        const turn = turns.find((candidate) => candidate.id === publication.turnId);
+        if (
+          !turn ||
+          turn.workspaceId !== artifact.workspaceId ||
+          turn.threadId !== publication.threadId ||
+          !isDeepStrictEqual(turn.triggerActor, publication.actor) ||
+          !items.some(
+            (item) =>
+              item.type === 'artifact-reference' &&
+              item.id === artifactReferenceItemId(artifact.id, publication.turnId!) &&
+              item.status === 'completed' &&
+              item.workspaceId === artifact.workspaceId &&
+              item.threadId === publication.threadId &&
+              item.turnId === publication.turnId &&
+              item.artifactId === artifact.id &&
+              item.artifactVersion === record.artifact.version &&
+              item.lastMutationRequestId === publication.requestId &&
+              item.title === record.artifact.title &&
+              item.summary === record.artifact.summary
+          )
+        ) {
+          throw new Error('Artifact export history lacks its exact publication Item.');
+        }
+      }
+    }
+    const retained = history.at(-1)!.artifact;
+    if (
+      !isDeepStrictEqual(
+        { ...retained, status: artifact.status, updatedAt: artifact.updatedAt },
+        artifact
+      )
+    ) {
+      throw new Error('Artifact export current-head projection is contradictory.');
+    }
   }
 }
 
@@ -996,6 +1080,7 @@ export function verifyWorkspaceExportTree(
     supportedFeatures: [
       WORKSPACE_EXPORT_CATALOG_FEATURE,
       RECURRING_PORTABLE_FEATURE,
+      WORKSPACE_RESOURCE_POLICY_FEATURE,
       'workspace.generative-kernel.v1',
       'workspace.generative-ui.native-v1',
       'openkit.work-observations.v1',
@@ -1100,7 +1185,9 @@ export function verifyWorkspaceExportTree(
         .filter(Boolean)
         .map((line) => JSON.parse(line));
     const threads = readRows('records/threads.jsonl').map((row) => ThreadSchema.parse(row));
-    const turns = readRows('records/turns.jsonl').map((row) => TurnSchema.parse(row));
+    const turns = readRows('records/turns.jsonl').map((row) =>
+      readRetainedV1(row, StoredTurnSnapshotV1Schema.parse)
+    );
     readRecurringPortableFiles(fileContents, {
       workspaceId: manifest.workspaceId,
       threadIds: new Set(threads.map((thread) => thread.id)),
@@ -1115,11 +1202,11 @@ export function verifyWorkspaceExportTree(
       : itemRevisionText
           .trimEnd()
           .split('\n')
-          .map((line) => ItemSchema.parse(JSON.parse(line)));
+          .map((line) => readRetainedV1(JSON.parse(line), StoredItemPayloadV1Schema.parse));
   const unresolvedUserInputRequestIds = listUnresolvedUserInputRequestItemIds(itemRevisions);
   const inputPaths = new Set<string>();
   for (const value of (fileContents.get('records/turns.jsonl') ?? '').split('\n').filter(Boolean)) {
-    const turn = TurnSchema.parse(JSON.parse(value));
+    const turn = readRetainedV1(JSON.parse(value), StoredTurnSnapshotV1Schema.parse);
     verifyTurnFileInputs(input.exportRoot, turn);
     for (const ordinal of (turn.fileInputs ?? []).keys()) {
       inputPaths.add(`threads/${turn.threadId}/turns/${turn.id}/inputs/${ordinal}/payload`);
@@ -1176,16 +1263,16 @@ function verifyPortableRetrievalTraceFiles(
     .strip();
   const turnOwnerSchema = z
     .object({
-      id: TurnSchema.shape.id,
-      threadId: TurnSchema.shape.threadId,
-      workspaceId: TurnSchema.shape.workspaceId,
+      id: StoredTurnSnapshotV1Schema.shape.id,
+      threadId: StoredTurnSnapshotV1Schema.shape.threadId,
+      workspaceId: StoredTurnSnapshotV1Schema.shape.workspaceId,
     })
     .strip();
   const threads = readJsonlForVerification(files, 'records/threads.jsonl').map((value) =>
     threadOwnerSchema.parse(value)
   );
   const turns = readJsonlForVerification(files, 'records/turns.jsonl').map((value) =>
-    turnOwnerSchema.parse(value)
+    readRetainedV1(value, turnOwnerSchema.parse)
   );
   const threadIds = new Set(threads.map((thread) => thread.id));
   const turnsById = new Map(turns.map((turn) => [turn.id, turn] as const));

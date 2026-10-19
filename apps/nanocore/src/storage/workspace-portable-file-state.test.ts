@@ -15,8 +15,10 @@ import {
   WorkspaceExportResponseSchema,
   WorkspaceImportResponseSchema,
 } from '@openkit/app-api-schemas';
+import { formatReferenceUri } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { createApp } from '../app.js';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { assertPortableWorkspaceNotebookDisclosure } from '../knowledge/notebook-workspace-portability.js';
 import {
@@ -45,7 +47,10 @@ import {
   serializeUserAuthoredKnowledgePage,
 } from './workspace-file-records.js';
 import { readWorkspaceImportSnapshot } from './workspace-import.js';
-import { readWorkspacePortableFileState } from './workspace-portable-file-state.js';
+import {
+  readWorkspacePortableFileState,
+  writeWorkspacePortableFileState,
+} from './workspace-portable-file-state.js';
 
 /**
  * Reads one optional JSONL fixture so a single red test can report every missing file family.
@@ -134,6 +139,54 @@ function publishFixturePages(
 }
 
 describe('workspace portable file state', () => {
+  it('completes staged configuration only for the initialized Knowledge Base binding', () => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-import-staged-config-'));
+    onTestFinished(() => rmSync(root, { recursive: true, force: true }));
+    const knowledgeBaseId = testEntityId('kb', 'portable-config-target');
+    const configPath = join(root, 'config', 'workspace.jsonc');
+    mkdirSync(join(root, 'config'));
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        workspace: { name: 'Staging', defaultKnowledgeBaseId: knowledgeBaseId },
+      })
+    );
+    const importedConfig = `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        workspace: {
+          name: 'Imported workspace',
+          defaultKnowledgeBaseId: knowledgeBaseId,
+          defaultAgentId: null,
+        },
+      },
+      null,
+      2
+    )}\n`;
+    const state = {
+      observations: new Map(),
+      claims: new Map(),
+      conflicts: new Map(),
+      retrievalTraceFiles: new Map(),
+      workspaceConfig: importedConfig,
+      workspaceSchema: null,
+      nativeKnowledgePages: new Map(),
+      workerContextPackageFiles: new Map(),
+    };
+    writeWorkspacePortableFileState(root, state);
+    expect(readFileSync(configPath, 'utf8')).toBe(importedConfig);
+
+    const otherBinding = importedConfig.replace(
+      knowledgeBaseId,
+      testEntityId('kb', 'portable-config-other-target')
+    );
+    expect(() =>
+      writeWorkspacePortableFileState(root, { ...state, workspaceConfig: otherBinding })
+    ).toThrow('Portable configuration contradicts the initialized Knowledge Base binding.');
+    expect(readFileSync(configPath, 'utf8')).toBe(importedConfig);
+  });
+
   it('rejects a publisher-temp-shaped directory in a retrieval trace directory', () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-retrieval-trace-temp-entry-'));
     try {
@@ -195,6 +248,11 @@ describe('workspace portable file state', () => {
       workspaceRoot: sourceRoot,
       notebook,
     } = workspaceFixture();
+    const sourceKnowledgeBaseId = readDefaultKnowledgeBaseId({
+      dataRoot,
+      scope: { kind: 'workspace', workspaceId: sourceWorkspaceId },
+    });
+    const sourcePageScopeId = `page/workspace/${sourceWorkspaceId}/${sourceKnowledgeBaseId}`;
     const firstTimestamp = '2026-07-06T00:00:00.000Z';
     const secondTimestamp = '2026-07-06T00:00:01.000Z';
     const knowledge = {
@@ -245,7 +303,9 @@ describe('workspace portable file state', () => {
       id: 'kc_00000000-0000-707a-a7d4-e48c361c5546',
       workspaceId: sourceWorkspaceId,
       statement: 'First portable claim.',
-      sourceReferences: [`knowledge:${knowledge.id}`],
+      sourceReferences: [
+        formatReferenceUri({ scopeId: sourcePageScopeId, objectId: knowledge.id }),
+      ],
       scope: 'workspace',
       producer: 'portability-test',
       confidence: 0.8,
@@ -259,7 +319,9 @@ describe('workspace portable file state', () => {
       id: 'kc_00000000-0000-71a7-90bd-9df60db5bd84',
       workspaceId: sourceWorkspaceId,
       statement: 'Source-backed portable claim.',
-      sourceReferences: [`knowledge:${knowledge.id}`],
+      sourceReferences: [
+        formatReferenceUri({ scopeId: sourcePageScopeId, objectId: knowledge.id }),
+      ],
       scope: 'workspace',
       producer: 'portability-test',
       confidence: 1,
@@ -273,10 +335,12 @@ describe('workspace portable file state', () => {
       id: 'kf_00000000-0000-72bb-b75d-46dfe72603e1',
       workspaceId: sourceWorkspaceId,
       subjectReferences: [
-        `knowledge:${knowledge.id}`,
+        formatReferenceUri({ scopeId: sourcePageScopeId, objectId: knowledge.id }),
         'claim:kc_00000000-0000-71a7-90bd-9df60db5bd84',
       ],
-      sourceReferences: [`knowledge:${knowledge.id}`],
+      sourceReferences: [
+        formatReferenceUri({ scopeId: sourcePageScopeId, objectId: knowledge.id }),
+      ],
       status: 'needs_review',
       summary: 'Portable conflict needs review.',
       suggestedActions: ['Resolve the portable conflict.'],
@@ -298,6 +362,7 @@ describe('workspace portable file state', () => {
       '  "schemaVersion": 1,',
       '  "workspace": {',
       '    "name": "Demo Workspace",',
+      `    "defaultKnowledgeBaseId": "${sourceKnowledgeBaseId}",`,
       '    "roots": [],',
       '    "assistant": { "repositoryInspection": { "enabled": false } }',
       '  }',
@@ -322,7 +387,9 @@ describe('workspace portable file state', () => {
           kind: 'project-context',
           title: 'Portable file convention',
           content: 'Portable file convention body.',
-          sourceReferences: [`knowledge:${knowledge.id}`],
+          sourceReferences: [
+            formatReferenceUri({ scopeId: sourcePageScopeId, objectId: knowledge.id }),
+          ],
           createdAt: firstTimestamp,
           updatedAt: secondTimestamp,
         },
@@ -334,11 +401,14 @@ describe('workspace portable file state', () => {
     writeFileSync(join(sourceRoot, 'config', 'workspace.jsonc'), workspaceConfig);
     writeFileSync(join(sourceRoot, 'knowledge', 'schema', 'scope-schema.yaml'), workspaceSchema);
     publishFixturePages(notebook, { 'portable-file.md': portablePage }, [
-      `knowledge:${knowledge.id}`,
+      formatReferenceUri({ scopeId: sourcePageScopeId, objectId: knowledge.id }),
     ]);
 
     const knowledgePageBytes = readWorkspaceKnowledgePage(sourceRoot, knowledge.id)!;
-    const knowledgeReference = `knowledge:${knowledge.id}@sha256:${createHash('sha256').update(knowledgePageBytes).digest('hex')}`;
+    const knowledgeReference = formatReferenceUri(
+      { scopeId: sourcePageScopeId, objectId: knowledge.id },
+      `sha256:${createHash('sha256').update(knowledgePageBytes).digest('hex')}`
+    );
     const acceptedPageId = 'portable-accepted-proposal';
     const acceptedPageBytes = updateOkfFrontmatter({
       path: `${acceptedPageId}.md`,
@@ -408,10 +478,12 @@ describe('workspace portable file state', () => {
     expect(retrieval.selected).toEqual([
       expect.objectContaining({
         reference: {
-          scopeId: `page/workspace/${sourceWorkspaceId}`,
+          scopeId: sourcePageScopeId,
           objectId: 'portable-file',
         },
-        sourceReferences: [`knowledge:${knowledge.id}`],
+        sourceReferences: [
+          formatReferenceUri({ scopeId: sourcePageScopeId, objectId: knowledge.id }),
+        ],
       }),
     ]);
     expect(retrieval.retrievalTraceRef).toBeUndefined();
@@ -439,6 +511,9 @@ describe('workspace portable file state', () => {
     });
     const acceptedExportPath = `workspace-files/knowledge/pages/${acceptedPageId}.md`;
     expect(verified.fileContents.get(acceptedExportPath)).toBe(acceptedPageBytes);
+    expect(verified.fileContents.get('workspace-files/config/workspace.jsonc')).toBe(
+      workspaceConfig
+    );
     expect(() =>
       readWorkspaceImportSnapshot({
         verified,
@@ -500,6 +575,12 @@ describe('workspace portable file state', () => {
     const imported = WorkspaceImportResponseSchema.parse(await importRes.json());
     const importedWorkspaceId = imported.importedWorkspaceId;
     const importedRoot = join(dataRoot, 'workspaces', importedWorkspaceId);
+    const importedKnowledgeBaseId = readDefaultKnowledgeBaseId({
+      dataRoot,
+      scope: { kind: 'workspace', workspaceId: importedWorkspaceId },
+    });
+    expect(importedKnowledgeBaseId).not.toBe(sourceKnowledgeBaseId);
+    const importedPageScopeId = `page/workspace/${importedWorkspaceId}/${importedKnowledgeBaseId}`;
     const importedKnowledge = store
       .listKnowledge(importedWorkspaceId)
       .find((entry) => entry.title === knowledge.title);
@@ -532,7 +613,10 @@ describe('workspace portable file state', () => {
       .toEqual([importedWorkspaceId, importedWorkspaceId]);
     expect
       .soft(claimRows.map((row) => row.sourceReferences))
-      .toEqual([[`knowledge:${importedKnowledge.id}`], [`knowledge:${importedKnowledge.id}`]]);
+      .toEqual([
+        [formatReferenceUri({ scopeId: importedPageScopeId, objectId: importedKnowledge.id })],
+        [formatReferenceUri({ scopeId: importedPageScopeId, objectId: importedKnowledge.id })],
+      ]);
     const importedSourceClaim = claimRows.find(
       (row) => row.statement === 'Source-backed portable claim.'
     );
@@ -547,9 +631,11 @@ describe('workspace portable file state', () => {
       .toEqual([importedWorkspaceId, importedWorkspaceId]);
     expect.soft(conflictRows[1]).toMatchObject({
       resolution: 'Portable conflict resolved.',
-      sourceReferences: [`knowledge:${importedKnowledge.id}`],
+      sourceReferences: [
+        formatReferenceUri({ scopeId: importedPageScopeId, objectId: importedKnowledge.id }),
+      ],
       subjectReferences: [
-        `knowledge:${importedKnowledge.id}`,
+        formatReferenceUri({ scopeId: importedPageScopeId, objectId: importedKnowledge.id }),
         `claim:${String(importedSourceClaim?.id)}`,
       ],
     });
@@ -559,7 +645,7 @@ describe('workspace portable file state', () => {
     const importedConfigPath = join(importedRoot, 'config', 'workspace.jsonc');
     expect
       .soft(existsSync(importedConfigPath) ? readFileSync(importedConfigPath, 'utf8') : null)
-      .toBe(workspaceConfig);
+      .toBe(workspaceConfig.replace(sourceKnowledgeBaseId, importedKnowledgeBaseId));
     const importedSchemaPath = join(importedRoot, 'knowledge', 'schema', 'scope-schema.yaml');
     expect
       .soft(existsSync(importedSchemaPath) ? readFileSync(importedSchemaPath, 'utf8') : null)
@@ -572,11 +658,17 @@ describe('workspace portable file state', () => {
         content: portablePage,
         updates: {
           scope: { kind: 'workspace', workspaceId: importedWorkspaceId },
+          source_refs: [
+            formatReferenceUri({ scopeId: importedPageScopeId, objectId: importedKnowledge.id }),
+          ],
         },
       })
     );
     const importedNativePage = readWorkspaceKnowledgePage(importedRoot, importedKnowledge.id)!;
-    const importedKnowledgeReference = `knowledge:${importedKnowledge.id}@sha256:${createHash('sha256').update(importedNativePage).digest('hex')}`;
+    const importedKnowledgeReference = formatReferenceUri(
+      { scopeId: importedPageScopeId, objectId: importedKnowledge.id },
+      `sha256:${createHash('sha256').update(importedNativePage).digest('hex')}`
+    );
     expect(importedNativePage).toContain(`openkit_entry_id: "${importedKnowledge.id}"`);
     const expectedImportedAcceptedPageBytes = updateOkfFrontmatter({
       path: `${importedAcceptedKnowledge.id}.md`,
@@ -624,7 +716,7 @@ describe('workspace portable file state', () => {
     expect(importedRetrieval.selected).toEqual([
       expect.objectContaining({
         reference: {
-          scopeId: `page/workspace/${importedWorkspaceId}`,
+          scopeId: importedPageScopeId,
           objectId: importedAcceptedKnowledge.id,
         },
         sourceReferences: [importedKnowledgeReference],
@@ -652,7 +744,7 @@ describe('workspace portable file state', () => {
         actor: { kind: 'user', id: LOCAL_USER_ID },
         threadId: thread.id,
       },
-      sourceScope: `page/workspace/${workspaceId}`,
+      sourceScope: workspacePageScope(dataRoot, workspaceId),
       notebookRevision: notebook.publishedRevision(),
       caller: 'app-api',
       requestDigest: `sha256:${'8'.repeat(64)}`,
@@ -666,7 +758,7 @@ describe('workspace portable file state', () => {
       excluded: [
         {
           reference: {
-            scopeId: `page/workspace/${workspaceId}`,
+            scopeId: workspacePageScope(dataRoot, workspaceId),
             objectId: 'restricted-same-path',
           },
           revision: null,
@@ -732,7 +824,7 @@ describe('workspace portable file state', () => {
       caller: 'app-api',
       query: 'Revoked export selection',
       limit: 1,
-      pinnedReferences: [{ scopeId: `page/workspace/${workspaceId}`, objectId: page.id }],
+      pinnedReferences: [{ scopeId: workspacePageScope(dataRoot, workspaceId), objectId: page.id }],
       access: {
         store,
         coreDb,
@@ -754,7 +846,7 @@ describe('workspace portable file state', () => {
     const selectedRevision = notebook.publishedRevision();
     expect(result.selected).toEqual([
       expect.objectContaining({
-        reference: { scopeId: `page/workspace/${workspaceId}`, objectId: page.id },
+        reference: { scopeId: workspacePageScope(dataRoot, workspaceId), objectId: page.id },
         contentDigest: `sha256:${createHash('sha256').update(pageBytes).digest('hex')}`,
         revision: selectedRevision,
       }),
@@ -791,3 +883,8 @@ describe('workspace portable file state', () => {
     coreDb.sqlite.close();
   });
 });
+
+/** Reads the retained base of a real Workspace fixture without creating missing authority. */
+function workspacePageScope(dataRoot: string, workspaceId: string): string {
+  return `page/workspace/${workspaceId}/${readDefaultKnowledgeBaseId({ dataRoot, scope: { kind: 'workspace', workspaceId } })}`;
+}

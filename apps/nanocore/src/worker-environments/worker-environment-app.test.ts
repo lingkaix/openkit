@@ -366,6 +366,7 @@ function writeReloadableModelCatalog(dataRoot: string): void {
         id: 'worker-environment-fixture',
         kind: 'local',
         models: ['openai/gpt-5.2'],
+        schemaVersion: 1,
       },
       null,
       2

@@ -2,11 +2,12 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ListWorkspaceReconciliationRecordsResponseSchema } from '@openkit/app-api-schemas';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import {
+  importWorkspaceReconciliationRecords,
   listWorkspaceReconciliationRecords,
   recordWorkspaceReconciliationRecord,
   resolveWorkspaceReconciliationRecord,
@@ -15,7 +16,7 @@ import {
 const timestamp = '2026-07-08T00:00:00.000Z';
 
 describe('workspace reconciliation records', () => {
-  it('preserves retained annotations and unchanged bytes through updates, recovery and reopening', () => {
+  it('writes v1 and preserves retained annotations and unchanged bytes through recovery', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-reconciliation-extensions-'));
     let db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     try {
@@ -27,6 +28,11 @@ describe('workspace reconciliation records', () => {
           detail: 'Public fixture hf_publicFixture',
         },
       });
+      expect(
+        db.sqlite
+          .prepare('SELECT schema_version AS schemaVersion FROM workspace_reconciliation_records')
+          .get()
+      ).toEqual({ schemaVersion: 1 });
       const extended = {
         ...original,
         futureAnnotation: { note: 'same owner', text: 'retained\nbytes' },
@@ -120,6 +126,47 @@ describe('workspace reconciliation records', () => {
     } finally {
       db.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses an unknown reconciliation version before malformed JSON or replacement', () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-reconciliation-version-'));
+    onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
+    const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+    try {
+      applyScopedMigrations(db);
+      const record = recordWorkspaceReconciliationRecord(db, workspaceReconciliationRecord());
+      db.sqlite
+        .prepare('UPDATE workspace_reconciliation_records SET schema_version=2,payload_json=?')
+        .run('{');
+
+      expect(() => listWorkspaceReconciliationRecords(db, db.workspaceId)).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(() => recordWorkspaceReconciliationRecord(db, record)).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(() => importWorkspaceReconciliationRecords(db, [record])).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(() =>
+        resolveWorkspaceReconciliationRecord({
+          workspaceDb: db,
+          workspaceId: db.workspaceId,
+          reconciliationRecordId: record.id,
+          decision: 'quarantine',
+          decidedAt: timestamp,
+        })
+      ).toThrow('Unsupported retained record format.');
+      expect(
+        db.sqlite
+          .prepare(
+            'SELECT schema_version AS schemaVersion,payload_json FROM workspace_reconciliation_records'
+          )
+          .get()
+      ).toEqual({ schemaVersion: 2, payload_json: '{' });
+    } finally {
+      db.sqlite.close();
     }
   });
 

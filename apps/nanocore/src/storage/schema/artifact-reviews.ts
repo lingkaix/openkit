@@ -2,6 +2,7 @@ import type {
   ArtifactReviewCandidateSelection,
   ArtifactReviewRangeFeedback,
 } from '@openkit/app-api-schemas';
+import { writeRetainedV1 } from '@openkit/protocol';
 import { sql } from 'drizzle-orm';
 import {
   check,
@@ -24,6 +25,8 @@ export type ArtifactReviewDecision =
 export const artifactReviews = sqliteTable(
   'artifact_reviews',
   {
+    /** Retained JSON payload format; native DDL versions scalar columns separately. */
+    schemaVersion: integer('schema_version').notNull().default(writeRetainedV1({}).schemaVersion),
     /** Workspace that owns the reviewed Artifact. */
     workspaceId: text('workspace_id').notNull(),
     /** Deterministic identity for this exact Artifact version Review. */

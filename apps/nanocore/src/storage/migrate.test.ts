@@ -299,6 +299,8 @@ describe('database setup', () => {
         '0007_discord_capture_origin.sql',
         '0008_server_capability_usage.sql',
         '0009_policy_audit_v1.sql',
+        '0010_retained_record_formats.sql',
+        '0011_audit_authentication.sql',
       ]);
       expect(
         ['app', 'core', 'user', 'workspace'].every((scope) =>
@@ -317,6 +319,8 @@ describe('database setup', () => {
         'core_0007_discord_capture_origin',
         'core_0008_server_capability_usage',
         'core_0009_policy_audit_v1',
+        'core_0010_retained_record_formats',
+        'core_0011_audit_authentication',
       ]);
       expect(listTableNames(coreDb)).toEqual(beforeTables);
       for (const table of ['capability_calls', 'usage_records', 'evidence_bundles']) {
@@ -373,6 +377,7 @@ describe('database setup', () => {
         'response_json',
         'created_at',
         'expires_at',
+        'schema_version',
       ]);
       expect(listColumnNames(coreDb, 'worker_storage_bindings')).toEqual([
         'storage_ref',
@@ -399,6 +404,7 @@ describe('database setup', () => {
         'created_at',
         'updated_at',
         'purged_at',
+        'schema_version',
       ]);
       expect(listColumnNames(coreDb, 'workspace_registry')).toEqual([
         'workspace_id',
@@ -448,6 +454,7 @@ describe('database setup', () => {
         'last_used_at',
         'last_used_channel',
         'last_used_source',
+        'schema_version',
       ]);
       /**
        * S-2b-1 Unit 2: durable NanoHost transport Token metadata projection.
@@ -537,6 +544,7 @@ describe('database setup', () => {
         'result_fingerprint',
         'created_at',
         'updated_at',
+        'schema_version',
       ]);
       expect(listColumnNames(coreDb, 'agent_session_runtime_bindings')).toEqual([
         'agent_session_runtime_binding_id',
@@ -561,6 +569,7 @@ describe('database setup', () => {
         'inference_loopback_credential_digest',
         'capability_loopback_credential_digest',
         'runtime_env_check_versions_json',
+        'schema_version',
       ]);
       expect(listColumnNames(coreDb, 'agent_session_runtime_binding_image_digests')).toEqual([
         'agent_session_runtime_binding_id',
@@ -614,6 +623,7 @@ describe('database setup', () => {
         'origin_physical_epoch',
         'backend_lineage_json',
         'sandbox_binding_ref',
+        'schema_version',
       ]);
       const backendProjectionColumns = coreDb.sqlite
         .prepare('PRAGMA table_info(worker_backend_sessions)')
@@ -705,6 +715,8 @@ describe('database setup', () => {
         'user_0001_thread_read_receipts',
         'user_0002_notebook_admission',
         'user_0003_policy_audit_v1',
+        'user_0004_retained_record_formats',
+        'user_0005_audit_authentication',
       ]);
       expect(listTableNames(userDb)).toEqual([
         '__drizzle_migrations',
@@ -718,6 +730,8 @@ describe('database setup', () => {
         'workspace_0002_notebook_admission',
         'workspace_0003_exact_review_feedback',
         'workspace_0004_policy_audit_v1',
+        'workspace_0005_retained_record_formats',
+        'workspace_0006_audit_authentication',
       ]);
       expect(listTableNames(workspaceDb)).toEqual(WORKSPACE_TABLES);
       const idempotencyRequestColumns = [
@@ -731,6 +745,7 @@ describe('database setup', () => {
         'response_json',
         'created_at',
         'expires_at',
+        'schema_version',
       ];
       expect(listColumnNames(userDb, 'idempotency_requests')).toEqual(idempotencyRequestColumns);
       expect(listColumnNames(workspaceDb, 'idempotency_requests')).toEqual(
@@ -763,6 +778,7 @@ describe('database setup', () => {
         'runtime_cache_lineage_ref',
         'system_prompt_digest',
         'extensions_json',
+        'schema_version',
       ]);
       expect(listColumnNames(workspaceDb, 'usage_records')).toEqual([
         'usage_id',
@@ -783,6 +799,7 @@ describe('database setup', () => {
         'source',
         'recorded_at',
         'responsible_user_id',
+        'schema_version',
       ]);
       expect(listColumnNames(workspaceDb, 'goal_review_records')).toEqual([]);
       expect(listColumnNames(workspaceDb, 'workspace_repository_resources')).toEqual([]);
@@ -1086,6 +1103,7 @@ describe('native Drizzle migrate', () => {
         ...before,
         range_feedback: null,
         candidate_selections: '[]',
+        schema_version: 1,
       });
       expect(listAppliedNativeMigrationIds(db.sqlite, 'workspace')).toEqual([
         'workspace_0000_setup',
@@ -1093,6 +1111,8 @@ describe('native Drizzle migrate', () => {
         'workspace_0002_notebook_admission',
         'workspace_0003_exact_review_feedback',
         'workspace_0004_policy_audit_v1',
+        'workspace_0005_retained_record_formats',
+        'workspace_0006_audit_authentication',
       ]);
     } finally {
       db.sqlite.close();
@@ -1174,12 +1194,18 @@ describe('native Drizzle migrate', () => {
         'harness_instance_records',
         'agent_session_runtime_bindings',
       ];
-      const before = names.map((name) => sqlite.prepare(`SELECT * FROM ${name}`).all());
+      const before = names.map(
+        (name) => sqlite.prepare(`SELECT * FROM ${name}`).all() as Record<string, unknown>[]
+      );
       const indices = names.map((name) => sqlite.pragma(`index_list(${name})`));
-      const binding = readNanoHostThreadAgentSessionBinding(coreDb, {
-        workspaceId: testEntityId('ws', 'retained-workspace'),
-        threadId: testEntityId('th', 'retained-thread'),
-      });
+      // The predecessor has no retained header; observe its scalar binding before current decoding applies.
+      const binding = sqlite
+        .prepare(
+          `SELECT agent_session_id AS agentSessionId
+           FROM agent_session_runtime_bindings
+           WHERE workspace_id = ? AND thread_id = ?`
+        )
+        .get(testEntityId('ws', 'retained-workspace'), testEntityId('th', 'retained-thread'));
       expect(binding).toEqual({ agentSessionId: testEntityId('as', 'retained-session') });
       expect(() =>
         sqlite.exec('UPDATE sandbox_runtime_records SET max_active_turns = 8')
@@ -1191,7 +1217,11 @@ describe('native Drizzle migrate', () => {
         });
       applyNativeScopeMigrations(sqlite, 'core', folder);
       const after = names.map((name) => sqlite.prepare(`SELECT * FROM ${name}`).all());
-      expect(after).toEqual(before);
+      expect(after).toEqual([
+        before[0],
+        before[1]!.map((row) => ({ ...row, schema_version: 1 })),
+        before[2]!.map((row) => ({ ...row, schema_version: 1 })),
+      ]);
       expect(sqlite.pragma('foreign_key_check')).toEqual([]);
       expect(sqlite.pragma('foreign_keys', { simple: true })).toBe(1);
       expect(names.map((name) => sqlite.pragma(`index_list(${name})`))).toEqual(indices);
@@ -1541,7 +1571,7 @@ describe('Assistant handoff descriptor migration', () => {
       >;
       applyNativeScopeMigrations(db, 'workspace');
       const current = db.prepare('SELECT * FROM pending_requests').get() as Record<string, unknown>;
-      expect(current).toEqual({ ...retained, assistant_handoff_json: null });
+      expect(current).toEqual({ ...retained, assistant_handoff_json: null, schema_version: 1 });
       expect(readPendingRequest(db, 'retained-question')).toMatchObject({
         requestId: 'retained-question',
         state: 'pending',
