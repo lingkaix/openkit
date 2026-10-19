@@ -384,7 +384,10 @@ describe('Knowledge package public operation round trip', () => {
     const beforeTamper = knowledgeFiles(f.tamperTarget.root);
     const tamperSeed = f.tamperTarget.notebook.publishedRevision();
     const tampered = Buffer.from(archive);
-    tampered[files.get(rawPath)!.offset] ^= 1;
+    const rawOffset = files.get(rawPath)!.offset;
+    const firstByte = tampered[rawOffset];
+    if (firstByte === undefined) throw new Error('Exported binary fixture is empty.');
+    tampered[rawOffset] = firstByte ^ 1;
     const refused = await f.transfer('import', f.tamperTarget.id, tampered);
     expect(refused.status, await refused.clone().text()).toBe(400);
     expect(await refused.json()).toMatchObject({ code: 'invalid_request' });
