@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import fs, { mkdtemp, rm } from 'node:fs/promises';
 import { createServer, type IncomingMessage } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -26,10 +26,12 @@ import {
 
 const VALID_ENDPOINT = 'http://127.0.0.1:4318';
 const TEST_BOOT_ID = 'boot_telemetry-instance';
+const readFilesystemStats = fs.statfs;
 let logDirectory: string;
 
 beforeEach(async () => {
   logDirectory = await mkdtemp(join(tmpdir(), 'telemetry-lifecycle-'));
+  vi.spyOn(fs, 'statfs').mockImplementation(finiteFilesystemStats);
 });
 
 afterEach(async () => {
@@ -40,6 +42,29 @@ afterEach(async () => {
     await rm(logDirectory, { recursive: true, force: true });
   }
 });
+
+/**
+ * Supplies finite, healthy capacity without interpreting the backing filesystem's inode zeros.
+ * The capacity fixture is not a production threshold; all file operations remain real.
+ */
+async function finiteFilesystemStats(...args: Parameters<typeof fs.statfs>) {
+  const stats = await readFilesystemStats(...args);
+  const capacity = {
+    type: 0xef53,
+    bsize: 4096,
+    blocks: 1_048_576,
+    bfree: 1_048_576,
+    bavail: 1_048_576,
+    files: 1_000_000,
+    ffree: 900_000,
+  };
+  return Object.assign(
+    stats,
+    typeof stats.bsize === 'bigint'
+      ? Object.fromEntries(Object.entries(capacity).map(([key, value]) => [key, BigInt(value)]))
+      : capacity
+  );
+}
 
 /** Keeps every lifecycle test's optional local sink inside its own disposable directory. */
 function startTelemetry(options: Parameters<typeof startProductionTelemetry>[0]) {

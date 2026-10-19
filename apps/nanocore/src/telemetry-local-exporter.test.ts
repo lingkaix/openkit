@@ -26,6 +26,7 @@ const BOOT_ID = 'boot-local-telemetry';
 const TURN_ID = 'turn-local-telemetry';
 const ENDPOINT = 'http://127.0.0.1:4318';
 const REQUEST_LIMIT = 1_048_576;
+const readFilesystemStats = fs.statfs;
 let root: string;
 let logDirectory: string;
 
@@ -50,6 +51,7 @@ beforeEach(async () => {
   root = await fs.mkdtemp(join(tmpdir(), 'telemetry-local-'));
   logDirectory = join(root, 'logs');
   await fs.mkdir(logDirectory);
+  vi.spyOn(fs, 'statfs').mockImplementation(finiteFilesystemStats);
   vi.spyOn(console, 'info').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
@@ -284,6 +286,7 @@ describe('local telemetry through the production SDK lifecycle', () => {
   it.each([
     'bytes',
     'inodes',
+    'unreported-inodes',
     'unknown',
   ] as const)('drops below-cap batches when filesystem headroom is unsafe: %s', async (failure) => {
     start();
@@ -293,17 +296,20 @@ describe('local telemetry through the production SDK lifecycle', () => {
       requestSpans(await readRequests(await segmentFiles())),
       'healthy capture is the positive control'
     ).toHaveLength(1);
-    const realStatfs = fs.statfs;
-    const checked = vi.spyOn(fs, 'statfs').mockImplementation(async (...args) => {
-      if (failure === 'unknown')
-        throw Object.assign(new Error('filesystem unavailable'), { code: 'EIO' });
-      const result = await realStatfs(...args);
-      const zero = typeof result.bavail === 'bigint' ? 0n : 0;
-      return Object.assign(
-        result,
-        failure === 'bytes' ? { bavail: zero, bfree: zero } : { ffree: zero }
-      );
-    });
+    const checked = vi
+      .mocked(fs.statfs)
+      .mockClear()
+      .mockImplementation(async (...args) => {
+        if (failure === 'unknown')
+          throw Object.assign(new Error('filesystem unavailable'), { code: 'EIO' });
+        const result = await finiteFilesystemStats(...args);
+        const zero = typeof result.bavail === 'bigint' ? 0n : 0;
+        if (failure === 'bytes') return Object.assign(result, { bavail: zero, bfree: zero });
+        if (failure === 'unreported-inodes')
+          return Object.assign(result, { files: zero, ffree: zero });
+        // A positive finite total distinguishes exhaustion from absent inode accounting.
+        return Object.assign(result, { ffree: zero });
+      });
     start();
     expect((await productApp().request('/items/one', { method: 'POST' })).status).toBe(201);
     await shutdownTelemetry();
@@ -390,6 +396,30 @@ describe('local telemetry through the production SDK lifecycle', () => {
     );
   });
 });
+
+/**
+ * Supplies explicit finite capacity, not a claim about the fixture's backing filesystem.
+ * Btrfs can report files=ffree=0; treating that as healthy would decide an unaccepted policy.
+ * Only statfs capacity is doubled. Paths, permissions, appends, pruning and reads stay real.
+ */
+async function finiteFilesystemStats(...args: Parameters<typeof fs.statfs>) {
+  const stats = await readFilesystemStats(...args);
+  const capacity = {
+    type: 0xef53, // Linux ext-family finite inode accounting, not a Btrfs policy exception.
+    bsize: 4096,
+    blocks: 1_048_576,
+    bfree: 1_048_576,
+    bavail: 1_048_576,
+    files: 1_000_000,
+    ffree: 900_000,
+  };
+  return Object.assign(
+    stats,
+    typeof stats.bsize === 'bigint'
+      ? Object.fromEntries(Object.entries(capacity).map(([key, value]) => [key, BigInt(value)]))
+      : capacity
+  );
+}
 
 /** Adds only the agreed composition inputs; the variable also typechecks against unchanged main. */
 function start(env: NodeJS.ProcessEnv = {}, exporter?: InMemorySpanExporter): void {
