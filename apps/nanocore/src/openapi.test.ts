@@ -274,7 +274,7 @@ describe('app api openapi projection', () => {
       ...RUNTIME_CONFIG_OPERATION_DEFINITIONS,
       ...PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS,
     };
-    expect(Object.keys(definitions)).toHaveLength(21);
+    expect(Object.keys(definitions)).toHaveLength(23);
     for (const [id, definition] of Object.entries(definitions)) {
       const operation = jsonObject(document.paths[operationHttpPath(id)]?.post);
       expect(operation).toMatchObject({
