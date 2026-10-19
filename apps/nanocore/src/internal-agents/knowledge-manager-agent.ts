@@ -1,3 +1,4 @@
+import { KNOWLEDGE_MANAGER_RUN_DEADLINE_MS } from '@openkit/config-schema';
 import type { ActorRef, Item, ServerItem, ServerTurn } from '@openkit/protocol';
 import {
   allocateEntityId,
@@ -150,7 +151,7 @@ export function pinKnowledgeManagerExecution(
   const limits = selection.profile?.limits ?? {
     maxModelTurns: 8,
     maxToolCalls: 24,
-    deadlineMs: 120_000,
+    deadlineMs: KNOWLEDGE_MANAGER_RUN_DEADLINE_MS,
   };
   updateRunTurn(dependencies.store, turn, {
     internalExecution: {
@@ -229,13 +230,15 @@ async function executeKnowledgeManagerAgent(
   const turn = runTurn(store, input);
   if (turn.agentId !== 'knowledge-manager' || turn.agentSessionId || turn.status !== 'running')
     throw new Error('Knowledge Manager Turn is not admitted.');
+  let deadlineSignal: AbortSignal | undefined;
   try {
     input.signal.throwIfAborted();
     input.assertCurrent();
     const { selection, threshold, limits } = pinKnowledgeManagerExecution(dependencies, input);
     const logicalModel = selection.logicalModel;
     const systemPrompt = assembleBuiltInSystemPrompt('knowledge-manager');
-    const signal = AbortSignal.any([input.signal, AbortSignal.timeout(limits.deadlineMs)]);
+    deadlineSignal = AbortSignal.timeout(limits.deadlineMs);
+    const signal = AbortSignal.any([input.signal, deadlineSignal]);
     let resultText: string | undefined;
     let usedToolCalls = 0;
     let repairUsed = false;
@@ -433,16 +436,26 @@ async function executeKnowledgeManagerAgent(
     updateRunTurn(store, turn, { status: 'completed', completedAt: new Date().toISOString() });
     return { turnId: turn.id, text: result };
   } catch (error) {
+    // Only this role's deadline is a KM timeout; caller cancellation keeps its original cause.
+    const timeout =
+      !input.signal.aborted && deadlineSignal?.aborted
+        ? {
+            code: 'knowledge_manager_timeout',
+            message: 'knowledge_manager_timeout: Knowledge Manager reached its run deadline.',
+          }
+        : undefined;
     if (!isSealedTurnTerminal(runTurn(store, input).status))
       updateRunTurn(store, turn, {
         status: input.signal.aborted ? 'cancelled' : 'failed',
         completedAt: new Date().toISOString(),
-        error: internalContextFailure(error) ?? {
-          code: 'knowledge_manager_failed',
-          message: 'Knowledge Manager run failed. Inspect the retained Turn before a new request.',
-        },
+        error: timeout ??
+          internalContextFailure(error) ?? {
+            code: 'knowledge_manager_failed',
+            message:
+              'Knowledge Manager run failed. Inspect the retained Turn before a new request.',
+          },
       });
-    throw error;
+    throw timeout ? Object.assign(new Error(timeout.message), { code: timeout.code }) : error;
   }
 }
 
