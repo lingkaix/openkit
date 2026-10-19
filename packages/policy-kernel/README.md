@@ -21,6 +21,8 @@ The current package implements:
 - access requests
 - allow or deny access decisions
 - decision traces
+
+A matching prohibition determines the deny reason before a missing privilege, including when the request has no granting association. Policy and request validation still run first.
 - local conformance fixtures for the implemented NGAC subset
 
 The current implementation is an NGAC-aligned subset, not a full NGAC implementation. It intentionally accepts caller-supplied immutable policy facts and does not implement policy storage, policy mutation, PEP/PDP/PAP/PIP/RAP/EPP entities, administrative routines, obligations, or lifecycle cleanup for process-terminated prohibitions.
