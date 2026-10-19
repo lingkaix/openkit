@@ -79,7 +79,7 @@ export const KnowledgeSourceDerivedRepresentationSchema = z.object({
 /** Request body for explicit Knowledge Source registration. */
 export const RegisterKnowledgeSourceRequestSchema = z
   .object({
-    requestId: z.string().min(1),
+    requestId: RequestIdSchema,
     kind: KnowledgeSourceKindSchema,
     title: z.string().min(1),
     content: z.string().min(1),

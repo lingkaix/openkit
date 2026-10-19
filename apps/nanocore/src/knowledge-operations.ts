@@ -835,6 +835,7 @@ export function createKnowledgeOperationImplementations(
                 'Knowledge Source publication is unavailable.',
                 503
               );
+            const sourceId = allocateEntityId('ks');
             const source = await publishCapturedSource(
               {
                 owner: {
@@ -873,7 +874,11 @@ export function createKnowledgeOperationImplementations(
                     );
                   if (commandInput.originatingTurnId) {
                     if (!commandInput.originatingThreadId)
-                      throw new NotebookError('invalid_request');
+                      throw new OperationError(
+                        'knowledge_source_register_failed',
+                        `Knowledge source turn requires a thread: ${sourceId}`,
+                        404
+                      );
                     store.getTurn(
                       workspaceId,
                       commandInput.originatingThreadId,
@@ -883,7 +888,7 @@ export function createKnowledgeOperationImplementations(
                 },
               },
               {
-                id: allocateEntityId('ks'),
+                id: sourceId,
                 kind: commandInput.kind,
                 title: commandInput.title,
                 uri: commandInput.uri ?? null,
@@ -952,7 +957,7 @@ export function createKnowledgeOperationImplementations(
           ...(coreDb ? { coreDb: coreDb } : {}),
         });
 
-        // Derived metadata and its usage accounting must not outlive current disclosure authority.
+        // Source metadata and its usage accounting must not outlive current disclosure authority.
         requireSourceAudience(workspaceId, sourceId, context);
         return response;
       } catch (error) {
