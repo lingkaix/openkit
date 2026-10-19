@@ -24,8 +24,8 @@ import { readCurrentMcpToolSchemaSnapshot } from '../runtime/mcp-tool-schema-sna
 import {
   OPENKIT_GENERATIVE_MCP_ID,
   OPENKIT_GENERATIVE_TOOLS,
-} from '../runtime/openkit-generative-mcp.js';
-import { OPENKIT_WORK_MCP_ID, OPENKIT_WORK_TOOLS } from '../runtime/openkit-work-mcp.js';
+} from '../runtime/openkit-generative-supply.js';
+import { OPENKIT_WORK_MCP_ID, OPENKIT_WORK_TOOLS } from '../runtime/openkit-work-supply.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import {
   listExportableWorkspacePermissionDecisions,
