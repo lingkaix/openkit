@@ -39,7 +39,7 @@ const recordedAt = '2026-10-17T01:00:00.000Z';
 const first = { artifactId, artifactVersion: 1, contentDigest: `sha256:${'a'.repeat(64)}` };
 const second = { artifactId, artifactVersion: 2, contentDigest: `sha256:${'b'.repeat(64)}` };
 const set = {
-  formatVersion: 1,
+  schemaVersion: 1,
   workspaceId,
   candidateSetId: 'comparison-request',
   createdBy: actor,
@@ -99,7 +99,7 @@ beforeEach(() => {
   const judgements: JudgementRecord[] = [];
   select.mockImplementation((input) => {
     judgements.push({
-      formatVersion: 1,
+      schemaVersion: 1,
       workspaceId,
       requestId: input.requestId,
       kind: 'select',

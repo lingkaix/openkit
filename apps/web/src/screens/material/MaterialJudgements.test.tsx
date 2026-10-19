@@ -34,7 +34,7 @@ beforeEach(() => {
   client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   correct.mockImplementation(async (input) => ({
     judgement: {
-      formatVersion: 1,
+      schemaVersion: 1,
       workspaceId: input.workspaceId,
       requestId: input.requestId,
       actor: { kind: 'user', id: 'human-editor' },
@@ -120,7 +120,7 @@ it('annotates the selected exact range without requesting a correction', async (
   add.mockImplementation(async (input) => ({
     judgement: {
       ...input.judgement,
-      formatVersion: 1,
+      schemaVersion: 1,
       workspaceId: input.workspaceId,
       requestId: input.requestId,
       actor: { kind: 'user', id: 'human-assessor' },
