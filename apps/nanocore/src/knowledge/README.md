@@ -44,6 +44,8 @@ This directory owns the portable OKF v0.2 Markdown parser, OpenKit knowledge-pro
 
 `okf.ts` admits Rule, Effect and Objective as governed domain types with declared `applies_to`; Effect also requires descriptive `basis` and an actual supplied `last_checked_at`. The common publisher retains exact metadata and descriptive extensions. Native retrieval and the KM search Tool accept optional `types` and `appliesTo` lists, with any-match within each and intersection across lists. Applicability uses exact identifiers on these domain types only. Current eligibility and pins remain governed, and absent filters preserve the existing request/trace shape. See [Typed Domain Pages](../../../../docs/specs/20260909-knowledge_notebook_editing.md#typed-domain-pages).
 
+Workspace maintenance identifies the exact supplied tell Source in the run instructions, separately from previous human notebook edits and the current overview. An unchanged generated empty root index is not a human edit; authored initial content and later edits remain inputs. The edit Tool changes the virtual snapshot and the submit Tool publishes those prior changes or prepares required Review. Captured original bytes alone do not prove page integration, and duplicate information may legitimately produce no-change. Run `pnpm --filter @openkit/nanocore exec vitest run src/knowledge/tell-intake-framing.test.ts` for native Source, candidate/Review, replay, duplicate and human-edit controls; the runner double does not establish live model comprehension.
+
 ## Verification
 
 Run `pnpm --filter @openkit/nanocore exec vitest run src/knowledge` and the affected Knowledge Store tests.
