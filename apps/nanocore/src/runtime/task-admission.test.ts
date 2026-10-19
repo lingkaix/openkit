@@ -1,13 +1,27 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, readFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it, vi } from 'vitest';
 import * as operationAuthorizer from '../auth/operation-authorizer.js';
-import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
+import {
+  createInMemoryRuntimeConfigSnapshot,
+  createRuntimeConfigManager,
+} from '../config/runtime-config.js';
+import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import { createStructuredWorkerDelegationRequest } from '../internal-agents/delegation.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
+import { createGoalDomainPolicyService } from '../policy/goal-domains.js';
+import { createGoalTaskPolicyService } from '../policy/goal-task-policy.js';
+import { EMPTY_POLICY_DOCUMENT, policyDigest } from '../policy/statements.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import {
   cancelSchedulerAdmissionEntry,
@@ -68,7 +82,32 @@ it.each([
   applyScopedMigrations(db);
   const actor = { kind: 'local' as const, userId: 'usr_00000000-0000-7000-8000-000000000001' };
   const human = { actor };
-  const services = { coreDb };
+  mkdirSync(join(root, 'config'), { recursive: true });
+  writeFileSync(join(root, 'config/server.jsonc'), JSON.stringify({ schemaVersion: 1 }));
+  const manager = createRuntimeConfigManager({ dataRoot: root });
+  const domains = createGoalDomainPolicyService({
+    coreDb,
+    store,
+    repositoryWorkspaceDb: () => db,
+    files: new RuntimeConfigFileService({
+      dataRoot: root,
+      userId: actor.userId,
+      workspaceIds: [ws.id],
+      runtimeConfigManager: manager,
+      readRuntimeConfigStatus: () => manager.status(),
+    }),
+    currentPolicy: () => manager.current().openKitConfig.policy?.mediation,
+    reload: () => manager.reload({ mode: 'safe', dryRun: false }),
+  });
+  const services = {
+    coreDb,
+    goalDomain: {
+      forActor: () => domains,
+      currentRevision: () =>
+        policyDigest(manager.current().openKitConfig.policy?.mediation ?? EMPTY_POLICY_DOCUMENT),
+    },
+  };
+  const selectedAgentId = createTestAgentSetup().manifest.id;
   const originalAuthorize = operationAuthorizer.authorizeWorkspace;
   const authorization = vi.spyOn(operationAuthorizer, 'authorizeWorkspace');
   const startWorker = vi.fn(
@@ -277,7 +316,13 @@ it.each([
         ...scope,
         requestId: randomUUID(),
         expectedRevision: cards.goal!.changeRevision,
-        goalDomain: testGoalDomainProposal(scope.workspaceId, scope.goalId),
+        goalDomain: {
+          ...testGoalDomainProposal(scope.workspaceId, scope.goalId),
+          scope: {
+            ...testGoalDomainProposal(scope.workspaceId, scope.goalId).scope,
+            subjects: [{ kind: 'agent', id: selectedAgentId }],
+          },
+        },
         commitment: {
           intentBasis: { revision: 0, intent: goal.intent },
           cards: [
@@ -350,6 +395,7 @@ it.each([
       goalId: goal.goalId,
       coordinatorTurnId: coordinator.id,
       startWorker,
+      ...{ goalTaskPolicy: () => createGoalTaskPolicyService({ coreDb, store, domains }) },
     });
     expect(taskTool.name).toBe('goal.task.dispatch');
     const request = createStructuredWorkerDelegationRequest({
@@ -377,7 +423,7 @@ it.each([
         withinCurrentIntent: true,
         withinPermittedAdjustments: true,
         rationale: 'Review stays inside the approved boundary',
-        agentId: 'test-worker',
+        agentId: selectedAgentId,
         request,
       },
       { callId: 'task', toolOccurrence: 1, signal: new AbortController().signal }
