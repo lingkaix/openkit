@@ -1,4 +1,5 @@
 import { Buffer } from 'node:buffer';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -36,6 +37,114 @@ const now = '2098-08-21T00:00:00.000Z';
 const physicalEpoch = 'e'.repeat(64);
 
 describe('private NanoHost Harness records', () => {
+  it('retains an unconsumed receiver receipt across settlement process loss and competing dispatch', () => {
+    let coreDb = openOpeningBindingDb('openkit-harness-consumption-cut-');
+    const dataRoot = coreDb.dataRoot;
+    try {
+      queueNanoHostHarnessOperation(coreDb, {
+        body: sessionOpenBody(),
+        harnessInstanceId: 'harness-1',
+        operation: 'session.open',
+        timestamp: now,
+      });
+      const command = dispatchNanoHostHarnessOperation(coreDb, {
+        sandboxIntegrationBindingRef: 'integration-binding-1',
+        now: () => now,
+      })!;
+      expect(command.operation).toBe('session.open');
+      const result = {
+        body: { reasonCode: 'busy' },
+        disposition: 'refused' as const,
+        harnessInstanceId: 'harness-1',
+        operationId: command.operationId,
+        schemaVersion: 2 as const,
+        sequence: command.sequence,
+      };
+      coreDb.sqlite.close();
+      // The real receiver commits before this callback.
+      // Kill before any consumer can commit a Workspace outcome or acknowledge consumption; do not simulate an ack.
+      const crashed = spawnSync(
+        process.execPath,
+        [
+          '--import',
+          'tsx',
+          '--input-type=module',
+          '-e',
+          `import { writeSync } from 'node:fs';
+import { openCoreDb } from './src/storage/db.ts';
+import { settleNanoHostHarnessOperation } from './src/runtime/nanohost-harness-records.ts';
+const db = openCoreDb(process.argv[1]);
+settleNanoHostHarnessOperation(db, {
+  sandboxIntegrationBindingRef: 'integration-binding-1',
+  result: JSON.parse(process.argv[2]),
+  timestamp: process.argv[3],
+  onSettled() {
+    writeSync(1, 'receiver-committed-before-consumption\\n');
+    process.kill(process.pid, 'SIGKILL');
+  },
+});`,
+          dataRoot,
+          JSON.stringify(result),
+          now,
+        ],
+        { cwd: process.cwd(), encoding: 'utf8', timeout: 60_000 }
+      );
+      expect(crashed.error, crashed.stderr).toBeUndefined();
+      expect(crashed.signal, crashed.stderr).toBe('SIGKILL');
+      expect(crashed.stdout).toBe('receiver-committed-before-consumption\n');
+      coreDb = openCoreDb(dataRoot);
+      const receipt = () =>
+        coreDb.sqlite
+          .prepare(
+            `SELECT result_json AS resultJson, result_fingerprint AS fingerprint
+             FROM harness_instance_records WHERE harness_instance_id = 'harness-1'`
+          )
+          .get() as { resultJson: string | null; fingerprint: string | null };
+      const retained = receipt();
+      if (retained.resultJson === null)
+        throw new Error('Receiver receipt missing at crash checkpoint.');
+      expect(JSON.parse(retained.resultJson)).toEqual(result);
+      expect(retained.fingerprint).toBe(
+        createHash('sha256').update(retained.resultJson).digest('hex')
+      );
+      const settle = (body: Record<string, unknown>) =>
+        settleNanoHostHarnessOperation(coreDb, {
+          sandboxIntegrationBindingRef: 'integration-binding-1',
+          result: { ...result, body },
+          timestamp: now,
+        });
+      // Receiver-result replay is not consumer acknowledgement.
+      expect(settle(result.body)).toBe('replayed');
+      expect(() => settle({ reasonCode: 'conflict' })).toThrow(/conflict/i);
+      expect(receipt()).toEqual(retained);
+      let successor: ReturnType<typeof dispatchNanoHostHarnessOperation> = null;
+      let refusal: unknown;
+      try {
+        queueNanoHostHarnessOperation(coreDb, {
+          body: {},
+          harnessInstanceId: 'harness-1',
+          operation: 'harness.drain',
+          timestamp: now,
+        });
+        successor = dispatchNanoHostHarnessOperation(coreDb, {
+          sandboxIntegrationBindingRef: 'integration-binding-1',
+          now: () => now,
+        });
+      } catch (error) {
+        refusal = error;
+      }
+      if (refusal !== undefined) {
+        expect(String(refusal)).toMatch(/consum|acknowledg|receipt|unsettled|unavailable/i);
+      }
+      expect.soft(successor, 'an unavailable consumer must block competing dispatch').toBeNull();
+      expect
+        .soft(receipt(), 'unacknowledged result bytes and fingerprint must survive')
+        .toEqual(retained);
+    } finally {
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
+    }
+  }, 90_000);
+
   it('logs only fixed slow-stage fields at the 100 ms boundary', () => {
     const coreDb = openOpeningBindingDb('openkit-harness-slow-stage-');
     const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
