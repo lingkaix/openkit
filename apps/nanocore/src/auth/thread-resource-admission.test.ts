@@ -45,6 +45,7 @@ describe('managed Thread native admission', () => {
     const thread = store.createThread(workspace.id, 'Managed');
     const ordinary = store.createThread(workspace.id, 'Ordinary');
     const config = WorkspaceConfigSchema.parse({
+      schemaVersion: 1,
       requiredFeatures: [WORKSPACE_RESOURCE_POLICY_FEATURE],
       workspace: {
         name: workspace.name,
