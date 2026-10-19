@@ -508,14 +508,17 @@ describe('agent gate at native I16', () => {
     'missing',
     'cyclic',
     'lost-human',
+    'lost-author',
+    'shadow-lost-authority',
   ] as const)('suspends a %s responsibility chain before disclosure', async (fault) => {
-    const input = fixture(agentDocument(otherHumanId));
+    const input = fixture(agentDocument(fault === 'lost-author' ? userId : otherHumanId));
     if (fault === 'missing') input.document.statements.splice(0, 1);
     if (fault === 'cyclic')
       Object.assign(input.document.statements[0]!, {
         responsibility: { kind: 'agent', id: agentId },
       });
     const binding = admittedBinding(input.document);
+    if (fault === 'shadow-lost-authority') binding.state = 'shadow';
     const invoke = vi.fn(async () => assessment('allow'));
     const finalKernel = vi.fn(() => kernel());
     const result = await new PolicyInterception(undefined, {
@@ -524,12 +527,20 @@ describe('agent gate at native I16', () => {
       invoke,
     }).decide({
       ...input,
-      authorCurrent: (id) => fault !== 'lost-human' || id !== otherHumanId,
+      authorCurrent: (id) =>
+        ((fault !== 'lost-human' && fault !== 'shadow-lost-authority') || id !== otherHumanId) &&
+        (fault !== 'lost-author' || id !== userId),
       finalKernel,
     });
-    expect(result.result).toBe('error');
+    expect(result.result).toBe(fault === 'shadow-lost-authority' ? 'allow' : 'error');
     expect(invoke).not.toHaveBeenCalled();
     expect(finalKernel).toHaveBeenCalledTimes(1);
+    if (fault === 'shadow-lost-authority')
+      expect(
+        listExportableWorkspacePermissionDecisions(input.workspaceDb, workspaceId).find(
+          (row) => row.mediation?.role === 'gate'
+        )?.result
+      ).toBe('error');
   });
 
   it('rechecks the current terminal human after an agent result and before release', async () => {
