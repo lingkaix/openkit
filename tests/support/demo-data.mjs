@@ -69,13 +69,14 @@ export function seedDemoWorkspaceDataRoot(dataRoot) {
   mkdirSync(join(threadRoot, 'turns'), { recursive: true });
   writeFileSync(workspacePath, `${JSON.stringify(workspace, null, 2)}\n`);
   writeFileSync(quickChatPath, `${JSON.stringify(quickChatWorkspace, null, 2)}\n`);
+  // Declare each fixed base's managed mount, as native creation does, so portable reads remain valid.
   writeFileSync(
     join(workspaceRoot, 'config', 'workspace.jsonc'),
-    `${JSON.stringify({ schemaVersion: 1, workspace: { name: 'Demo Workspace', defaultAgentId: 'agent_codex_host', defaultKnowledgeBaseId: 'kb_00000000-0000-7000-8000-000000000001' } }, null, 2)}\n`
+    `${JSON.stringify({ schemaVersion: 1, workspace: { name: 'Demo Workspace', defaultAgentId: 'agent_codex_host', defaultKnowledgeBaseId: 'kb_00000000-0000-7000-8000-000000000001', knowledgeMounts: [{ name: 'managed', backend: 'local', root: 'raw', default: true, knowledgeBaseId: 'kb_00000000-0000-7000-8000-000000000001' }] } }, null, 2)}\n`
   );
   writeFileSync(
     join(quickChatRoot, 'config', 'workspace.jsonc'),
-    `${JSON.stringify({ schemaVersion: 1, workspace: { name: 'Personal', defaultAgentId: null, defaultKnowledgeBaseId: 'kb_00000000-0000-7000-8000-000000000002' } }, null, 2)}\n`
+    `${JSON.stringify({ schemaVersion: 1, workspace: { name: 'Personal', defaultAgentId: null, defaultKnowledgeBaseId: 'kb_00000000-0000-7000-8000-000000000002', knowledgeMounts: [{ name: 'managed', backend: 'local', root: 'raw', default: true, knowledgeBaseId: 'kb_00000000-0000-7000-8000-000000000002' }] } }, null, 2)}\n`
   );
   writeFileSync(
     join(threadRoot, 'thread.json'),
