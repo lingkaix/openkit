@@ -18,8 +18,7 @@ import {
   type AssistantHistoryAuthority,
   assertConversationRetrievalTraceReadable,
 } from './assistant-history.js';
-import { InternalAgentProviderError } from './internal-agent-loop.js';
-import { internalContextDigest } from './rolling-context.js';
+import { internalContextDigest, internalContextSourceUnavailable } from './rolling-context.js';
 
 /**
  * Verifies the current source dependencies of exact retained history and continuation summaries.
@@ -75,18 +74,26 @@ export function readInternalContextEvidence(
           .map((turnId) => ({ threadId: input.threadId, turnId }));
   const inventory = owners.flatMap((context) => {
     const turnId = context.turnId!;
-    input.store.getTurn(input.workspaceId, context.threadId, turnId);
-    return readTurnRetrievalTraces(
-      join(dataRoot, 'workspaces', input.workspaceId),
-      input.workspaceId,
-      context.threadId,
-      turnId
-    );
+    try {
+      input.store.getTurn(input.workspaceId, context.threadId, turnId);
+      return readTurnRetrievalTraces(
+        join(dataRoot, 'workspaces', input.workspaceId),
+        input.workspaceId,
+        context.threadId,
+        turnId
+      );
+    } catch {
+      throw internalContextSourceUnavailable('readTurnRetrievalTraces');
+    }
   });
   const entries = internalContextEvidenceEntries(input.items, inventory, input.strategy);
   for (const { reference, trace } of entries) {
     if ('sourceKind' in trace) {
-      assertConversationRetrievalTraceReadable({ ...input, retrievalTraceRef: reference });
+      try {
+        assertConversationRetrievalTraceReadable({ ...input, retrievalTraceRef: reference });
+      } catch {
+        throw internalContextSourceUnavailable('assertConversationRetrievalTraceReadable');
+      }
     } else {
       const access = {
         store: input.store,
@@ -109,22 +116,34 @@ export function readInternalContextEvidence(
         input.strategy === 'compaction' && input.knowledgeProjection === 'selection'
           ? assertKnowledgeRetrievalSelectionReadable
           : assertKnowledgeRetrievalTraceReadable;
-      verifyKnowledge({
-        dataRoot,
-        workspaceId: input.workspaceId,
-        access,
-        retrievalTraceRef: reference,
-      });
-      if (
-        resolveWorkspaceKnowledgeRetrievalPages({
+      try {
+        verifyKnowledge({
           dataRoot,
           workspaceId: input.workspaceId,
           access,
           retrievalTraceRef: reference,
-          caller: trace.caller,
-        }) === null
-      )
-        throw unavailable();
+        });
+      } catch {
+        throw internalContextSourceUnavailable(
+          verifyKnowledge === assertKnowledgeRetrievalSelectionReadable
+            ? 'assertKnowledgeRetrievalSelectionReadable'
+            : 'assertKnowledgeRetrievalTraceReadable'
+        );
+      }
+      try {
+        if (
+          resolveWorkspaceKnowledgeRetrievalPages({
+            dataRoot,
+            workspaceId: input.workspaceId,
+            access,
+            retrievalTraceRef: reference,
+            caller: trace.caller,
+          }) === null
+        )
+          throw unavailable();
+      } catch {
+        throw internalContextSourceUnavailable('resolveWorkspaceKnowledgeRetrievalPages');
+      }
     }
   }
   input.nativeAuthority?.assertCurrent();
@@ -226,9 +245,6 @@ export function internalContextEvidenceEntries(
   );
 }
 
-function unavailable(): InternalAgentProviderError {
-  return new InternalAgentProviderError(
-    'internal_agent_context_exceeded',
-    'Required internal context source evidence is unavailable.'
-  );
+function unavailable() {
+  return internalContextSourceUnavailable('readInternalContextEvidence');
 }
