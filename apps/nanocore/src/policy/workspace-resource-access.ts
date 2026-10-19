@@ -1,11 +1,43 @@
-import {
-  PRODUCT_OPERATION_ACCESS_RIGHTS,
-  type WorkspacePolicySubject,
-  type WorkspaceResourceAccessEntry,
-  WorkspaceResourceAccessSchema,
-} from '@openkit/config-schema';
+import { PRODUCT_OPERATION_ACCESS_RIGHTS, WorkspacePolicyDocumentSchema, type WorkspacePolicySubject } from '@openkit/config-schema';
+import { type PolicyDocumentV1 } from '@openkit/protocol';
 import { evaluateAccess, type PolicyDecision, type PolicyState } from '@openkit/policy-kernel';
+import type { CoreDb } from '../storage/db.js';
+import { resolveWorkspaceMembershipRelation } from '../workspace-membership.js';
+import { isCurrentServerPolicyAuthor } from './configuration.js';
 import { WORKSPACE_MEMBER_OPERATIONS } from './workspace-access.js';
+
+/** Validates the activated Workspace subset without introducing another authored grammar. */
+export function parseWorkspacePolicy(workspaceId: string, value: unknown): PolicyDocumentV1 {
+  const document = WorkspacePolicyDocumentSchema.parse(value);
+  for (const statement of document.statements) {
+    const anchor = statement.lifetime.anchor;
+    if (anchor.owner.kind !== 'workspace' || anchor.owner.workspaceId !== workspaceId) throw new Error('Workspace Policy belongs to a different owner.');
+  }
+  return document;
+}
+
+/** Rereads current authors before projection; a lost boundary author never becomes an unmanaged resource. */
+export function readCurrentWorkspacePolicy(input: {readonly coreDb: CoreDb; readonly workspaceId: string; readonly policy: unknown}): PolicyDocumentV1 {
+  const document = parseWorkspacePolicy(input.workspaceId, input.policy);
+  for (const statement of document.statements) {
+    if (statement.state !== 'active') continue;
+    if (statement.author.kind !== 'human' ||
+      !(resolveWorkspaceMembershipRelation(input.coreDb,input.workspaceId,statement.author.id) ||
+        isCurrentServerPolicyAuthor(input.coreDb,statement.author.id)))
+      throw new Error('Workspace Policy author no longer has current authority.');
+  }
+  return document;
+}
+
+/** Projects the exact permission recipient for native membership and portable binding checks. */
+export function workspacePolicySubject(statement: PolicyDocumentV1['statements'][number]): WorkspacePolicySubject | null {
+  if (statement.kind !== 'permission') return null;
+  const principal = statement.scope.subjects[0];
+  if (principal?.kind !== 'human') throw new Error('Workspace Policy recipient must be human-rooted.');
+  if (statement.grant.kind === 'ordinary') return {kind:'user',userId:principal.id};
+  if (statement.grant.kind === 'agent-process') return {kind:'agent',userId:principal.id,agentId:statement.grant.agentId};
+  throw new Error('Unsupported Workspace Policy grant.');
+}
 
 /** Authenticated current responsibility; a runtime process is mapped to a User, never an NGAC element. */
 export type ResourcePolicyActor =
@@ -34,16 +66,18 @@ function matches(subject: WorkspacePolicySubject, actor: ResourcePolicyActor): b
 export function evaluateWorkspaceResourceAccess(input: {
   readonly actor: ResourcePolicyActor;
   readonly eligible: boolean;
-  readonly resource: WorkspaceResourceAccessEntry['resource'];
+  readonly workspaceId: string;
+  readonly policy: unknown;
+  readonly resource: { readonly family: 'thread'; readonly id: string };
   readonly operation: string;
-  readonly resourceAccess: readonly WorkspaceResourceAccessEntry[];
 }): PolicyDecision {
   // Reparse at the bridge boundary: corrupt or unsupported mandatory facts cannot become unmanaged.
-  const entries = WorkspaceResourceAccessSchema.parse(input.resourceAccess);
-  const managed = entries.find(
-    (entry) =>
-      entry.resource.family === input.resource.family && entry.resource.id === input.resource.id
-  );
+  const document = parseWorkspacePolicy(input.workspaceId,input.policy);
+  const matching = document.statements.filter(statement => statement.state === 'active' && statement.scope.resources.some(resource => resource.kind === 'container' && resource.container.kind === 'thread' && resource.container.id === input.resource.id));
+  const managed = matching.some(statement => statement.kind === 'managed-boundary') ? {
+    grants: matching.flatMap(statement => statement.kind === 'permission' && statement.effect === 'allow' ? [{subject:workspacePolicySubject(statement)!,operations:statement.scope.actions}] : []),
+    prohibitions: matching.flatMap(statement => statement.kind === 'permission' && statement.effect === 'prohibit' ? [{subject:workspacePolicySubject(statement)!,operations:statement.scope.actions}] : [])
+  } : null;
   const user = `user:${input.actor.userId}`;
   const target = `object:${JSON.stringify(input.resource)}`;
   const baseline = 'ua:workspace-eligible';
@@ -103,7 +137,7 @@ export function evaluateWorkspaceResourceAccess(input: {
         userAttribute: attribute,
         targetAttribute: resourceObjects,
         accessRights: grant.operations.map(
-          (operation) => PRODUCT_OPERATION_ACCESS_RIGHTS[operation]
+          (operation) => PRODUCT_OPERATION_ACCESS_RIGHTS[operation as keyof typeof PRODUCT_OPERATION_ACCESS_RIGHTS]
         ),
       });
     }
@@ -125,7 +159,7 @@ export function evaluateWorkspaceResourceAccess(input: {
               ? input.actor.processId
               : user,
           accessRights: prohibition.operations.map(
-            (operation) => PRODUCT_OPERATION_ACCESS_RIGHTS[operation]
+            (operation) => PRODUCT_OPERATION_ACCESS_RIGHTS[operation as keyof typeof PRODUCT_OPERATION_ACCESS_RIGHTS]
           ),
           range: { type: 'disjunctive' as const, include: [resourceObjects] },
         },

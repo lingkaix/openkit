@@ -1,67 +1,40 @@
-import { ThreadIdSchema, UserIdSchema } from '@openkit/protocol';
+import { PolicyDocumentV1Schema, ThreadIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import { ProductOperationSchema } from './product-policy.js';
 
-/** Existing required-feature readers must understand restrictions before exposing content. */
+/** Readers must understand the common Policy restrictions before exposing content. */
 export const WORKSPACE_RESOURCE_POLICY_FEATURE = 'openkit.workspace-resource-policy.v1';
 
-/** Family is part of the reference; this slice activates Threads only. */
-export const WorkspacePolicyResourceSchema = z
-  .object({
-    family: z.literal('thread'),
-    id: ThreadIdSchema,
-  })
-  .strict();
+/** Transient request selector; authority lives only in the scope-owned Policy document. */
+export const WorkspacePolicyResourceSchema = z.object({ family: z.literal('thread'), id: ThreadIdSchema }).strict();
 
-/** Exact human or registered Agent responsibility; runtime sessions are not Policy elements. */
-export const WorkspacePolicySubjectSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('user'), userId: UserIdSchema }).strict(),
-  z
-    .object({ kind: z.literal('agent'), userId: UserIdSchema, agentId: z.string().trim().min(1) })
-    .strict(),
-]);
+/** Current recipient binding used by portable import admission, never a retained grant grammar. */
+export type WorkspacePolicySubject =
+  | { readonly kind: 'user'; readonly userId: string }
+  | { readonly kind: 'agent'; readonly userId: string; readonly agentId: string };
 
-/** An allocation or prohibition contains current rights, not a receipt or grant identity. */
-export const WorkspaceResourceAllocationSchema = z
-  .object({
-    subject: WorkspacePolicySubjectSchema,
-    operations: z
-      .array(ProductOperationSchema)
-      .min(1)
-      .refine(
-        (operations) => new Set(operations).size === operations.length,
-        'Resource operations must be unique.'
-      ),
-  })
-  .strict();
-
-/** Presence of a resource entry is the managed boundary, including when grants is empty. */
-export const WorkspaceResourceAccessEntrySchema = z
-  .object({
-    resource: WorkspacePolicyResourceSchema,
-    grants: z.array(WorkspaceResourceAllocationSchema),
-    prohibitions: z.array(WorkspaceResourceAllocationSchema),
-  })
-  .strict();
-
-/** One Workspace owns the exact current managed boundaries; duplicate targets are ambiguous. */
-export const WorkspaceResourceAccessSchema = z
-  .array(WorkspaceResourceAccessEntrySchema)
-  .superRefine((entries, ctx) => {
-    const resources = new Set<string>();
-    for (const [index, entry] of entries.entries()) {
-      const key = JSON.stringify(entry.resource);
-      if (resources.has(key))
-        ctx.addIssue({
-          code: 'custom',
-          path: [index, 'resource'],
-          message: 'Managed resources must be unique.',
-        });
-      resources.add(key);
+/** Native Workspace constraints on the shared grammar; parsing supplies no current author authority. */
+export const WorkspacePolicyDocumentSchema = PolicyDocumentV1Schema.superRefine((document,ctx)=>{
+  const boundaries = new Set<string>();
+  const permissions: string[] = [];
+  for (const [index,statement] of document.statements.entries()) {
+    const invalid = () => ctx.addIssue({code:'custom',path:['statements',index],message:'Unsupported Workspace Policy scope, constraint or boundary.'});
+    if (statement.kind !== 'permission' && statement.kind !== 'managed-boundary') { invalid(); continue; }
+    const anchor=statement.lifetime.anchor;
+    const target=statement.scope.resources[0];
+    if (statement.author.kind !== 'human' || statement.authority.kind !== 'human' || statement.author.id !== statement.authority.userId ||
+      anchor.owner.kind!=='workspace' || anchor.kind!=='workspace' || anchor.id!==anchor.owner.workspaceId ||
+      statement.lifetime.notAfter!==undefined || statement.lifetime.uses!==undefined ||
+      statement.scope.resources.length!==1 || target?.kind!=='container' || target.container.kind!=='thread' ||
+      target.container.owner.kind!=='workspace' || target.container.owner.workspaceId!==anchor.id) { invalid(); continue; }
+    const key=JSON.stringify(target.container);
+    if (statement.kind==='managed-boundary') {
+      if (statement.state==='active') { if (boundaries.has(key)) invalid(); boundaries.add(key); }
+    } else {
+      if (!['ordinary','agent-process'].includes(statement.grant.kind) || statement.scope.subjects.length!==1 ||
+        statement.scope.subjects[0].kind!=='human' || statement.scope.actions.some(action=>!ProductOperationSchema.safeParse(action).success)) invalid();
+      if (statement.state==='active') permissions.push(key);
     }
-  });
-
-/** Current Workspace-authored managed resource and exact allocations. */
-export type WorkspaceResourceAccessEntry = z.infer<typeof WorkspaceResourceAccessEntrySchema>;
-/** Current exact User or registered Agent target. */
-export type WorkspacePolicySubject = z.infer<typeof WorkspacePolicySubjectSchema>;
+  }
+  for (const key of permissions) if (!boundaries.has(key)) ctx.addIssue({code:'custom',path:['statements'],message:'An active permission requires its managed boundary.'});
+});
