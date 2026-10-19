@@ -122,6 +122,7 @@ async function fixture(
         policyDigest(manager.current().openKitConfig.policy?.mediation ?? EMPTY_POLICY_DOCUMENT),
     },
   };
+  const goalWake = vi.fn<(workspaceId: string, goalId: string) => void>();
   const goal = (
     await executeGoalOperation(
       'goal.create',
@@ -585,6 +586,7 @@ async function fixture(
       store,
       interception,
       goalTaskPolicy,
+      goalWake,
       workspaceMutationAdmission: new WorkspaceMutationAdmission(),
       workerControlGateway: {
         authenticatePackageToken: () => environmentPackage,
@@ -621,10 +623,153 @@ async function fixture(
       listExportableWorkspacePermissionDecisions(db, workspace.id).filter(
         (row) => row.mediation?.role === 'final'
       );
-    return { client, gateway, call, decisions, turn, routes, catalog, interception, administrator };
+    return {
+      client,
+      gateway,
+      call,
+      decisions,
+      turn,
+      routes,
+      catalog,
+      interception,
+      administrator,
+      packageSnapshotId: environmentPackage.snapshotId,
+    };
   };
-  return { coreDb, db, store, actor, scope, domain, domains, plan, agentId, dispatch, setupMcp };
+  return {
+    coreDb,
+    db,
+    store,
+    actor,
+    scope,
+    domain,
+    domains,
+    plan,
+    agentId,
+    dispatch,
+    setupMcp,
+    coordinator,
+    resource,
+    services,
+    goalWake,
+  };
 }
+
+describe('Goal Coordinator missing Task grant routing', () => {
+  it('preserves the actual Coordinator destination without a human request, effect or finite use', async () => {
+    const f = await fixture({ taskGrant: false, uses: 2 });
+    const mcp = await f.setupMcp();
+    const decide = vi.spyOn(mcp.interception, 'decide');
+    const goalPending = listThreadPendingRequests(
+      f.db.sqlite,
+      f.scope.workspaceId,
+      f.scope.threadId
+    );
+    const blocked = await mcp.call().then(
+      (result) => result.isError === true,
+      () => true
+    );
+    expect(blocked).toBe(true);
+    expect(mcp.gateway.callTool).not.toHaveBeenCalled();
+    expect(listThreadPendingRequests(f.db.sqlite, f.scope.workspaceId, mcp.turn.threadId)).toEqual(
+      []
+    );
+    expect(listThreadPendingRequests(f.db.sqlite, f.scope.workspaceId, f.scope.threadId)).toEqual(
+      goalPending
+    );
+    expect(
+      readPolicyStatementUseCount(f.db, { id: f.domain!.id, digest: policyDigest(f.domain) })
+    ).toBe(0);
+    expect(decide).toHaveBeenCalledTimes(1);
+    expect(await decide.mock.results[0]!.value).toMatchObject({
+      result: 'require_escalation',
+      escalation: {
+        kind: 'coordinator',
+        workspaceId: f.scope.workspaceId,
+        goalId: f.scope.goalId,
+        agentId: 'goal-coordinator',
+      },
+    });
+  });
+
+  it('advances the existing Goal wake marker and notifies only its Coordinator after a Task grant gap', async () => {
+    const f = await fixture({ taskGrant: false, uses: 2 });
+    const mcp = await f.setupMcp();
+    const before = readGoalView(f.store, f.db, f.scope.goalId).goal!;
+    expect(f.goalWake).not.toHaveBeenCalled();
+    await mcp.call().catch(() => undefined);
+    expect(mcp.gateway.callTool).not.toHaveBeenCalled();
+    expect(listThreadPendingRequests(f.db.sqlite, f.scope.workspaceId, mcp.turn.threadId)).toEqual(
+      []
+    );
+    const after = readGoalView(f.store, f.db, f.scope.goalId).goal!;
+    expect(after.changeRevision).toBe(before.changeRevision + 1);
+    expect(after.consideredRevision).toBe(before.consideredRevision);
+    expect(after.disposition).toBeNull();
+    expect(f.goalWake).toHaveBeenCalledExactlyOnceWith(f.scope.workspaceId, f.scope.goalId);
+  });
+
+  it('reruns ordinary current evaluation after a bounded grant and consumes that grant only on the allowed effect', async () => {
+    const f = await fixture({ taskGrant: false, uses: 2 });
+    const mcp = await f.setupMcp();
+    const blocked = await mcp.call().then(
+      (result) => result.isError === true,
+      () => true
+    );
+    expect(blocked).toBe(true);
+    expect(mcp.gateway.callTool).not.toHaveBeenCalled();
+    expect(listThreadPendingRequests(f.db.sqlite, f.scope.workspaceId, mcp.turn.threadId)).toEqual(
+      []
+    );
+    expect(
+      readPolicyStatementUseCount(f.db, { id: f.domain!.id, digest: policyDigest(f.domain) })
+    ).toBe(0);
+    // Administration and effect are separate requests to their real existing owners.
+    const granted = f.domains.administer({
+      workspaceDb: f.db,
+      goalId: f.scope.goalId,
+      coordinatorTurnId: f.coordinator.id,
+      taskLineage: {
+        workspaceId: f.scope.workspaceId,
+        threadId: mcp.turn.threadId,
+        turnId: mcp.turn.id,
+        agentSessionId: mcp.turn.agentSessionId!,
+        packageSnapshotId: mcp.packageSnapshotId,
+      },
+      expectedPolicyRevision: f.services.goalDomain.currentRevision(),
+      grant: {
+        id: 'one-issue-read-after-escalation',
+        scope: {
+          subjects: [{ kind: 'agent', id: f.agentId }],
+          actions: ['tool.use'],
+          resources: [f.resource],
+        },
+        lifetime: {
+          anchor: {
+            owner: { kind: 'workspace', workspaceId: f.scope.workspaceId },
+            kind: 'thread',
+            id: mcp.turn.threadId,
+          },
+          uses: 1,
+        },
+        rationale: 'Read this issue once for the exact assigned Task',
+      },
+    });
+    const permission = { id: granted.statement.id, digest: policyDigest(granted.statement) };
+    expect(readPolicyStatementUseCount(f.db, permission)).toBe(0);
+    expect(mcp.gateway.callTool).not.toHaveBeenCalled();
+    expect(await mcp.call()).toMatchObject({ content: [{ text: 'ISSUE_RESULT_CANARY' }] });
+    expect(mcp.gateway.callTool).toHaveBeenCalledTimes(1);
+    expect(mcp.decisions().at(-1)).toMatchObject({ result: 'allow' });
+    expect(readPolicyStatementUseCount(f.db, permission)).toBe(1);
+    expect(
+      readPolicyStatementUseCount(f.db, { id: f.domain!.id, digest: policyDigest(f.domain) })
+    ).toBe(1);
+    expect(listThreadPendingRequests(f.db.sqlite, f.scope.workspaceId, mcp.turn.threadId)).toEqual(
+      []
+    );
+  });
+});
 
 describe('Goal-domain Task consumers', () => {
   it.each([
