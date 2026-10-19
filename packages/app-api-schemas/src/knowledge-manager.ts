@@ -259,6 +259,7 @@ export const KnowledgeRetrievalExclusionSchema = z
       'sensitive_content',
       'lower_conformance',
       'policy_excluded',
+      'selector_mismatch',
       'freshness_expired',
       'budget_exceeded',
       'source_unavailable',

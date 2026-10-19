@@ -1,5 +1,7 @@
 # Storage
 
+Knowledge retrieval records exact metadata selector mismatches as `selector_mismatch` in the existing response and retained trace. Current authorization or Source-policy refusals retain `policy_excluded`; selectors do not widen admission.
+
 This directory owns NanoCore's physical data-root layout, ownership-scoped SQLite databases, canonical workspace file records, migrations, integrity validation, derived indexes, backup, export, and import mechanics.
 
 ## Source Of Truth

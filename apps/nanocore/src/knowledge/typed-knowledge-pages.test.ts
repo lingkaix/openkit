@@ -1,7 +1,8 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
@@ -280,3 +281,75 @@ it('forwards typed filters through the native operation and records supplied fil
     native.selected.map((entry: { reference: { objectId: string } }) => entry.reference.objectId)
   ).toEqual(['invoice-rule']);
 });
+
+it('retains selector mismatch separately from an actual Source audience denial without widening wildcard selectors', async () => {
+  const f = fixture();
+  const sourceThread = f.store.createThread(
+    f.workspace.id,
+    'Private source',
+    undefined,
+    'conversation',
+    { visibility: 'workspace' }
+  );
+  const captured = 'domain-selector private evidence.';
+  const source = f.store.createKnowledgeSource(
+    {
+      id: allocateEntityId('ks'),
+      workspaceId: f.workspace.id,
+      kind: 'document',
+      title: 'Private evidence',
+      uri: null,
+      contentDigest: `sha256:${createHash('sha256').update(captured).digest('hex')}`,
+      originatingThreadId: sourceThread.id,
+      originatingTurnId: null,
+      originatingFileId: null,
+      capturedAt: NOW,
+      createdAt: NOW,
+      updatedAt: NOW,
+    },
+    captured
+  );
+  const publication = await f.publish([
+    { path: 'invoice-rule.md', content: page('invoice-rule', 'Rule', f.workspace.id) },
+    {
+      path: 'private-rule.md',
+      content: page('private-rule', 'Rule', f.workspace.id, {
+        source_refs: [`source:${source.id}@${source.contentDigest}`],
+      }),
+    },
+  ]);
+  // Narrow after publication so the query proves current audience admission, not setup refusal.
+  Object.assign(sourceThread, { visibility: 'private', privateOwnerUserId: f.access.actor.id });
+  const thread = f.store.createThread(
+    f.workspace.id,
+    'Shared selector query',
+    undefined,
+    'conversation',
+    { visibility: 'workspace' }
+  );
+  Object.assign(f.access, { outputThreadId: thread.id });
+  const corrected = await f.retrieve();
+  expect(corrected.selected.map((entry) => entry.reference.objectId)).toEqual(['invoice-rule']);
+  expect(JSON.stringify([corrected.selected, corrected.excluded])).not.toContain('private-rule');
+  expect(JSON.stringify([corrected.selected, corrected.excluded])).not.toContain(source.id);
+  const result = await f.retrieve({ types: ['*'], appliesTo: ['*'] });
+  expect(result.selected).toEqual([]);
+  expect(result.retrievalParameters).toMatchObject({ types: ['*'], appliesTo: ['*'] });
+  // The admitted index hides this Source-restricted page before any selector disposition.
+  expect(JSON.stringify([result.selected, result.excluded])).not.toContain('private-rule');
+  expect(JSON.stringify([result.selected, result.excluded])).not.toContain(source.id);
+  expect(result.excluded).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        reference: expect.objectContaining({ objectId: 'invoice-rule' }),
+        reason: 'selector_mismatch',
+      }),
+    ])
+  );
+  const retained = readRetrievalTrace(f.root, result.retrievalTraceRef!);
+  expect(retained).toMatchObject({
+    notebookRevision: publication.notebookRevision,
+    retrievalParameters: { types: ['*'], appliesTo: ['*'] },
+    excluded: result.excluded,
+  });
+}, 120_000);
