@@ -226,11 +226,14 @@ export async function prepareInternalAgentContext(
     input.bounds.context ?? undefined,
     input.bounds.output ?? undefined
   );
-  try {
-    input.assertCurrent();
-  } catch {
-    throw capacity();
-  }
+  const assertCurrentAuthority = () => {
+    try {
+      input.assertCurrent();
+    } catch {
+      throw internalContextSourceUnavailable('assertCurrent');
+    }
+  };
+  assertCurrentAuthority();
   const currentTurn = input.store.getTurnById(input.turn.id);
   const execution = {
     ...currentTurn.internalExecution,
@@ -274,13 +277,20 @@ export async function prepareInternalAgentContext(
   const sourceDigest = (sources: readonly Item[]) =>
     internalContextSourceDigest(input.store, sources);
   const originalSourceDigest = sourceDigest(items);
-  let originalEvidenceDigest: string;
-  try {
-    input.assertCurrent();
-    originalEvidenceDigest = input.readEvidence(items);
-  } catch {
-    throw capacity();
-  }
+  const readEvidence = (sources: readonly Item[]) => {
+    try {
+      return input.readEvidence(sources);
+    } catch (error) {
+      if (
+        error instanceof InternalAgentProviderError &&
+        error.code === 'internal_agent_context_source_unavailable'
+      )
+        throw error;
+      throw internalContextSourceUnavailable('readInternalContextEvidence');
+    }
+  };
+  assertCurrentAuthority();
+  const originalEvidenceDigest = readEvidence(items);
   const assertDeadline = () => {
     if (signal.aborted || Date.now() - startedAt >= input.limits.deadlineMs) {
       if (input.signal.aborted) throw input.signal.reason;
@@ -292,13 +302,12 @@ export async function prepareInternalAgentContext(
   };
   const assertCurrent = () => {
     assertDeadline();
-    input.assertCurrent();
+    assertCurrentAuthority();
     const current = internalContextItems(input.store, input.turn);
-    if (
-      sourceDigest(current) !== originalSourceDigest ||
-      input.readEvidence(current) !== originalEvidenceDigest
-    )
-      throw capacity();
+    if (sourceDigest(current) !== originalSourceDigest)
+      throw internalContextSourceUnavailable('internalContextSourceDigest');
+    if (readEvidence(current) !== originalEvidenceDigest)
+      throw internalContextSourceUnavailable('readInternalContextEvidence');
     assertDeadline();
   };
   const fits = (messages: readonly AgentMessage[]) => {
@@ -552,6 +561,24 @@ function capacity(): InternalAgentProviderError {
     'Required internal Agent history cannot fit with verified source continuity.'
   );
 }
+/** Fixed verifier names make source failures diagnosable without disclosing exception or source bytes. */
+export function internalContextSourceUnavailable(
+  check:
+    | 'assertCurrent'
+    | 'internalContextSourceDigest'
+    | 'readInternalContextEvidence'
+    | 'readTurnRetrievalTraces'
+    | 'assertConversationRetrievalTraceReadable'
+    | 'assertKnowledgeRetrievalTraceReadable'
+    | 'assertKnowledgeRetrievalSelectionReadable'
+    | 'resolveWorkspaceKnowledgeRetrievalPages'
+): InternalAgentProviderError {
+  return new InternalAgentProviderError(
+    'internal_agent_context_source_unavailable',
+    `Required internal context source verification failed: ${check}.`
+  );
+}
+
 function invalidSummary(): InternalAgentProviderError {
   return new InternalAgentProviderError(
     'internal_agent_summary_invalid',
@@ -570,6 +597,8 @@ export function internalContextFailure(error: unknown): { code: string; message:
   const messages: Record<string, string> = {
     internal_agent_context_exceeded: exceededMessage,
     internal_agent_context_unavailable: 'The selected model has no usable context bounds.',
+    internal_agent_context_source_unavailable:
+      'Required internal Agent history source evidence is unavailable. Inspect source access and history before a new request.',
     internal_agent_summary_invalid:
       'Continuation summary production failed. Its source boundary did not advance.',
     internal_agent_model_turns_exceeded:

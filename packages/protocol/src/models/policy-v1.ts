@@ -136,13 +136,18 @@ export const PolicyBindingV1Schema = z
     operation: z.string().min(1),
     stage: PolicyStageV1Schema,
     mode: PolicyModeV1Schema,
-    participant: z
-      .object({
-        kind: z.literal('deterministic'),
-        id: z.string().min(1),
-        version: PolicyDigestV1Schema,
-      })
-      .strict(),
+    participant: z.discriminatedUnion('kind', [
+      z
+        .object({
+          kind: z.literal('deterministic'),
+          id: z.string().min(1),
+          version: PolicyDigestV1Schema,
+        })
+        .strict(),
+      z
+        .object({ kind: z.literal('agent'), id: AgentIdSchema, version: PolicyDigestV1Schema })
+        .strict(),
+    ]),
     inputDisclosure: PolicyScopeV1Schema,
     order: z.number().int().nonnegative(),
     timeoutMs: z.number().int().min(1).max(60_000),
@@ -327,6 +332,27 @@ export const PolicyDelegationV1Schema = z
       .strict(),
   })
   .strict();
+/** Human-approved identity/accountability only; native admission supplies current domain authority. */
+export const PolicyAgentPrincipalV1Schema = z
+  .object({
+    ...statementFields,
+    kind: z.literal('agent-principal'),
+    state: z.enum(['inactive', 'active']),
+    agentId: AgentIdSchema,
+    creator: PolicyPrincipalV1Schema,
+    responsibleHumanId: UserIdSchema,
+    responsibility: PolicyPrincipalV1Schema,
+  })
+  .strict();
+/** Transient agent-only assessment; existing invocation evidence retains only its digest. */
+export const PolicyAgentGateOutputV1Schema = z
+  .object({
+    decision: z.enum(['allow', 'deny', 'escalate']),
+    risk: z.string().min(1).max(2000),
+    authorizationAssessment: z.string().min(1).max(2000),
+    rationale: z.string().min(1).max(2000),
+  })
+  .strict();
 /** Shared authored Policy collection; resolved revision is its canonical content digest. */
 export const PolicyDocumentV1Schema = z
   .object({
@@ -337,6 +363,7 @@ export const PolicyDocumentV1Schema = z
         PolicyPermissionV1Schema,
         PolicyDelegationV1Schema,
         PolicyManagedBoundaryV1Schema,
+        PolicyAgentPrincipalV1Schema,
       ])
     ),
   })
@@ -513,3 +540,6 @@ export type PolicyBindingV1 = z.infer<typeof PolicyBindingV1Schema>;
 export type PolicyDecisionV1 = z.infer<typeof PolicyDecisionV1Schema>;
 /** Typed retained non-secret participant evidence. */
 export type PolicyInvocationV1 = z.infer<typeof PolicyInvocationV1Schema>;
+
+/** One accountable native agent declaration in the existing Policy owner. */
+export type PolicyAgentPrincipalV1 = z.infer<typeof PolicyAgentPrincipalV1Schema>;

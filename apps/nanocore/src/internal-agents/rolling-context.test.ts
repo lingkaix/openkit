@@ -415,7 +415,9 @@ describe('source-bound internal rolling context', () => {
         return response();
       }),
     });
-    await expect(prepareInternalAgentContext(request)).rejects.toBe(denied);
+    await expect(prepareInternalAgentContext(request)).rejects.toMatchObject({
+      code: 'internal_agent_context_source_unavailable',
+    });
     expect(request.callProvider).toHaveBeenCalledTimes(1);
     expect(summaries(f)).toEqual([]);
   });
@@ -448,7 +450,7 @@ describe('source-bound internal rolling context', () => {
       },
     });
     await expect(prepareInternalAgentContext(request)).rejects.toMatchObject({
-      code: 'internal_agent_context_exceeded',
+      code: 'internal_agent_context_source_unavailable',
     });
     expect(request.callProvider).toHaveBeenCalledTimes(1);
     expect(summaries(f)).toEqual([]);

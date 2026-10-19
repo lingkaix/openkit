@@ -11,6 +11,7 @@ import {
 } from '@openkit/protocol';
 import type { StorageAccess } from '@openkit/storage';
 import type { z } from 'zod';
+import { listWorkspaceAuditEvents } from '../audit-events.js';
 import type { Actor } from '../auth/identity.js';
 import {
   DeploymentAdminRequiredError,
@@ -21,6 +22,7 @@ import type { RuntimeConfigFileService } from '../config/runtime-config-files.js
 import type { FsStore } from '../lib/store.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import {
+  listExportableWorkspacePermissionDecisions,
   listServerPermissionDecisions,
   recordProductPermissionDecision,
 } from './permission-decisions.js';
@@ -100,6 +102,50 @@ export function preparePolicyConfiguration(input: {
     )
   )
     throw new Error('Goal-domain changes require their jointly approved Goal owner.');
+
+  // Activation is a distinct human decision over previously observed exact shadow bytes.
+  for (const binding of prepared.document.statements) {
+    if (
+      binding.kind !== 'binding' ||
+      binding.participant.kind !== 'agent' ||
+      binding.state !== 'active'
+    )
+      continue;
+    const previous = currentDocument.statements.find((s) => s.id === binding.id);
+    if (previous && policyDigest(previous) === policyDigest(binding)) continue;
+    const content = (value: typeof binding) => {
+      const { state: _state, author: _author, authoredAt: _time, ...rest } = value;
+      return rest;
+    };
+    if (
+      previous?.kind !== 'binding' ||
+      previous.state !== 'shadow' ||
+      policyDigest(content(previous)) !== policyDigest(content(binding))
+    )
+      throw new Error('Agent activation requires the exact prior shadow binding.');
+    const anchor = binding.lifetime.anchor;
+    if (anchor.owner.kind !== 'workspace')
+      throw new Error('Agent shadow evidence has no Workspace.');
+    const workspaceId = anchor.owner.workspaceId;
+    const db = input.repositoryWorkspaceDb(workspaceId);
+    const events = listWorkspaceAuditEvents(db, workspaceId);
+    const completed = listExportableWorkspacePermissionDecisions(db, workspaceId).some(
+      (decision) =>
+        decision.mediation?.role === 'gate' &&
+        decision.mediation.binding?.id === previous.id &&
+        decision.mediation.binding.digest === policyDigest(previous) &&
+        events.some(
+          (event) =>
+            event.id === decision.auditEventId &&
+            event.permissionDecisionId === decision.decisionId &&
+            event.policyInvocation?.outcome === 'completed' &&
+            event.policyInvocation.binding.digest === policyDigest(previous) &&
+            event.policyInvocation.policyRevision === decision.policySnapshotId
+        )
+    );
+    if (!completed)
+      throw new Error('Agent activation requires completed exact shadow gate evidence.');
+  }
 
   const proposal = PolicyWriteProposalV1Schema.parse({
     schemaVersion: 1,

@@ -1,6 +1,7 @@
 import type { PolicyDecision } from '@openkit/policy-kernel';
 import {
   allocateEntityId,
+  PolicyAgentGateOutputV1Schema,
   type PolicyApprovalBindingV1Schema,
   type PolicyBindingV1,
   type PolicyDecisionV1,
@@ -21,6 +22,7 @@ import {
   policyDigest,
   policyProposalDigest,
   policyScopeIncludesProposal,
+  readPolicyAgentPrincipal,
   selectPolicyBindings,
 } from './statements.js';
 
@@ -39,6 +41,13 @@ export interface DeterministicPolicyParticipant {
     readonly advice: readonly unknown[];
     readonly signal: AbortSignal;
   }): Promise<unknown>;
+}
+
+/** A single bounded native agent runner; optional selectors are useful for isolated transport fakes. */
+export interface AgentPolicyParticipant {
+  readonly id?: string;
+  readonly version?: string;
+  invoke: DeterministicPolicyParticipant['invoke'];
 }
 
 /** Current owner facts and existing durable owner used by the I16 pilot. */
@@ -87,7 +96,10 @@ export class PolicyInterception {
     { failures: number; retryAt: number; probing: boolean }
   >();
 
-  constructor(private readonly participant?: DeterministicPolicyParticipant) {}
+  constructor(
+    private readonly participant?: DeterministicPolicyParticipant,
+    private readonly agentParticipant?: AgentPolicyParticipant
+  ) {}
 
   /** Runs the supported pilot modes and retains evidence before releasing a result. */
   async decide(input: InterceptionInput): Promise<InterceptionDecision> {
@@ -154,6 +166,17 @@ export class PolicyInterception {
       /* Missing mandatory facts are an evaluation error. */
     }
     if (!current) results.push('error');
+    // Recheck agent authority after participant work and before the final mandatory Kernel.
+    // Only active gates decide; shadow failures remain evidence without a veto.
+    for (const binding of used.filter((value) => value.participant.kind === 'agent')) {
+      try {
+        readPolicyAgentPrincipal({ ...input, binding, now: Date.now() });
+        if (!input.participantAuthorized(binding))
+          throw new Error('Agent disclosure authority changed.');
+      } catch {
+        results.push('error');
+      }
+    }
     let kernel: PolicyDecision | null = null;
     try {
       kernel = input.finalKernel({ proposal: input.proposal, advice });
@@ -280,7 +303,13 @@ export class PolicyInterception {
     let current = false;
     let participantAuthorized = false;
     let authorityError = false;
+    let agent: ReturnType<typeof readPolicyAgentPrincipal> | undefined;
     try {
+      if (binding.participant.kind === 'agent') {
+        if (binding.author.kind !== 'human' || !input.authorCurrent(binding.author.id))
+          throw new Error('Current agent activation authority is unavailable.');
+        agent = readPolicyAgentPrincipal({ ...input, binding, now: Date.now() });
+      }
       current = input.stillCurrent();
       if (current)
         participantAuthorized =
@@ -289,6 +318,8 @@ export class PolicyInterception {
     } catch {
       authorityError = true;
     }
+    const participant =
+      binding.participant.kind === 'agent' ? this.agentParticipant : this.participant;
     if (authorityError) {
       outcome = 'error';
       result = 'error';
@@ -302,8 +333,12 @@ export class PolicyInterception {
       // this mode rather than inventing a completed transform from a digest.
       outcome = 'unavailable';
     } else if (
-      this.participant?.id === binding.participant.id &&
-      this.participant.version === binding.participant.version
+      participant &&
+      (binding.participant.kind === 'agent' ||
+        (participant.id === binding.participant.id &&
+          participant.version === binding.participant.version)) &&
+      (participant.id === undefined || participant.id === binding.participant.id) &&
+      (participant.version === undefined || participant.version === binding.participant.version)
     ) {
       const controller = new AbortController();
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -317,7 +352,7 @@ export class PolicyInterception {
           }, binding.timeoutMs);
         });
         output = await Promise.race([
-          this.participant.invoke({
+          participant.invoke({
             binding: structuredClone(binding),
             proposal: structuredClone(input.proposal),
             advice: structuredClone(advice),
@@ -327,17 +362,33 @@ export class PolicyInterception {
         ]);
         const parsed =
           binding.mode === 'gate'
-            ? GateOutput.safeParse(output)
+            ? (binding.participant.kind === 'agent'
+                ? PolicyAgentGateOutputV1Schema
+                : GateOutput
+              ).safeParse(output)
             : binding.mode === 'advise'
               ? AdviceOutput.safeParse(output)
               : ObservationOutput.safeParse(output);
         if (!parsed.success) outcome = 'malformed';
         else if (!input.stillCurrent()) outcome = 'stale';
         else {
+          if (binding.participant.kind === 'agent') {
+            try {
+              agent = readPolicyAgentPrincipal({ ...input, binding, now: Date.now() });
+              if (!input.participantAuthorized(binding))
+                throw new Error('Agent disclosure authority changed.');
+            } catch {
+              authorityError = true;
+              throw new Error('Agent authority changed during review.');
+            }
+          }
           outcome = 'completed';
           output = parsed.data;
           if (binding.mode === 'gate') {
-            const gate = GateOutput.parse(parsed.data).decision;
+            const gate =
+              binding.participant.kind === 'agent'
+                ? PolicyAgentGateOutputV1Schema.parse(parsed.data).decision
+                : GateOutput.parse(parsed.data).decision;
             result = gate === 'escalate' ? 'require_escalation' : gate;
           } else {
             result = 'not_applicable';
@@ -359,6 +410,20 @@ export class PolicyInterception {
           circuit.retryAt = Date.now() + binding.circuit.recoveryAfterMs;
       }
     }
+    if (authorityError) result = 'error';
+    const subject = agent
+      ? {
+          ...input.proposal.subject,
+          principal: { kind: 'agent' as const, id: agent.agentId },
+          onBehalfOf: null,
+          actor: {
+            kind: 'agent' as const,
+            id: agent.agentId,
+            responsibleUserId: agent.responsibleHumanId,
+          },
+          responsibleHumanId: agent.responsibleHumanId,
+        }
+      : input.proposal.subject;
     const invocation: PolicyInvocationV1 = {
       binding: bindingRef,
       operation: binding.operation,
@@ -367,7 +432,7 @@ export class PolicyInterception {
       policyRevision,
       authorizationRevision: input.authorizationRevision,
       proposalDigest,
-      subject: input.proposal.subject,
+      subject,
       participant: { id: binding.participant.id, version: binding.participant.version },
       inputDigest: policyDigest({ proposal: input.proposal, advice }),
       outputDigest: outcome === 'completed' ? policyDigest(output) : null,
@@ -380,6 +445,15 @@ export class PolicyInterception {
       const decisionId = allocateEntityId('pd');
       recordProductPermissionDecision({
         ...decisionInput(input, policyRevision),
+        ...(agent
+          ? {
+              subjectSummary: {
+                principal: subject.principal,
+                responsibleHumanId: subject.responsibleHumanId,
+              },
+              auditActor: subject.actor,
+            }
+          : {}),
         decisionId,
         result,
         reasonCode:
@@ -396,7 +470,7 @@ export class PolicyInterception {
           stage: binding.stage,
           authorizationRevision: input.authorizationRevision,
           proposalDigest,
-          subject: input.proposal.subject,
+          subject,
           role: 'gate',
           binding: bindingRef,
           invocations: [],

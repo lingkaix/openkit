@@ -131,6 +131,7 @@ import { APP_OPENAPI_DOCUMENT } from './openapi.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
 import { createOperationInvocation } from './operation-composition.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
+import { createAgentPolicyParticipant } from './policy/agent-gate-provider.js';
 import { createGoalDomainPolicyService } from './policy/goal-domains.js';
 import { type DeterministicPolicyParticipant, PolicyInterception } from './policy/interception.js';
 import {
@@ -1859,7 +1860,18 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   });
 
   app.use('/api/worker-capabilities/*', browserCors);
-  const policyInterception = new PolicyInterception(options.policyParticipant);
+  const policyInterception = new PolicyInterception(
+    options.policyParticipant,
+    createAgentPolicyParticipant({
+      ...(options.coreDb ? { coreDb: options.coreDb } : {}),
+      store: sharedStore,
+      runtimeConfig,
+      dispatcher: llmGatewayDispatcher,
+      resolveGatewayProvider,
+      ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
+      providerCredentialConfigured,
+    })
+  );
   const workerMcpRouteInput: RegisterWorkerMcpRoutesInput = {
     interception: policyInterception,
     ...(automationStore ? { automationStore } : {}),

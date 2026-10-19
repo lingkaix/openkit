@@ -190,7 +190,7 @@ const NATIVE_OPERATION_DEFINITIONS = {
     crossings: ['dispatch'],
     stages: ['propose', 'decide', 'commit', 'completed'],
     modes: ['observe', 'advise', 'gate', 'transform'],
-    participantKinds: ['deterministic'],
+    participantKinds: ['deterministic', 'agent'],
   } satisfies NativeOperationDefinition,
 } as const;
 
