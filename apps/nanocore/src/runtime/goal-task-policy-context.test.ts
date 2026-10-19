@@ -498,6 +498,74 @@ it.each([
   });
 });
 
+it('retains original Task bounds for an ordinary checkpoint-free user follow-up', async () => {
+  const f = await fixture();
+  const original = f.read()!;
+  f.closeSource();
+  clearWorkerCheckpoint(f.db, f.lineage.workspaceId, f.lineage.threadId, f.lineage.turnId);
+  const agentId = 'followup-worker';
+  const agentSessionId = testEntityId('as', 'ordinary-followup');
+  const input = 'Review the next result.';
+  const turn = f.store.createTurn(
+    f.lineage.workspaceId,
+    f.lineage.threadId,
+    input,
+    { kind: 'user', id: f.actor.userId },
+    null,
+    {
+      agentId,
+      agentSessionId,
+      executorKind: 'worker',
+      triggerSource: { kind: 'user-input', summary: 'Direct Worker input.' },
+    }
+  );
+  const item = f.store.createItem({
+    id: deriveEntityId('it', ['task-user', turn.id]),
+    workspaceId: turn.workspaceId,
+    threadId: turn.threadId,
+    turnId: turn.id,
+    type: 'user-message',
+    status: 'completed',
+    actor: turn.triggerActor,
+    text: input,
+    createdAt: turn.startedAt!,
+    completedAt: turn.startedAt!,
+  });
+  const admission = createSchedulerAdmissionEntry(f.coreDb, {
+    backendId: 'nanohost',
+    queueEntryId: `queue_${turn.id}`,
+    requestId: randomUUID(),
+    triggerActor: turn.triggerActor,
+    workspaceId: turn.workspaceId,
+    threadId: turn.threadId,
+    turnId: turn.id,
+    turnInput: input,
+    requestedAgentId: agentId,
+  });
+  recordTestExecutionAttempt(f.coreDb, {
+    entry: admission,
+    attemptId: testEntityId('attempt', 'ordinary-followup'),
+    agentSessionId,
+    inputRef: 'followup-package',
+    bindingRef: 'followup-binding',
+    sessionCompatibilityKey: 'task-context',
+    now: () => new Date().toISOString(),
+  });
+  const lineage = {
+    workspaceId: turn.workspaceId,
+    threadId: turn.threadId,
+    turnId: turn.id,
+    agentSessionId,
+    packageSnapshotId: 'followup-package',
+  };
+  f.reopen();
+  const read = () =>
+    readGoalTaskPolicyContext({ coreDb: f.coreDb, store: f.store, db: f.db, lineage });
+  expect(read()).toEqual({ ...original, turnId: turn.id, agentId });
+  f.store.updateItem(item.id, { text: 'Contradictory follow-up input.' });
+  expect(read).toThrow();
+});
+
 it.each([
   'changed-original-input',
   'wrong-current-package',
