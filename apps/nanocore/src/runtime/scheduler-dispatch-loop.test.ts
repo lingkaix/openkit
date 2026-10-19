@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { WorkspaceDataSourceCatalog } from '@openkit/config-schema';
-import { responsibleUserIdForActor } from '@openkit/protocol';
+import { responsibleUserIdForActor, workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { requireResolvedAgentSetup } from '../agents/setup-ledger';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
@@ -118,7 +118,7 @@ class RecordingTurnExecutor extends SimulatedTurnExecutor {
   ): Promise<PreparedAgentSessionForTurn> {
     this.prepareCalls.push({ threadId: input.turn.threadId, turnId: input.turn.id });
     const current = store
-      .listThreadAgentSessions(input.turn.workspaceId, input.turn.threadId)
+      .listThreadAgentSessions(workspaceIdForOwner(input.turn.owner), input.turn.threadId)
       .find((candidate) => isCurrentAgentSessionStatus(candidate.status));
     const resolveKey = (agentSessionId: string) =>
       resolveAgentSessionCompatibilityKey({
@@ -153,7 +153,7 @@ class RecordingTurnExecutor extends SimulatedTurnExecutor {
         updatedAt: current.updatedAt,
       };
       const activeTurn = store
-        .listThreadTurns(input.turn.workspaceId, input.turn.threadId)
+        .listThreadTurns(workspaceIdForOwner(input.turn.owner), input.turn.threadId)
         .some((turn) => turn.status === 'running');
       if (
         current.agentId === input.agentSetup.manifest.id &&
@@ -2034,7 +2034,9 @@ describe('scheduler dispatch loop', () => {
     const prepare = turnExecutor.prepareAgentSessionForTurn.bind(turnExecutor);
     let ownPreparationRan = false;
     turnExecutor.prepareAgentSessionForTurn = async (ownerStore, preparation) => {
-      expect(preparation.turn.workspaceId).toBe('ws_00000000-0000-7000-8000-000000000001');
+      expect(workspaceIdForOwner(preparation.turn.owner)).toBe(
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
       expect(preparation.requestId).toBe(requestId);
       ownPreparationRan = true;
       const prepared = await prepare(ownerStore, preparation);
@@ -3433,7 +3435,7 @@ describe('scheduler dispatch loop', () => {
       }
       const turn = ownerStore.getTurnById(turnId);
       const existing = ownerStore
-        .listThreadAgentSessions(turn.workspaceId, turn.threadId)
+        .listThreadAgentSessions(workspaceIdForOwner(turn.owner), turn.threadId)
         .find((candidate) => candidate.id === agentSessionId);
       if (!existing) {
         ownerStore.createAgentSession({
@@ -3445,7 +3447,7 @@ describe('scheduler dispatch loop', () => {
           status: 'idle',
           threadId: turn.threadId,
           updatedAt: '2026-07-05T00:00:02.000Z',
-          workspaceId: turn.workspaceId,
+          workspaceId: workspaceIdForOwner(turn.owner),
         });
       }
       ownerStore.updateTurn(turnId, {

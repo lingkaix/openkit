@@ -13,7 +13,9 @@ import {
 } from '@openkit/app-api-schemas';
 import {
   allocateEntityId,
+  type CapabilityCall,
   deriveEntityId,
+  type Item,
   isSealedTurnTerminal,
   PolicyDelegationV1Schema,
   readRetainedV1,
@@ -533,6 +535,7 @@ function consumeGrant(
       reason ??= 'The completion candidate no longer matches current intent and Plan.';
     for (const evidence of candidate.evidence) {
       let current: unknown;
+      let sourceWorkspaceId: string | undefined;
       try {
         current =
           evidence.kind === 'artifact'
@@ -553,14 +556,19 @@ function consumeGrant(
                       .listThreads(goal.workspaceId)
                       .flatMap((thread) => store.listThreadItems(goal.workspaceId, thread.id))
                       .find((item) => item.id === evidence.id);
+        if (current)
+          sourceWorkspaceId =
+            evidence.kind === 'item' || evidence.kind === 'capability-call'
+              ? workspaceIdForOwner((current as Item | CapabilityCall).owner)
+              : (current as { workspaceId: string }).workspaceId;
       } catch {
         current = undefined;
       }
-      const source = current as { workspaceId?: string; threadId?: string } | undefined;
+      const source = current as { threadId?: string } | undefined;
       const actor = request.decidingActorContext;
       if (
         !source ||
-        source.workspaceId !== goal.workspaceId ||
+        sourceWorkspaceId !== goal.workspaceId ||
         (source.threadId &&
           (!actor ||
             !isThreadIdVisible(

@@ -1687,7 +1687,7 @@ describe('terminal failed-start product recovery', () => {
         receivingWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         receivingThreadId: f.threadId,
         turn: {
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           threadId: f.threadId,
           triggerActor: { kind: 'user', id: LOCAL_USER_ID },
         },
@@ -1916,7 +1916,7 @@ describe('terminal failed-start product recovery', () => {
       expect(admitted.status, JSON.stringify(body)).toBe(202);
       expect(body).toMatchObject({
         turn: {
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           threadId: f.threadId,
           agentId: setup.manifest.id,
           triggerActor: { kind: 'user', id: LOCAL_USER_ID },

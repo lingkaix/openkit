@@ -2224,7 +2224,7 @@ describe('nanocore server', () => {
           providerRef: 'nanocore-storage',
           serviceRef: 'workspace-export',
           status: 'succeeded',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         }),
       ]);
       expect(usage.usageRecords).toHaveLength(2);
@@ -2301,7 +2301,7 @@ describe('nanocore server', () => {
           providerRef: 'nanocore-storage',
           serviceRef: 'workspace-import',
           status: 'succeeded',
-          workspaceId: imported.importedWorkspaceId,
+          owner: { kind: 'workspace', workspaceId: imported.importedWorkspaceId },
         }),
       ]);
       expect(usage.usageRecords).toHaveLength(2);
@@ -7165,7 +7165,7 @@ describe('nanocore server', () => {
       const accepted = StartTaskModeResponseSchema.parse(await res.json());
       await executor.waitForFinished(store);
       expect(store.getTurnById(accepted.turn.id)).toMatchObject({
-        workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+        owner: { kind: 'workspace', workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28' },
         status: 'completed',
       });
       expect(executor.startContexts).toHaveLength(1);

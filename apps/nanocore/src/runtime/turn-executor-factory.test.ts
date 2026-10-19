@@ -13543,11 +13543,14 @@ describe('createConfiguredTurnExecutor', () => {
               const agentSession = store.getAgentSession(String(exact.body.agentSessionId));
               const packageSnapshotId = agentSession.environmentPackageSnapshotId!;
               expect(packageSnapshotId).toEqual(expect.any(String));
-              const workspaceDb = openWorkspaceDb(coreDb.dataRoot, accepted.workspaceId);
+              const workspaceDb = openWorkspaceDb(
+                coreDb.dataRoot,
+                workspaceIdForOwner(accepted.owner)
+              );
               try {
                 const produced = requireAgentEnvironmentPackageSnapshot(
                   workspaceDb,
-                  accepted.workspaceId,
+                  workspaceIdForOwner(accepted.owner),
                   packageSnapshotId
                 ).snapshot;
                 expect(produced.scope).toMatchObject({

@@ -380,7 +380,7 @@ describe('FsStore persistence', () => {
 
     expect(lineage).toEqual([
       expect.objectContaining({
-        workspaceId: workspace.id,
+        owner: { kind: 'workspace', workspaceId: workspace.id },
         threadId: thread.id,
         turnId: turn.id,
         artifactId: artifact.id,

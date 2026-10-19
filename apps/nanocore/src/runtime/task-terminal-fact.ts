@@ -23,7 +23,9 @@ export function recordTaskTerminalFact(db: WorkspaceDb, turn: z.infer<typeof Tur
     .get(turn.threadId) as { schemaVersion: unknown; goal_id: string } | undefined;
   if (!link) return;
   const goalId = readRetainedV1(link, () => link.goal_id);
-  const bytes = JSON.stringify(TaskTerminalFactSchema.parse(turn));
+  const bytes = JSON.stringify(
+    TaskTerminalFactSchema.parse({ ...turn, workspaceId: workspaceIdForOwner(turn.owner) })
+  );
   db.sqlite.transaction(() => {
     const prior = db.sqlite
       .prepare(
@@ -68,7 +70,11 @@ export function recoverTaskTerminalFacts(store: FsStore, db: WorkspaceDb): void 
         completedAt: fact.completedAt,
         durationMs: fact.durationMs,
       });
-    else if (JSON.stringify(TaskTerminalFactSchema.parse(turn)) !== JSON.stringify(fact))
+    else if (
+      JSON.stringify(
+        TaskTerminalFactSchema.parse({ ...turn, workspaceId: workspaceIdForOwner(turn.owner) })
+      ) !== JSON.stringify(fact)
+    )
       throw new Error('Task terminal fact conflicts with its published result.');
   }
 }

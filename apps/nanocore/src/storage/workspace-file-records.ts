@@ -36,7 +36,6 @@ import {
   deriveEntityId,
   entityIdPattern,
   ItemSchema,
-  isEntityId,
   KnowledgeEntrySchema,
   type KnowledgeOwnerScope,
   KnowledgeOwnerScopeSchema,
@@ -54,7 +53,6 @@ import {
   type CaptureCoverageBinding,
   CaptureCoverageBindingSchema,
 } from '@openkit/worker-protocol';
-import Database from 'better-sqlite3';
 import { applyEdits, modify } from 'jsonc-parser';
 import { z } from 'zod';
 import { parseJsoncObject } from '../config/jsonc.js';
@@ -79,7 +77,7 @@ import {
 } from './artifacts/artifact-version-records.js';
 import { artifactFilePayloadPath } from './artifacts/file-records.js';
 import { reserveCanonicalFileWrite } from './canonical-write-capacity.js';
-import { coreDbPath, ensureLayoutDirectories, ensureWorkspaceLayoutRoot } from './fs-layout.js';
+import { ensureLayoutDirectories, ensureWorkspaceLayoutRoot } from './fs-layout.js';
 import {
   StoredArtifactSnapshotV1Schema,
   StoredEventPayloadV1Schema,
@@ -807,16 +805,7 @@ export function readPublishedTurnIdentities(dataRoot: string): PublishedTurnIden
       const threadsRoot = join(workspaceRoot, 'threads');
       for (const threadId of listDirectoryNames(threadsRoot)) {
         const threadPath = join(threadsRoot, threadId, 'thread.json');
-        const thread = parseCanonicalThreadRecord(
-          readJson(threadPath),
-          workspaceId,
-          threadId,
-          () => {
-            throw new Error(
-              'Read-only history inspection does not migrate a Thread visibility envelope.'
-            );
-          }
-        );
+        const thread = parseCanonicalThreadRecord(readJson(threadPath), workspaceId, threadId);
         if (thread.id !== threadId || workspaceIdForOwner(thread.owner) !== workspaceId) {
           return { status: 'unreadable' };
         }
@@ -990,7 +979,7 @@ export function loadWorkspaceFileRecords(dataRoot: string): WorkspaceFileRecords
     .filter((name) => name !== '.staging')
     .map((workspaceId) => {
       assertSafeWorkspacePathSegment(workspaceId, 'Workspace id');
-      return loadWorkspace(join(workspacesRoot, workspaceId), workspaceId, dataRoot);
+      return loadWorkspace(join(workspacesRoot, workspaceId), workspaceId);
     });
   const threadIds = new Set<string>();
   const turnIds = new Set<string>();
@@ -1144,11 +1133,7 @@ export function appendWorkspaceTurnEvent(workspaceRoot: string, event: SseEventE
  * @param workspaceId Workspace directory id.
  * @returns Loaded canonical workspace records.
  */
-function loadWorkspace(
-  workspaceRoot: string,
-  workspaceId: string,
-  dataRoot: string
-): WorkspaceFileRecords {
+function loadWorkspace(workspaceRoot: string, workspaceId: string): WorkspaceFileRecords {
   assertExistingWorkspaceDirectoryParents(workspaceRoot);
   const retiredWorkspacePath = join(workspaceRoot, 'workspace.json');
   const workspacePath = join(workspaceRoot, 'workspace-record.json');
@@ -1198,17 +1183,7 @@ function loadWorkspace(
     }
 
     const rawThread = readJson(threadPath);
-    const thread = parseCanonicalThreadRecord(rawThread, workspaceId, threadId, () =>
-      classifyThreadVisibilityCutover(dataRoot, workspaceRoot, workspaceRecord.kind, threadId)
-    );
-    if (
-      !isCanonicalThreadEnvelope(rawThread) ||
-      !(rawThread as { requiredFeatures: string[] }).requiredFeatures.includes(
-        THREAD_VISIBILITY_REQUIRED_FEATURE
-      )
-    ) {
-      writeJsonAtomic(threadPath, projectCanonicalThreadRecord(thread));
-    }
+    const thread = parseCanonicalThreadRecord(rawThread, workspaceId, threadId);
 
     if (thread.id !== threadId || workspaceIdForOwner(thread.owner) !== workspaceId) {
       throw new Error(`Thread record ${thread.id} has invalid workspace or directory lineage.`);
@@ -2164,104 +2139,27 @@ function assertExistingWorkspaceDirectoryParents(workspaceRoot: string): void {
   }
 }
 
-/** Classifies predecessor records from owned Quick Chat identity or formal Task/Goal inception lineage. */
-function classifyThreadVisibilityCutover(
-  dataRoot: string,
-  workspaceRoot: string,
-  kind: WorkspaceRecord['kind'],
-  threadId: string
-): Pick<Thread, 'visibility' | 'privateOwnerUserId'> {
-  if (kind === 'personal') {
-    const workspaceId = basename(workspaceRoot);
-    const candidates = new Set(listDirectoryNames(join(dataRoot, 'users')));
-    if (existsSync(coreDbPath(dataRoot))) {
-      const database = new Database(coreDbPath(dataRoot), { readonly: true, fileMustExist: true });
-      try {
-        for (const row of database.prepare('SELECT id FROM users').all() as Array<{ id: string }>)
-          candidates.add(row.id);
-      } finally {
-        database.close();
-      }
-    }
-    for (const userId of candidates) {
-      if (isEntityId('usr', userId) && workspaceId === deriveEntityId('ws', ['quick_chat', userId]))
-        return { visibility: 'private', privateOwnerUserId: userId };
-    }
-    throw new Error('Thread visibility cutover requires the canonical Quick Chat owner.');
-  }
-  const turnsRoot = join(workspaceRoot, 'threads', threadId, 'turns');
-  const turns = listDirectoryNames(turnsRoot).map((id) =>
-    TurnReaderSchema.parse({
-      ...readRetainedV1(readJson(join(turnsRoot, id, 'turn.json')), TurnFileMetadataSchema.parse),
-      items: [],
-    })
-  );
-  const firstTurn = turns.sort(
-    (left, right) =>
-      (left.startedAt ?? '').localeCompare(right.startedAt ?? '') || left.id.localeCompare(right.id)
-  )[0];
-  if (turns.length > 0 && turns.every((turn) => turn.agentId)) return { visibility: 'workspace' };
-  if (!firstTurn?.startedAt || turns[1]?.startedAt === firstTurn.startedAt) {
+/** Validates the reset-cohort Thread envelope without converting or rewriting predecessors. */
+function parseCanonicalThreadRecord(input: unknown, workspaceId: string, threadId: string): Thread {
+  const envelope = parseRecordEnvelope(input, { supportedFeatures: THREAD_REQUIRED_FEATURES });
+  if (
+    envelope.schemaVersion !== 1 ||
+    envelope.recordType !== 'thread' ||
+    envelope.ownerScope !== 'workspace' ||
+    envelope.id !== threadId ||
+    envelope.lineage.workspaceId !== workspaceId ||
+    envelope.lineage.threadId !== threadId ||
+    !envelope.requiredFeatures.includes(THREAD_ENTRY_REQUIRED_FEATURE) ||
+    !envelope.requiredFeatures.includes(THREAD_VISIBILITY_REQUIRED_FEATURE)
+  ) {
     throw new Error(
-      'Thread visibility cutover requires explicit classification of ambiguous project history.'
+      `Canonical Thread envelope has invalid ownership, lineage or required features: ${threadId}.`
     );
   }
-  if (firstTurn.agentId) return { visibility: 'workspace' };
-  throw new Error(
-    'Thread visibility cutover requires explicit classification of ambiguous project history.'
-  );
-}
-
-/** Parses current audience-gated records or explicitly classifies a validated predecessor once. */
-function parseCanonicalThreadRecord(
-  input: unknown,
-  workspaceId: string,
-  threadId: string,
-  classify: () => Pick<Thread, 'visibility' | 'privateOwnerUserId'>
-): Thread {
-  const raw = typeof input === 'object' && input !== null ? (input as Record<string, unknown>) : {};
-  const enveloped = looksLikeThreadEnvelope(input);
-  if (!enveloped && ('entryPath' in raw || 'visibility' in raw || 'privateOwnerUserId' in raw)) {
-    throw new Error(`Thread metadata requires its canonical envelope: ${threadId}.`);
-  }
-  const envelope = enveloped
-    ? parseRecordEnvelope(input, { supportedFeatures: THREAD_REQUIRED_FEATURES })
-    : null;
-  if (
-    envelope &&
-    (envelope.schemaVersion !== 1 ||
-      envelope.recordType !== 'thread' ||
-      envelope.ownerScope !== 'workspace' ||
-      envelope.id !== threadId ||
-      envelope.lineage.workspaceId !== workspaceId ||
-      envelope.lineage.threadId !== threadId ||
-      !envelope.requiredFeatures.includes(THREAD_ENTRY_REQUIRED_FEATURE))
-  ) {
-    throw new Error(`Canonical Thread envelope has invalid ownership or lineage: ${threadId}.`);
-  }
-  if (envelope?.requiredFeatures.includes(THREAD_VISIBILITY_REQUIRED_FEATURE)) {
-    const thread = ThreadSchema.parse(input);
-    if (envelope.contentDigest !== canonicalThreadContentDigest(thread))
-      throw new Error(`Canonical Thread envelope content digest does not match: ${threadId}.`);
-    return thread;
-  }
-  if ('visibility' in raw || 'privateOwnerUserId' in raw)
-    throw new Error('Thread visibility requires its required feature.');
-  // Validate predecessor fields and digest without audience authority; apply all Thread refinements after classification.
-  const oldPayload = z
-    .object(ThreadSchema.shape)
-    .omit({ visibility: true, privateOwnerUserId: true })
-    .parse({
-      ...raw,
-      entryPath: enveloped ? raw.entryPath : 'conversation',
-    });
-  if (
-    envelope &&
-    envelope.contentDigest !==
-      `sha256:${createHash('sha256').update(JSON.stringify(oldPayload)).digest('hex')}`
-  )
+  const thread = ThreadSchema.parse(input);
+  if (envelope.contentDigest !== canonicalThreadContentDigest(thread))
     throw new Error(`Canonical Thread envelope content digest does not match: ${threadId}.`);
-  return ThreadSchema.parse({ ...oldPayload, ...classify() });
+  return thread;
 }
 
 /** Projects one Thread into its authority-gated canonical record envelope. */
@@ -2310,11 +2208,6 @@ function looksLikeThreadEnvelope(input: unknown): input is Record<string, unknow
       (field) => field in input
     )
   );
-}
-
-/** Returns whether a record is an already gated canonical Thread envelope. */
-function isCanonicalThreadEnvelope(input: unknown): boolean {
-  return looksLikeThreadEnvelope(input);
 }
 
 /**

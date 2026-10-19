@@ -14,7 +14,7 @@ import {
 import { openCoreDb } from './db.js';
 import { applyMigrations } from './migrate.js';
 
-/** Seeds the recorded User that the predecessor audience classifier must resolve. */
+/** Seeds the recorded User for current private Thread authority checks. */
 function createOwnerBoundStore(dataRoot: string): FsStore {
   const coreDb = openCoreDb(dataRoot);
   try {
@@ -56,7 +56,7 @@ describe('Thread canonical record envelope', () => {
       recordType: 'thread',
       requiredFeatures: ['openkit.thread-entry.v1', 'openkit.thread-visibility.v1'],
       schemaVersion: 1,
-      workspaceId: workspace.id,
+      owner: { kind: 'workspace', workspaceId: workspace.id },
     });
     expect(() =>
       parseRecordEnvelope(persisted.value, { supportedFeatures: ['openkit.thread-entry.v1'] })
@@ -78,7 +78,7 @@ describe('Thread canonical record envelope', () => {
     );
   });
 
-  it('classifies a pre-envelope Thread as conversation and rewrites the gated envelope', () => {
+  it('refuses a pre-envelope Thread without rewriting its bytes after the reset boundary', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-thread-cutover-'));
     const store = createOwnerBoundStore(dataRoot);
     const workspace = store.ensureQuickChatWorkspace(LOCAL_USER_ID);
@@ -106,17 +106,9 @@ describe('Thread canonical record envelope', () => {
     }
     writeFileSync(persisted.path, `${JSON.stringify(legacy)}\n`);
 
-    const restarted = new FsStore({ dataRoot });
-    expect(restarted.getThread(workspace.id, thread.id)).toMatchObject({
-      entryPath: 'conversation',
-      visibility: 'private',
-      privateOwnerUserId: LOCAL_USER_ID,
-    });
-    expect(threadRecord(dataRoot, workspace.id, thread.id).value).toMatchObject({
-      entryPath: 'conversation',
-      requiredFeatures: ['openkit.thread-entry.v1', 'openkit.thread-visibility.v1'],
-      recordType: 'thread',
-    });
+    const bytes = readFileSync(persisted.path, 'utf8');
+    expect(() => new FsStore({ dataRoot })).toThrow();
+    expect(readFileSync(persisted.path, 'utf8')).toBe(bytes);
   });
 });
 
@@ -128,12 +120,12 @@ function predecessorRecord(value: Record<string, unknown>) {
   delete predecessor.threadSource;
   delete predecessor.parentThreadId;
   predecessor.requiredFeatures = ['openkit.thread-entry.v1'];
-  const { id, workspaceId, name, preview, status, entryPath, createdAt, updatedAt } = predecessor;
+  const { id, owner, name, preview, status, entryPath, createdAt, updatedAt } = predecessor;
   predecessor.contentDigest = `sha256:${createHash('sha256')
     .update(
       JSON.stringify({
         id,
-        owner: { kind: 'workspace', workspaceId: workspaceId },
+        owner,
         name,
         preview,
         status,
@@ -146,7 +138,7 @@ function predecessorRecord(value: Record<string, unknown>) {
   return predecessor;
 }
 
-it('cuts over exclusively formal worker history but never publishes ambiguous project history', () => {
+it('refuses predecessor envelopes for both formal and conversation history without publication', () => {
   for (const formal of [true, false]) {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-project-cutover-'));
     const store = new FsStore({ dataRoot });
@@ -159,17 +151,9 @@ it('cuts over exclusively formal worker history but never publishes ambiguous pr
     if (formal) store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
     const persisted = threadRecord(dataRoot, workspace.id, thread.id);
     writeFileSync(persisted.path, JSON.stringify(predecessorRecord(persisted.value)));
-    if (formal) {
-      expect(new FsStore({ dataRoot }).getThread(workspace.id, thread.id)).toMatchObject({
-        visibility: 'workspace',
-      });
-      expect(threadRecord(dataRoot, workspace.id, thread.id).value.requiredFeatures).toContain(
-        'openkit.thread-visibility.v1'
-      );
-    } else {
-      expect(() => new FsStore({ dataRoot })).toThrow(/ambiguous project history/);
-      expect(threadRecord(dataRoot, workspace.id, thread.id).value.visibility).toBeUndefined();
-    }
+    const bytes = readFileSync(persisted.path, 'utf8');
+    expect(() => new FsStore({ dataRoot })).toThrow(/required features/);
+    expect(readFileSync(persisted.path, 'utf8')).toBe(bytes);
   }
 });
 
@@ -226,7 +210,7 @@ it('does not infer shared inception when formal and conversation Turns have tied
   writeFileSync(conversationPath, JSON.stringify({ ...rawTurn, startedAt: formal.startedAt }));
   const persisted = threadRecord(dataRoot, workspace.id, thread.id);
   writeFileSync(persisted.path, JSON.stringify(predecessorRecord(persisted.value)));
-  expect(() => new FsStore({ dataRoot })).toThrow(/ambiguous project history/);
+  expect(() => new FsStore({ dataRoot })).toThrow(/required features/);
 });
 
 it.each([
@@ -237,7 +221,7 @@ it.each([
     value: LOCAL_USER_ID,
   },
   { name: 'self-parent Thread', field: 'parentThreadId', value: 'self' },
-])('refuses a predecessor with $name without rewriting its bytes', ({ field, value }) => {
+])('refuses a current record with $name without rewriting its bytes', ({ field, value }) => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-invalid-thread-predecessor-'));
   try {
     const store = createOwnerBoundStore(dataRoot);
@@ -254,22 +238,18 @@ it.each([
     );
     const persisted = threadRecord(dataRoot, workspace.id, thread.id);
     const predecessor = {
-      id: thread.id,
-      workspaceId: workspace.id,
-      name: thread.name,
-      preview: thread.preview,
-      status: thread.status,
-      createdAt: thread.createdAt,
-      updatedAt: thread.updatedAt,
+      ...persisted.value,
       [field]: value === 'self' ? thread.id : value,
     };
     const bytes = `${JSON.stringify(predecessor)}\n`;
     writeFileSync(persisted.path, bytes);
 
     expect(() => new FsStore({ dataRoot })).toThrowError(
-      expect.objectContaining({
-        issues: expect.arrayContaining([expect.objectContaining({ path: [field] })]),
-      })
+      field === 'id'
+        ? /invalid ownership, lineage or required features/
+        : expect.objectContaining({
+            issues: expect.arrayContaining([expect.objectContaining({ path: [field] })]),
+          })
     );
     expect(readFileSync(persisted.path, 'utf8')).toBe(bytes);
   } finally {
@@ -277,7 +257,7 @@ it.each([
   }
 });
 
-it('preserves predecessor administration entry and validates its original envelope before cutover', () => {
+it('preserves current administration entry and validates its envelope without rewriting', () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-admin-thread-predecessor-'));
   try {
     const store = createOwnerBoundStore(dataRoot);
@@ -294,7 +274,7 @@ it('preserves predecessor administration entry and validates its original envelo
       }
     );
     const persisted = threadRecord(dataRoot, workspace.id, thread.id);
-    const predecessor = predecessorRecord(persisted.value);
+    const predecessor = persisted.value;
     for (const damage of [
       { contentDigest: `sha256:${'0'.repeat(64)}` },
       {
@@ -304,7 +284,7 @@ it('preserves predecessor administration entry and validates its original envelo
       const bytes = `${JSON.stringify({ ...predecessor, ...damage })}\n`;
       writeFileSync(persisted.path, bytes);
       expect(() => new FsStore({ dataRoot })).toThrow(
-        /content digest does not match|invalid ownership or lineage/
+        /content digest does not match|invalid ownership, lineage or required features/
       );
       expect(readFileSync(persisted.path, 'utf8')).toBe(bytes);
     }

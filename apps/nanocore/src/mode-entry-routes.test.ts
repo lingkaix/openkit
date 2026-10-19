@@ -5043,7 +5043,7 @@ describe('#144 real Assistant command wiring', () => {
         expect(call).toMatchObject({
           requestId: null,
           status: 'succeeded',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           threadId: f.thread.id,
           turnId: original.turn.id,
         });

@@ -1306,7 +1306,7 @@ describe('FsStore canonical reload', () => {
     mkdirSync(duplicateRoot, { recursive: true });
     const duplicateThread = ThreadSchema.parse({
       ...firstThread,
-      workspaceId: secondWorkspace.id,
+      owner: { kind: 'workspace', workspaceId: secondWorkspace.id },
     });
     writeFileSync(
       join(duplicateRoot, 'thread.json'),

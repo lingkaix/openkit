@@ -27,6 +27,8 @@ The engineer confirmed F9 cleanup on 2026-10-19. The coordinator approved the fi
 - Producer, reader, capture, context, App API and portability changes keep owner facts consistent across existing boundaries.
 - Offline public-record attribution reads the explicit Turn owner so Server work cannot qualify a Workspace round.
 - Exact operation-table type annotations permit declaration emission after the owner and Policy joins without changing validators or runtime composition.
+- Removing the pre-envelope Thread audience classifier and its obsolete migration command makes the required reset boundary use one reader without conversion or startup rewriting.
+- Task terminal facts retain their existing Workspace address through an explicit projection from the canonical Turn owner; completion evidence joins read the owner only for Item and CapabilityCall.
 - Owner documents and the retained-format register state the accepted reset-cohort shape and unchanged placement.
 
 ## Checkpoint (Rewritable)

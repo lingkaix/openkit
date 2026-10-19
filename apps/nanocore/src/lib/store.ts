@@ -3391,9 +3391,7 @@ export class FsStore {
     threadId: string,
     input: Partial<Pick<Thread, 'name' | 'status'>>
   ): Thread {
-    for (const field of Object.keys(input))
-      if (!['name', 'status'].includes(field))
-        throw new Error(`Thread update cannot change field: ${field}`);
+    if ('owner' in input) throw new Error('Thread update cannot change field: owner');
     const thread = this.getThread(workspaceId, threadId);
     const updated: Thread = {
       ...thread,

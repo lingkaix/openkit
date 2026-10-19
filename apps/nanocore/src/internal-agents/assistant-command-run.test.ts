@@ -440,7 +440,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({
       status: 'succeeded',
-      workspaceId: f.workspaceId,
+      owner: { kind: 'workspace', workspaceId: f.workspaceId },
       requestId: null,
       threadId: f.threadId,
       turnId: f.turn.id,
@@ -784,7 +784,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
       expect(call).toMatchObject({
         requestId: null,
         status: 'succeeded',
-        workspaceId: f.workspaceId,
+        owner: { kind: 'workspace', workspaceId: f.workspaceId },
         threadId: f.threadId,
         turnId: f.turn.id,
       });
