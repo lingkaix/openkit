@@ -2,6 +2,7 @@ import {
   isSealedTurnTerminal,
   readRetainedV1,
   type TurnSchema,
+  workspaceIdForOwner,
   writeRetainedV1,
 } from '@openkit/protocol';
 import type { z } from 'zod';
@@ -22,7 +23,9 @@ export function recordTaskTerminalFact(db: WorkspaceDb, turn: z.infer<typeof Tur
     .get(turn.threadId) as { schemaVersion: unknown; goal_id: string } | undefined;
   if (!link) return;
   const goalId = readRetainedV1(link, () => link.goal_id);
-  const bytes = JSON.stringify(TaskTerminalFactSchema.parse(turn));
+  const bytes = JSON.stringify(
+    TaskTerminalFactSchema.parse({ ...turn, workspaceId: workspaceIdForOwner(turn.owner) })
+  );
   db.sqlite.transaction(() => {
     const prior = db.sqlite
       .prepare(
@@ -58,7 +61,7 @@ export function recoverTaskTerminalFacts(store: FsStore, db: WorkspaceDb): void 
       .listThreadTurns(db.workspaceId, fact.threadId)
       .find((turn) => turn.id === fact.id);
     if (!turn) continue;
-    if (turn.workspaceId !== fact.workspaceId || turn.threadId !== fact.threadId)
+    if (workspaceIdForOwner(turn.owner) !== fact.workspaceId || turn.threadId !== fact.threadId)
       throw new Error('Task terminal fact lineage conflicts with the Turn owner.');
     if (!isSealedTurnTerminal(turn.status))
       store.updateTurn(turn.id, {
@@ -67,7 +70,11 @@ export function recoverTaskTerminalFacts(store: FsStore, db: WorkspaceDb): void 
         completedAt: fact.completedAt,
         durationMs: fact.durationMs,
       });
-    else if (JSON.stringify(TaskTerminalFactSchema.parse(turn)) !== JSON.stringify(fact))
+    else if (
+      JSON.stringify(
+        TaskTerminalFactSchema.parse({ ...turn, workspaceId: workspaceIdForOwner(turn.owner) })
+      ) !== JSON.stringify(fact)
+    )
       throw new Error('Task terminal fact conflicts with its published result.');
   }
 }

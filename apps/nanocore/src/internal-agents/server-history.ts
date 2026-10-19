@@ -1,5 +1,5 @@
 import { AssistantHistoryReadSchema } from '@openkit/app-api-schemas';
-import type { ServerTurn } from '@openkit/protocol';
+import type { Turn } from '@openkit/protocol';
 import { z } from 'zod';
 import type { FsStore } from '../lib/store.js';
 import type { AgentTool } from './internal-agent-loop.js';
@@ -9,7 +9,7 @@ import { internalContextDigest } from './rolling-context.js';
 /** Exact current-run history retrieval after compaction; it admits no other Server, User or Workspace work. */
 export function createServerRunHistory(input: {
   readonly store: FsStore;
-  readonly turn: ServerTurn;
+  readonly turn: Turn;
   readonly assertCurrent: () => void;
 }): AgentTool {
   const { $schema: _schema, ...inputSchema } = z.toJSONSchema(AssistantHistoryReadSchema, {

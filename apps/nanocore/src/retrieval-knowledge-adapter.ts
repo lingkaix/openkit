@@ -9,6 +9,7 @@ import {
   RetrievalTraceReferenceSchema,
   responsibleUserIdForActor,
   WorkspaceIdSchema,
+  workspaceIdForOwner,
 } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { parseDocument } from 'yaml';
@@ -501,14 +502,18 @@ export function resolveKnowledgeQueryContext(input: Target) {
     if (access.outputTurnId && !access.outputThreadId) throw new Error('Turn without Thread.');
     if (access.outputThreadId) {
       const thread = access.store.getThread(workspaceId, access.outputThreadId);
-      if (thread.workspaceId !== workspaceId) throw new Error('Wrong Thread Workspace.');
+      if (workspaceIdForOwner(thread.owner) !== workspaceId)
+        throw new Error('Wrong Thread Workspace.');
       const scopeId = access.outputTurnId
         ? `retrieval-trace/turn/${workspaceId}/${access.outputThreadId}/${access.outputTurnId}`
         : `retrieval-trace/thread/${workspaceId}/${access.outputThreadId}`;
       RetrievalTraceReferenceSchema.shape.scopeId.parse(scopeId);
       if (access.outputTurnId) {
         const turn = access.store.getTurnById(access.outputTurnId);
-        if (turn.workspaceId !== workspaceId || turn.threadId !== access.outputThreadId)
+        if (
+          workspaceIdForOwner(turn.owner) !== workspaceId ||
+          turn.threadId !== access.outputThreadId
+        )
           throw new Error('Wrong Turn lineage.');
       }
     }
@@ -616,7 +621,7 @@ export function knowledgeSourceLineageReadable(
       const turn = input.access.store.getTurnById(source.originatingTurnId);
       if (
         !source.originatingThreadId ||
-        turn.workspaceId !== input.workspaceId ||
+        workspaceIdForOwner(turn.owner) !== input.workspaceId ||
         turn.threadId !== source.originatingThreadId
       )
         return false;
@@ -784,7 +789,10 @@ function pinnedSourcesReadable(
         }
       } else if (reference.startsWith('turn:')) {
         const turn = store.getTurnById(reference.slice(5));
-        if (turn.workspaceId !== input.workspaceId || !threadReadable(input, turn.threadId))
+        if (
+          workspaceIdForOwner(turn.owner) !== input.workspaceId ||
+          !threadReadable(input, turn.threadId)
+        )
           return false;
       } else if (!reference.startsWith('item:') && !reference.startsWith('context-package:'))
         return false;

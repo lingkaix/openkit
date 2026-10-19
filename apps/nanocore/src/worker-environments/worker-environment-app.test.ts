@@ -7,6 +7,7 @@ import type {
   PrepareWorkerEnvironmentResponse,
 } from '@openkit/app-api-schemas';
 import { AuthoredAgentConfigSchema } from '@openkit/config-schema';
+import { workspaceIdForOwner } from '@openkit/protocol';
 import { parse } from 'jsonc-parser';
 import { describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
@@ -136,7 +137,7 @@ class DeferredInterruptTurnExecutor extends SimulatedTurnExecutor {
       store.createAgentSession({
         id: agentSessionId,
         agentId: context.agentSetup?.manifest.id ?? AGENT_ID,
-        workspaceId: turn.workspaceId,
+        workspaceId: workspaceIdForOwner(turn.owner),
         threadId: turn.threadId,
         status: 'busy',
         message: null,
@@ -222,7 +223,7 @@ class DeferredInterruptTurnExecutor extends SimulatedTurnExecutor {
           requestId: pending.context.requestId,
           threadId: running.threadId,
           turnId: pending.turnId,
-          workspaceId: running.workspaceId,
+          workspaceId: workspaceIdForOwner(running.owner),
         });
       }
       const cancelled = pending.store.updateTurn(pending.turnId, {
@@ -237,7 +238,7 @@ class DeferredInterruptTurnExecutor extends SimulatedTurnExecutor {
           requestId: pending.context.requestId,
           threadId: cancelled.threadId,
           turnId: pending.turnId,
-          workspaceId: cancelled.workspaceId,
+          workspaceId: workspaceIdForOwner(cancelled.owner),
         },
         ALREADY_DECIDED_PUBLICATION_ADMISSION
       );
@@ -245,7 +246,7 @@ class DeferredInterruptTurnExecutor extends SimulatedTurnExecutor {
       await super.interruptTurn(pending.store, pending.turnId, pending.context);
     }
     const attempt = listSchedulerExecutionAttemptsForTurn(this.fixtureCoreDb, {
-      workspaceId: pending.store.getTurnById(pending.turnId).workspaceId,
+      workspaceId: workspaceIdForOwner(pending.store.getTurnById(pending.turnId).owner),
       threadId: pending.store.getTurnById(pending.turnId).threadId,
       turnId: pending.turnId,
     })[0]!;

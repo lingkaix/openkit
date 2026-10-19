@@ -15,7 +15,7 @@ import {
   WorkerSandboxAccessSchema,
   WorkspaceConfigSchema,
 } from '@openkit/config-schema';
-import { ENTITY_KINDS, entityIdPattern, isEntityId } from '@openkit/protocol';
+import { ENTITY_KINDS, entityIdPattern, isEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import { afterAll, describe, expect, it, vi } from 'vitest';
 import { createDefaultWorkerControlGateway } from '../app.js';
@@ -591,7 +591,10 @@ function completeNanoHostPackage(input: {
       status: 'running',
       threadId: String(input.scope.threadId ?? 'th_00000000-0000-79ee-a2d0-3fba4a9c8530'),
       triggerActor: { kind: 'user', id: 'usr_00000000-0000-7353-b5d8-71f1d581a738' },
-      workspaceId: String(input.scope.workspaceId ?? 'ws_00000000-0000-7d70-aab0-c1f50b525f79'),
+      owner: {
+        kind: 'workspace',
+        workspaceId: String(input.scope.workspaceId ?? 'ws_00000000-0000-7d70-aab0-c1f50b525f79'),
+      },
     },
     turnInput: 'Run fixture',
     workspaceCwd: '/workspace',
@@ -1649,7 +1652,7 @@ describe('createConfiguredTurnExecutor', () => {
       status: 'idle',
       threadId: turn.threadId,
       updatedAt: '2026-08-21T00:00:01.000Z',
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
       workspaceRoots: [],
     });
     const predecessorPackage = completeNanoHostPackage({
@@ -1659,11 +1662,11 @@ describe('createConfiguredTurnExecutor', () => {
         threadId: turn.threadId,
         turnId: turn.id,
         triggerActor: turn.triggerActor,
-        workspaceId: turn.workspaceId,
+        workspaceId: workspaceIdForOwner(turn.owner),
       },
       snapshotId: 'aepsnap-unready-predecessor',
     });
-    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, turn.workspaceId);
+    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, workspaceIdForOwner(turn.owner));
     try {
       recordAgentEnvironmentPackageSnapshot(workspaceDb, {
         environmentPackage: predecessorPackage,
@@ -4921,7 +4924,7 @@ describe('createConfiguredTurnExecutor', () => {
           status: 'running' as const,
           threadId: 'th_00000000-0000-7721-81c5-55891e4c429c',
           triggerActor,
-          workspaceId: 'ws_00000000-0000-7734-9328-04bb0a013ecb',
+          owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7734-9328-04bb0a013ecb' },
         },
         turnInput: 'Run fixture',
         workspaceCwd: '/workspace',
@@ -5349,7 +5352,7 @@ describe('createConfiguredTurnExecutor', () => {
           status: 'running',
           threadId: 'th_00000000-0000-732d-b277-d1c586f5870b',
           triggerActor,
-          workspaceId: 'ws_00000000-0000-77cd-b501-25149e0337a0',
+          owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-77cd-b501-25149e0337a0' },
         },
         turnInput: 'Continue predecessor work',
         workspaceCwd: null,
@@ -5436,7 +5439,7 @@ describe('createConfiguredTurnExecutor', () => {
         status: 'running' as const,
         threadId: environmentPackage.scope.threadId,
         triggerActor,
-        workspaceId: environmentPackage.scope.workspaceId,
+        owner: { kind: 'workspace', workspaceId: environmentPackage.scope.workspaceId },
       };
       const previewPackage = (
         runtime.turnExecutor as unknown as {
@@ -5500,7 +5503,7 @@ describe('createConfiguredTurnExecutor', () => {
         workerStorageChoice: { goalId: null, kind: 'fresh', taskId: null },
       });
       const freshWorktree = `/workspace/worktrees/${workerStorageDefaultWorkSlotRef(
-        successorTurn.workspaceId,
+        workspaceIdForOwner(successorTurn.owner),
         successorTurn.threadId
       )}`;
       expect(freshSuccessorPackage.workspace.inputs[0]?.target).toBe(freshWorktree);
@@ -6957,7 +6960,7 @@ describe('createConfiguredTurnExecutor', () => {
         status: 'busy',
         threadId: turn.threadId,
         updatedAt: turn.startedAt ?? '2026-08-12T00:00:00.000Z',
-        workspaceId: turn.workspaceId,
+        workspaceId: workspaceIdForOwner(turn.owner),
       });
       store.updateTurn(turn.id, { agentSessionId });
       const priorPackageSnapshotId = `${packageSnapshotId}_prior`;
@@ -6967,7 +6970,7 @@ describe('createConfiguredTurnExecutor', () => {
           requestId: null,
           threadId: turn.threadId,
           turnId: turn.id,
-          workspaceId: turn.workspaceId,
+          workspaceId: workspaceIdForOwner(turn.owner),
         },
         snapshotId: priorPackageSnapshotId,
       } as AgentEnvironmentPackage);
@@ -6977,7 +6980,7 @@ describe('createConfiguredTurnExecutor', () => {
           requestId: null,
           threadId: turn.threadId,
           turnId: turn.id,
-          workspaceId: turn.workspaceId,
+          workspaceId: workspaceIdForOwner(turn.owner),
         },
         snapshotId: packageSnapshotId,
       } as AgentEnvironmentPackage);
@@ -7149,7 +7152,7 @@ describe('createConfiguredTurnExecutor', () => {
             status: 'running',
             threadId: 'th_00000000-0000-7b36-ada8-71118e96b488',
             triggerActor: environmentPackage.scope.triggerActor,
-            workspaceId: 'ws_00000000-0000-7fa5-9782-1098693cdfc1',
+            owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7fa5-9782-1098693cdfc1' },
           },
           workspaceCwd: '/workspace/openkit',
           workspaceRoots: [
@@ -7287,7 +7290,7 @@ describe('createConfiguredTurnExecutor', () => {
           status: 'idle',
           threadId: proofTurn.threadId,
           updatedAt: '2026-09-03T00:00:00.000Z',
-          workspaceId: proofTurn.workspaceId,
+          workspaceId: workspaceIdForOwner(proofTurn.owner),
         });
       }
       backend.bindNativeHandleRecorder?.(environmentPackage.snapshotId, (digest) => {
@@ -8885,7 +8888,7 @@ describe('createConfiguredTurnExecutor', () => {
             status: 'running',
             threadId: 'th_00000000-0000-72f2-a013-5e17b0446503',
             triggerActor,
-            workspaceId: 'ws_00000000-0000-763b-a723-89cbc100e1e6',
+            owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-763b-a723-89cbc100e1e6' },
           },
           turnInput: `Run ${suffix}`,
           workspaceCwd: '/workspace',
@@ -9028,7 +9031,7 @@ describe('createConfiguredTurnExecutor', () => {
           status: 'running',
           threadId: 'th_00000000-0000-76fb-97f1-abc486fea25a',
           triggerActor,
-          workspaceId: 'ws_00000000-0000-72af-a977-4c84584c2cee',
+          owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-72af-a977-4c84584c2cee' },
         },
         turnInput: 'Restore existing binding copy',
         workspaceCwd: '/workspace',
@@ -9206,7 +9209,7 @@ describe('createConfiguredTurnExecutor', () => {
           status: 'running',
           threadId: 'th_00000000-0000-7465-bba5-dc4cf7c89b86',
           triggerActor,
-          workspaceId: 'ws_00000000-0000-7058-8e48-7cd50df605b6',
+          owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7058-8e48-7cd50df605b6' },
         },
         turnInput: 'Inspect restored binding copy',
         workspaceCwd: '/workspace',
@@ -10063,7 +10066,7 @@ describe('createConfiguredTurnExecutor', () => {
           completedAt: new Date().toISOString(),
           threadId: entry.threadId,
           turnId: entry.turnId,
-          workspaceId: entry.workspaceId,
+          owner: { kind: 'workspace', workspaceId: entry.workspaceId },
         });
         const retrievalTraceId = `krt_0190f4c8-0000-7000-8000-00000000030${index}`;
         await retrieveWorkspaceKnowledge({
@@ -10375,7 +10378,7 @@ describe('createConfiguredTurnExecutor', () => {
             status: 'running',
             threadId: testEntityId('th', `thread_resume_${index}`),
             triggerActor: { kind: 'user', id: 'usr_00000000-0000-7b6b-94c1-11ec88e0100c' },
-            workspaceId: 'ws_00000000-0000-7af1-aea9-339aceb3f05b',
+            owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7af1-aea9-339aceb3f05b' },
           },
           turnInput: 'Continue',
           workspaceCwd: null,
@@ -11373,7 +11376,7 @@ describe('createConfiguredTurnExecutor', () => {
             status: 'running',
             threadId: testEntityId('th', `thread_admission_stall_${number}`),
             triggerActor: { kind: 'user', id: 'usr_00000000-0000-7353-b5d8-71f1d581a738' },
-            workspaceId: 'ws_00000000-0000-7ae6-ab0c-3edb48a2c46a',
+            owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7ae6-ab0c-3edb48a2c46a' },
           },
           turnInput: 'Complete a reusable Turn',
           workspaceCwd: '/workspace',
@@ -13538,11 +13541,14 @@ describe('createConfiguredTurnExecutor', () => {
               const agentSession = store.getAgentSession(String(exact.body.agentSessionId));
               const packageSnapshotId = agentSession.environmentPackageSnapshotId!;
               expect(packageSnapshotId).toEqual(expect.any(String));
-              const workspaceDb = openWorkspaceDb(coreDb.dataRoot, accepted.workspaceId);
+              const workspaceDb = openWorkspaceDb(
+                coreDb.dataRoot,
+                workspaceIdForOwner(accepted.owner)
+              );
               try {
                 const produced = requireAgentEnvironmentPackageSnapshot(
                   workspaceDb,
-                  accepted.workspaceId,
+                  workspaceIdForOwner(accepted.owner),
                   packageSnapshotId
                 ).snapshot;
                 expect(produced.scope).toMatchObject({
@@ -14686,7 +14692,7 @@ describe('createConfiguredTurnExecutor', () => {
           status: 'running' as const,
           threadId: 'th_00000000-0000-70b7-8999-770fc3deeb0f',
           triggerActor: { kind: 'user' as const, id: 'usr_00000000-0000-7696-8ea8-dab52c9a8217' },
-          workspaceId: 'ws_00000000-0000-7666-b81a-a9189af9b625',
+          owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7666-b81a-a9189af9b625' },
         },
         turnInput: 'Continue from the retained restart-selected workspace.',
         workerStorageChoice: selectedChoice,

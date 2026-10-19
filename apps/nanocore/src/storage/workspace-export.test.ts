@@ -456,7 +456,7 @@ describe('workspace export verifier', () => {
       threads: [
         {
           id: 'th_00000000-0000-7000-8000-000000000001',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           name: 'Demo thread',
           preview: 'Demo thread',
           status: 'active',
@@ -604,7 +604,7 @@ describe('workspace export verifier', () => {
     };
     const thread = {
       id: 'th_00000000-0000-76e4-9cab-bf0f18349249',
-      workspaceId: workspace.id,
+      owner: { kind: 'workspace', workspaceId: workspace.id },
       name: 'History thread',
       preview: 'Canonical history',
       status: 'active',
@@ -628,7 +628,7 @@ describe('workspace export verifier', () => {
     };
     const firstItemRevision = {
       id: 'it_00000000-0000-7cab-8553-ff29f1f63940',
-      workspaceId: workspace.id,
+      owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: thread.id,
       turnId: 'tu_00000000-0000-72a5-8d51-50bb4c19b084',
       type: 'assistant-message',
@@ -701,7 +701,7 @@ describe('workspace export verifier', () => {
     };
     const artifactItem = {
       id: artifactReferenceItemId(artifact.id, firstItemRevision.turnId),
-      workspaceId: workspace.id,
+      owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: thread.id,
       turnId: firstItemRevision.turnId,
       type: 'artifact-reference',
@@ -717,7 +717,7 @@ describe('workspace export verifier', () => {
     };
     const approvalItem = {
       id: 'it_00000000-0000-75b1-b567-8dba93fffe22',
-      workspaceId: workspace.id,
+      owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: thread.id,
       turnId: firstItemRevision.turnId,
       type: 'approval-request',
@@ -731,7 +731,7 @@ describe('workspace export verifier', () => {
     };
     const userMessageItem = {
       id: 'it_00000000-0000-72f3-8907-3b2acee786c0',
-      workspaceId: workspace.id,
+      owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: thread.id,
       turnId: firstItemRevision.turnId,
       type: 'user-message',
@@ -743,7 +743,7 @@ describe('workspace export verifier', () => {
     } as const;
     const userInputRequestItem = {
       id: 'it_00000000-0000-7af0-a35f-2d6dbcf53c85',
-      workspaceId: workspace.id,
+      owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: thread.id,
       turnId: firstItemRevision.turnId,
       type: 'user-input-request',
@@ -767,7 +767,7 @@ describe('workspace export verifier', () => {
     const userInputResponseRequestId = 'req_user_input_response_source';
     const userInputResponseItem = {
       id: 'it_00000000-0000-7695-a7a1-7f48f8a3702c',
-      workspaceId: workspace.id,
+      owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: thread.id,
       turnId: firstItemRevision.turnId,
       type: 'user-input-response',
@@ -791,7 +791,7 @@ describe('workspace export verifier', () => {
     ).toEqual([userInputRequestItem.id]);
     const turn = {
       id: firstItemRevision.turnId,
-      workspaceId: workspace.id,
+      owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: thread.id,
       triggerActor: localActor,
       items: [
@@ -995,7 +995,7 @@ describe('workspace export verifier', () => {
       expect.soft(importedArtifact.id).not.toBe(artifact.id);
       expect.soft(importedSession.id).not.toBe(agentSession.id);
       expect.soft(importedTurn).toMatchObject({
-        workspaceId: targetWorkspaceId,
+        owner: { kind: 'workspace', workspaceId: targetWorkspaceId },
         threadId: importedThread.id,
         agentSessionId: null,
         status: 'running',
@@ -1046,7 +1046,7 @@ describe('workspace export verifier', () => {
       expect.soft(importedRevisions).toEqual(
         importedRevisions.map((item) => ({
           ...item,
-          workspaceId: targetWorkspaceId,
+          owner: { kind: 'workspace', workspaceId: targetWorkspaceId },
           threadId: importedThread.id,
           turnId: importedTurn.id,
         }))
@@ -1670,7 +1670,7 @@ describe('workspace export verifier', () => {
     const root = freshExportRoot('openkit-workspace-server-trace-import-');
     const thread = {
       id: 'th_00000000-0000-7967-a569-efdf670da460',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       name: 'Server trace',
       preview: 'Server trace',
       status: 'active',
@@ -2200,7 +2200,7 @@ describe('workspace export verifier', () => {
       capabilityCalls: [
         {
           id: 'cap_00000000-0000-768a-b60e-361b4ce8bea1',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           threadId: null,
           turnId: null,
           itemId: null,
@@ -2493,7 +2493,7 @@ describe('workspace export verifier', () => {
     const root = freshExportRoot('openkit-workspace-worker-evidence-');
     const workerThread = {
       id: 'th_00000000-0000-7267-800d-a65e1b6a22d7',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       name: 'Worker evidence thread',
       preview: 'Worker evidence',
       status: 'active',
@@ -2504,7 +2504,7 @@ describe('workspace export verifier', () => {
     };
     const workerTurn = {
       id: 'tu_00000000-0000-7b5c-9add-c4bfc5a04575',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: workerThread.id,
       triggerActor: localActor,
       items: [],
@@ -2683,7 +2683,7 @@ describe('workspace export verifier', () => {
       capabilityCalls: [
         {
           id: 'cap_00000000-0000-7e87-a828-c80cc3539f51',
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           threadId: null,
           turnId: null,
           itemId: null,
@@ -2712,7 +2712,7 @@ describe('workspace export verifier', () => {
       expect.objectContaining({
         capabilityId: 'assistant.repository.read',
         family: 'workspace',
-        workspaceId: 'ws_00000000-0000-7689-a3f6-ae0b906eb3a8',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7689-a3f6-ae0b906eb3a8' },
       }),
     ]);
   });

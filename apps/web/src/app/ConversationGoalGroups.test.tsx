@@ -23,7 +23,7 @@ describe('Goal navigation groups', () => {
     const thread = (id: string, name: string, status: 'active' | 'archived' = 'active') => ({
       id,
       name,
-      workspaceId,
+      owner: { kind: 'workspace', workspaceId: workspaceId },
       preview: name,
       status,
       visibility: 'workspace',

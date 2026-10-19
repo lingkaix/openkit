@@ -1,4 +1,5 @@
 import type { GenerativePresentation } from '@openkit/app-api-schemas';
+import type { WorkOwner } from '@openkit/protocol';
 import { useQueries } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { useCoreClient } from '../app/core-client';
@@ -8,6 +9,11 @@ import type { ThreadItem } from '../screens/chat/data';
 export type GenerativeTextSource = Extract<ThreadItem, { type: 'assistant-message' | 'tool-call' }>;
 
 const EMPTY_ITEMS: ThreadItem[] = [];
+
+/** Returns null for Server work so Workspace queries and source matching stay closed. */
+function workspaceIdFromOwner(owner: WorkOwner): string | null {
+  return owner.kind === 'workspace' ? owner.workspaceId : null;
+}
 
 /**
  * Groups only same-Turn text with an exact digest and a currently admitted presentation.
@@ -23,14 +29,18 @@ export function useGenerativeSourceGroups(
   const client = useCoreClient();
   const references = items.filter((item) => item.type === 'generative-ui-reference');
   const admitted = useQueries({
-    queries: references.map((item) => ({
-      queryKey: ['generative-presentation', item.workspaceId, item.presentationId],
-      queryFn: () =>
-        client.operations['generative-ui.get']({
-          workspaceId: item.workspaceId,
-          presentationId: item.presentationId,
-        }),
-    })),
+    queries: references.map((item) => {
+      const workspaceId = workspaceIdFromOwner(item.owner);
+      return {
+        queryKey: ['generative-presentation', workspaceId, item.presentationId],
+        enabled: workspaceId !== null,
+        queryFn: () =>
+          client.operations['generative-ui.get']({
+            workspaceId: workspaceId as string,
+            presentationId: item.presentationId,
+          }),
+      };
+    }),
     combine: (results) =>
       references.flatMap((item, index) => {
         const result = results[index];
@@ -73,21 +83,25 @@ export async function exactGenerativeSource(
   reference: Extract<ThreadItem, { type: 'generative-ui-reference' }>,
   presentation: GenerativePresentation
 ): Promise<GenerativeTextSource | null> {
+  const referenceWorkspaceId = workspaceIdFromOwner(reference.owner);
   if (
     presentation.publication !== 'published' ||
     presentation.itemId !== reference.id ||
     presentation.threadId !== reference.threadId ||
     presentation.turnId !== reference.turnId ||
-    presentation.workspaceId !== reference.workspaceId ||
+    referenceWorkspaceId === null ||
+    presentation.workspaceId !== referenceWorkspaceId ||
     presentation.source.kind !== 'item'
   )
     return null;
   const sourceId = presentation.source.itemId;
   const source = items.find((item) => item.id === sourceId);
+  const sourceWorkspaceId = source ? workspaceIdFromOwner(source.owner) : null;
   if (
     !source ||
     source.status !== 'completed' ||
-    source.workspaceId !== reference.workspaceId ||
+    sourceWorkspaceId === null ||
+    sourceWorkspaceId !== referenceWorkspaceId ||
     source.threadId !== reference.threadId ||
     source.turnId !== reference.turnId ||
     (source.type !== 'assistant-message' && source.type !== 'tool-call')

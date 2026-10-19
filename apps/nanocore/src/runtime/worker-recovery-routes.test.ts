@@ -270,7 +270,7 @@ describe('worker recovery routes', () => {
       expect(repositoryWorkspaceDb).not.toHaveBeenCalled();
       expect(store.getTurnById(foreignTurn.id)).toMatchObject({
         status: 'running',
-        workspaceId: foreignWorkspace.id,
+        owner: { kind: 'workspace', workspaceId: foreignWorkspace.id },
       });
     } finally {
       coreDb.sqlite.close();

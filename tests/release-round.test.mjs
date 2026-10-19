@@ -25,7 +25,7 @@ import {
   validateParams,
 } from './support/release-round/safety.mjs';
 
-/** Prospective attempt inputs; the earlier fixture remains unchanged historical test data. */
+/** Prospective attempt inputs retain the earlier source and plan attribution. */
 function parameters() {
   return { ...originalParameters(), releaseTag: 'v0.1.0-rc.6' };
 }
@@ -48,6 +48,30 @@ async function temp(t) {
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   return dir;
 }
+test('admits current explicit Workspace Turn ownership without a retired selector', () => {
+  const p = parameters(),
+    b = bundle(p);
+  const turn = b.runtimes.codex.steps[0].turn;
+  turn.owner = { kind: 'workspace', workspaceId: p.workspaceId };
+  delete turn.workspaceId;
+  const row = evaluate(b, p).rows.find((row) => row.scenario === 'codex.A');
+  assert.equal(row.mechanicalCode, 'P', JSON.stringify(row.failures));
+});
+test('rejects a Server Turn even when a retired Workspace selector matches the plan', () => {
+  const p = parameters(),
+    b = bundle(p);
+  const turn = b.runtimes.codex.steps[0].turn;
+  turn.owner = { kind: 'server' };
+  turn.workspaceId = p.workspaceId;
+  const row = evaluate(b, p).rows.find((row) => row.scenario === 'codex.A');
+  assert.equal(row.mechanicalCode, 'N');
+  assert(
+    row.failures.some(
+      (failure) => failure.predicate === 'runtime, model and configuration attribution'
+    )
+  );
+});
+
 for (const scenario of SCENARIOS)
   test(`mechanically admits complete synthetic ${scenario}`, () => {
     const r = evaluate(bundle(), parameters());

@@ -43,10 +43,10 @@ export function shardPlan(root = process.cwd()) {
         .map((owner) => owner.name),
     },
     ...vitest
-      .filter((owner) => owner.name === '@openkit/worker-shim')
+      .filter((owner) => ['@openkit/worker-shim', '@openkit/nanocore'].includes(owner.name))
       .flatMap((owner) => {
         const id = owner.name.replace('@openkit/', '');
-        const count = 2;
+        const count = owner.name === '@openkit/nanocore' ? 4 : 2;
         return Array.from({ length: count }, (_, index) => ({
           id: `${id}-${index + 1}`,
           kind: 'coverage',
@@ -54,13 +54,6 @@ export function shardPlan(root = process.cwd()) {
           partition: { index: index + 1, count },
         }));
       }),
-    {
-      id: 'nanocore',
-      kind: 'coverage',
-      owners: vitest
-        .filter((owner) => owner.name === '@openkit/nanocore')
-        .map((owner) => owner.name),
-    },
     {
       id: 'web',
       kind: 'coverage',

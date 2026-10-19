@@ -1,6 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { workspaceIdForOwner } from '@openkit/protocol';
 import { WORKER_ADAPTER_SUPPLY_FORMS } from '@openkit/worker-protocol';
 import {
   createSourceFile,
@@ -59,7 +60,7 @@ describe('release-declared catalog Skill supply', () => {
           path: 'SKILL.md',
         },
       ],
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
     }).version.digest;
   });
 
@@ -153,7 +154,9 @@ describe('release-declared catalog Skill supply', () => {
       code: 'turn_start_failed',
       message: `Worker skill catalog entry is not allowed for ${adapter}: repo-guidelines`,
     });
-    expect(store.listThreadAgentSessions(turn.workspaceId, turn.threadId)).toEqual([]);
+    expect(store.listThreadAgentSessions(workspaceIdForOwner(turn.owner), turn.threadId)).toEqual(
+      []
+    );
   });
 });
 

@@ -919,7 +919,7 @@ describe('Proposed Plan eligibility', () => {
       await f.consume(p.pendingRequestId);
       const evidence = f.store.createItem({
         id: testEntityId('it', 'goal-completion-evidence'),
-        workspaceId: f.scope.workspaceId,
+        owner: { kind: 'workspace', workspaceId: f.scope.workspaceId },
         threadId: f.scope.threadId,
         turnId: f.coordinator.coordinatorTurnId,
         type: 'assistant-message',

@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { workspaceIdForOwner } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { afterEach, expect, it, vi } from 'vitest';
 import type { AuthVariables } from '../auth/middleware.js';
@@ -250,7 +251,7 @@ it.each([
     outputBegan: true,
     requestId: call!.request_id,
     capabilityCallId: call!.call_id,
-    workspaceId: f.turn.workspaceId,
+    workspaceId: workspaceIdForOwner(f.turn.owner),
     threadId: f.turn.threadId,
     turnId: f.turn.id,
     corr: expect.any(String),

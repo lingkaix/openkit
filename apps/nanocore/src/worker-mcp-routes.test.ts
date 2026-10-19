@@ -31,7 +31,7 @@ import {
   parseWorkspaceMcpServerCatalog,
   resolveWorkspaceMcpServer,
 } from '@openkit/config-schema';
-import { deriveEntityId, PolicyDocumentV1Schema } from '@openkit/protocol';
+import { deriveEntityId, PolicyDocumentV1Schema, workspaceIdForOwner } from '@openkit/protocol';
 import { buildWorkerCanonicalTerminalEventRecord } from '@openkit/worker-protocol';
 import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
@@ -837,7 +837,7 @@ describe('worker MCP routes', () => {
       status: 'busy',
       threadId: turn.threadId,
       updatedAt: '2026-10-05T00:00:00.000Z',
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
     });
     store.updateTurn(turn.id, {
       agentSessionId: testEntityId('as', 'as_capture_wait'),
@@ -1112,7 +1112,7 @@ describe('worker MCP routes', () => {
       status: 'busy',
       threadId: turn.threadId,
       updatedAt: '2026-09-03T00:00:00.000Z',
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
     });
     store.updateTurn(turn.id, {
       agentId: 'agent_codex_host',
@@ -1306,16 +1306,17 @@ describe('worker MCP routes', () => {
       expect(askKnowledge).toHaveBeenCalledWith(
         expect.objectContaining({
           caller: 'worker',
-          workspaceId: turn.workspaceId,
+          workspaceId: workspaceIdForOwner(turn.owner),
           question: 'What is known?',
           access: expect.objectContaining({ outputThreadId: turn.threadId, outputTurnId: turn.id }),
         })
       );
-      const knowledgeDb = openWorkspaceDb(dataRoot, turn.workspaceId);
+      const knowledgeDb = openWorkspaceDb(dataRoot, workspaceIdForOwner(turn.owner));
       try {
-        const retained = listWorkspaceCapabilityCalls(knowledgeDb, turn.workspaceId).find(
-          (call) => call.extensions?.['openkit.knowledge/delivery']
-        );
+        const retained = listWorkspaceCapabilityCalls(
+          knowledgeDb,
+          workspaceIdForOwner(turn.owner)
+        ).find((call) => call.extensions?.['openkit.knowledge/delivery']);
         expect(retained?.status).toBe('succeeded');
         expect(JSON.parse(retained!.extensions!['openkit.knowledge/delivery']!.answer)).toEqual(
           delivered
@@ -1432,11 +1433,11 @@ describe('worker MCP routes', () => {
         conditionDb.sqlite.close();
       }
       // Owner refusals cross the selected HTTP relay and retain their established JSON-RPC envelope.
-      const refusalDb = openWorkspaceDb(dataRoot, turn.workspaceId);
+      const refusalDb = openWorkspaceDb(dataRoot, workspaceIdForOwner(turn.owner));
       try {
         applyScopedMigrations(refusalDb);
         const errorsBefore = rpcErrors.length;
-        const itemsBefore = store.listThreadItems(turn.workspaceId, turn.threadId);
+        const itemsBefore = store.listThreadItems(workspaceIdForOwner(turn.owner), turn.threadId);
         const turnBefore = store.getTurnById(turn.id);
         const presentationsBefore = refusalDb.sqlite
           .prepare('SELECT * FROM generative_presentations')
@@ -1444,7 +1445,9 @@ describe('worker MCP routes', () => {
         const receiptsBefore = refusalDb.sqlite.prepare('SELECT * FROM idempotency_requests').all();
         const missingAppId = '00000000-0000-4000-8000-000000000701';
         const missingPresentationId = 'pres_00000000-0000-70d7-8dd6-8e00b4b4b40e';
-        expect(existsSync(lightAppDbPath(dataRoot, turn.workspaceId, missingAppId))).toBe(false);
+        expect(
+          existsSync(lightAppDbPath(dataRoot, workspaceIdForOwner(turn.owner), missingAppId))
+        ).toBe(false);
         await expect(
           sessionClient.callTool({
             name: 'kernel_apps_retire',
@@ -1515,9 +1518,13 @@ describe('worker MCP routes', () => {
         expect(refusalDb.sqlite.prepare('SELECT * FROM idempotency_requests').all()).toEqual(
           receiptsBefore
         );
-        expect(store.listThreadItems(turn.workspaceId, turn.threadId)).toEqual(itemsBefore);
+        expect(store.listThreadItems(workspaceIdForOwner(turn.owner), turn.threadId)).toEqual(
+          itemsBefore
+        );
         expect(store.getTurnById(turn.id)).toEqual(turnBefore);
-        expect(existsSync(lightAppDbPath(dataRoot, turn.workspaceId, missingAppId))).toBe(false);
+        expect(
+          existsSync(lightAppDbPath(dataRoot, workspaceIdForOwner(turn.owner), missingAppId))
+        ).toBe(false);
       } finally {
         refusalDb.sqlite.close();
       }
@@ -1790,10 +1797,10 @@ describe('worker MCP routes', () => {
       });
     }
     const turns = threads.map((thread) => {
-      const turn = store.createTurn(thread.workspaceId, thread.id, 'Read peers', {
+      const turn = store.createTurn(workspaceIdForOwner(thread.owner), thread.id, 'Read peers', {
         kind: 'user',
         id:
-          thread.workspaceId === otherWorkspace.id
+          workspaceIdForOwner(thread.owner) === otherWorkspace.id
             ? 'usr_00000000-0000-73d4-904a-d4c4b905df7c'
             : 'usr_00000000-0000-7000-8000-000000000001',
       });
@@ -1801,7 +1808,7 @@ describe('worker MCP routes', () => {
       store.createAgentSession({
         id: sessionId,
         agentId: 'agent_codex_host',
-        workspaceId: thread.workspaceId,
+        workspaceId: workspaceIdForOwner(thread.owner),
         threadId: thread.id,
         status: 'busy',
         message: 'native-state-canary credential-canary',
@@ -1819,7 +1826,7 @@ describe('worker MCP routes', () => {
         agentSessionRuntimeBindingId: `binding_${thread.name}`,
         effectiveSetupGeneration: 1,
         harnessInstanceId: thread.name === 'foreign' ? 'harness_foreign' : 'harness_shared',
-        workspaceId: thread.workspaceId,
+        workspaceId: workspaceIdForOwner(thread.owner),
         threadId: thread.id,
         timestamp,
       });
@@ -1827,7 +1834,7 @@ describe('worker MCP routes', () => {
     });
     const peer = turns[1]!;
     const itemFields = {
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: peer.owner,
       threadId: peer.threadId,
       turnId: peer.id,
       status: 'completed' as const,
@@ -1985,13 +1992,13 @@ describe('worker MCP routes', () => {
         .slice(1)
         .flatMap((thread) =>
           store
-            .listThreadTurns(thread.workspaceId, thread.id)
+            .listThreadTurns(workspaceIdForOwner(thread.owner), thread.id)
             .flatMap((turn) =>
               ['turn.json', 'items.jsonl'].map((name) =>
                 join(
                   dataRoot,
                   'workspaces',
-                  thread.workspaceId,
+                  workspaceIdForOwner(thread.owner),
                   'threads',
                   thread.id,
                   'turns',
@@ -2005,10 +2012,10 @@ describe('worker MCP routes', () => {
         files: peerTurnFiles.map((path) => readFileSync(path).toString('base64')),
         turns: threads
           .slice(1)
-          .flatMap((thread) => store.listThreadTurns(thread.workspaceId, thread.id)),
+          .flatMap((thread) => store.listThreadTurns(workspaceIdForOwner(thread.owner), thread.id)),
         items: threads
           .slice(1)
-          .flatMap((thread) => store.listThreadItems(thread.workspaceId, thread.id)),
+          .flatMap((thread) => store.listThreadItems(workspaceIdForOwner(thread.owner), thread.id)),
         requests: workspaceDb.sqlite.prepare('SELECT * FROM pending_requests').all(),
         bindings: coreDb.sqlite.prepare('SELECT * FROM agent_session_runtime_bindings').all(),
       });
@@ -2151,10 +2158,10 @@ describe('worker MCP routes', () => {
         files: peerTurnFiles.map((path) => readFileSync(path).toString('base64')),
         turns: threads
           .slice(1)
-          .flatMap((thread) => store.listThreadTurns(thread.workspaceId, thread.id)),
+          .flatMap((thread) => store.listThreadTurns(workspaceIdForOwner(thread.owner), thread.id)),
         items: threads
           .slice(1)
-          .flatMap((thread) => store.listThreadItems(thread.workspaceId, thread.id)),
+          .flatMap((thread) => store.listThreadItems(workspaceIdForOwner(thread.owner), thread.id)),
         requests: workspaceDb.sqlite.prepare('SELECT * FROM pending_requests').all(),
         bindings: coreDb.sqlite.prepare('SELECT * FROM agent_session_runtime_bindings').all(),
       });
@@ -2877,7 +2884,7 @@ describe('worker MCP routes', () => {
     expect(JSON.stringify(environmentPackage)).not.toContain('pending-secret-canary');
     recordMcpWorkerLineage(coreDb, environmentPackage);
     // Production retains the dispatched package before a later captured human response reads it.
-    const packageDb = openWorkspaceDb(dataRoot, turn.workspaceId);
+    const packageDb = openWorkspaceDb(dataRoot, workspaceIdForOwner(turn.owner));
     try {
       applyScopedMigrations(packageDb);
       recordAgentEnvironmentPackageSnapshot(packageDb, {
@@ -3694,7 +3701,9 @@ describe('worker MCP routes', () => {
         `Expected queued NanoHost Harness operation: ${operation}; Turns: ${JSON.stringify(
           store
             .listThreads('ws_00000000-0000-7000-8000-000000000001')
-            .flatMap((thread) => store.listThreadTurns(thread.workspaceId, thread.id))
+            .flatMap((thread) =>
+              store.listThreadTurns(workspaceIdForOwner(thread.owner), thread.id)
+            )
             .map((turn) => ({ id: turn.id, status: turn.status, error: turn.error }))
         )}; Queue: ${JSON.stringify(coreDb.sqlite.prepare('SELECT status, denial_reason FROM scheduler_admission_entries').all())}`
       );
@@ -4018,9 +4027,10 @@ describe('worker MCP routes', () => {
       const durableTurn = store.getTurnById(firstTask.turn.id);
       if (ownerCommand === 'conversation.submit') {
         expect(durableTurn.threadId).not.toBe('th_00000000-0000-7000-8000-000000000001');
-        expect(store.getThread(durableTurn.workspaceId, durableTurn.threadId).parentThreadId).toBe(
-          'th_00000000-0000-7000-8000-000000000001'
-        );
+        expect(
+          store.getThread(workspaceIdForOwner(durableTurn.owner), durableTurn.threadId)
+            .parentThreadId
+        ).toBe('th_00000000-0000-7000-8000-000000000001');
       }
       expect(durableTurn.status).toBe('completed');
       if ('outcome' in firstTask) expect(firstTask.outcome).toBe('accepted');
@@ -4389,7 +4399,7 @@ describe('worker MCP routes', () => {
       status: 'busy',
       threadId: turn.threadId,
       updatedAt: '2026-09-03T00:00:00.000Z',
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
     });
     const snapshotDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(snapshotDb);
@@ -5086,7 +5096,7 @@ describe('worker MCP routes', () => {
         const session = store.createAgentSession({
           id: testEntityId('as', `as_mcp_${suffix}`),
           agentId: 'agent_codex_host',
-          workspaceId: turn.workspaceId,
+          workspaceId: workspaceIdForOwner(turn.owner),
           threadId: turn.threadId,
           status: 'idle',
           message: null,
@@ -5127,7 +5137,7 @@ describe('worker MCP routes', () => {
           threadId: turn.threadId,
           turnId: turn.id,
           workspaceDb,
-          workspaceId: turn.workspaceId,
+          workspaceId: workspaceIdForOwner(turn.owner),
         });
         finishCapabilityCall({
           callId: call.id,
@@ -5297,7 +5307,7 @@ describe('worker MCP routes', () => {
         threadId: turn.threadId,
         turnId: turn.id,
         workspaceDb,
-        workspaceId: turn.workspaceId,
+        workspaceId: workspaceIdForOwner(turn.owner),
       });
       finishCapabilityCall({ callId: call.id, status: 'succeeded', workspaceDb });
     } finally {

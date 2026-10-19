@@ -1527,7 +1527,7 @@ describe('central Workspace operation authorizer', () => {
     expect(response.status, await response.clone().text()).toBe(200);
     expect(fixture.administrationHandlerReads()).toBe(1);
     await expect(response.json()).resolves.toMatchObject({
-      turn: { workspaceId: actorQuickChatId },
+      turn: { owner: { kind: 'workspace', workspaceId: actorQuickChatId } },
     });
     expect(fixture.store.listThreads(actorQuickChatId)).toHaveLength(1);
     expect(fixture.store.getWorkspace(actorQuickChatId)).toMatchObject({

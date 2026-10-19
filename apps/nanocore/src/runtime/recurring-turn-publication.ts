@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { AutomationOccurrence } from '@openkit/app-api-schemas';
 import type { TurnSchema } from '@openkit/protocol';
+import { workspaceIdForOwner } from '@openkit/protocol';
 import type { FsStore } from '../lib/store.js';
 import type { SchedulerAdmissionEntryRecord } from '../scheduler-records.js';
 import { readPublishedTurnFileRecords } from '../storage/workspace-file-records.js';
@@ -16,7 +17,7 @@ export function recurringCanonicalTurnPublicationIssue(
   if (!turn) return 'turn_missing';
   if (
     turn.id !== entry.turnId ||
-    turn.workspaceId !== entry.workspaceId ||
+    workspaceIdForOwner(turn.owner) !== entry.workspaceId ||
     turn.threadId !== entry.threadId ||
     turn.agentId !== entry.requestedAgentId ||
     !isDeepStrictEqual(turn.triggerActor, entry.triggerActor) ||

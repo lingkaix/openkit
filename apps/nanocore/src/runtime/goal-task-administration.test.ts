@@ -234,7 +234,6 @@ async function fixture() {
   store.createItem({
     id: deriveEntityId('it', ['task-user', turn.id]),
     owner: { kind: 'workspace', workspaceId: workspace.id },
-    workspaceId: workspace.id,
     threadId: thread.id,
     turnId: turn.id,
     type: 'user-message',

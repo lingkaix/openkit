@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { deriveEntityId } from '@openkit/protocol';
+import { deriveEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, expect, it } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import {
@@ -211,7 +211,7 @@ async function fixture(typed = true, linked = true) {
   );
   store.createItem({
     id: deriveEntityId('it', ['task-user', turn.id]),
-    workspaceId: workspace.id,
+    owner: { kind: 'workspace', workspaceId: workspace.id },
     threadId: thread.id,
     turnId: turn.id,
     type: 'user-message',
@@ -318,7 +318,7 @@ async function fixture(typed = true, linked = true) {
       });
       store.createItem({
         id: requestItemId,
-        workspaceId: workspace.id,
+        owner: { kind: 'workspace', workspaceId: workspace.id },
         threadId: thread.id,
         turnId: turn.id,
         type: 'approval-request',
@@ -414,7 +414,7 @@ async function fixture(typed = true, linked = true) {
       ).toHaveLength(1);
       store.createItem({
         id: deriveEntityId('it', ['task-user', outcomeTurn.id]),
-        workspaceId: workspace.id,
+        owner: { kind: 'workspace', workspaceId: workspace.id },
         threadId: thread.id,
         turnId: outcomeTurn.id,
         type: 'user-message',
@@ -521,7 +521,7 @@ it('retains original Task bounds for an ordinary checkpoint-free user follow-up'
   );
   const item = f.store.createItem({
     id: deriveEntityId('it', ['task-user', turn.id]),
-    workspaceId: turn.workspaceId,
+    owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
     threadId: turn.threadId,
     turnId: turn.id,
     type: 'user-message',
@@ -536,7 +536,7 @@ it('retains original Task bounds for an ordinary checkpoint-free user follow-up'
     queueEntryId: `queue_${turn.id}`,
     requestId: randomUUID(),
     triggerActor: turn.triggerActor,
-    workspaceId: turn.workspaceId,
+    workspaceId: workspaceIdForOwner(turn.owner),
     threadId: turn.threadId,
     turnId: turn.id,
     turnInput: input,
@@ -552,7 +552,7 @@ it('retains original Task bounds for an ordinary checkpoint-free user follow-up'
     now: () => new Date().toISOString(),
   });
   const lineage = {
-    workspaceId: turn.workspaceId,
+    workspaceId: workspaceIdForOwner(turn.owner),
     threadId: turn.threadId,
     turnId: turn.id,
     agentSessionId,

@@ -187,7 +187,7 @@ describe('worker Context Package read projection', () => {
         readThreadItems: () => [
           {
             id: itemId,
-            workspaceId,
+            owner: { kind: 'workspace', workspaceId: workspaceId },
             threadId: thread.id,
             turnId: turn.id,
             type: 'user-message',
@@ -471,7 +471,7 @@ describe('thread taskInputs projection', () => {
     const otherText = structuredRequestText('Ignore this unproven matching JSON.');
     const item = store.createItem({
       id: 'it_00000000-0000-7b9d-9e1a-2632c3b76ed5',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
       turnId: turn.id,
       type: 'user-message',
@@ -483,7 +483,7 @@ describe('thread taskInputs projection', () => {
     });
     store.createItem({
       id: 'it_00000000-0000-7275-b9e3-6a2e51407254',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
       turnId: turn.id,
       type: 'user-message',
@@ -556,7 +556,7 @@ describe('thread taskInputs projection', () => {
     );
     store.createItem({
       id: 'it_00000000-0000-75e6-8332-7e496922d8d5',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
       turnId: turn.id,
       type: 'user-message',

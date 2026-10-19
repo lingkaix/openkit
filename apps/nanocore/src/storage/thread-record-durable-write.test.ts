@@ -1,6 +1,5 @@
 // openkit-test-platform: posix
-import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -33,7 +32,6 @@ vi.mock('node:fs', async (importOriginal) => {
 });
 
 import { FsStore } from '../lib/store.js';
-import { migrateThreadVisibilityCutover } from './thread-visibility-cutover-migration.js';
 
 /**
  * Requires a file fsync between the temporary write and rename, then a directory fsync.
@@ -55,30 +53,9 @@ function expectDurableRename(
   expect(events.slice(renameAt + 1).some((event) => event.op === 'fsyncSync')).toBe(true);
 }
 
-/** Reads one persisted Thread record from an isolated store. */
-function threadRecord(dataRoot: string, workspaceId: string, threadId: string) {
-  const path = join(dataRoot, 'workspaces', workspaceId, 'threads', threadId, 'thread.json');
-  return {
-    path,
-    value: JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>,
-  };
-}
-
-/** Removes only visibility-era metadata and recomputes the predecessor envelope digest. */
-function predecessorRecord(value: Record<string, unknown>) {
-  const predecessor = { ...value };
-  delete predecessor.visibility;
-  delete predecessor.privateOwnerUserId;
-  predecessor.requiredFeatures = ['openkit.thread-entry.v1'];
-  const { id, workspaceId, name, preview, status, entryPath, createdAt, updatedAt } = predecessor;
-  predecessor.contentDigest = `sha256:${createHash('sha256').update(JSON.stringify({ id, workspaceId, name, preview, status, entryPath, createdAt, updatedAt })).digest('hex')}`;
-  return predecessor;
-}
-
-describe('Thread visibility cutover durable publication', () => {
+describe('Current Thread record durable publication', () => {
   it('fsyncs thread.json before and after the atomic rename', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-visibility-durable-'));
-    const backupRoot = mkdtempSync(join(tmpdir(), 'openkit-visibility-durable-backup-'));
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Migration workspace');
     const formal = store.createThread(workspace.id, 'Formal worker history');
@@ -87,15 +64,13 @@ describe('Thread visibility cutover durable publication', () => {
       id: 'usr_00000000-0000-7000-8000-000000000001',
     });
     store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
-    const current = threadRecord(dataRoot, workspace.id, formal.id);
-    writeFileSync(current.path, `${JSON.stringify(predecessorRecord(current.value))}\n`);
-
     trace.events.length = 0;
-    const applied = migrateThreadVisibilityCutover({
-      backupRoot,
-      dataRoot,
+    const updated = store.updateThread(workspace.id, formal.id, { name: 'Updated formal work' });
+    expect(updated).toMatchObject({
+      name: 'Updated formal work',
+      owner: { kind: 'workspace', workspaceId: workspace.id },
+      visibility: 'workspace',
     });
-    expect(applied).toMatchObject({ applied: true, outcome: 'succeeded', writtenCount: 1 });
     expectDurableRename(trace.events, '/thread.json');
   });
 });

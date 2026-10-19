@@ -28,7 +28,7 @@ it('admits effort on turn.start and retained Turn projections without inventing 
   ).toBe(false);
   const retained = {
     id: 'tu_00000000-0000-77e3-bfde-66477d556f64',
-    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     threadId: 'th_00000000-0000-7000-8000-000000000001',
     triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     items: [],

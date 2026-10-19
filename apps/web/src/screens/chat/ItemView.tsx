@@ -339,7 +339,12 @@ export function ItemView({
       );
 
     case 'artifact-reference':
-      return <ArtifactReference key={`${item.workspaceId}:${item.id}`} item={item} />;
+      return (
+        <ArtifactReference
+          key={`${item.owner.kind === 'workspace' ? item.owner.workspaceId : 'server'}:${item.id}`}
+          item={item}
+        />
+      );
 
     case 'command-execution':
       return (

@@ -139,7 +139,13 @@ export function ChatStarter() {
               <button
                 type="button"
                 onClick={() =>
-                  navigate(conversationThreadPath(thread.workspaceId, thread.id, activity))
+                  navigate(
+                    conversationThreadPath(
+                      thread.owner.kind === 'workspace' ? thread.owner.workspaceId : '',
+                      thread.id,
+                      activity
+                    )
+                  )
                 }
                 className="flex min-w-0 flex-1 items-center gap-3 rounded-ok px-2 py-1 text-left outline-none hover:bg-overlay focus-visible:ring-2 focus-visible:ring-focus"
               >

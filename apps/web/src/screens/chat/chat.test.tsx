@@ -20,7 +20,7 @@ import { chatKeys } from './data';
 
 const THREAD = {
   id: 'th_00000000-0000-70a0-9cde-4561f64881c6',
-  workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+  owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' },
   name: 'Competitive teardown',
   preview: 'Competitive teardown',
   status: 'active',
@@ -95,7 +95,7 @@ const CONVERSATION_TARGET = {
 const ITEMS = ItemSchema.array().parse([
   {
     id: 'it_00000000-0000-7596-a3e2-be317d999ead',
-    workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+    owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' },
     threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
     turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
     type: 'user-message',
@@ -107,7 +107,7 @@ const ITEMS = ItemSchema.array().parse([
   },
   {
     id: 'it_00000000-0000-785f-a82d-59daa7b54760',
-    workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+    owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' },
     threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
     turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
     type: 'assistant-message',
@@ -118,7 +118,7 @@ const ITEMS = ItemSchema.array().parse([
   },
   {
     id: 'it_00000000-0000-7570-9913-dd37f2bda2fe',
-    workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+    owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' },
     threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
     type: 'approval-request',
     turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
@@ -135,7 +135,7 @@ const ITEMS = ItemSchema.array().parse([
 const USER_INPUT_ITEMS = ItemSchema.array().parse([
   {
     id: 'it_00000000-0000-722b-8b9c-ef21b6ead700',
-    workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+    owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' },
     threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
     turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
     type: 'user-input-request',
@@ -304,7 +304,7 @@ function turnStreamEvent(sequence: number, event: string, data: unknown) {
 
 const ACTIVE_TURN = TurnSchema.parse({
   id: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
-  workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+  owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' },
   threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
   triggerActor: { kind: 'user', id: 'usr_00000000-0000-7968-a053-ad9e71464afe' },
   items: [],
@@ -390,11 +390,11 @@ const QUICK_CHAT_MODE_RESPONSE = {
   receivingWorkspaceId: QUICK_CHAT_WORKSPACE.id,
   turn: TurnSchema.parse({
     ...COMPLETED_TURN,
-    workspaceId: QUICK_CHAT_WORKSPACE.id,
+    owner: { kind: 'workspace', workspaceId: QUICK_CHAT_WORKSPACE.id },
   }),
   item: ItemSchema.parse({
     ...ITEMS[1],
-    workspaceId: QUICK_CHAT_WORKSPACE.id,
+    owner: { kind: 'workspace', workspaceId: QUICK_CHAT_WORKSPACE.id },
   }),
 };
 
@@ -408,7 +408,7 @@ const SECOND_ASSISTANT_ITEM = ItemSchema.parse({
 
 const STREAMING_ITEM = {
   id: 'it_00000000-0000-7ba1-a7e3-58d592e2e90b',
-  workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+  owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' },
   threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
   turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
   type: 'assistant-message',
@@ -493,7 +493,10 @@ beforeEach(() => {
 
 describe.each([
   ['starter', '/chat'],
-  ['Thread', `/chat/${THREAD.workspaceId}/${THREAD.id}`],
+  [
+    'Thread',
+    `/chat/${THREAD.owner.kind === 'workspace' ? THREAD.owner.workspaceId : ''}/${THREAD.id}`,
+  ],
 ])('Composer client file drafts on %s', (_surface, path) => {
   it('keeps arbitrary files local and removes them without publishing an Artifact', async () => {
     const user = userEvent.setup();
@@ -1081,7 +1084,7 @@ describe('chat starter (board 01)', () => {
     const workspaceId = 'ws/space ?#%';
     const thread = {
       ...THREAD,
-      workspaceId,
+      owner: { kind: 'workspace' as const, workspaceId },
       id: 'th_00000000-0000-77d5-84f0-993908e56e3f',
       name: 'Encoded conversation',
     };
@@ -1285,7 +1288,7 @@ describe('chat starter (board 01)', () => {
   it('syncs the primary switcher to the canonical Thread route Workspace', async () => {
     const workspaceBThread = {
       ...THREAD,
-      workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' },
       name: 'Workspace B thread',
       preview: 'Workspace B thread',
     };
@@ -1408,7 +1411,7 @@ describe('chat starter (board 01)', () => {
     };
     const destination = {
       ...THREAD,
-      workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' },
       id: receivingThreadId,
       name: 'Receiving Task',
     };
@@ -1471,7 +1474,10 @@ describe('chat starter (board 01)', () => {
     };
     const other = {
       ...origin,
-      workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+      owner: {
+        kind: 'workspace' as const,
+        workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+      },
       name: 'Other Chat',
     };
     const getThread = vi
@@ -1767,7 +1773,7 @@ describe('chat thread (boards 02/03)', () => {
   it('explains a closed approval and never offers another decision', async () => {
     const decision = ItemSchema.parse({
       id: 'it_00000000-0000-7858-8a3b-5f4791bf9c4a',
-      workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' },
       threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
       turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
       type: 'approval-decision',
@@ -1943,7 +1949,7 @@ describe('chat thread (boards 02/03)', () => {
         ...ITEMS,
         {
           id: 'it_00000000-0000-78b1-834e-a8dc49f35819',
-          workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+          owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' },
           threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
           turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
           type: 'approval-decision',
@@ -1992,7 +1998,7 @@ describe('chat thread (boards 02/03)', () => {
       ...ITEMS,
       {
         id: 'it_00000000-0000-7db6-8b5a-6d048ddcb778',
-        workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' },
         threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
         turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
         type: 'approval-decision',
@@ -2215,7 +2221,11 @@ describe('chat thread (boards 02/03)', () => {
           userInputItem,
           {
             id: 'it_00000000-0000-72f2-914f-1f9755fa60c1',
-            workspaceId: userInputItem.workspaceId,
+            owner: {
+              kind: 'workspace',
+              workspaceId:
+                userInputItem.owner.kind === 'workspace' ? userInputItem.owner.workspaceId : '',
+            },
             threadId: userInputItem.threadId,
             turnId: 'tu_00000000-0000-7553-9195-34d7d80353d5',
             type: 'user-input-response',
@@ -2656,13 +2666,13 @@ describe('thread lifecycle and attribution (S7)', () => {
     const mutation = vi.fn().mockReturnValue(pending.promise);
     const workspaceBThread = {
       ...THREAD,
-      workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' },
       name: 'Workspace B teardown',
       preview: 'Workspace B teardown',
     };
     const workspaceBTurn = TurnSchema.parse({
       ...ACTIVE_TURN,
-      workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' },
       triggerActor: { kind: 'user', id: 'usr_00000000-0000-7e1a-82fc-aa295bc43d6c' },
     });
     const subscribeTurnEvents = vi.fn().mockReturnValue({
@@ -2815,13 +2825,13 @@ describe('thread lifecycle and attribution (S7)', () => {
     const workspaceBRequest = createDeferred<unknown>();
     const workspaceBThread = {
       ...THREAD,
-      workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' },
       name: 'Workspace B teardown',
       preview: 'Workspace B teardown',
     };
     const workspaceBTurn = TurnSchema.parse({
       ...ACTIVE_TURN,
-      workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' },
       triggerActor: { kind: 'user', id: 'usr_00000000-0000-7e1a-82fc-aa295bc43d6c' },
     });
     const workspaceAResult =
@@ -3127,7 +3137,7 @@ describe('thread lifecycle and attribution (S7)', () => {
     const updateThread = vi.fn().mockResolvedValue(THREAD);
     const workspaceBThread = {
       ...THREAD,
-      workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' },
       name: 'Workspace B teardown',
       preview: 'Workspace B teardown',
     };
@@ -3293,7 +3303,7 @@ describe('thread lifecycle and attribution (S7)', () => {
         items: ItemSchema.array().parse([
           {
             id: 'it_00000000-0000-799d-8511-6b79b6446a1d',
-            workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+            owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' },
             threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
             type: 'approval-decision',
             turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
@@ -3308,7 +3318,7 @@ describe('thread lifecycle and attribution (S7)', () => {
           },
           {
             id: 'it_00000000-0000-7ac7-8058-2f2d482b7437',
-            workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+            owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' },
             threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
             type: 'user-input-response',
             turnId: 'tu_00000000-0000-7da3-a7fc-80982f9b215e',
@@ -4513,7 +4523,7 @@ describe('open thread external activity', () => {
   const idleTurn = COMPLETED_TURN;
   const laterItem = ItemSchema.parse({
     id: 'it_00000000-0000-7025-9336-d2c7c3d76ac2',
-    workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+    owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' },
     threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
     turnId: 'tu_00000000-0000-7e0f-94c8-e1078c4837c1',
     type: 'assistant-message',
@@ -5049,7 +5059,10 @@ describe('open thread external activity', () => {
               navigationItem(
                 {
                   ...otherThread,
-                  workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+                  owner: {
+                    kind: 'workspace',
+                    workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+                  },
                   name: 'Second workspace thread',
                 },
                 '2026-07-21T00:00:00.000Z'
@@ -5064,7 +5077,7 @@ describe('open thread external activity', () => {
                 ItemSchema.parse({
                   ...ITEMS[0],
                   id: 'it_00000000-0000-7b75-87ae-cd4800676a62',
-                  workspaceId,
+                  owner: { kind: 'workspace', workspaceId },
                   threadId: 'th_00000000-0000-7c00-b9fc-382312fdf476',
                   text: 'Other thread baseline.',
                 }),
@@ -5078,7 +5091,7 @@ describe('open thread external activity', () => {
         threadId === 'th_00000000-0000-7c00-b9fc-382312fdf476'
           ? {
               ...otherThread,
-              workspaceId,
+              owner: { kind: 'workspace', workspaceId },
               name:
                 workspaceId === 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6'
                   ? 'Second workspace thread'
@@ -5418,9 +5431,10 @@ describe('mode entry and feedback (S8)', () => {
     const startTaskMode = vi.fn();
     const client = makeClient(
       {
-        'thread.read': vi
-          .fn()
-          .mockResolvedValue({ ...THREAD, workspaceId: QUICK_CHAT_WORKSPACE.id }),
+        'thread.read': vi.fn().mockResolvedValue({
+          ...THREAD,
+          owner: { kind: 'workspace', workspaceId: QUICK_CHAT_WORKSPACE.id },
+        }),
         'thread.items': vi.fn().mockResolvedValue({ items: ITEMS, nextCursor: null }),
         'workspace.list': vi.fn().mockResolvedValue({
           items: [QUICK_CHAT_WORKSPACE].map((workspace) => ({
@@ -5470,14 +5484,14 @@ describe('mode entry and feedback (S8)', () => {
     const submitConversation = vi.fn().mockReturnValue(started.promise);
     const workspaceBThread = {
       ...THREAD,
-      workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' },
       name: 'Workspace B teardown',
       preview: 'Workspace B teardown',
     };
     const workspaceBItem = ItemSchema.parse({
       ...ITEMS[0],
       id: 'it_00000000-0000-7dc6-b838-1e3fce692665',
-      workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' },
       turnId: 'tu_00000000-0000-7135-a7d9-4aa63b405497',
       text: 'Workspace B stays authoritative.',
     });
@@ -5631,20 +5645,20 @@ describe('mode entry and feedback (S8)', () => {
     const submitTurnFeedback = vi.fn().mockReturnValue(submitted.promise);
     const workspaceBThread = {
       ...THREAD,
-      workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' },
       name: 'Workspace B teardown',
       preview: 'Workspace B teardown',
     };
     const workspaceBTurn = TurnSchema.parse({
       ...COMPLETED_TURN,
       id: 'tu_00000000-0000-7135-a7d9-4aa63b405497',
-      workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' },
       triggerActor: { kind: 'user', id: 'usr_00000000-0000-7e1a-82fc-aa295bc43d6c' },
     });
     const workspaceBAssistant = ItemSchema.parse({
       ...ITEMS[1],
       id: 'it_00000000-0000-7a72-a3c3-089dca8798b5',
-      workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6' },
       turnId: workspaceBTurn.id,
       text: 'Workspace B answer.',
     });
@@ -7020,9 +7034,9 @@ describe('Worker environment Advanced choice', () => {
 });
 
 describe('exact Review candidate draft handoff', () => {
-  const path = `/chat/${THREAD.workspaceId}/${THREAD.id}`;
+  const path = `/chat/${THREAD.owner.kind === 'workspace' ? THREAD.owner.workspaceId : ''}/${THREAD.id}`;
   const candidate = {
-    workspaceId: THREAD.workspaceId,
+    workspaceId: THREAD.owner.kind === 'workspace' ? THREAD.owner.workspaceId : '',
     threadId: THREAD.id,
     artifactId: 'ar_00000000-0000-7fcd-91a3-6acf6c2aee4e',
     artifactVersion: 2,
@@ -7030,7 +7044,7 @@ describe('exact Review candidate draft handoff', () => {
   };
   const artifact = {
     id: candidate.artifactId,
-    workspaceId: THREAD.workspaceId,
+    workspaceId: THREAD.owner.kind === 'workspace' ? THREAD.owner.workspaceId : '',
     version: candidate.artifactVersion,
     contentDigest: candidate.contentDigest,
     status: 'ready',
@@ -7158,7 +7172,7 @@ describe('exact Review candidate draft handoff', () => {
             context: undefined,
             submittedAt: 1,
             variables: {
-              workspaceId: THREAD.workspaceId,
+              workspaceId: THREAD.owner.kind === 'workspace' ? THREAD.owner.workspaceId : '',
               threadId: THREAD.id,
               draft: {
                 input: 'Previous sent message',
@@ -7222,7 +7236,11 @@ describe('exact Review candidate draft handoff', () => {
             isPaused: false,
             context: undefined,
             submittedAt: 1,
-            variables: { workspaceId: THREAD.workspaceId, threadId: THREAD.id, draft: original },
+            variables: {
+              workspaceId: THREAD.owner.kind === 'workspace' ? THREAD.owner.workspaceId : '',
+              threadId: THREAD.id,
+              draft: original,
+            },
           }
         );
       },

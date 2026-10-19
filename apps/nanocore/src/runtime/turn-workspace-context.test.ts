@@ -2,6 +2,7 @@ import {
   resolveWorkspaceDataSourceReference,
   type WorkspaceDataSourceCatalog,
 } from '@openkit/config-schema';
+import { workspaceIdForOwner } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
@@ -115,7 +116,7 @@ describe('turn workspace context', () => {
     });
     expect(pkg.workspace.inputs).toEqual([]);
     expect(pkg.runtime.command.workingDirectory).toBe(
-      `/workspace/worktrees/${workerStorageDefaultWorkSlotRef(turn.workspaceId, turn.threadId)}`
+      `/workspace/worktrees/${workerStorageDefaultWorkSlotRef(workspaceIdForOwner(turn.owner), turn.threadId)}`
     );
   });
   it('resolves one authored remote Git source without projecting a NanoCore host path', () => {
@@ -181,7 +182,7 @@ describe('turn workspace context', () => {
       (input) => input.id === 'repo_remote'
     );
     const expectedWorktree = `/workspace/worktrees/${workerStorageDefaultWorkSlotRef(
-      turn.workspaceId,
+      workspaceIdForOwner(turn.owner),
       turn.threadId
     )}`;
 

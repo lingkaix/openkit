@@ -6,6 +6,7 @@ import {
   MAX_ARTIFACT_FILE_BYTES,
   TurnInputReferenceSchema,
   type TurnSchema,
+  workspaceIdForOwner,
 } from '@openkit/protocol';
 import type { z } from 'zod';
 import {
@@ -39,7 +40,8 @@ export async function prepareTurnFileSourceInputs(input: {
   const signal = input.signal ?? new AbortController().signal;
   const assertCurrent = input.assertCurrent;
   const workspaceRoot = input.workspaceRoot;
-  const { workspaceId, threadId, id: turnId } = input.turn;
+  const { threadId, id: turnId } = input.turn;
+  const workspaceId = workspaceIdForOwner(input.turn.owner);
   const originals = (input.turn.fileInputs ?? []).map((original) => Object.freeze({ ...original }));
   if (
     input.onlyOrdinal !== undefined &&

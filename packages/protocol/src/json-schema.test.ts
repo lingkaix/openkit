@@ -60,7 +60,7 @@ function createTurnCompletedEnvelope(stopReason: string = 'completed') {
       stopReason,
       turn: {
         id: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         triggerActor: { kind: 'user', id: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0' },
         items: [],
@@ -195,7 +195,7 @@ describe('generated JSON Schema event parity', () => {
     const validate = createValidator(turnSchemaUrl);
     const baseTurn = {
       id: 'tu_00000000-0000-7bde-8e11-bbfbdf1c1bf6',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       triggerActor: { kind: 'user', id: 'usr_00000000-0000-7e68-be9b-ac7521cb7be0' },
       items: [],
@@ -255,7 +255,7 @@ describe('generated JSON Schema event parity', () => {
       summary: null,
       threadId: null,
       turnId: null,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     });
 
     expect(validate(terminal)).toBe(true);

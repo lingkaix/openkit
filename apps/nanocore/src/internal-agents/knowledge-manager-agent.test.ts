@@ -10,11 +10,12 @@ import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js
 import { FsStore } from '../lib/store.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { ProviderRegistry } from '../providers/registry.js';
-import { openWorkspaceDb } from '../storage/db.js';
+import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import {
   createKnowledgeManagerTranscript,
   runKnowledgeManagerAgent,
+  runServerKnowledgeManagerAgent,
 } from './knowledge-manager-agent.js';
 import { internalContextDigest } from './rolling-context.js';
 
@@ -260,6 +261,75 @@ it('commits a completed Tool pair once and never fabricates a result for an unse
     expect(commit(complete)).toHaveLength(1);
     expect(f.store.getTurnById(f.turn.id).items).toHaveLength(1);
   } finally {
+    f.workspaceDb.sqlite.close();
+  }
+});
+
+it('rejects mismatched Knowledge Manager run owners before configuration, current admission or Turn mutation', async () => {
+  const f = fixture();
+  const coreDb = openCoreDb(f.store.getDataRoot()!);
+  try {
+    const serverThread = f.store.createServerThread('Server');
+    const serverTurn = f.store.createServerTurn(serverThread.id, 'Question', f.actor, null, {
+      agentId: 'knowledge-manager',
+    });
+    const runtimeConfig = vi.fn(() => {
+      throw new Error('Configuration must not be read.');
+    });
+    const assertCurrent = vi.fn();
+    const dependencies = {
+      store: f.store,
+      runtimeConfig,
+      dispatcher: { createResponses: vi.fn() },
+      resolveGatewayProvider: vi.fn(),
+    };
+    const common = {
+      signal: new AbortController().signal,
+      inputs: {
+        purpose: 'query' as const,
+        ownerScope: { kind: 'server' as const },
+        baseRevision: 'base',
+        trigger: 'request' as const,
+        instructions: 'Question',
+        sourceRange: [],
+      },
+      messages: [],
+      tools: [],
+      assertCurrent,
+      readEvidence: () => '',
+      resultSchema: { type: 'object' as const },
+      validateResult: () => undefined,
+    };
+    await expect(
+      runServerKnowledgeManagerAgent(dependencies, {
+        ...common,
+        kind: 'server',
+        coreDb,
+        turn: f.turn,
+      })
+    ).rejects.toThrow(/owner/i);
+    await expect(
+      runKnowledgeManagerAgent(dependencies, {
+        ...common,
+        workspaceDb: f.workspaceDb,
+        turn: serverTurn,
+      })
+    ).rejects.toThrow(/owner/i);
+    const other = f.store.createWorkspace('Other');
+    const otherDb = openWorkspaceDb(f.store.getDataRoot()!, other.id);
+    try {
+      await expect(
+        runKnowledgeManagerAgent(dependencies, { ...common, workspaceDb: otherDb, turn: f.turn })
+      ).rejects.toThrow(/owner/i);
+    } finally {
+      otherDb.sqlite.close();
+    }
+    expect(runtimeConfig).not.toHaveBeenCalled();
+    expect(assertCurrent).not.toHaveBeenCalled();
+    expect(f.store.getTurnById(f.turn.id).status).toBe('running');
+    expect(f.store.getServerTurnById(serverTurn.id).status).toBe('running');
+  } finally {
+    coreDb.sqlite.close();
     f.workspaceDb.sqlite.close();
   }
 });

@@ -10,6 +10,7 @@ import {
   WorkerSandboxAccessSchema,
 } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
+import { workspaceIdForOwner } from '@openkit/protocol';
 import {
   createSourceFile,
   forEachChild,
@@ -219,7 +220,7 @@ function createTurnFixture(
       queueEntryId: `queue_${turn.id}`,
       triggerActor,
       ...(serverAdminTokenId ? { serverAdminTokenId } : {}),
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
       threadId: turn.threadId,
       turnId: turn.id,
       turnInput: input,
@@ -1159,7 +1160,7 @@ describe('agent environment package resolver', () => {
             path: 'SKILL.md',
           },
         ],
-        workspaceId: turn.workspaceId,
+        workspaceId: workspaceIdForOwner(turn.owner),
       });
       const resolved = resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
@@ -1215,14 +1216,14 @@ describe('agent environment package resolver', () => {
             path: 'SKILL.md',
           },
         ],
-        workspaceId: turn.workspaceId,
+        workspaceId: workspaceIdForOwner(turn.owner),
       });
       const pinned = setWorkspaceSkillPin({
         dataRoot,
         digest: first.version.digest,
         entryId: 'repo-guidelines',
         expectedRevision: first.catalog.revision,
-        workspaceId: turn.workspaceId,
+        workspaceId: workspaceIdForOwner(turn.owner),
       });
       const second = importWorkspaceSkill({
         activate: true,
@@ -1242,7 +1243,7 @@ describe('agent environment package resolver', () => {
             path: 'SKILL.md',
           },
         ],
-        workspaceId: turn.workspaceId,
+        workspaceId: workspaceIdForOwner(turn.owner),
       });
       const resolved = resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
@@ -1659,7 +1660,7 @@ describe('agent environment package resolver', () => {
         resolveNanoHostAttemptTokenBinding(coreDb, {
           sandboxBindingRef: `lease-token:${turn.id}`,
           lineage: {
-            workspaceId: turn.workspaceId,
+            workspaceId: workspaceIdForOwner(turn.owner),
             threadId: turn.threadId,
             turnId: turn.id,
             agentSessionId: 'as_00000000-0000-7cc7-8867-edb4d3f5bad9',
@@ -2491,7 +2492,7 @@ describe('public network AEP admission', () => {
       recordWorkspaceOwnerMembership({
         coreDb,
         ownerUserId: USER_TRIGGER_ACTOR.id,
-        workspaceId: turn.workspaceId,
+        workspaceId: workspaceIdForOwner(turn.owner),
       });
       const agentSetup = createTestSetup({ network, mcpIds: ['shared'] });
       const current = createInMemoryRuntimeConfigSnapshot({
@@ -2556,7 +2557,7 @@ describe('public network AEP admission', () => {
       current.agentManifests = [agentSetup.manifest];
       setSharedMcpDisabled({
         dataRoot,
-        workspaceId: turn.workspaceId,
+        workspaceId: workspaceIdForOwner(turn.owner),
         mcpId: 'shared',
         disabled: true,
         expectedRevision: 0,
@@ -2566,14 +2567,14 @@ describe('public network AEP admission', () => {
       );
       setSharedMcpDisabled({
         dataRoot,
-        workspaceId: turn.workspaceId,
+        workspaceId: workspaceIdForOwner(turn.owner),
         mcpId: 'shared',
         disabled: false,
         expectedRevision: 1,
       });
       createMcpConfig({
         dataRoot,
-        owner: { kind: 'workspace', workspaceId: turn.workspaceId },
+        owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
         id: 'shared',
         displayName: 'Local collision',
         declaration: { kind: 'http', endpoint: 'https://local.example.com/mcp' },

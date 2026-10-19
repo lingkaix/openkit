@@ -7,6 +7,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
@@ -334,7 +335,7 @@ describe('S39 exact source owner map', () => {
       ).toBeNull();
       store.updateTurn(turn.id, { status: 'completed', completedAt: timestamp });
       store.commitArtifactVersion({
-        workspaceId: turn.workspaceId,
+        workspaceId: workspaceIdForOwner(turn.owner),
         threadId: turn.threadId,
         artifactId: 'ar_00000000-0000-7000-8000-0000000003eb',
         expectedArtifactVersion: 1,

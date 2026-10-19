@@ -19,7 +19,12 @@ import {
   type WorkspaceDataSourceCatalog,
   type WorkspaceMcpServerCatalog,
 } from '@openkit/config-schema';
-import { type ActorRef, ActorRefSchema, type TurnSchema } from '@openkit/protocol';
+import {
+  type ActorRef,
+  ActorRefSchema,
+  type TurnSchema,
+  workspaceIdForOwner,
+} from '@openkit/protocol';
 import {
   WORKER_ADAPTER_SUPPLY_FORMS,
   workerSessionInputPaths,
@@ -308,7 +313,7 @@ function hasWorkerContextPackageCheckpoint(coreDb: CoreDb | undefined, turn: Tur
   if (!coreDb) {
     return false;
   }
-  const path = workspaceDbPath(coreDb.dataRoot, turn.workspaceId);
+  const path = workspaceDbPath(coreDb.dataRoot, workspaceIdForOwner(turn.owner));
   if (!existsSync(path)) {
     return false;
   }
@@ -330,7 +335,7 @@ function hasWorkerContextPackageCheckpoint(coreDb: CoreDb | undefined, turn: Tur
           `SELECT 1 FROM ${schema}.worker_turn_checkpoints
            WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?`
         )
-        .get(turn.workspaceId, turn.threadId, turn.id)
+        .get(workspaceIdForOwner(turn.owner), turn.threadId, turn.id)
     );
   } finally {
     coreDb.sqlite.prepare(`DETACH DATABASE ${schema}`).run();
@@ -374,7 +379,7 @@ function resolveOpenShellAgentEnvironmentPackage(
   const mcpCatalog = input.coreDb
     ? composeWorkspaceMcpCatalog({
         dataRoot: input.coreDb.dataRoot,
-        workspaceId: input.turn.workspaceId,
+        workspaceId: workspaceIdForOwner(input.turn.owner),
         workspaceCatalog: input.workspaceMcpServerCatalog ?? { schemaVersion: 1, servers: [] },
       })
     : input.workspaceMcpServerCatalog;
@@ -386,7 +391,7 @@ function resolveOpenShellAgentEnvironmentPackage(
       throw new Error('Public network current admission metadata is required.');
     }
     const lineage = {
-      workspaceId: input.turn.workspaceId,
+      workspaceId: workspaceIdForOwner(input.turn.owner),
       threadId: input.turn.threadId,
       turnId: input.turn.id,
       triggerActor,
@@ -410,7 +415,7 @@ function resolveOpenShellAgentEnvironmentPackage(
         agentId: manifest.id,
         profileId: input.agentSetup.profileId,
         logicalModelId: logicalModels.preferredLogicalModelId,
-        workspaceId: input.turn.workspaceId,
+        workspaceId: workspaceIdForOwner(input.turn.owner),
         sandbox: sandboxAccess,
         mcp: manifest.mcp,
       },
@@ -423,7 +428,7 @@ function resolveOpenShellAgentEnvironmentPackage(
   const workspaceRoot = '/workspace';
   const workSlotRef =
     input.workerStorageWorkSlotRef ??
-    workerStorageDefaultWorkSlotRef(input.turn.workspaceId, input.turn.threadId);
+    workerStorageDefaultWorkSlotRef(workspaceIdForOwner(input.turn.owner), input.turn.threadId);
   const workingDirectory = `${workspaceRoot}/worktrees/${workSlotRef}`;
   const packageId = `aepkg_${input.turn.id}_${input.agentSessionId}`;
   const snapshotId = `aepsnap_${input.turn.id}_${input.agentSessionId}`;
@@ -463,7 +468,7 @@ function resolveOpenShellAgentEnvironmentPackage(
   const workerSkills = resolveWorkerSkillSupply(
     manifest.skills ?? [],
     manifest.runtime.adapter,
-    input.turn.workspaceId,
+    workspaceIdForOwner(input.turn.owner),
     input.coreDb?.dataRoot,
     input.agentSessionId,
     input.turn.skillSelections
@@ -543,7 +548,7 @@ function resolveOpenShellAgentEnvironmentPackage(
     turnId: input.turn.id,
     responsibleUserId,
     triggerActor,
-    workspaceId: input.turn.workspaceId,
+    workspaceId: workspaceIdForOwner(input.turn.owner),
     credentialResolution,
     ...(input.providerCredentialSink
       ? { providerCredentialSink: input.providerCredentialSink }
@@ -565,7 +570,7 @@ function resolveOpenShellAgentEnvironmentPackage(
     snapshotId,
     createdAt,
     scope: {
-      workspaceId: input.turn.workspaceId,
+      workspaceId: workspaceIdForOwner(input.turn.owner),
       threadId: input.turn.threadId,
       turnId: input.turn.id,
       agentSessionId: input.agentSessionId,

@@ -18,7 +18,7 @@ describe('thread item replay app API', () => {
     );
     const first = store.createItem({
       id: 'it_00000000-0000-763b-b3b8-3669a5928aa2',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
       turnId: turn.id,
       type: 'user-message',
@@ -30,7 +30,7 @@ describe('thread item replay app API', () => {
     });
     const second = store.createItem({
       id: 'it_00000000-0000-7beb-8b84-62c886f469f0',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
       turnId: turn.id,
       type: 'assistant-message',

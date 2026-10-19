@@ -214,7 +214,7 @@ it.each([
     });
     const reply = store.createItem({
       id: 'it_00000000-0000-704d-b966-477a8ad1120b',
-      workspaceId: workspace.id,
+      owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: completed.id,
       turnId: taskTurn.id,
       type: 'assistant-message',
@@ -335,7 +335,7 @@ it.each([
     // A reference in a linked shared Thread cannot launder a private Artifact's origin audience.
     store.createItem({
       id: 'it_00000000-0000-7189-a388-3daa686462d9',
-      workspaceId: workspace.id,
+      owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: completed.id,
       turnId: taskTurn.id,
       type: 'artifact-reference',

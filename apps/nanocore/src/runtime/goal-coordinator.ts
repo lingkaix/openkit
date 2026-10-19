@@ -10,6 +10,7 @@ import {
   allocateEntityId,
   isSealedTurnTerminal,
   readRetainedV1,
+  workspaceIdForOwner,
   writeRetainedV1,
 } from '@openkit/protocol';
 import { z } from 'zod';
@@ -564,7 +565,7 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
     if (active.has(turnId)) return;
     active.add(turnId);
     const turn = store.getTurnById(turnId);
-    const db = options.openWorkspace(turn.workspaceId);
+    const db = options.openWorkspace(workspaceIdForOwner(turn.owner));
     const row = db.sqlite
       .prepare('SELECT schema_version AS schemaVersion,goal_id FROM goals WHERE thread_id=?')
       .get(turn.threadId) as { schemaVersion: unknown; goal_id: string } | undefined;
@@ -771,7 +772,7 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
           if (text)
             store.createItem({
               id: allocateEntityId('it'),
-              workspaceId: goal.workspaceId,
+              owner: { kind: 'workspace', workspaceId: goal.workspaceId },
               threadId: goal.threadId,
               turnId,
               type: 'assistant-message',
@@ -816,7 +817,7 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
     }
   }
   function terminal(turn: ReturnType<FsStore['getTurnById']>): void {
-    const db = options.openWorkspace(turn.workspaceId);
+    const db = options.openWorkspace(workspaceIdForOwner(turn.owner));
     try {
       const rows = db.sqlite
         .prepare(
@@ -824,7 +825,7 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
         )
         .all(turn.threadId, turn.threadId) as { schemaVersion: unknown; goal_id: string }[];
       const goalIds = rows.map((row) => readRetainedV1(row, () => row.goal_id));
-      for (const goalId of new Set(goalIds)) wake(turn.workspaceId, goalId);
+      for (const goalId of new Set(goalIds)) wake(workspaceIdForOwner(turn.owner), goalId);
     } finally {
       db.sqlite.close();
     }

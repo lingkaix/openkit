@@ -253,7 +253,7 @@ function importItemRecords(
     const timestamp = recordedAt ?? new Date().toISOString();
     const item = {
       id: deriveEntityId('it', ['worker', environmentPackage.scope.turnId, parsed.data.sequence]),
-      workspaceId: environmentPackage.scope.workspaceId,
+      owner: { kind: 'workspace', workspaceId: environmentPackage.scope.workspaceId },
       threadId: environmentPackage.scope.threadId,
       turnId: environmentPackage.scope.turnId,
       type: 'assistant-message',
@@ -417,7 +417,7 @@ export function preflightArtifactTuple(
 ): boolean {
   const expectedReference = ItemSchema.parse({
     id: artifactReferenceItemId(artifact.id, artifact.turnId as string),
-    workspaceId: artifact.workspaceId,
+    owner: { kind: 'workspace', workspaceId: artifact.workspaceId },
     threadId: artifact.threadId,
     turnId: artifact.turnId,
     type: 'artifact-reference',

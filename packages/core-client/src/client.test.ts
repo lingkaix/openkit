@@ -221,7 +221,7 @@ function workspaceDeletionResponse() {
 function thread() {
   return {
     id: 'th_00000000-0000-7000-8000-000000000001',
-    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     name: 'Demo thread',
     preview: 'Demo thread',
     entryPath: 'conversation',
@@ -236,7 +236,7 @@ function thread() {
 function turn() {
   return {
     id: 'tu_00000000-0000-77e3-bfde-66477d556f64',
-    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     threadId: 'th_00000000-0000-7000-8000-000000000001',
     triggerActor: { kind: 'user', id: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b' },
     items: [],
@@ -506,7 +506,7 @@ function notebookPublication(
 function userMessageItem() {
   return {
     id: 'it_00000000-0000-7167-b408-becd17a436db',
-    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     threadId: 'th_00000000-0000-7000-8000-000000000001',
     turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
     type: 'user-message',
@@ -819,7 +819,7 @@ function capabilityUsageResponse() {
     capabilityCalls: [
       {
         id: 'cap_00000000-0000-7d4f-884e-ab4fdf8dc968',
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
         itemId: 'it_00000000-0000-7d53-9abb-fba003a3df39',
@@ -1389,6 +1389,16 @@ const pseudoTerminalCases = [
     { ...turnEvent(5, 'turn.completed'), turnId: 'tu_00000000-0000-7e18-a597-336d92a699e9' },
   ],
   [
+    'a Server-owned payload Turn',
+    {
+      ...turnEvent(5, 'turn.completed'),
+      data: {
+        ...turnEvent(5, 'turn.completed').data,
+        turn: { ...turn(), owner: { kind: 'server' }, status: 'completed', completedAt: timestamp },
+      },
+    },
+  ],
+  [
     'a mismatched payload Workspace',
     {
       ...turnEvent(5, 'turn.completed'),
@@ -1398,7 +1408,7 @@ const pseudoTerminalCases = [
           ...turn(),
           status: 'completed',
           completedAt: timestamp,
-          workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580',
+          owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580' },
         },
       },
     },
@@ -3066,7 +3076,7 @@ describe('createCoreClient', () => {
           turn: turn(),
           item: {
             id: 'it_00000000-0000-7865-a4d8-ae16913048ac',
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
             threadId: 'th_00000000-0000-7000-8000-000000000001',
             turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
             type: 'assistant-message',

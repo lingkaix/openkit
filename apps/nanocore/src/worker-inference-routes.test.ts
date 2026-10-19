@@ -16,6 +16,7 @@ import { serve } from '@hono/node-server';
 import type { AgentEnvironmentPackage, GatewayConfig } from '@openkit/config-schema';
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
 import type { ReasoningEffort } from '@openkit/protocol';
+import { workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WORKER_ADAPTERS } from '../../../packages/worker-shim/src/adapter-registry.js';
 import { openSandboxIntegration } from '../../../packages/worker-shim/src/integration-client.js';
@@ -396,14 +397,14 @@ function createWorkerInferenceRouteFixture(
     const persisted = new FsStore({ dataRoot: appCoreDb.dataRoot });
     persisted.importWorkspaceSnapshot({
       ...notebookImportFixture({
-        workspaceId: store.getWorkspace(turn.workspaceId).id,
+        workspaceId: store.getWorkspace(workspaceIdForOwner(turn.owner)).id,
         knowledge: [],
       }),
-      workspace: store.getWorkspace(turn.workspaceId),
-      threads: [store.getThread(turn.workspaceId, turn.threadId)],
+      workspace: store.getWorkspace(workspaceIdForOwner(turn.owner)),
+      threads: [store.getThread(workspaceIdForOwner(turn.owner), turn.threadId)],
       turns: [turn],
       knowledge: [],
-      itemRevisions: store.listThreadItems(turn.workspaceId, turn.threadId),
+      itemRevisions: store.listThreadItems(workspaceIdForOwner(turn.owner), turn.threadId),
       artifacts: [],
       agentSessions: [],
       turnEvents: [],
@@ -484,7 +485,7 @@ function createWorkerInferenceRouteFixture(
       requestId: 'req_worker_inference_outer_1',
       triggerActor: environmentPackage.scope.triggerActor,
       serverAdminTokenId: options.adminBearer ? 'token_worker_inference_admin' : null,
-      workspaceId: turn.workspaceId,
+      workspaceId: workspaceIdForOwner(turn.owner),
       threadId: turn.threadId,
       turnId: turn.id,
       turnInput: 'Call worker inference',
@@ -518,7 +519,7 @@ function createWorkerInferenceRouteFixture(
       workerControlTokenHash: hashWorkerRouteToken(workerControlToken),
       workerInferenceTokenHash: hashWorkerRouteToken(workerInferenceToken),
     });
-    const workspaceDb = openWorkspaceDb(appCoreDb.dataRoot, turn.workspaceId);
+    const workspaceDb = openWorkspaceDb(appCoreDb.dataRoot, workspaceIdForOwner(turn.owner));
     try {
       applyScopedMigrations(workspaceDb);
       recordAgentEnvironmentPackageSnapshot(workspaceDb, {

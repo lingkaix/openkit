@@ -114,7 +114,7 @@ async function fixture(reviewRequired = false, failAfterPublication = false) {
   const now = new Date().toISOString();
   store.createItem({
     id: allocateEntityId('it'),
-    workspaceId: workspace.id,
+    owner: { kind: 'workspace', workspaceId: workspace.id },
     threadId: ordinary.id,
     turnId: sourceTurn.id,
     type: 'user-message',

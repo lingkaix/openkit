@@ -5,6 +5,7 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
+import { workspaceIdForOwner } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
@@ -195,8 +196,8 @@ describe('first private User Memory query', () => {
     expect(OPERATION_DEFINITIONS['memory.ask'].outputSchema.safeParse(result).success).toBe(true);
     expect(result.citations).toEqual([]);
     const work = f.store.getTurnById(result.turnId);
-    expect(work.workspaceId).toBe(f.workspace.id);
-    expect(f.store.getThread(work.workspaceId, work.threadId)).toMatchObject({
+    expect(work.owner).toEqual({ kind: 'workspace', workspaceId: f.workspace.id });
+    expect(f.store.getThread(workspaceIdForOwner(work.owner), work.threadId)).toMatchObject({
       visibility: 'private',
       privateOwnerUserId: f.userId,
     });

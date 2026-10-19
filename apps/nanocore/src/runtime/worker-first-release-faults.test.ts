@@ -570,7 +570,7 @@ describe('first-release worker faults (real Core crossings)', () => {
       };
       f.store.createItem({
         id: request.requestItemId,
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: testEntityId('tu', 'fault-turn'),
         type: 'user-input-request',

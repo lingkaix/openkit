@@ -397,7 +397,7 @@ describe('cleaned backend delete delivery discard', () => {
     { requestId: requestId.toUpperCase() },
     { failureCode: 'effect_failed' },
     { sandboxId: null },
-  ])('rejects a malformed or uncorrelated retained result %j', async (change) => {
+  ])('rejects a malformed or uncorrelated retained result (case %#)', async (change) => {
     const fixture = await createFixture();
     try {
       fixture.transition('physical-cleaned');

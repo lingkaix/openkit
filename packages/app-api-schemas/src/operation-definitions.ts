@@ -160,7 +160,9 @@ export const PRODUCT_OPERATION_DEFINITIONS = composeOperationTables(
 );
 
 /** Static composition of the implemented families; this is not a registration surface. */
-const API_OPERATION_DEFINITIONS = composeOperationTables(
+const API_OPERATION_DEFINITIONS: typeof PRODUCT_OPERATION_DEFINITIONS &
+  typeof ADMINISTRATION_OPERATION_DEFINITIONS &
+  typeof ACCESS_TOKEN_OPERATION_DEFINITIONS = composeOperationTables(
   PRODUCT_OPERATION_DEFINITIONS,
   ADMINISTRATION_OPERATION_DEFINITIONS,
   ACCESS_TOKEN_OPERATION_DEFINITIONS
@@ -189,8 +191,8 @@ export const GoalTaskPolicyWriteOutputSchema = z
   })
   .strict();
 
-/** The shared registry includes native dispatch without publishing a transport projection. */
-export const OPERATION_REGISTRY = composeOperationTables(API_OPERATION_DEFINITIONS, {
+/** Named native declarations keep exact registry types within declaration-emission limits. */
+const NATIVE_OPERATION_DEFINITIONS = {
   'policy.write': {
     binding: 'native',
     description:
@@ -221,7 +223,14 @@ export const OPERATION_REGISTRY = composeOperationTables(API_OPERATION_DEFINITIO
     modes: ['observe', 'advise', 'gate', 'transform'],
     participantKinds: ['deterministic', 'agent'],
   } satisfies NativeOperationDefinition,
-});
+} as const;
+
+/** The shared registry includes native dispatch without publishing a transport projection. */
+export const OPERATION_REGISTRY: typeof API_OPERATION_DEFINITIONS &
+  typeof NATIVE_OPERATION_DEFINITIONS = composeOperationTables(
+  API_OPERATION_DEFINITIONS,
+  NATIVE_OPERATION_DEFINITIONS
+);
 
 /** Existing API projections are selected from the single composed registry. */
 export const OPERATION_DEFINITIONS = Object.fromEntries(

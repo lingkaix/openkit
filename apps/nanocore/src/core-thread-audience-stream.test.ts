@@ -63,7 +63,7 @@ function createSharedStreamFixture() {
     threadId: thread.id,
     turnId: turn.id,
     type: 'assistant-message',
-    workspaceId: workspace.id,
+    owner: { kind: 'workspace', workspaceId: workspace.id },
   });
   store.emitTurnEvent(turn.id, {
     data: { status: 'running', turnId: turn.id, type: 'turn-started' },

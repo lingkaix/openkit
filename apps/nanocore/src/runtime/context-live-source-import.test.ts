@@ -102,7 +102,7 @@ it('streams a complete admitted Turn ZIP into the live Context input without ret
     );
     const item = store.createItem({
       id: allocateEntityId('it'),
-      workspaceId: workspace.id,
+      owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: thread.id,
       turnId: turn.id,
       type: 'user-message',

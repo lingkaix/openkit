@@ -6,8 +6,8 @@ import { KNOWLEDGE_MANAGER_RUN_DEADLINE_MS } from '@openkit/config-schema';
 import {
   type ActorRef,
   allocateEntityId,
+  type Item,
   responsibleUserIdForActor,
-  type ServerItem,
 } from '@openkit/protocol';
 import type { Actor } from '../auth/identity.js';
 import { requireCurrentDeploymentAdmin } from '../auth/operation-authorizer.js';
@@ -590,7 +590,7 @@ export function prepareServerKnowledgeMaintenance(
           ],
           tools,
           assertCurrent,
-          readEvidence: (items: readonly ServerItem[]) => {
+          readEvidence: (items: readonly Item[]) => {
             assertCurrent();
             return internalContextDigest({
               owner: { kind: 'server' },

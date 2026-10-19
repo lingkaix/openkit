@@ -6,6 +6,7 @@ import {
 } from 'node:http2';
 import { createServer as createHttpsServer } from 'node:https';
 import { serve } from '@hono/node-server';
+import { workspaceIdForOwner } from '@openkit/protocol';
 import {
   createApp,
   createDefaultVaultUnlockState,
@@ -403,7 +404,10 @@ const bootResult = await runBootPhases({
             }
 
             if ('id' in result && result.error?.code === 'worker_governance_restart_recovery') {
-              const workspaceDb = openBootVerifiedWorkspaceDb(dataRoot, result.workspaceId);
+              const workspaceDb = openBootVerifiedWorkspaceDb(
+                dataRoot,
+                workspaceIdForOwner(result.owner)
+              );
               try {
                 appendRecoveredTurnObservation(
                   workspaceDb,

@@ -9,7 +9,7 @@ import {
   operationToolName,
   SubmitConversationResponseSchema,
 } from '@openkit/app-api-schemas';
-import { allocateEntityId, formatReferenceUri } from '@openkit/protocol';
+import { allocateEntityId, formatReferenceUri, workspaceIdForOwner } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { BUILT_IN_SYSTEM_PROMPTS } from './internal-agents/builtin-prompts.js';
@@ -1297,7 +1297,7 @@ describe('quick chat app API', () => {
     for (const status of ['in_progress', 'failed'] as const) {
       store.createItem({
         id: allocateEntityId('it'),
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
         turnId: priorTurn,
         type: 'assistant-message',
@@ -2224,7 +2224,7 @@ describe('quick chat app API', () => {
     // The existing Pending Request producer owns this prior question; no keyword vote or receipt is fabricated.
     const question = store.createItem({
       id: pendingRequestItemId(pendingId, 'request'),
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: 'th_00000000-0000-7000-8000-000000000001',
       turnId: raisingTurn.id,
       type: 'user-input-request',
@@ -2516,7 +2516,7 @@ describe('quick chat app API', () => {
     const marker = 'AMBIENT_PRIVATE_GOAL_CONTEXT';
     store.createItem({
       id: allocateEntityId('it'),
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
       turnId: privateTurn.id,
       type: 'user-message',
@@ -2756,7 +2756,7 @@ describe('quick chat app API', () => {
     } else
       store.createItem({
         id: allocateEntityId('it'),
-        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: thread.id,
         turnId: old.id,
         type: 'user-message',
@@ -2865,18 +2865,18 @@ describe('quick chat app API', () => {
     expect(work.visibility).toBe('workspace');
     // Goal creation admits its own Coordinator Turn; only the subsequent ordinary Assistant dispatch is forbidden.
     await vi.waitFor(() => {
-      const turns = fixture.store.listThreadTurns(work.workspaceId, work.id);
+      const turns = fixture.store.listThreadTurns(workspaceIdForOwner(work.owner), work.id);
       expect(turns.length).toBeGreaterThan(0);
       expect(turns.every((turn) => turn.status === 'completed')).toBe(true);
     });
     const beforeProviderCalls = createResponses.mock.calls.length;
-    const beforeTurns = fixture.store.listThreadTurns(work.workspaceId, work.id);
-    const beforeItems = fixture.store.listThreadItems(work.workspaceId, work.id);
+    const beforeTurns = fixture.store.listThreadTurns(workspaceIdForOwner(work.owner), work.id);
+    const beforeItems = fixture.store.listThreadItems(workspaceIdForOwner(work.owner), work.id);
     const response = await fixture.app.request(
       ...operationRequest(
         'conversation.submit',
         {
-          workspaceId: work.workspaceId,
+          workspaceId: workspaceIdForOwner(work.owner),
           threadId: work.id,
         },
         { body: JSON.stringify(conversationRequest('Explain a short concept.', randomUUID())) }
@@ -2885,15 +2885,19 @@ describe('quick chat app API', () => {
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toMatchObject({ code: 'assistant_timeline_required' });
     expect(createResponses).toHaveBeenCalledTimes(beforeProviderCalls);
-    expect(fixture.store.listThreadTurns(work.workspaceId, work.id)).toEqual(beforeTurns);
-    expect(fixture.store.listThreadItems(work.workspaceId, work.id)).toEqual(beforeItems);
-    expect(fixture.store.getThread(work.workspaceId, work.id)).toEqual(work);
+    expect(fixture.store.listThreadTurns(workspaceIdForOwner(work.owner), work.id)).toEqual(
+      beforeTurns
+    );
+    expect(fixture.store.listThreadItems(workspaceIdForOwner(work.owner), work.id)).toEqual(
+      beforeItems
+    );
+    expect(fixture.store.getThread(workspaceIdForOwner(work.owner), work.id)).toEqual(work);
     const targetsResponse = await fixture.app.request(
       ...operationRequest(
         'conversation.targets',
         {},
         {
-          body: JSON.stringify({ workspaceId: work.workspaceId, threadId: work.id }),
+          body: JSON.stringify({ workspaceId: workspaceIdForOwner(work.owner), threadId: work.id }),
         }
       )
     );

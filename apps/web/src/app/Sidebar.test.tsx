@@ -1,5 +1,6 @@
 import type { ConversationNavigationResponse } from '@openkit/app-api-schemas';
 import type { CoreClient } from '@openkit/core-client';
+import { workspaceIdForOwner } from '@openkit/protocol';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -128,7 +129,7 @@ describe('conversation navigation sidebar', () => {
     const user = userEvent.setup();
     const thread = {
       id: 'th_019a0000-0000-7000-8000-000000000103',
-      workspaceId: 'ws_019a0000-0000-7000-8000-000000000101',
+      owner: { kind: 'workspace', workspaceId: 'ws_019a0000-0000-7000-8000-000000000101' },
       name: 'Retained Assistant name',
       preview: 'Retained history',
       status: 'archived',
@@ -161,13 +162,13 @@ describe('conversation navigation sidebar', () => {
     await user.click(within(error).getByRole('button', { name: 'Try again' }));
     await waitFor(() =>
       expect(screen.getByLabelText('Location')).toHaveTextContent(
-        `/chat/${thread.workspaceId}/${thread.id}`
+        `/chat/${workspaceIdForOwner(thread.owner)}/${thread.id}`
       )
     );
     expect(create).toHaveBeenCalledTimes(2);
     const first = create.mock.calls[0]![0];
     expect(first).toEqual({
-      workspaceId: thread.workspaceId,
+      workspaceId: workspaceIdForOwner(thread.owner),
       name: 'Assistant',
       requestId: expect.any(String),
     });
@@ -203,7 +204,7 @@ describe('conversation navigation sidebar', () => {
     await act(async () => {
       finishOpening({
         id: 'th_019a0000-0000-7000-8000-000000000103',
-        workspaceId: 'ws_019a0000-0000-7000-8000-000000000101',
+        owner: { kind: 'workspace', workspaceId: 'ws_019a0000-0000-7000-8000-000000000101' },
         name: 'Assistant',
         preview: 'History',
         status: 'active',
@@ -236,7 +237,7 @@ describe('conversation navigation sidebar', () => {
     const rows: ConversationNavigationResponse['items'] = kinds.map((activity, index) => ({
       thread: {
         id: threadIds[index]!,
-        workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+        owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0' },
         name: `Conversation ${index}`,
         preview: '',
         status: 'active',

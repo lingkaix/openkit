@@ -63,7 +63,7 @@ export function parameters() {
 function turn(tid, n, agent = 'quick-chat') {
   return {
     id: `turn-example-${tid}-${n}`,
-    workspaceId: 'workspace-example',
+    owner: { kind: 'workspace', workspaceId: 'workspace-example' },
     threadId: tid,
     status: 'completed',
     error: null,
@@ -77,7 +77,7 @@ function turn(tid, n, agent = 'quick-chat') {
 function item(t, text) {
   return {
     id: `item-example-${t.id}`,
-    workspaceId: t.workspaceId,
+    owner: t.owner,
     threadId: t.threadId,
     turnId: t.id,
     status: 'completed',

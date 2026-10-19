@@ -6,10 +6,11 @@ import { join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 /** Reuse the existing skip guard while streaming deciding test output to CI. */
-function guardedExecution({ cwd, command }) {
+function guardedExecution({ cwd, command, env }) {
   const guard = new URL('./validate-test-governance.mjs', import.meta.url);
   const result = spawnSync(process.execPath, [guard.pathname, '--run', '--', ...command], {
     cwd,
+    env,
     stdio: 'inherit',
   });
   return result.error || result.signal || result.status !== 0
@@ -71,6 +72,9 @@ export function coveredSuite(
   } = {}
 ) {
   const cli = join(owner.cwd, 'node_modules/vitest/vitest.mjs');
+  // Vitest's environment overrides CLI worker limits; keep NanoCore's actual child cap exact.
+  const nanoCore = owner.name === '@openkit/nanocore';
+  const env = nanoCore ? { ...process.env, VITEST_MAX_WORKERS: '2' } : undefined;
   if (
     partition &&
     (!Number.isSafeInteger(partition.index) ||
@@ -89,13 +93,13 @@ export function coveredSuite(
         cli,
         'list',
         '--json',
-        '--maxWorkers=4',
+        `--maxWorkers=${nanoCore ? 2 : 4}`,
         '--pool=threads',
         ...(coverage ? ['--coverage'] : []),
         ...(filesOnly ? ['--filesOnly'] : []),
         ...partitionArgs,
       ],
-      { cwd: owner.cwd, encoding: 'utf8', timeout: 600000, maxBuffer: 64 * 1024 * 1024 }
+      { cwd: owner.cwd, env, encoding: 'utf8', timeout: 600000, maxBuffer: 64 * 1024 * 1024 }
     );
     if (r.error || r.signal || r.status !== 0)
       throw Error(
@@ -119,10 +123,12 @@ export function coveredSuite(
     }
     const errors = run({
       cwd: owner.cwd,
+      env,
       command: [
         process.execPath,
         cli,
         'run',
+        ...(nanoCore ? ['--maxWorkers=2'] : []),
         '--coverage',
         '--reporter=tap-flat',
         ...(reportFile ? ['--reporter=json', `--outputFile.json=${reportFile}`] : []),
@@ -207,10 +213,21 @@ export function mergeCoveredSuite(
   { directory, reportFile, count = 8, spawn = spawnSync, run = guardedExecution } = {}
 ) {
   const cli = join(owner.cwd, 'node_modules/vitest/vitest.mjs');
+  // Vitest's environment overrides CLI worker limits; keep NanoCore's actual child cap exact.
+  const nanoCore = owner.name === '@openkit/nanocore';
+  const env = nanoCore ? { ...process.env, VITEST_MAX_WORKERS: '2' } : undefined;
   const collected = spawn(
     process.execPath,
-    [cli, 'list', '--json', '--filesOnly', '--maxWorkers=4', '--pool=threads', '--coverage'],
-    { cwd: owner.cwd, encoding: 'utf8', timeout: 600000, maxBuffer: 64 * 1024 * 1024 }
+    [
+      cli,
+      'list',
+      '--json',
+      '--filesOnly',
+      `--maxWorkers=${nanoCore ? 2 : 4}`,
+      '--pool=threads',
+      '--coverage',
+    ],
+    { cwd: owner.cwd, env, encoding: 'utf8', timeout: 600000, maxBuffer: 64 * 1024 * 1024 }
   );
   if (collected.error || collected.signal || collected.status !== 0)
     throw Error('Test Strategy: complete coverage file collection failed');
@@ -230,10 +247,12 @@ export function mergeCoveredSuite(
     throw Error('Test Strategy: missing or extra coverage blob');
   const errors = run({
     cwd: owner.cwd,
+    env,
     command: [
       process.execPath,
       cli,
       `--merge-reports=${join(directory, 'blobs')}`,
+      ...(nanoCore ? ['--maxWorkers=2'] : []),
       '--coverage',
       '--reporter=tap-flat',
       '--reporter=json',

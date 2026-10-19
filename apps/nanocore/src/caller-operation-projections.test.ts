@@ -143,7 +143,7 @@ function seedRetainedWork(f: Awaited<ReturnType<typeof fixture>>) {
     });
     f.store.createItem({
       id: testEntityId('it', `it_caller_${index}`),
-      workspaceId: f.owned.id,
+      owner: { kind: 'workspace', workspaceId: f.owned.id },
       threadId: thread.id,
       turnId: turn.id,
       type: 'user-message',

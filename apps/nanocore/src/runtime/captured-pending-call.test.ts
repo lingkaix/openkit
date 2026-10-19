@@ -12,6 +12,7 @@ import {
   deriveEntityId,
   type PolicyDecisionV1,
   PolicyDocumentV1Schema,
+  workspaceIdForOwner,
 } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -186,7 +187,7 @@ function fixture(
   const resolved = resolveWorkspaceMcpServer({ catalog, serverId: 'echo-server' });
   store.createItem({
     id: 'it_00000000-0000-74e7-bec8-70d5a20db395',
-    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     threadId: 'th_00000000-0000-7000-8000-000000000001',
     turnId: turn.id,
     type: 'approval-request',
@@ -214,7 +215,11 @@ function fixture(
         id: 'agent_demo',
         responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
       },
-      process: { workspaceId: turn.workspaceId, threadId: turn.threadId, turnId: turn.id },
+      process: {
+        workspaceId: workspaceIdForOwner(turn.owner),
+        threadId: turn.threadId,
+        turnId: turn.id,
+      },
       credentialKind: 'worker-package',
       responsibleHumanId: 'usr_00000000-0000-7000-8000-000000000001',
     },
@@ -224,7 +229,7 @@ function fixture(
   const sourceDecisionId = mediated ? allocateEntityId('pd') : null;
   const decisionBase = {
     workspaceDb: db,
-    workspaceId: turn.workspaceId,
+    workspaceId: workspaceIdForOwner(turn.owner),
     ownerScope: 'workspace' as const,
     policyEngineVersion: 'fixture:v1',
     policySnapshotId: digest,
