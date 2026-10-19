@@ -62,6 +62,31 @@ export function validatePolicyDocument(input: unknown): PolicyDocumentV1 {
         throw new Error('Active Goal domain requires its human author and exact Goal anchor.');
       continue;
     }
+    if (statement.kind === 'permission' && statement.grant.kind === 'storage-lease') {
+      const anchor = statement.lifetime.anchor;
+      const expectedAction =
+        statement.grant.mode === 'read-only' ? 'knowledge.read' : 'knowledge.write';
+      if (
+        statement.effect !== 'allow' ||
+        statement.author.kind !== 'human' ||
+        statement.authority.kind !== 'human' ||
+        statement.author.id !== statement.authority.userId ||
+        statement.scope.subjects.some((subject) => subject.kind !== 'human') ||
+        statement.scope.actions.some((action) => action !== expectedAction) ||
+        statement.scope.resources.some(
+          (resource) =>
+            resource.kind !== 'container' ||
+            policyDigest(resource.container) !== policyDigest(anchor)
+        ) ||
+        !['server', 'user', 'workspace'].includes(anchor.kind) ||
+        anchor.kind !== anchor.owner.kind ||
+        (anchor.owner.kind === 'workspace' && anchor.id !== anchor.owner.workspaceId) ||
+        (anchor.owner.kind === 'user' && anchor.id !== anchor.owner.userId) ||
+        statement.lifetime.uses !== undefined
+      )
+        throw new Error('Storage lease activation requires a human root and exact owner scope.');
+      continue;
+    }
     // Other forms stay declarations until their native authority consumer exists.
     if (statement.kind !== 'binding') throw new Error('This Policy form must remain inactive.');
     const definition = OPERATION_REGISTRY[statement.operation as keyof typeof OPERATION_REGISTRY];

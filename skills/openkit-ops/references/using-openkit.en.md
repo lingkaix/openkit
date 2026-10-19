@@ -313,6 +313,8 @@ Keep the user's objective open-ended. Discover the operations needed to accompli
 
 Use an admitted Assistant or selected Worker to create and update a Kernel app through the available native Kernel tools. A published native view in the same Thread can read and edit that same data. Expand Source history to inspect its admitted answer or Tool result.
 
+Use `kernel.apps.get` to inspect the admitted schema and its pinned meaning references. Its `meaning` rows return available target text or an unavailable status under current access. An unavailable dependency does not change the app's records or permit a substitute version.
+
 A reopened presentation shows historical values. Use its Refresh action to read current data. Save applies the form's explicit record update through Core. An error or stale-write conflict keeps the unsaved input visible; inspect the error and refresh before the next explicit save. Refresh does not save the draft. Unsaved input is local to the open browser view and does not survive a reload. Richer operators, destructive writes, HTML delegates and saved views retain their separate admission gates.
 
 ## Manage Light App Definitions

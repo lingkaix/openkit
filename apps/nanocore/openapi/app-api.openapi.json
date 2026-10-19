@@ -31797,6 +31797,51 @@
               "maxFilterBytes"
             ],
             "additionalProperties": false
+          },
+          "meaning": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "reference": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "available"
+                    },
+                    "content": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "reference",
+                    "status",
+                    "content"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "reference": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "unavailable"
+                    }
+                  },
+                  "required": [
+                    "reference",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
           }
         },
         "required": [
@@ -32556,6 +32601,51 @@
               "maxFilterBytes"
             ],
             "additionalProperties": false
+          },
+          "meaning": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "reference": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "available"
+                    },
+                    "content": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "reference",
+                    "status",
+                    "content"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "reference": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "unavailable"
+                    }
+                  },
+                  "required": [
+                    "reference",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
           }
         },
         "required": [
@@ -33073,6 +33163,51 @@
               "maxFilterBytes"
             ],
             "additionalProperties": false
+          },
+          "meaning": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "reference": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "available"
+                    },
+                    "content": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "reference",
+                    "status",
+                    "content"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "reference": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "unavailable"
+                    }
+                  },
+                  "required": [
+                    "reference",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
           }
         },
         "required": [
@@ -33433,6 +33568,51 @@
               "maxFilterBytes"
             ],
             "additionalProperties": false
+          },
+          "meaning": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "reference": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "available"
+                    },
+                    "content": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "reference",
+                    "status",
+                    "content"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "reference": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "unavailable"
+                    }
+                  },
+                  "required": [
+                    "reference",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
           }
         },
         "required": [
@@ -102887,6 +103067,51 @@
               "maxFilterBytes"
             ],
             "additionalProperties": false
+          },
+          "meaning": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "reference": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "available"
+                    },
+                    "content": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "reference",
+                    "status",
+                    "content"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "reference": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "unavailable"
+                    }
+                  },
+                  "required": [
+                    "reference",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
           }
         },
         "required": [
@@ -103262,6 +103487,51 @@
               "maxFilterBytes"
             ],
             "additionalProperties": false
+          },
+          "meaning": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "reference": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "available"
+                    },
+                    "content": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "reference",
+                    "status",
+                    "content"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "reference": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "unavailable"
+                    }
+                  },
+                  "required": [
+                    "reference",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
           }
         },
         "required": [
@@ -103716,6 +103986,51 @@
               "maxFilterBytes"
             ],
             "additionalProperties": false
+          },
+          "meaning": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "reference": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "available"
+                    },
+                    "content": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "reference",
+                    "status",
+                    "content"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "reference": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "unavailable"
+                    }
+                  },
+                  "required": [
+                    "reference",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
           }
         },
         "required": [
@@ -104076,6 +104391,51 @@
               "maxFilterBytes"
             ],
             "additionalProperties": false
+          },
+          "meaning": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "reference": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "available"
+                    },
+                    "content": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "reference",
+                    "status",
+                    "content"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "reference": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "unavailable"
+                    }
+                  },
+                  "required": [
+                    "reference",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
           }
         },
         "required": [
@@ -137598,5 +137958,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:82e999bc28fcb9a272ff167ca3575585a4a6ae5f8c1d2d100bca6b4cc23c49e0"
+  "x-openkit-source-digest": "sha256:ea4bfe3851fd0a6489fd18623a0aa8cffe0f73072dcdd86137503f6ce57cba4b"
 }

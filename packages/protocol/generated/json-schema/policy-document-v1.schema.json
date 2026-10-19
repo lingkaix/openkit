@@ -1097,17 +1097,58 @@
                 ]
               },
               "grant": {
-                "type": "object",
-                "properties": {
-                  "kind": {
-                    "type": "string",
-                    "const": "ordinary"
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "ordinary"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "storage-lease"
+                      },
+                      "knowledgeBaseId": {
+                        "type": "string",
+                        "pattern": "^kb_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                      },
+                      "mount": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "pathPrefix": {
+                        "type": "string",
+                        "maxLength": 4096,
+                        "description": "Normalized relative path; empty means mount root. Canonical Zod validation rejects traversal and invalid separators."
+                      },
+                      "mode": {
+                        "type": "string",
+                        "enum": [
+                          "read-only",
+                          "staged-write"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "knowledgeBaseId",
+                      "mount",
+                      "pathPrefix",
+                      "mode"
+                    ],
+                    "additionalProperties": false
                   }
-                },
-                "required": [
-                  "kind"
-                ],
-                "additionalProperties": false
+                ]
               }
             },
             "required": [
@@ -1122,7 +1163,8 @@
               "effect",
               "grant"
             ],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "description": "Storage-lease permissions require lifetime.notAfter; validate this cross-field rule with the canonical Zod schema."
           },
           {
             "type": "object",
