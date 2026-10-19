@@ -26,6 +26,7 @@ describe('raw Workspace configuration Policy edits', () => {
       });
       const thread = store.createThread(workspace.id, 'Managed Thread');
       const source = {
+        schemaVersion: 1,
         requiredFeatures: ['openkit.workspace-resource-policy.v1'],
         workspace: {
           name: 'Managed Workspace',
