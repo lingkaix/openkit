@@ -300,6 +300,8 @@ describe('resource Policy Pending Request commands', () => {
   it('joins confirmed apply and loaded Kernel authority through the final grant revocation', () => {
     const f = fixture();
     try {
+      // The control Thread keeps its write rights while the separate target becomes read-only.
+      const controlThread = f.store.createThread(f.workspace.id, 'Policy control');
       const handlers = createResourcePolicyOperationImplementations({
         coreDb: f.coreDb,
         store: f.store,
@@ -354,7 +356,7 @@ describe('resource Policy Pending Request commands', () => {
       ).toBeUndefined();
       const input = {
         workspaceId: f.workspace.id,
-        threadId: f.thread.id,
+        threadId: controlThread.id,
         requestId: randomUUID(),
         change: { resource: f.resource, replacement: proposed },
       };
@@ -381,7 +383,7 @@ describe('resource Policy Pending Request commands', () => {
       const result = handlers['workspace.resource-access-apply'](
         {
           workspaceId: f.workspace.id,
-          threadId: f.thread.id,
+          threadId: controlThread.id,
           approvalRequestId: request.id!,
           confirmation: 'APPLY WORKSPACE RESOURCE POLICY',
         },
@@ -435,7 +437,7 @@ describe('resource Policy Pending Request commands', () => {
       const revoked = handlers['workspace.resource-access-apply'](
         {
           workspaceId: f.workspace.id,
-          threadId: f.thread.id,
+          threadId: controlThread.id,
           approvalRequestId: revoke.id!,
           confirmation: 'APPLY WORKSPACE RESOURCE POLICY',
         },
