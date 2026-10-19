@@ -245,3 +245,5 @@ Knowledge retrieval accepts optional nonempty `types` and `appliesTo` identifier
 Light App reads may include request-local `meaning` rows for their exact admitted references. Available rows carry exact target text; unavailable rows omit content and target metadata. Empty dependencies omit the projection. This response field is not a retained definition, version, authority or default selection. Native Knowledge and Skill readers own current access and version integrity.
 
 Evaluation sets and judgements use the shared retained-v1 `schemaVersion` marker. Retained readers reject absent or unknown markers before decoding the family; current writers use `writeRetainedV1`.
+
+Claim and reusable Observation/conflict content use the ordinary Notebook operations and canonical OKF metadata. The seven standalone `knowledge.claim.*`, `knowledge.observation.*` and `knowledge.conflict.*` bindings and their separate fact DTOs are retired without aliases. The definition-derived client, CLI and OpenAPI expose the same Notebook lifecycle. WorkObservation and actual decision APIs retain their owners.

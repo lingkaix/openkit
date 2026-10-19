@@ -5,7 +5,7 @@ kind: concept
 ---
 # Knowledge Store Governance Rules
 
-Implementation note: the accepted V1 validation, source, maintenance-record, create-only proposal review and application, unchanged-page reversal, and S39-only worker-delivery boundaries are implemented. Governed retrieval remains Partial because it does not yet surface or exclude relevant unresolved conflict-ledger authority; scoped ownership, Git notebook publication and bounded learning are accepted extensions that remain Not Started.
+Implementation note: C01/C02 reuse canonical Git Notebook pages for Claims and reusable Observations. Current unresolved subjects drive Proposal acceptance and active retrieval; standalone fact ledgers are retired. Other flows retain the implementation state of their owning specification.
 
 ## Versioned Source Pointers
 
@@ -123,7 +123,7 @@ OpenKit distinguishes portable format compatibility from active Knowledge validi
 
 External material MAY remain a source or lower-conformance draft until transformed and reviewed; format compatibility alone never authorizes active retrieval.
 
-Every active Knowledge Page and every draft Knowledge Page validated for possible activation MUST carry these fields or equivalent structured metadata. Proposals, reviews, source-registry rows, maintenance ledgers, retrieval traces, indexes, audit records, and usage records use their separately owned exact schemas and are not active Knowledge Pages:
+Every active Knowledge Page and every draft Knowledge Page validated for possible activation MUST carry these fields or equivalent structured metadata. Proposals, Reviews, Source records, operational WorkObservation, User suppression, retrieval traces, indexes, Audit and usage records use their separately owned exact schemas and are not active Knowledge Pages:
 
 - `type`
 - `title`
@@ -191,21 +191,21 @@ Generated learning and consolidation use explicitly delegated ordinary publicati
 
 ## Maintenance Records
 
-Observations, candidate claims, conflicts, stale signals, lint findings, and health reports belong to the maintenance layer rather than the default notebook view.
+Reusable Claims, Observations and conflict analysis belong to the canonical OKF Notebook. An Observation is not active knowledge by default. Operational events, actual decisions, Audit, transient lint/health projections and User suppression retain their existing owners; they are not reusable-fact ledgers.
 
 Observation capture MUST be selective and the owning scope policy SHOULD bound allowed types, producers, required sources, retention, expiration, aggregation, promotion criteria, and high-impact review requirements.
 
 An Observation MAY be ignored, retained, summarized, aggregated, attached to a pending proposal, or expired; repetition does not promote it automatically.
 
-A Claim is a reusable assertion that may influence future work and therefore MUST carry sources, confidence, freshness, scope, review state, and conflict status.
+A Claim is a reusable assertion that may influence future work and therefore MUST carry sources, finite numeric confidence from zero through one, freshness, scope and Review state. Preserve a recorded conflict assessment without inventing one when absent.
 
 Claims MAY guide source-grounded notebook editing, but a claim record is never publication authority; current maintenance delegation or an exact required Review remains necessary.
 
-Conflict states SHOULD distinguish conflicting, needs-review, weak-evidence, stale, resolved, superseded, and partially superseded material.
+A recorded conflict assessment is only `unresolved` or `resolved`; absence is not a resolution. Confidence, freshness, Review and whole-page lifecycle retain their separate fields. Low confidence alone MUST NOT create a conflict or weak-evidence assessment.
 
 Knowledge selection MUST surface unresolved conflicts and MUST NOT present one side as uncontested truth when the owning scope intentionally preserves competing views.
 
-Maintenance records SHOULD use bounded append-only ledgers or equivalent history-preserving records; they MUST NOT create another Knowledge source of truth.
+Reusable fact edits retain history through the existing Git Notebook publisher, with current authority, exact-base publication, required Review, ordinary archive/removal and restore. No canonical Claim, Observation or conflict JSONL family remains. WorkObservation, Audit, actual decisions and User suppression are unchanged.
 
 ## Proposal And Human Review Rules
 
@@ -215,7 +215,7 @@ Publication revalidates scope, path, OKF/profile/schema, sources, confidentialit
 
 Generated knowledge retains exact registered Source references or the existing strict completed-worker Turn/final Item/S39 evidence trio when claiming worker output. Current or historical generated pages may guide organization and comparison but are not independent factual evidence; preserve their underlying admitted source lineage. Imported, workspace-only, reconstructed or standalone retrieval history cannot masquerade as a new worker result. Only S39 proves worker delivery. Source references and captured evidence remain owned by their existing records, not Git history alone.
 
-Active pages may preserve explicitly marked uncertainty; retrieval keeps the existing conflict exclusions. A relevant unresolved conflict is still determined from the latest conflict row's target/source subjects, not the conflict row's own evidence references. Its states `conflicting`, `needs_review`, `weak_evidence` and `stale` remain unresolved; `resolved`, `superseded` and `partially_superseded` do not independently block use. A conflict affecting publication under authored review policy requires that actual decision; a model score cannot suppress the conflict or fabricate resolution.
+Active pages may preserve explicitly marked uncertainty. Active Claim or Observation pages marked `unresolved` are withheld from retrieval. A current draft or active Observation with `conflict_status: unresolved` also withholds its subject pages from active retrieval and refuses relevant target/source Proposal acceptance before a human Review is appended. `subject_refs` names affected objects; supporting `source_refs` never substitutes for it. Current native admission checks same-Notebook target identity and any exact digest when the assessment is written. An unpinned subject applies to the object; an exact pin applies only to those bytes. Unsupported target families remain refused until their native owner reader exists. Resolution, archive and confirmed removal are ordinary Notebook edits; a new base needs a new exact Proposal. A model score supplies neither resolution nor authority.
 
 Archive/supersede are retained metadata edits through the same publisher. Multi-page merge/split and link repair are final-tree edits, not distinct workflows. Removing published pages requires exact human confirmation; restore appends an exact-base validated revision. Explicit forgetting additionally suppresses current and normal historical retrieval and automatic re-extraction, with truthful source/evidence/backup retention. No historical reset or downstream-effect reversal is implied.
 
@@ -266,13 +266,13 @@ A Context Package may deliver a bounded body, excerpt, or descriptor under [its 
 
 ## Current Implementation Projection
 
-The current V1 implements portable governed page projection, the default Workspace Schema, pre-write validation and secret-like-field rejection, source identity and first text-derived metadata, observation and claim ledgers, conflict recording and resolution, derived indexes, deterministic retrieval traces, proposal review and application, and explicit Knowledge context preparation. The retrieval path does not yet consume the latest conflict ledger, so it cannot satisfy the required unresolved-conflict selection and trace decision; this bounded implementation defect remains scheduled under S60/S61 before the next generated-Knowledge release claim.
+Canonical OKF Claims and reusable Observations now share the Git Notebook writer, history and current readers. Unresolved subject assessments drive the existing Proposal and retrieval refusals; supporting evidence does not identify subjects. Standalone fact DTOs, monthly JSONL and portable ledger records are retired without conversion. The ordinary validation, source, Review, index, query trace and explicit context-preparation owners remain in force.
 
 The transport-neutral operation catalog, bundled CLI, and public App API project those existing owners. No user-facing stdio MCP facade remains. That absence is the deleted stdio package and is not a prohibition of the remote MCP endpoint owned by [Remote MCP Interface](20261002-remote_mcp_interface.md).
 
 Worker-facing Knowledge capability routes remain disabled and are not current product behavior.
 
-The unactivated Notebook cutover component saves fixed-base Proposal candidates in the single Git content owner. Exact human Review names the Proposal digest and base/candidate commits; accepted publication uses that retained candidate without rewriting original producer attribution. Stale base returns conflict. Bounded reverse copies the selected original path into the current fixed base and publishes a new revision; reversing a created path and explicit page removal require exact human confirmation and retain Git history. Current source/audience admission, Audit and ordinary command receipts remain mandatory; incomplete publication evidence returns `recovery_required`, with no missing-page repair.
+The Notebook owner saves fixed-base Proposal candidates in the single Git content owner. Exact human Review names the Proposal digest and base/candidate commits; accepted publication uses that retained candidate without rewriting original producer attribution. Stale base returns conflict. Bounded reverse copies the selected original path into the current fixed base and publishes a new revision; reversing a created path and explicit page removal require exact human confirmation and retain Git history. Current source/audience admission, Audit and ordinary command receipts remain mandatory; incomplete publication evidence returns `recovery_required`, with no missing-page repair.
 
 Context preparation references the single governed retrieval trace and exposes no standalone worker-context trace or materialization. Only S39 materializes and proves worker delivery.
 

@@ -14,7 +14,11 @@ import { describe, expect, it, onTestFinished } from 'vitest';
 
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
-import { KnowledgePageValidationError, parseOkfDocument } from '../knowledge/okf.js';
+import {
+  KnowledgePageValidationError,
+  parseOkfDocument,
+  updateOkfFrontmatter,
+} from '../knowledge/okf.js';
 import { FsStore } from '../lib/store.js';
 import { createApp } from '../test-support/app.js';
 import { testEntityId } from '../test-support/entity-ids.js';
@@ -270,21 +274,53 @@ function access(f: Owners) {
   };
 }
 
-/** Records the existing conflict owner without changing Proposal or published page bytes. */
-function conflict(f: Fixture, subject: string, label: string) {
-  const id = testEntityId('kf', label);
-  f.store.recordKnowledgeConflict({
-    id,
+/** Retains a new exact candidate after an ordinary Notebook edit changes the base. */
+function refreshConflictProposal(f: Fixture, label: string) {
+  f.proposal = f.store.createKnowledgeProposal({
     workspaceId: f.workspaceId,
-    subjectReferences: [subject],
-    sourceReferences: [],
-    status: 'needs_review',
-    summary: 'Resolve conflicting evidence before publication.',
-    suggestedActions: ['Review the conflicting evidence.'],
-    producer: 'proposal-authority-test',
+    requestId: authorityRequestId(label),
+    baseRevision: f.notebook.publishedRevision(),
+    changes: [{ path: `${f.knowledgePageId}.md`, content: f.canonicalPageBytes! }],
+    sourceReferences: [f.sourceReference],
+    summary: 'Review the exact current source-grounded candidate.',
+    producer: PRODUCER,
+    verifiedExternalReferences: [],
     createdAt: CREATED_AT,
-    updatedAt: CREATED_AT,
   });
+  f.proposalPath = join(f.workspaceRoot, 'knowledge', 'proposals', `${f.proposal.id}.md`);
+  f.reviewPath = join(f.workspaceRoot, 'knowledge', 'reviews', `${f.proposal.id}.json`);
+}
+
+/** Publishes actual reusable analysis before retaining the new exact-base Proposal. */
+async function conflict(f: Fixture, subject: string, label: string) {
+  const target = parseReferenceUri(subject);
+  if (!target) throw new Error('The conflict fixture requires an admitted canonical page.');
+  if (currentPage(f, target.reference.objectId) === undefined) {
+    await edit(
+      f,
+      target.reference.objectId,
+      candidatePage(f.workspaceId, target.reference.objectId, f.sourceReference),
+      `${label}-subject`
+    );
+  }
+  const id = `assessments/${label}`;
+  await edit(
+    f,
+    id,
+    updateOkfFrontmatter({
+      path: `${id}.md`,
+      content: candidatePage(f.workspaceId, id, f.sourceReference),
+      updates: {
+        type: 'Observation',
+        openkit_status: 'draft',
+        status: 'draft',
+        subject_refs: [subject],
+        conflict_status: 'unresolved',
+      },
+    }),
+    `${label}-analysis`
+  );
+  refreshConflictProposal(f, `${label}-current-proposal`);
   return id;
 }
 
@@ -461,7 +497,7 @@ describe('knowledge proposal authority', () => {
     });
     expect(currentPage(f, f.knowledgePageId)).toBe(f.canonicalPageBytes);
     const reversed = await reverse(f, first.review.reviewId);
-    conflict(
+    await conflict(
       f,
       formatReferenceUri({ scopeId: workspacePageScope(f), objectId: f.knowledgePageId }),
       'post-completion-conflict'
@@ -694,7 +730,7 @@ describe('knowledge proposal authority', () => {
 
   it('does not block publication for an unrelated unresolved conflict', async () => {
     const f = await createFixture('proposal-unrelated-conflict');
-    conflict(
+    await conflict(
       f,
       formatReferenceUri({ scopeId: workspacePageScope(f), objectId: 'unrelated-page' }),
       'unrelated-conflict'
@@ -710,7 +746,7 @@ describe('knowledge proposal authority', () => {
     'source',
   ] as const)('blocks publication while the %s has an unresolved conflict', async (subject) => {
     const f = await createFixture(`proposal-unresolved-${subject}`);
-    const id = conflict(
+    const id = await conflict(
       f,
       subject === 'target'
         ? formatReferenceUri({ scopeId: workspacePageScope(f), objectId: f.knowledgePageId })
@@ -718,21 +754,25 @@ describe('knowledge proposal authority', () => {
       `conflict-${subject}`
     );
     const before = f.notebook.publishedRevision();
+    const priorPage = currentPage(f, f.knowledgePageId);
     await expectAuthorityFailure(
       () => decide(f, 'accepted', `review-unresolved-${subject}`),
       'conflict'
     );
     expect(existsSync(f.reviewPath)).toBe(false);
-    expect(currentPage(f, f.knowledgePageId)).toBeUndefined();
+    expect(currentPage(f, f.knowledgePageId)).toBe(priorPage);
     expect(f.notebook.publishedRevision()).toBe(before);
-    f.store.resolveKnowledgeConflict({
-      workspaceId: f.workspaceId,
-      conflictId: id,
-      status: 'resolved',
-      resolution: 'The conflicting evidence was reviewed.',
-      resolvedBy: FIXTURE_LOCAL_USER_ID,
-      resolvedAt: DECIDED_AT,
-    });
+    await edit(
+      f,
+      id,
+      updateOkfFrontmatter({
+        path: `${id}.md`,
+        content: currentPage(f, id)!,
+        updates: { conflict_status: 'resolved' },
+      }),
+      `resolve-${subject}`
+    );
+    refreshConflictProposal(f, `resolved-${subject}-current-proposal`);
     expect((await decide(f, 'accepted', `review-resolved-${subject}`)).application?.present).toBe(
       true
     );

@@ -20,7 +20,6 @@ import {
   KnowledgeSourceSchema,
   RegisterKnowledgeSourceRequestSchema,
 } from './knowledge-manager.js';
-import { KNOWLEDGE_OPERATION_DEFINITIONS } from './knowledge-operation-definitions.js';
 import * as material from './material.js';
 import {
   NanoHostRuntimeTargetStatusResponseSchema,
@@ -104,12 +103,6 @@ const fields = [
   {
     kind: 'nhtok',
     schema: NanoHostTransportTokenRecordSchema.shape.predecessorTokenId,
-    derived: false,
-  },
-  {
-    kind: 'kf',
-    schema:
-      KNOWLEDGE_OPERATION_DEFINITIONS['knowledge.conflict.resolve'].inputSchema.shape.conflictId,
     derived: false,
   },
   { kind: 'ar', schema: DashboardArtifactSummarySchema.shape.id, derived: true },

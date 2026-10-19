@@ -172,21 +172,27 @@ describe('governed Knowledge retrieval over the Retrieval Kernel', () => {
       freshness: 'stale',
       sensitivity: 'confidential',
     });
-    fixture.store.recordKnowledgeConflict({
-      id: 'kf_00000000-0000-7c2b-96dc-273a402e04ac',
-      workspaceId: fixture.workspaceId,
-      subjectReferences: [
-        formatReferenceUri(pageReference(fixture, conflicted.id)),
-        formatReferenceUri(pageReference(fixture, sensitive.id)),
-      ],
-      sourceReferences: [],
-      status: 'conflicting',
-      summary: 'The test owns an unresolved conflict.',
-      suggestedActions: ['Resolve the test conflict.'],
-      producer: 'test-author',
-      createdAt: NOW,
-      updatedAt: NOW,
-    });
+    const analysisId = 'assessments/enumeration-conflict';
+    await publishPages(fixture, [
+      {
+        path: `${analysisId}.md`,
+        content: updateOkfFrontmatter({
+          path: `${analysisId}.md`,
+          content: readPage(fixture, conflicted.id),
+          updates: {
+            openkit_entry_id: analysisId,
+            type: 'Observation',
+            openkit_status: 'draft',
+            status: 'draft',
+            subject_refs: [
+              formatReferenceUri(pageReference(fixture, conflicted.id)),
+              formatReferenceUri(pageReference(fixture, sensitive.id)),
+            ],
+            conflict_status: 'unresolved',
+          },
+        }),
+      },
+    ]);
 
     const trace = await retrieveWorkspaceKnowledge({
       ...retrievalInput(fixture, 'selection-marker'),
