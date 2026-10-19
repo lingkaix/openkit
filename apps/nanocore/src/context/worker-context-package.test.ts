@@ -896,10 +896,11 @@ describe('worker Context Package owner', () => {
     if (knowledge) {
       raw.knowledgeSelectionInput.annotation = 'retrieval input';
       raw.knowledgeSelectionInput.retrievalTraceRef.annotation = 'qualified reference';
-      raw.knowledgeSelections[0].annotation = 'Knowledge selection';
+      raw.knowledgeSelections = structuredClone(manifest.knowledgeSelections);
       raw.knowledgeExclusions[0].annotation = 'Knowledge exclusion';
     }
-    raw.materialSelections[0].annotation = 'selection';
+    // Selected payload annotations now have one retained owner: the manifest.
+    raw.materialSelections = structuredClone(manifest.materialSelections);
     raw.materialExclusions[0].annotation = 'exclusion';
     raw.excludedItems[0].annotation = 'item';
     const entry = raw.fileInventory.find(
@@ -945,7 +946,16 @@ describe('worker Context Package owner', () => {
       })
     ).toEqual(read);
     expect(readFileSync(packagePath, 'utf8')).toBe(bytes);
-    expect(JSON.parse(serializeWorkerContextPackageTrace(read))).toEqual(raw);
+    const serialized = serializeWorkerContextPackageTrace(read);
+    expect(JSON.parse(serialized).annotation).toBe('trace');
+    expect(parseWorkerContextPackageTrace(JSON.parse(serialized), Buffer.from(bytes))).toEqual(
+      read
+    );
+    expect(
+      serializeWorkerContextPackageTrace(
+        parseWorkerContextPackageTrace(JSON.parse(serialized), Buffer.from(bytes))
+      )
+    ).toBe(serialized);
     Object.assign(read, { requestId: 'req_changed' });
     expect(() => parseWorkerContextPackageTrace(read)).toThrow('retained core mismatch');
     expect(() => serializeWorkerContextPackageTrace(read)).toThrow('retained core mismatch');
