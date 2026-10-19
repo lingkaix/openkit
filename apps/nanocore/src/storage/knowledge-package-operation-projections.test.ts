@@ -1,18 +1,23 @@
 // openkit-test-platform: posix
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { allocateEntityId, ContentReferenceSchema, formatReferenceUri } from '@openkit/protocol';
 import { LocalStorage } from '@openkit/storage';
 import { describe, expect, it, onTestFinished } from 'vitest';
-import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
+import { readDefaultKnowledgeBaseId, readKnowledgeMounts } from '../config/knowledge-base.js';
+import { deriveManagedSourceAccess } from '../knowledge/managed-source-access.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { parseOkfDocument } from '../knowledge/okf.js';
+import { readSourceByteRange } from '../knowledge/source-bytes.js';
+import { readSourcePointers } from '../knowledge/source-pointers.js';
 import { FsStore } from '../lib/store.js';
 import { createApp } from '../test-support/app.js';
+import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { openCoreDb } from './db.js';
 import { applyMigrations } from './migrate.js';
@@ -144,57 +149,112 @@ function fixture() {
     );
     return app.fetch(request);
   };
-  return { source, target, tamperTarget, call, transfer, dataRoot };
+  return { source, target, tamperTarget, call, transfer, dataRoot, coreDb, store, userId };
 }
 
 describe('Knowledge package public operation round trip', () => {
   it('preserves pinned Knowledge and binary originals, remints owned references, and refuses tampered bytes before publication', async () => {
     const f = fixture();
     const original = Buffer.from([0x00, 0xff, 0x80, 0x0d, 0x0a, 0x41, 0xc3, 0x28, 0x00]);
-    const rawPath = 'raw/original.bin';
-    mkdirSync(join(f.source.root, 'raw'), { recursive: true });
-    writeFileSync(join(f.source.root, rawPath), original);
-    // This is a real local Storage fixture, not an invented binary Source registration API.
     const ownerScope = { kind: 'workspace' as const, workspaceId: f.source.id };
+    const owner = { dataRoot: f.dataRoot, ownerScope };
+    const mounts = readKnowledgeMounts({ dataRoot: f.dataRoot, scope: ownerScope });
+    expect(mounts).toEqual([
+      {
+        name: 'managed',
+        backend: 'local',
+        root: 'raw',
+        default: true,
+        knowledgeBaseId: f.source.knowledgeBaseId,
+      },
+    ]);
+    const mount = mounts[0]!;
+    const sourceAccess = {
+      store: f.store,
+      coreDb: f.coreDb,
+      actor: { kind: 'user' as const, id: f.userId },
+      requestActor: { kind: 'local' as const, userId: f.userId },
+    };
+    const capturedAt = '2026-10-19T00:00:00.000Z';
+    // The existing fixture composes current Notebook admission with the real binary Source publisher.
+    const binarySource = await captureWorkspaceSourceFixture({
+      dataRoot: f.dataRoot,
+      store: f.store,
+      coreDb: f.coreDb,
+      userId: f.userId,
+      source: {
+        id: allocateEntityId('ks'),
+        workspaceId: f.source.id,
+        kind: 'document',
+        title: 'Exact binary original',
+        contentDigest: digest(original),
+        uri: null,
+        originatingThreadId: null,
+        originatingTurnId: null,
+        originatingFileId: null,
+        capturedAt,
+        createdAt: capturedAt,
+        updatedAt: capturedAt,
+      },
+      content: original,
+    });
+    const binaryPointer = readSourcePointers(owner).get(binarySource.id)!;
+    expect(binaryPointer.source).toMatchObject({
+      id: binarySource.id,
+      contentDigest: digest(original),
+    });
+    expect(binaryPointer.fields).toMatchObject({
+      byteLength: original.length,
+      contentRef: {
+        knowledgeBaseId: f.source.knowledgeBaseId,
+        contentDigest: digest(original),
+        locator: { ownerScope, mount: mount.name },
+        availability: 'available',
+      },
+    });
+    const rawPath = `raw/${binaryPointer.fields.contentRef.locator.path}`;
     const storage = new LocalStorage({
       mounts: [
         {
-          knowledgeBaseId: f.source.knowledgeBaseId,
+          knowledgeBaseId: mount.knowledgeBaseId,
           ownerScope,
-          name: 'fixture-local',
-          root: join(f.source.root, 'raw'),
+          name: mount.name,
+          root: resolve(f.source.root, mount.root),
+          managed: true,
         },
       ],
-      stagingRoot: join(f.dataRoot, 'fixture-staging'),
+      stagingRoot: join(f.source.root, '.source-staging'),
     });
     onTestFinished(() => storage.close());
-    const access = {
-      basis: 'lease' as const,
-      grantId: allocateEntityId('grant'),
+    const admit = () =>
+      deriveManagedSourceAccess({
+        owner,
+        knowledgeBaseId: f.source.knowledgeBaseId,
+        mount,
+        access: sourceAccess,
+        consumer: 'native',
+        mode: 'read-only',
+      });
+    expect(admit()).toEqual({
+      basis: 'knowledge',
       knowledgeBaseId: f.source.knowledgeBaseId,
       ownerScope,
-      mount: 'fixture-local',
-      pathPrefix: '',
-      mode: 'read-only' as const,
-      expiresAt: '2099-01-01T00:00:00.000Z',
-      revoked: false,
-    };
-    const observed = await storage.stat({
-      access,
-      locator: { ownerScope, mount: access.mount, path: 'original.bin' },
+      mount: mount.name,
+      pathPrefix: 'sources',
+      mode: 'read-only',
     });
-    expect(observed.status, 'Binary setup must reach the real Storage owner').toBe('ok');
-    if (observed.status !== 'ok') throw new Error('Binary Storage setup failed.');
-    expect(observed.value.reference.contentDigest).toBe(digest(original));
-    const read = await storage.read({
-      access,
-      content: observed.value,
+    const read = await readSourceByteRange({
+      storage,
+      pointer: binaryPointer,
+      admit,
       offset: 0,
       length: original.length,
     });
-    expect(read.status).toBe('ok');
-    if (read.status !== 'ok') throw new Error('Binary Storage read failed.');
-    expect(Buffer.from(read.value.data, 'base64')).toEqual(original);
+    expect(read.status, 'Binary setup must use current Native authority and real Storage').toBe(
+      'ok'
+    );
+    if (read.status !== 'ok') throw new Error('Binary Storage setup failed.');
+    expect(read.value).toEqual(original);
     const schemaNames = readdirSync(join(f.source.root, 'schema')).filter((name) =>
       name.endsWith('.yaml')
     );
@@ -210,13 +270,21 @@ describe('Knowledge package public operation round trip', () => {
     });
     expect(registered.status, JSON.stringify(registered.body)).toBe(200);
     const sourcePin = `source:${registered.body.source.id}@${registered.body.source.contentDigest}`;
-    const companion = await f.call('knowledge.create', f.source.id, {
+    const companionContent = serializeKnowledgePageFixture(
+      {
+        title: 'Companion',
+        content: 'Independent companion page.',
+        sourceReferences: [sourcePin],
+        createdAt: capturedAt,
+        updatedAt: capturedAt,
+      },
+      ownerScope
+    );
+    const companion = await f.call('knowledge.notebook.create', f.source.id, {
       baseRevision: f.source.notebook.publishedRevision(),
-      knowledgePageId: 'nested/companion',
-      kind: 'project-context',
-      title: 'Companion',
-      content: 'Independent companion page.',
-      sourceReferences: [sourcePin],
+      path: 'nested/companion.md',
+      content: companionContent,
+      summary: 'Publish exact companion page.',
     });
     expect(companion.status, JSON.stringify(companion.body)).toBe(200);
     const companionBytes = f.source.notebook.readRevision(f.source.notebook.publishedRevision())
@@ -231,25 +299,47 @@ describe('Knowledge package public operation round trip', () => {
     const originalUri = formatReferenceUri(
       {
         scopeId: `raw/workspace/${f.source.id}/${f.source.knowledgeBaseId}`,
-        objectId: 'original.bin',
+        objectId: binaryPointer.fields.contentRef.locator.path,
       },
       digest(original)
     );
-    const guide = await f.call('knowledge.create', f.source.id, {
+    const guideBody = `Exact guide: café 雪.\r\n[Original](../../${rawPath})\n[Qualified original](${originalUri})\n[Companion](${companionUri})`;
+    const guideContent = serializeKnowledgePageFixture(
+      {
+        title: 'Package round-trip guide',
+        content: guideBody,
+        sourceReferences: [sourcePin, companionUri],
+        createdAt: capturedAt,
+        updatedAt: capturedAt,
+      },
+      ownerScope
+    );
+    const guide = await f.call('knowledge.notebook.create', f.source.id, {
       baseRevision: f.source.notebook.publishedRevision(),
-      knowledgePageId: 'nested/guide',
-      kind: 'project-context',
-      title: 'Package round-trip guide',
-      content: `Exact guide: café 雪.\r\n[Original](../../raw/original.bin)\n[Qualified original](${originalUri})\n[Companion](${companionUri})`,
-      sourceReferences: [sourcePin, companionUri],
+      path: 'nested/guide.md',
+      content: guideContent,
+      summary: 'Publish exact package guide.',
     });
     expect(guide.status, JSON.stringify(guide.body)).toBe(200);
     const pinnedRevision = f.source.notebook.publishedRevision();
     const pinnedPages = f.source.notebook.readRevision(pinnedRevision).files;
-    const admitted = await f.call('knowledge.list', f.source.id);
+    const admitted = await f.call('knowledge.notebook.list', f.source.id);
     expect(admitted.status, JSON.stringify(admitted.body)).toBe(200);
     expect(admitted.body.notebookRevision).toBe(pinnedRevision);
-    expect(admitted.body.items).toContainEqual(expect.objectContaining({ id: 'nested/guide' }));
+    expect(admitted.body.knowledgeBaseId).toBe(f.source.knowledgeBaseId);
+    expect(admitted.body.pages).toContainEqual({
+      id: 'nested/guide',
+      path: 'nested/guide.md',
+      content: guideContent,
+      contentDigest: digest(guideContent),
+    });
+    const sourcePointers = readSourcePointers(owner, pinnedRevision);
+    expect([...sourcePointers.keys()].sort()).toEqual(
+      [binarySource.id, registered.body.source.id].sort()
+    );
+    expect(sourcePointers.get(registered.body.source.id)!.fields.contentRef.contentDigest).toBe(
+      digest(capturedText)
+    );
     expect(f.target.knowledgeBaseId).not.toBe(f.source.knowledgeBaseId);
 
     // Expected RED before implementation: valid authorized Notebook setup reaches the missing export operation.
@@ -289,6 +379,10 @@ describe('Knowledge package public operation round trip', () => {
     expect(files.get(pointerPath)?.bytes).toEqual(
       publishedFile(f.source.root, pinnedRevision, pointerPath)
     );
+    const binaryPointerPath = `sources/${binarySource.id}.md`;
+    expect(files.get(binaryPointerPath)?.bytes).toEqual(
+      publishedFile(f.source.root, pinnedRevision, binaryPointerPath)
+    );
 
     const targetSeed = f.target.notebook.publishedRevision();
     const imported = await f.transfer('import', f.target.id, archive);
@@ -301,25 +395,52 @@ describe('Knowledge package public operation round trip', () => {
     expect(result.notebookRevision).toBe(f.target.notebook.publishedRevision());
     expect(result.notebookRevision).not.toBe(targetSeed);
     expect(f.target.notebook.readRevision(result.notebookRevision).parentRevision).toBe(targetSeed);
-    expect(readFileSync(join(f.target.root, rawPath))).toEqual(original);
     expect(readFileSync(join(f.target.root, schemaPath))).toEqual(Buffer.from(schema));
-    const listed = await f.call('knowledge.list', f.target.id);
+    const listed = await f.call('knowledge.notebook.list', f.target.id);
     expect(listed.status, JSON.stringify(listed.body)).toBe(200);
     expect(listed.body.notebookRevision).toBe(result.notebookRevision);
     const targetSources = await f.call('knowledge.source.list', f.target.id);
     expect(targetSources.status, JSON.stringify(targetSources.body)).toBe(200);
-    expect(targetSources.body.items).toHaveLength(1);
-    const targetSource = targetSources.body.items[0];
-    expect(listed.body.items).toContainEqual(
-      expect.objectContaining({
-        id: 'nested/companion',
-        title: 'Companion',
-        content: 'Independent companion page.',
-        sourceReferences: [`source:${targetSource.id}@${targetSource.contentDigest}`],
-      })
+    expect(targetSources.body.items).toHaveLength(2);
+    const targetSource = targetSources.body.items.find(
+      (source: { contentDigest: string }) => source.contentDigest === digest(capturedText)
     );
+    const targetBinarySource = targetSources.body.items.find(
+      (source: { contentDigest: string }) => source.contentDigest === digest(original)
+    );
+    expect(targetSource).toBeDefined();
+    expect(targetBinarySource).toBeDefined();
     expect(targetSource.id).not.toBe(registered.body.source.id);
     expect(targetSource.contentDigest).toBe(registered.body.source.contentDigest);
+    expect(targetBinarySource.id).not.toBe(binarySource.id);
+    const targetOwnerScope = { kind: 'workspace' as const, workspaceId: f.target.id };
+    expect(readKnowledgeMounts({ dataRoot: f.dataRoot, scope: targetOwnerScope })).toEqual([
+      {
+        name: 'managed',
+        backend: 'local',
+        root: 'raw',
+        default: true,
+        knowledgeBaseId: f.target.knowledgeBaseId,
+      },
+    ]);
+    const targetBinaryPointer = readSourcePointers(
+      { dataRoot: f.dataRoot, ownerScope: targetOwnerScope },
+      result.notebookRevision
+    ).get(targetBinarySource.id)!;
+    expect(targetBinaryPointer.fields).toMatchObject({
+      byteLength: original.length,
+      contentRef: {
+        knowledgeBaseId: f.target.knowledgeBaseId,
+        contentDigest: digest(original),
+        locator: { ownerScope: targetOwnerScope, mount: 'managed' },
+        availability: 'available',
+      },
+    });
+    expect(targetBinaryPointer.fields.contentRef.locator.path).toBe(
+      binaryPointer.fields.contentRef.locator.path.replace(binarySource.id, targetBinarySource.id)
+    );
+    const targetRawPath = `raw/${targetBinaryPointer.fields.contentRef.locator.path}`;
+    expect(readFileSync(join(f.target.root, targetRawPath))).toEqual(original);
     const targetPages = f.target.notebook.readRevision(result.notebookRevision).files;
     const targetCompanionUri = formatReferenceUri(
       {
@@ -331,23 +452,48 @@ describe('Knowledge package public operation round trip', () => {
     const targetOriginalUri = formatReferenceUri(
       {
         scopeId: `raw/workspace/${f.target.id}/${f.target.knowledgeBaseId}`,
-        objectId: 'original.bin',
+        objectId: targetBinaryPointer.fields.contentRef.locator.path,
       },
       digest(original)
     );
-    expect(listed.body.items).toContainEqual(
-      expect.objectContaining({
-        id: 'nested/guide',
-        title: 'Package round-trip guide',
-        content: guide.body.content
-          .replaceAll(companionUri, targetCompanionUri)
-          .replaceAll(originalUri, targetOriginalUri),
-        sourceReferences: [
-          `source:${targetSource.id}@${targetSource.contentDigest}`,
-          targetCompanionUri,
-        ],
-      })
+    const targetCompanion = parseOkfDocument({
+      path: 'nested/companion.md',
+      content: targetPages['nested/companion.md']!,
+    });
+    const targetGuide = parseOkfDocument({
+      path: 'nested/guide.md',
+      content: targetPages['nested/guide.md']!,
+    });
+    expect(targetCompanion.ok).toBe(true);
+    expect(targetGuide.ok).toBe(true);
+    if (!targetCompanion.ok || !targetGuide.ok)
+      throw new Error('Imported Notebook page is invalid.');
+    expect(targetCompanion.document.frontmatter).toMatchObject({
+      type: 'KnowledgePage',
+      title: 'Companion',
+      scope: targetOwnerScope,
+      source_refs: [`source:${targetSource.id}@${targetSource.contentDigest}`],
+    });
+    expect(targetCompanion.document.body).toBe('Independent companion page.\n');
+    expect(targetGuide.document.frontmatter).toMatchObject({
+      type: 'KnowledgePage',
+      title: 'Package round-trip guide',
+      scope: targetOwnerScope,
+      source_refs: [`source:${targetSource.id}@${targetSource.contentDigest}`, targetCompanionUri],
+    });
+    expect(targetGuide.document.body).toBe(
+      `${guideBody}\n`
+        .replaceAll(companionUri, targetCompanionUri)
+        .replaceAll(originalUri, targetOriginalUri)
+        .replaceAll(`../../${rawPath}`, `../../${targetRawPath}`)
     );
+    for (const path of ['nested/companion.md', 'nested/guide.md'])
+      expect(listed.body.pages).toContainEqual({
+        id: path.slice(0, -3),
+        path,
+        content: targetPages[path],
+        contentDigest: digest(targetPages[path]!),
+      });
     expect(targetPages['nested/guide.md']).not.toContain(f.source.id);
     expect(targetPages['nested/guide.md']).not.toContain(f.source.knowledgeBaseId);
     const targetPointer = publishedFile(
