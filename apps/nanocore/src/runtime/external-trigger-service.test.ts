@@ -21,6 +21,7 @@ import {
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { managedThreadPolicy } from '../test-support/resource-policy.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { closeSchedulerExecutionAttemptWithoutEffects } from './execution-attempt-records.js';
@@ -303,19 +304,19 @@ describe('bounded scheduled poll event admission', () => {
   it('refuses a managed poll brief before publishing an unmanaged child despite current source grants', async () => {
     const f = fixture();
     const agentId = f.store.getAgentSession(f.source.agentSessionId).agentId;
-    f.store.setWorkspaceResourcePolicyProjection(() => [
-      {
-        resource: { family: 'thread', id: f.source.threadId },
-        grants: [
-          { subject: { kind: 'user', userId: f.userId }, operations: ['thread.read', 'turn.run'] },
-          {
-            subject: { kind: 'agent', userId: f.userId, agentId },
-            operations: ['thread.read', 'turn.run'],
-          },
-        ],
-        prohibitions: [],
-      },
-    ]);
+    const policy = managedThreadPolicy({
+      workspaceId: f.source.workspaceId,
+      threadId: f.source.threadId,
+      userId: f.userId,
+      operations: ['thread.read', 'turn.run'],
+    });
+    const permission = policy.statements.find((statement) => statement.kind === 'permission')!;
+    policy.statements.push({
+      ...permission,
+      id: `${permission.id}-agent`,
+      grant: { kind: 'agent-process', agentId },
+    });
+    f.store.setWorkspaceResourcePolicyProjection(() => policy);
     const workspaceDb = openWorkspaceDb(f.root, f.source.workspaceId);
     applyScopedMigrations(workspaceDb);
     try {
