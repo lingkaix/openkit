@@ -142,7 +142,7 @@ export interface NativeOperationDefinition {
   readonly crossings: readonly OperationCrossing[];
   readonly stages: readonly OperationStage[];
   readonly modes: readonly OperationParticipationMode[];
-  readonly participantKinds: readonly 'deterministic'[];
+  readonly participantKinds: readonly ('deterministic' | 'agent')[];
 }
 
 /** Browser-safe declaration vocabulary; no live dependencies or authority facts. */

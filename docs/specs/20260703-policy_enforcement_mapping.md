@@ -202,6 +202,26 @@ Timeout, malformed output, unavailable provider, refusal to perform the job, or 
 
 A failed participant MUST NOT be recorded as a substantive deny or an inferred allow. Missing mandatory authorization facts remain `error` under the existing result contract. A required gate without a valid result cannot release an effect. Retries stay within one bounded invocation deadline; availability circuits remain distinct from any Turn-level substantive-denial circuit. Restart loads current Policy and preserves evidence without replaying participant effects or restoring old authority.
 
+### Additive I16 Agent Gate
+
+The native agent subset is only `mcp.call-tool@decide` in gate mode. It does not activate advice, transforms, automatic Policy review, delegated administration or an agent's general Tool authority. Without an agent gate, the existing deterministic and empty paths retain identical decision and Audit bytes and effects.
+
+An `agent-principal` statement lives in the existing Server Policy collection. Its common author, authority, scope, state and lifetime retain their existing meanings. The authenticated human candidate writer stamps the creator on creation and preserves it on edits. Only explicit human confirmation can publish a new declaration or activation. Each active agent identity is unique. Its responsibility reference reaches either its declared human or another current declaration with the same terminal human. Missing, inactive, expired, cyclic or out-of-domain links supply no agent authority. No statement outlives its current author. Finite uses on an identity declaration remain inactive; finite binding uses keep the existing final decision consumption owner.
+
+| Element | Writer and reader or validator | Necessity |
+| --- | --- | --- |
+| `agentId` | Human candidate writer; native binding lookup and unique-identity validator. | A binding must identify exactly one accountable principal. |
+| `creator` | Native candidate preparation stamps the creating human and preserves it; later preparation validates preservation. | Current authorship must not rewrite creation attribution. |
+| `responsibleHumanId` | Human-confirmed declaration; native current-authority evaluation and gate decision writer. | The agent must resolve to a specific currently authorized human. |
+| `responsibility` | Human-confirmed declaration; native finite acyclic traversal and scope/lifetime validator. | An intermediate agent cannot bypass the terminal human or its own domain. |
+| Agent participant discriminator and version | Human-confirmed binding; I16 dispatch and exact declaration-digest validator. | Deterministic injection and an unrelated identity version cannot act as an agent gate. |
+
+The binding's agent participant id names `agentId`; its version pins the exact declaration digest. Preparation can replace a submitted reference to that same submitted declaration with its server-stamped digest in the candidate preview. It cannot repin an unrelated or unchanged binding. Declaration scope limits the agent's own subject, actions and resources; the human's rights are independently mandatory and are never inherited. Input disclosure is admitted by the existing human Policy writer and rechecked by the Kernel-only invocation boundary. This first subset exposes only the safe I16 summary and the result Tool, with no investigative Tools or raw Tool arguments. The bounded internal-agent loop uses the existing Gateway and the actual admitted Turn; it invents no Session, Turn or execution store.
+
+An agent result contains `decision: allow | deny | escalate` and nonempty bounded `risk`, `authorizationAssessment` and `rationale` text. These assessments supply no authority and remain untrusted content. Existing invocation evidence retains the output digest, not assessment bodies. The agent gate decision retains the actual agent principal, actor, process and resolved human; the final decision retains the original caller and logical proposal. The current chain and pinned declaration are checked before disclosure and again before release. Missing mandatory authority produces `error`; participant unavailability or invalid output follows the declared failure, with human escalation as the default. Kernel evaluation remains last and mandatory. An agent allow cannot satisfy a human-only requirement.
+
+An active agent binding must first have the same shadow binding and its completed gate evidence in the existing PermissionDecision owner. The separate human candidate/apply boundary verifies that evidence before activation; it adds no activation receipt or store. Shadow results cannot decide the Tool effect. Existing captured Pending Requests own human escalation and response-time reevaluation.
+
 ## Policy Review And Update
 
 The pre-v0.1.0 `policy.write` administration path MUST carry the same governed proposal, decision, and commit boundary as other effects. The proposal retains the proposer, rationale, exact proposed collection with its scope and lifetime, and expected Policy revision. Compute its diff and narrowing/widening classification from the pinned candidate and base; do not retain them as independent facts. Validation MUST check the closed required shape, conflicts, current author/delegation authority, input disclosure, and whether the change narrows or widens authority.
@@ -467,7 +487,7 @@ Once means consuming this proposal approval without a Policy write. Work-unit or
 
 ## Current Implementation Projection
 
-The native I16 pilot and human `policy.write` candidate path implement the first shared mediation slice. Protocol retains version-one statements, subjects, lifetime, decision and invocation envelopes. Goal-domain activation, Task-resource intersection, agent-principal grants and automatic narrowing review remain Not Started. Inactive declarations do not activate these authorities. No agent approver is activated.
+The native I16 pilot and human `policy.write` candidate path implement the first shared mediation slice. Protocol retains version-one statements, subjects, lifetime, decision and invocation envelopes. Goal-domain activation, Task-resource intersection, agent-principal grants and automatic narrowing review remain Not Started. Inactive declarations do not activate these authorities. The additive I16 agent gate subsection defines the explicit human-approved subset; it supplies no general agent Tool authority.
 
 ### Version-One Retained Projection
 

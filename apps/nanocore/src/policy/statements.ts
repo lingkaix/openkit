@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto';
 import { type NativeOperationDefinition, OPERATION_REGISTRY } from '@openkit/app-api-schemas';
+import { evaluateAccess, type PolicyState } from '@openkit/policy-kernel';
 import {
   canonicalIdentifierName,
+  type PolicyAgentPrincipalV1,
   type PolicyBindingV1,
   type PolicyDocumentV1,
   PolicyDocumentV1Schema,
@@ -44,6 +46,33 @@ export function validatePolicyDocument(input: unknown): PolicyDocumentV1 {
   const positions = new Set<string>();
   for (const statement of document.statements) {
     if (statement.state === 'inactive') continue;
+    if (statement.kind === 'agent-principal') {
+      if (
+        statement.author.kind !== 'human' ||
+        statement.authority.kind !== 'human' ||
+        statement.author.id !== statement.authority.userId ||
+        statement.lifetime.uses !== undefined ||
+        statement.scope.subjects.length !== 1 ||
+        statement.scope.subjects[0]?.kind !== 'agent' ||
+        statement.scope.subjects[0].id !== statement.agentId ||
+        statement.scope.actions.some((action) => action !== 'tool.use')
+      )
+        throw new Error(
+          'Agent identity requires an explicit human root and its own finite native domain.'
+        );
+      const anchor = statement.lifetime.anchor;
+      const workspaceId = anchor.owner.kind === 'workspace' ? anchor.owner.workspaceId : null;
+      if (
+        anchor.owner.kind !== 'workspace' ||
+        !['workspace', 'turn'].includes(anchor.kind) ||
+        (anchor.kind === 'workspace' && anchor.id !== anchor.owner.workspaceId) ||
+        statement.scope.resources.some(
+          (resource) => resource.kind !== 'mcp-tool' || resource.workspaceId !== workspaceId
+        )
+      )
+        throw new Error('Agent domain requires one exact native Workspace scope.');
+      continue;
+    }
     // Goal activation is admitted separately against its jointly approved request.
     // Structural admission alone supplies no Goal authority to a consumer.
     if (statement.kind === 'delegation' && statement.purpose === 'goal-domain') {
@@ -121,6 +150,12 @@ export function validatePolicyDocument(input: unknown): PolicyDocumentV1 {
     if (!native.stages.includes(statement.stage) || !native.modes.includes(statement.mode))
       throw new Error('Policy binding stage or mode is unavailable.');
     const stage = { observe: 'completed', advise: 'propose', transform: 'propose', gate: 'decide' };
+    if (
+      !native.participantKinds.includes(statement.participant.kind) ||
+      (statement.participant.kind === 'agent' &&
+        (statement.mode !== 'gate' || statement.stage !== 'decide'))
+    )
+      throw new Error('Agent participation is only available for the I16 deciding gate.');
     if (statement.stage !== stage[statement.mode])
       throw new Error('Policy mode is at the wrong stage.');
     // I16 has no resolvable safe output owner for advice or replacement bodies.
@@ -169,6 +204,53 @@ export function validatePolicyDocument(input: unknown): PolicyDocumentV1 {
   }
   if (document.statements.some((statement) => statement.authority.kind === 'delegation'))
     throw new Error('Delegated Policy authority is unavailable.');
+  const agents = document.statements.filter(
+    (s): s is PolicyAgentPrincipalV1 => s.kind === 'agent-principal' && s.state === 'active'
+  );
+  if (new Set(agents.map((s) => s.agentId)).size !== agents.length)
+    throw new Error('Active agent identities must be unique.');
+  for (const agent of agents) {
+    const seen = new Set<string>();
+    let current: PolicyAgentPrincipalV1 | undefined = agent;
+    while (current) {
+      if (seen.has(current.agentId)) throw new Error('Agent responsibility chain is cyclic.');
+      seen.add(current.agentId);
+      if (current.responsibleHumanId !== agent.responsibleHumanId)
+        throw new Error('Agent responsibility chain changes its terminal human.');
+      if (current.responsibility.kind === 'human') {
+        if (current.responsibility.id !== agent.responsibleHumanId)
+          throw new Error('Agent responsibility must end at its declared human.');
+        break;
+      }
+      current = agents.find((s) => s.agentId === current!.responsibility.id);
+      if (!current) throw new Error('Agent responsibility chain is unavailable.');
+    }
+  }
+  for (const binding of document.statements) {
+    if (
+      binding.kind !== 'binding' ||
+      binding.state === 'inactive' ||
+      binding.participant.kind !== 'agent'
+    )
+      continue;
+    let agent = agents.find((value) => value.agentId === binding.participant.id);
+    if (!agent || policyDigest(agent) !== binding.participant.version)
+      throw new Error('Agent binding must pin its active declaration.');
+    // The chain was checked above; every edge also limits the declared disclosure domain.
+    for (;;) {
+      if (
+        !scopeContains(
+          { ...agent.scope, subjects: binding.inputDisclosure.subjects },
+          binding.inputDisclosure
+        )
+      )
+        throw new Error('Agent input disclosure exceeds its current declared domain.');
+      if (agent.responsibility.kind === 'human') break;
+      const next = agents.find((value) => value.agentId === agent!.responsibility.id);
+      if (!next) throw new Error('Agent responsibility chain is unavailable.');
+      agent = next;
+    }
+  }
   return document;
 }
 
@@ -199,8 +281,33 @@ export function preparePolicyDocument(input: {
       author: { kind: 'human' as const, id: input.userId },
       authority: { kind: 'human' as const, userId: input.userId },
       authoredAt: input.now,
+      ...(statement.kind === 'agent-principal'
+        ? {
+            creator:
+              previous?.kind === 'agent-principal'
+                ? previous.creator
+                : { kind: 'human' as const, id: input.userId },
+          }
+        : {}),
     };
   });
+  // Only references to the same submitted declaration follow native authorship stamping.
+  for (const statement of statements) {
+    if (
+      statement.kind !== 'binding' ||
+      statement.participant.kind !== 'agent' ||
+      ![...diff.added, ...diff.changed].includes(statement.id)
+    )
+      continue;
+    const source = proposed.statements.find(
+      (s) => s.kind === 'agent-principal' && s.agentId === statement.participant.id
+    );
+    const prepared = statements.find(
+      (s) => s.kind === 'agent-principal' && s.agentId === statement.participant.id
+    );
+    if (source && prepared && statement.participant.version === policyDigest(source))
+      statement.participant = { ...statement.participant, version: policyDigest(prepared) };
+  }
   const retained = new Set(statements.map(({ id }) => id));
   diff.removed = input.current.statements.filter(({ id }) => !retained.has(id)).map(({ id }) => id);
   const document = validatePolicyDocument({ schemaVersion: 1, statements });
@@ -259,7 +366,9 @@ export function selectPolicyBindings(input: {
         return false;
       if (!input.anchorCurrent(anchor)) return false;
       if (lifetime.notAfter && Date.parse(lifetime.notAfter) <= input.now) return false;
-      if (statement.author.kind !== 'human' || !input.authorCurrent(statement.author.id))
+      if (statement.author.kind !== 'human') return false;
+      // A required agent gate cannot disappear when its activation author loses authority.
+      if (statement.participant.kind !== 'agent' && !input.authorCurrent(statement.author.id))
         return false;
       return policyScopeIncludesProposal(statement.scope, proposal);
     })
@@ -275,4 +384,97 @@ function scopeContains(
     const admitted = new Set(scope[key].map((value) => policyDigest(value)));
     return disclosure[key].every((value) => admitted.has(policyDigest(value)));
   });
+}
+
+/** Resolves the current accountable agent and its explicit domain through the existing Kernel. */
+export function readPolicyAgentPrincipal(input: {
+  document: PolicyDocumentV1;
+  binding: PolicyBindingV1;
+  proposal: PolicyProposal;
+  authorCurrent: (userId: string) => boolean;
+  anchorCurrent: (anchor: PolicyBindingV1['lifetime']['anchor']) => boolean;
+  now: number;
+}): PolicyAgentPrincipalV1 {
+  const { binding, proposal } = input;
+  if (binding.participant.kind !== 'agent') throw new Error('An agent binding is required.');
+  const agents = input.document.statements.filter(
+    (s): s is PolicyAgentPrincipalV1 => s.kind === 'agent-principal'
+  );
+  const root = agents.find((s) => s.agentId === binding.participant.id);
+  if (!root || policyDigest(root) !== binding.participant.version)
+    throw new Error('The pinned agent declaration is unavailable.');
+  const seen = new Set<string>();
+  let current = root;
+  for (;;) {
+    const anchor = current.lifetime.anchor;
+    if (
+      seen.has(current.agentId) ||
+      agents.filter((s) => s.agentId === current.agentId).length !== 1 ||
+      current.state !== 'active' ||
+      current.responsibleHumanId !== root.responsibleHumanId ||
+      current.author.kind !== 'human' ||
+      current.authority.kind !== 'human' ||
+      current.author.id !== current.authority.userId ||
+      !input.authorCurrent(current.author.id) ||
+      !input.authorCurrent(root.responsibleHumanId) ||
+      current.lifetime.uses !== undefined ||
+      (current.lifetime.notAfter && Date.parse(current.lifetime.notAfter) <= input.now) ||
+      anchor.owner.kind !== 'workspace' ||
+      anchor.owner.workspaceId !== proposal.workspaceId ||
+      !['workspace', 'turn'].includes(anchor.kind) ||
+      (anchor.kind === 'workspace' && anchor.id !== proposal.workspaceId) ||
+      (anchor.kind === 'turn' && anchor.id !== proposal.subject.process?.turnId) ||
+      !input.anchorCurrent(anchor)
+    )
+      throw new Error('Current agent accountability is unavailable.');
+    seen.add(current.agentId);
+    const resource = {
+      kind: 'mcp-tool',
+      workspaceId: proposal.workspaceId,
+      serverId: proposal.serverId,
+      toolName: proposal.toolName,
+    };
+    const policy: PolicyState = {
+      elements: [
+        { id: 'agent', kind: 'user' },
+        { id: 'domain', kind: 'userAttribute' },
+        { id: 'target', kind: 'object' },
+        { id: 'resources', kind: 'objectAttribute' },
+        { id: 'scope', kind: 'policyClass' },
+      ],
+      assignments: [
+        { child: 'agent', parent: 'domain' },
+        { child: 'domain', parent: 'scope' },
+        { child: 'target', parent: 'resources' },
+        { child: 'resources', parent: 'scope' },
+      ],
+      operations: [{ id: 'tool.use', accessRights: ['tool.use'] }],
+      associations:
+        current.scope.subjects.some((s) => s.kind === 'agent' && s.id === current.agentId) &&
+        current.scope.resources.some((r) => policyDigest(r) === policyDigest(resource)) &&
+        current.scope.actions.includes('tool.use')
+          ? [
+              {
+                id: current.id,
+                userAttribute: 'domain',
+                targetAttribute: 'resources',
+                accessRights: ['tool.use'],
+              },
+            ]
+          : [],
+    };
+    if (
+      evaluateAccess(policy, { user: 'agent', operation: 'tool.use', target: 'target' }).effect !==
+      'allow'
+    )
+      throw new Error('Current agent domain does not cover the proposal.');
+    if (current.responsibility.kind === 'human') {
+      if (current.responsibility.id !== root.responsibleHumanId)
+        throw new Error('Agent terminal human differs.');
+      return root;
+    }
+    const next = agents.find((s) => s.agentId === current.responsibility.id);
+    if (!next) throw new Error('Agent responsibility chain is unavailable.');
+    current = next;
+  }
 }
