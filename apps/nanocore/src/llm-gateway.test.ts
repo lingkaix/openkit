@@ -234,6 +234,8 @@ function createDirectGatewayApp(input: {
     providerSubscriptionAccountManager: {
       getPairHandle: input.getPairHandle,
       gatewayUnavailableReason: () => null,
+      // Protocol/authentication fixtures explicitly admit quota, independent of account defaults.
+      codexInferenceAllowed: async () => true,
     },
     resolveGatewayProvider: (providerId: string) => {
       const profile = providerRegistry.get(providerId);
@@ -2604,7 +2606,11 @@ describe('OpenAI-compatible agent gateway', () => {
         coreDb,
         defaultProviderId: profile.id,
         dispatcher: new LLMGatewayProviderDispatcher({ piAiClient: new PiAiGatewayClient() }),
-        getPairHandle: async () => ({ credentials: {} as never, models }),
+        getPairHandle: async () => ({
+          credentials: {} as never,
+          models,
+          getCredentialVersion: async () => 'synthetic-team:1',
+        }),
         profiles: [profile],
       });
       const res = await app.request('/v1/responses', {
@@ -2681,7 +2687,11 @@ describe('OpenAI-compatible agent gateway', () => {
         stopReason: 'error',
       }),
     ]);
-    const getPairHandle = vi.fn(async () => ({ credentials: {} as never, models }));
+    const getPairHandle = vi.fn(async () => ({
+      credentials: {} as never,
+      models,
+      getCredentialVersion: async () => 'synthetic-team:1',
+    }));
     const app = createDirectGatewayApp({
       defaultProviderId: profile.id,
       dispatcher: new LLMGatewayProviderDispatcher({
@@ -3079,7 +3089,11 @@ describe('OpenAI-compatible agent gateway', () => {
     };
     const models = createModels();
     vi.spyOn(models, 'checkAuth').mockResolvedValue({ source: 'OAuth', type: 'oauth' });
-    const getPairHandle = vi.fn(async () => ({ credentials: {} as never, models }));
+    const getPairHandle = vi.fn(async () => ({
+      credentials: {} as never,
+      models,
+      getCredentialVersion: async () => 'synthetic-team:1',
+    }));
     const createResponses = vi.fn(
       async (
         _provider: unknown,
