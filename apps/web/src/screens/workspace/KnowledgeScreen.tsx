@@ -16,8 +16,6 @@ import {
   PageHeader,
   Select,
   Skeleton,
-  StatusChip,
-  type StatusChipProps,
   TextField,
 } from '../../primitives';
 import {
@@ -33,11 +31,7 @@ import {
   matchesWorkspaceKnowledgePageReference,
   type PrepareKnowledgeContextCommand,
   type ReadKnowledgeSourceCommand,
-  type RecordKnowledgeClaimCommand,
-  type RecordKnowledgeConflictCommand,
-  type RecordKnowledgeObservationCommand,
   type RegisterKnowledgeSourceCommand,
-  type ResolveKnowledgeConflictCommand,
   type RetrieveKnowledgeCommand,
   readKnowledgeCitationEvidence,
   type SuggestKnowledgeRepairsCommand,
@@ -50,18 +44,11 @@ import {
   useDeleteKnowledge,
   useHumanAttention,
   useKnowledge,
-  useKnowledgeClaims,
-  useKnowledgeConflicts,
   useKnowledgeIndexes,
-  useKnowledgeObservations,
   useKnowledgeSources,
   usePrepareKnowledgeContext,
   useReadKnowledgeSource,
-  useRecordKnowledgeClaim,
-  useRecordKnowledgeConflict,
-  useRecordKnowledgeObservation,
   useRegisterKnowledgeSource,
-  useResolveKnowledgeConflict,
   useRetrieveKnowledge,
   useSubmitKnowledgeProposalDecision,
   useSuggestKnowledgeRepairs,
@@ -85,40 +72,6 @@ const SOURCE_KIND_LABEL = {
   code: 'Code',
 } satisfies Record<KnowledgeStoreProjection['sources'][number]['kind'], string>;
 
-const OBSERVATION_KIND_LABEL = {
-  retrieval: 'Retrieval',
-  source: 'Source',
-  maintenance: 'Maintenance',
-  agent: 'Agent',
-  'user-feedback': 'User feedback',
-} satisfies Record<KnowledgeStoreProjection['observations'][number]['kind'], string>;
-
-const OBSERVATION_STATUS_LABEL = {
-  retained: 'Retained',
-  promoted: 'Promoted',
-  expired: 'Expired',
-  archived: 'Archived',
-} satisfies Record<KnowledgeStoreProjection['observations'][number]['status'], string>;
-
-const CLAIM_REVIEW_STATUS = {
-  'needs-review': { label: 'Needs review', tone: 'notice' },
-  accepted: { label: 'Approved', tone: 'positive' },
-  rejected: { label: 'Rejected', tone: 'negative' },
-  deferred: { label: 'Paused', tone: 'neutral' },
-} satisfies Record<
-  KnowledgeStoreProjection['claims'][number]['reviewState'],
-  { label: string; tone: StatusChipProps['tone'] }
->;
-
-const CLAIM_CONFLICT_STATUS_LABEL = {
-  none: 'No conflict',
-  conflicting: 'Conflicting',
-  weak_evidence: 'Weak evidence',
-  stale: 'Stale',
-  superseded: 'Superseded',
-  partially_superseded: 'Partially superseded',
-} satisfies Record<KnowledgeStoreProjection['claims'][number]['conflictStatus'], string>;
-
 const DERIVED_KIND_LABEL = {
   text: 'Text',
 } as const;
@@ -134,24 +87,9 @@ const EXCLUSION_REASON_LABEL = {
 } as const;
 
 const SOURCE_KIND_ITEMS = Object.entries(SOURCE_KIND_LABEL).map(([id, label]) => ({ id, label }));
-const OBSERVATION_KIND_ITEMS = Object.entries(OBSERVATION_KIND_LABEL).map(([id, label]) => ({
-  id,
-  label,
-}));
 
 function isSourceKind(value: string): value is keyof typeof SOURCE_KIND_LABEL {
   return Object.hasOwn(SOURCE_KIND_LABEL, value);
-}
-
-function isObservationKind(value: string): value is keyof typeof OBSERVATION_KIND_LABEL {
-  return Object.hasOwn(OBSERVATION_KIND_LABEL, value);
-}
-
-function splitReferences(value: string): string[] {
-  return value
-    .split(/\s+/)
-    .map((item) => item.trim())
-    .filter(Boolean);
 }
 
 /** Scope the existing full-content fragment to its Workspace and page identity. */
@@ -223,41 +161,6 @@ type SourceDraft = {
 
 const EMPTY_SOURCE_DRAFT: SourceDraft = { kind: null, title: '', content: '' };
 
-type ObservationDraft = {
-  kind: string | null;
-  summary: string;
-  producer: string;
-};
-
-const EMPTY_OBSERVATION_DRAFT: ObservationDraft = { kind: null, summary: '', producer: '' };
-
-type ClaimDraft = {
-  statement: string;
-  producer: string;
-};
-
-const EMPTY_CLAIM_DRAFT: ClaimDraft = { statement: '', producer: '' };
-
-type ConflictDraft = {
-  summary: string;
-  subjectReferences: string;
-  producer: string;
-};
-
-const EMPTY_CONFLICT_DRAFT: ConflictDraft = {
-  summary: '',
-  subjectReferences: '',
-  producer: '',
-};
-
-type ResolveDraft = {
-  conflictId: string | null;
-  resolution: string;
-  resolvedBy: string;
-};
-
-const EMPTY_RESOLVE_DRAFT: ResolveDraft = { conflictId: null, resolution: '', resolvedBy: '' };
-
 type AddDraft = {
   adding: boolean;
   baseRevision: string | null;
@@ -295,9 +198,6 @@ export function KnowledgeScreen() {
   const workspaceId = useCurrentWorkspaceId();
   const knowledge = useKnowledge(workspaceId);
   const sourcesCatalog = useKnowledgeSources(workspaceId);
-  const observationsCatalog = useKnowledgeObservations(workspaceId);
-  const claimsCatalog = useKnowledgeClaims(workspaceId);
-  const conflictsCatalog = useKnowledgeConflicts(workspaceId);
   const indexesCatalog = useKnowledgeIndexes(workspaceId);
   const create = useCreateKnowledge();
   const update = useUpdateKnowledge();
@@ -325,13 +225,7 @@ export function KnowledgeScreen() {
   const proposalWriteBlocked = entryWriteBlocked || attention.isFetching || attention.isError;
   const connectionBlocked = checking || failed;
   const pagePending =
-    !workspaceId ||
-    knowledge.isPending ||
-    sourcesCatalog.isPending ||
-    observationsCatalog.isPending ||
-    claimsCatalog.isPending ||
-    conflictsCatalog.isPending ||
-    indexesCatalog.isPending;
+    !workspaceId || knowledge.isPending || sourcesCatalog.isPending || indexesCatalog.isPending;
 
   const sourceOptions = (sourcesCatalog.isSuccess ? sourcesCatalog.data : []).flatMap((source) =>
     source.workspaceId === workspaceId && source.contentDigest
@@ -778,7 +672,6 @@ export function KnowledgeScreen() {
         )}
 
         <KnowledgeSourcesPanel connectionBlocked={connectionBlocked} workspaceId={workspaceId} />
-        <KnowledgeLedgerPanel connectionBlocked={connectionBlocked} workspaceId={workspaceId} />
         <KnowledgeRetrievalPanel
           connectionBlocked={connectionBlocked}
           workspaceId={workspaceId}
@@ -1037,564 +930,6 @@ function KnowledgeSourcesPanel({
             </p>
           ))
         : null}
-    </section>
-  );
-}
-
-function KnowledgeLedgerPanel({
-  workspaceId,
-  connectionBlocked,
-}: {
-  workspaceId: string | null;
-  connectionBlocked: boolean;
-}) {
-  const queryClient = useQueryClient();
-  const observations = useKnowledgeObservations(workspaceId);
-  const claims = useKnowledgeClaims(workspaceId);
-  const conflicts = useKnowledgeConflicts(workspaceId);
-  const recordObservation = useRecordKnowledgeObservation();
-  const recordClaim = useRecordKnowledgeClaim();
-  const recordConflict = useRecordKnowledgeConflict();
-  const resolveConflict = useResolveKnowledgeConflict();
-  const [observationDraft, setObservationDraft, clearObservationDraft] = useWorkspaceScoped(
-    workspaceId,
-    EMPTY_OBSERVATION_DRAFT
-  );
-  const [claimDraft, setClaimDraft, clearClaimDraft] = useWorkspaceScoped(
-    workspaceId,
-    EMPTY_CLAIM_DRAFT
-  );
-  const [conflictDraft, setConflictDraft, clearConflictDraft] = useWorkspaceScoped(
-    workspaceId,
-    EMPTY_CONFLICT_DRAFT
-  );
-  const [resolveDraft, setResolveDraft, clearResolveDraft] = useWorkspaceScoped(
-    workspaceId,
-    EMPTY_RESOLVE_DRAFT
-  );
-  const [awaitingObservation, setAwaitingObservation] = useState<Record<string, true>>({});
-  const [awaitingClaim, setAwaitingClaim] = useState<Record<string, true>>({});
-  const [awaitingConflict, setAwaitingConflict] = useState<Record<string, true>>({});
-  const [awaitingResolve, setAwaitingResolve] = useState<Record<string, true>>({});
-  const observationFieldBlocked = connectionBlocked || !workspaceId || observations.isFetching;
-  const claimFieldBlocked = connectionBlocked || !workspaceId || claims.isFetching;
-  const conflictFieldBlocked = connectionBlocked || !workspaceId || conflicts.isFetching;
-  const resolveFieldBlocked = connectionBlocked || !workspaceId || conflicts.isFetching;
-  const observationSubmitBlocked =
-    observationFieldBlocked ||
-    recordObservation.isPending ||
-    observations.isError ||
-    Boolean(workspaceId && awaitingObservation[workspaceId]) ||
-    (recordObservation.isSuccess &&
-      matchesWorkspace(workspaceId, recordObservation.variables?.workspaceId));
-  const claimSubmitBlocked =
-    claimFieldBlocked ||
-    recordClaim.isPending ||
-    claims.isError ||
-    Boolean(workspaceId && awaitingClaim[workspaceId]) ||
-    (recordClaim.isSuccess && matchesWorkspace(workspaceId, recordClaim.variables?.workspaceId));
-  const conflictSubmitBlocked =
-    conflictFieldBlocked ||
-    recordConflict.isPending ||
-    conflicts.isError ||
-    Boolean(workspaceId && awaitingConflict[workspaceId]) ||
-    (recordConflict.isSuccess &&
-      matchesWorkspace(workspaceId, recordConflict.variables?.workspaceId));
-  const resolveSubmitBlocked =
-    resolveFieldBlocked ||
-    resolveConflict.isPending ||
-    conflicts.isError ||
-    Boolean(workspaceId && awaitingResolve[workspaceId]) ||
-    (resolveConflict.isSuccess &&
-      matchesWorkspace(workspaceId, resolveConflict.variables?.workspaceId));
-  const parsedSubjectReferences = splitReferences(conflictDraft.subjectReferences);
-  const conflictItems = (conflicts.data ?? []).map((conflict) => ({
-    id: conflict.id,
-    label: conflict.summary,
-  }));
-
-  function settleObservation(targetId: string) {
-    clearObservationDraft(targetId);
-    setAwaitingObservation((current) => omitWorkspaceFlag(current, targetId));
-    if (recordObservation.variables?.workspaceId === targetId) recordObservation.reset();
-  }
-
-  function settleClaim(targetId: string) {
-    clearClaimDraft(targetId);
-    setAwaitingClaim((current) => omitWorkspaceFlag(current, targetId));
-    if (recordClaim.variables?.workspaceId === targetId) recordClaim.reset();
-  }
-
-  function settleConflict(targetId: string) {
-    clearConflictDraft(targetId);
-    setAwaitingConflict((current) => omitWorkspaceFlag(current, targetId));
-    if (recordConflict.variables?.workspaceId === targetId) recordConflict.reset();
-  }
-
-  function settleResolve(targetId: string) {
-    clearResolveDraft(targetId);
-    setAwaitingResolve((current) => omitWorkspaceFlag(current, targetId));
-    if (resolveConflict.variables?.workspaceId === targetId) resolveConflict.reset();
-  }
-
-  /** Append one observation, then wait for the authoritative observation list. */
-  function submitObservation(command?: RecordKnowledgeObservationCommand) {
-    const next =
-      command ??
-      (workspaceId &&
-      observationDraft.kind &&
-      isObservationKind(observationDraft.kind) &&
-      observationDraft.summary.trim() &&
-      observationDraft.producer.trim()
-        ? {
-            workspaceId,
-            input: {
-              requestId: createRequestId(),
-              kind: observationDraft.kind,
-              summary: observationDraft.summary.trim(),
-              sourceReferences: [],
-              scope: 'workspace',
-              producer: observationDraft.producer.trim(),
-              confidence: 0.5,
-              freshness: 'current' as const,
-              status: 'retained' as const,
-            },
-          }
-        : undefined);
-    if (!next || (!command && observationSubmitBlocked)) return;
-    if (command && (observationFieldBlocked || recordObservation.isPending)) return;
-    recordObservation.mutate(next, {
-      onSuccess: async (_data, settled) => {
-        setAwaitingObservation((current) => ({ ...current, [settled.workspaceId]: true }));
-        await refetchWorkspaceCatalog(
-          queryClient,
-          workspaceKeys.knowledgeObservations(settled.workspaceId),
-          () => settleObservation(settled.workspaceId)
-        );
-      },
-    });
-  }
-
-  /** Append one claim, then wait for the authoritative claim list. */
-  function submitClaim(command?: RecordKnowledgeClaimCommand) {
-    const next =
-      command ??
-      (workspaceId && claimDraft.statement.trim() && claimDraft.producer.trim()
-        ? {
-            workspaceId,
-            input: {
-              requestId: createRequestId(),
-              statement: claimDraft.statement.trim(),
-              producer: claimDraft.producer.trim(),
-            },
-          }
-        : undefined);
-    if (!next || (!command && claimSubmitBlocked)) return;
-    if (command && (claimFieldBlocked || recordClaim.isPending)) return;
-    recordClaim.mutate(next, {
-      onSuccess: async (_data, settled) => {
-        setAwaitingClaim((current) => ({ ...current, [settled.workspaceId]: true }));
-        await refetchWorkspaceCatalog(
-          queryClient,
-          workspaceKeys.knowledgeClaims(settled.workspaceId),
-          () => settleClaim(settled.workspaceId)
-        );
-      },
-    });
-  }
-
-  /** Append one conflict, then wait for the authoritative conflict list. */
-  function submitConflict(command?: RecordKnowledgeConflictCommand) {
-    const next =
-      command ??
-      (workspaceId &&
-      conflictDraft.summary.trim() &&
-      parsedSubjectReferences.length &&
-      conflictDraft.producer.trim()
-        ? {
-            workspaceId,
-            input: {
-              requestId: createRequestId(),
-              summary: conflictDraft.summary.trim(),
-              subjectReferences: parsedSubjectReferences,
-              producer: conflictDraft.producer.trim(),
-            },
-          }
-        : undefined);
-    if (!next || (!command && conflictSubmitBlocked)) return;
-    if (command && (conflictFieldBlocked || recordConflict.isPending)) return;
-    recordConflict.mutate(next, {
-      onSuccess: async (_data, settled) => {
-        setAwaitingConflict((current) => ({ ...current, [settled.workspaceId]: true }));
-        await refetchWorkspaceCatalog(
-          queryClient,
-          workspaceKeys.knowledgeConflicts(settled.workspaceId),
-          () => settleConflict(settled.workspaceId)
-        );
-      },
-    });
-  }
-
-  /** Resolve one listed conflict, then wait for the authoritative conflict list. */
-  function submitResolve(command?: ResolveKnowledgeConflictCommand) {
-    const next =
-      command ??
-      (workspaceId &&
-      resolveDraft.conflictId &&
-      resolveDraft.resolution.trim() &&
-      resolveDraft.resolvedBy.trim()
-        ? {
-            workspaceId,
-            conflictId: resolveDraft.conflictId,
-            input: {
-              requestId: createRequestId(),
-              resolution: resolveDraft.resolution.trim(),
-              resolvedBy: resolveDraft.resolvedBy.trim(),
-            },
-          }
-        : undefined);
-    if (!next || (!command && resolveSubmitBlocked)) return;
-    if (command && (resolveFieldBlocked || resolveConflict.isPending)) return;
-    resolveConflict.mutate(next, {
-      onSuccess: async (_data, settled) => {
-        setAwaitingResolve((current) => ({ ...current, [settled.workspaceId]: true }));
-        await refetchWorkspaceCatalog(
-          queryClient,
-          workspaceKeys.knowledgeConflicts(settled.workspaceId),
-          () => settleResolve(settled.workspaceId)
-        );
-      },
-    });
-  }
-
-  async function retryObservationsCatalog() {
-    const result = await observations.refetch();
-    if (
-      result.isSuccess &&
-      workspaceId &&
-      recordObservation.isSuccess &&
-      matchesWorkspace(workspaceId, recordObservation.variables?.workspaceId)
-    ) {
-      settleObservation(workspaceId);
-    }
-  }
-
-  async function retryClaimsCatalog() {
-    const result = await claims.refetch();
-    if (
-      result.isSuccess &&
-      workspaceId &&
-      recordClaim.isSuccess &&
-      matchesWorkspace(workspaceId, recordClaim.variables?.workspaceId)
-    ) {
-      settleClaim(workspaceId);
-    }
-  }
-
-  async function retryConflictsCatalog() {
-    const result = await conflicts.refetch();
-    if (!result.isSuccess || !workspaceId) return;
-    if (
-      recordConflict.isSuccess &&
-      matchesWorkspace(workspaceId, recordConflict.variables?.workspaceId)
-    ) {
-      settleConflict(workspaceId);
-    }
-    if (
-      resolveConflict.isSuccess &&
-      matchesWorkspace(workspaceId, resolveConflict.variables?.workspaceId)
-    ) {
-      settleResolve(workspaceId);
-    }
-  }
-
-  const failedObservation =
-    recordObservation.isError &&
-    matchesWorkspace(workspaceId, recordObservation.variables?.workspaceId)
-      ? recordObservation.variables
-      : undefined;
-  const failedClaim =
-    recordClaim.isError && matchesWorkspace(workspaceId, recordClaim.variables?.workspaceId)
-      ? recordClaim.variables
-      : undefined;
-  const failedConflict =
-    recordConflict.isError && matchesWorkspace(workspaceId, recordConflict.variables?.workspaceId)
-      ? recordConflict.variables
-      : undefined;
-  const failedResolve =
-    resolveConflict.isError && matchesWorkspace(workspaceId, resolveConflict.variables?.workspaceId)
-      ? resolveConflict.variables
-      : undefined;
-
-  return (
-    <section aria-label="Ledger" className="flex flex-col gap-2">
-      <Eyebrow>Ledger</Eyebrow>
-      {observations.isError ? (
-        <fieldset disabled={connectionBlocked || observations.isFetching} className="contents">
-          <ErrorBanner
-            message={knowledgeActionErrorMessage(observations.error, "Couldn't load observations.")}
-            onRetry={() => void retryObservationsCatalog()}
-          />
-        </fieldset>
-      ) : null}
-      {claims.isError ? (
-        <fieldset disabled={connectionBlocked || claims.isFetching} className="contents">
-          <ErrorBanner
-            message={knowledgeActionErrorMessage(claims.error, "Couldn't load claims.")}
-            onRetry={() => void retryClaimsCatalog()}
-          />
-        </fieldset>
-      ) : null}
-      {conflicts.isError ? (
-        <fieldset disabled={connectionBlocked || conflicts.isFetching} className="contents">
-          <ErrorBanner
-            message={knowledgeActionErrorMessage(conflicts.error, "Couldn't load conflicts.")}
-            onRetry={() => void retryConflictsCatalog()}
-          />
-        </fieldset>
-      ) : null}
-      <Card className="flex flex-col gap-3">
-        <Select
-          label="Observation kind"
-          placeholder={
-            observationDraft.kind && isObservationKind(observationDraft.kind)
-              ? OBSERVATION_KIND_LABEL[observationDraft.kind]
-              : 'Select…'
-          }
-          items={OBSERVATION_KIND_ITEMS}
-          selectedKey={observationDraft.kind ?? null}
-          isDisabled={observationFieldBlocked}
-          onSelectionChange={(key) =>
-            setObservationDraft((current) => ({
-              ...current,
-              kind: key == null ? null : String(key),
-            }))
-          }
-        />
-        <TextField
-          label="Observation summary"
-          value={observationDraft.summary}
-          onChange={(summary) => setObservationDraft((current) => ({ ...current, summary }))}
-          isDisabled={observationFieldBlocked}
-        />
-        <TextField
-          label="Observation producer"
-          value={observationDraft.producer}
-          onChange={(producer) => setObservationDraft((current) => ({ ...current, producer }))}
-          isDisabled={observationFieldBlocked}
-        />
-        {failedObservation ? (
-          <fieldset
-            disabled={observationFieldBlocked || recordObservation.isPending}
-            className="contents"
-          >
-            <ErrorBanner
-              message={knowledgeActionErrorMessage(
-                recordObservation.error,
-                "Couldn't record that observation."
-              )}
-              onRetry={() => submitObservation(failedObservation)}
-            />
-          </fieldset>
-        ) : null}
-        <Button
-          size="sm"
-          isDisabled={
-            observationSubmitBlocked ||
-            !observationDraft.kind ||
-            !isObservationKind(observationDraft.kind) ||
-            !observationDraft.summary.trim() ||
-            !observationDraft.producer.trim()
-          }
-          onPress={() => submitObservation()}
-        >
-          Record observation
-        </Button>
-      </Card>
-      <Card className="flex flex-col gap-3">
-        <TextField
-          label="Claim statement"
-          value={claimDraft.statement}
-          onChange={(statement) => setClaimDraft((current) => ({ ...current, statement }))}
-          isDisabled={claimFieldBlocked}
-        />
-        <TextField
-          label="Claim producer"
-          value={claimDraft.producer}
-          onChange={(producer) => setClaimDraft((current) => ({ ...current, producer }))}
-          isDisabled={claimFieldBlocked}
-        />
-        {failedClaim ? (
-          <fieldset disabled={claimFieldBlocked || recordClaim.isPending} className="contents">
-            <ErrorBanner
-              message={knowledgeActionErrorMessage(
-                recordClaim.error,
-                "Couldn't record that claim."
-              )}
-              onRetry={() => submitClaim(failedClaim)}
-            />
-          </fieldset>
-        ) : null}
-        <Button
-          size="sm"
-          isDisabled={
-            claimSubmitBlocked || !claimDraft.statement.trim() || !claimDraft.producer.trim()
-          }
-          onPress={() => submitClaim()}
-        >
-          Record claim
-        </Button>
-      </Card>
-      <Card className="flex flex-col gap-3">
-        <TextField
-          label="Conflict summary"
-          value={conflictDraft.summary}
-          onChange={(summary) => setConflictDraft((current) => ({ ...current, summary }))}
-          isDisabled={conflictFieldBlocked}
-        />
-        <TextField
-          label="Subject references"
-          value={conflictDraft.subjectReferences}
-          onChange={(subjectReferences) =>
-            setConflictDraft((current) => ({ ...current, subjectReferences }))
-          }
-          isDisabled={conflictFieldBlocked}
-        />
-        <TextField
-          label="Conflict producer"
-          value={conflictDraft.producer}
-          onChange={(producer) => setConflictDraft((current) => ({ ...current, producer }))}
-          isDisabled={conflictFieldBlocked}
-        />
-        {failedConflict ? (
-          <fieldset
-            disabled={conflictFieldBlocked || recordConflict.isPending}
-            className="contents"
-          >
-            <ErrorBanner
-              message={knowledgeActionErrorMessage(
-                recordConflict.error,
-                "Couldn't record that conflict."
-              )}
-              onRetry={() => submitConflict(failedConflict)}
-            />
-          </fieldset>
-        ) : null}
-        <Button
-          size="sm"
-          isDisabled={
-            conflictSubmitBlocked ||
-            !conflictDraft.summary.trim() ||
-            parsedSubjectReferences.length === 0 ||
-            !conflictDraft.producer.trim()
-          }
-          onPress={() => submitConflict()}
-        >
-          Record conflict
-        </Button>
-      </Card>
-      <Card className="flex flex-col gap-3">
-        <Select
-          label="Conflict"
-          placeholder={
-            conflictItems.find((item) => item.id === resolveDraft.conflictId)?.label ?? 'Select…'
-          }
-          items={conflictItems}
-          selectedKey={resolveDraft.conflictId ?? null}
-          isDisabled={resolveFieldBlocked || conflictItems.length === 0}
-          onSelectionChange={(key) =>
-            setResolveDraft((current) => ({
-              ...current,
-              conflictId: key == null ? null : String(key),
-            }))
-          }
-        />
-        <TextField
-          label="Resolution"
-          value={resolveDraft.resolution}
-          onChange={(resolution) => setResolveDraft((current) => ({ ...current, resolution }))}
-          isDisabled={resolveFieldBlocked}
-        />
-        <TextField
-          label="Resolved by"
-          value={resolveDraft.resolvedBy}
-          onChange={(resolvedBy) => setResolveDraft((current) => ({ ...current, resolvedBy }))}
-          isDisabled={resolveFieldBlocked}
-        />
-        {failedResolve ? (
-          <fieldset
-            disabled={resolveFieldBlocked || resolveConflict.isPending}
-            className="contents"
-          >
-            <ErrorBanner
-              message={knowledgeActionErrorMessage(
-                resolveConflict.error,
-                "Couldn't resolve that conflict."
-              )}
-              onRetry={() => submitResolve(failedResolve)}
-            />
-          </fieldset>
-        ) : null}
-        <Button
-          size="sm"
-          isDisabled={
-            resolveSubmitBlocked ||
-            !resolveDraft.conflictId ||
-            !resolveDraft.resolution.trim() ||
-            !resolveDraft.resolvedBy.trim()
-          }
-          onPress={() => submitResolve()}
-        >
-          Resolve conflict
-        </Button>
-      </Card>
-      {observations.data && observations.data.length > 0 ? (
-        <Card className="p-0 px-4">
-          {observations.data.map((observation) => (
-            <ListRow key={observation.id}>
-              <div className="min-w-0 flex-1 py-1">
-                <p className="text-sm text-fg-strong">{observation.summary}</p>
-                <p className="mt-0.5 text-xs text-fg-muted">
-                  {OBSERVATION_STATUS_LABEL[observation.status]}
-                </p>
-              </div>
-            </ListRow>
-          ))}
-        </Card>
-      ) : null}
-      {claims.data && claims.data.length > 0 ? (
-        <Card className="p-0 px-4">
-          {claims.data.map((claim) => (
-            <ListRow key={claim.id}>
-              <div className="min-w-0 flex-1 py-1">
-                <p className="text-sm text-fg-strong">{claim.statement}</p>
-                <div className="mt-1 flex flex-wrap gap-2">
-                  <StatusChip tone={CLAIM_REVIEW_STATUS[claim.reviewState].tone}>
-                    {CLAIM_REVIEW_STATUS[claim.reviewState].label}
-                  </StatusChip>
-                  <span className="text-xs text-fg-muted">
-                    {CLAIM_CONFLICT_STATUS_LABEL[claim.conflictStatus]}
-                  </span>
-                </div>
-              </div>
-            </ListRow>
-          ))}
-        </Card>
-      ) : null}
-      {conflicts.data && conflicts.data.length > 0 ? (
-        <Card className="p-0 px-4">
-          {conflicts.data.map((conflict) => (
-            <ListRow key={conflict.id}>
-              <div className="min-w-0 flex-1 py-1">
-                <p className="text-sm text-fg-strong">{conflict.summary}</p>
-                {conflict.resolution ? (
-                  <p className="mt-0.5 text-xs text-fg-muted">{conflict.resolution}</p>
-                ) : null}
-              </div>
-            </ListRow>
-          ))}
-        </Card>
-      ) : null}
     </section>
   );
 }

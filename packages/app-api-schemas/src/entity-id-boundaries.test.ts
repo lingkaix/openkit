@@ -106,12 +106,6 @@ const fields = [
     schema: NanoHostTransportTokenRecordSchema.shape.predecessorTokenId,
     derived: false,
   },
-  {
-    kind: 'kf',
-    schema:
-      KNOWLEDGE_OPERATION_DEFINITIONS['knowledge.conflict.resolve'].inputSchema.shape.conflictId,
-    derived: false,
-  },
   { kind: 'ar', schema: DashboardArtifactSummarySchema.shape.id, derived: true },
   { kind: 'cand', schema: SkillCatalogCandidateSchema.shape.id, derived: false },
   { kind: 'ks', schema: KnowledgeSourceDerivedRepresentationSchema.shape.sourceId, derived: false },

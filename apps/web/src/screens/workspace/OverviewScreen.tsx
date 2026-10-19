@@ -142,39 +142,32 @@ export function OverviewScreen() {
             title="You're all caught up"
             hint="When something needs a decision, it will show up here."
           />
-        ) : (
-          <>
-            {needsYouCount > 0 ? (
-              <Card className="p-0 px-4">
-                {attentionRows.map((row) => (
-                  <AttentionListRow
-                    key={row.id}
-                    row={row}
-                    conversation={
-                      conversationByThread.get(
-                        row.threadId ??
-                          ('threadId' in row.source ? (row.source.threadId ?? '') : '')
-                      ) ?? null
-                    }
-                    disabled={
-                      disconnected ||
-                      (currentDecision &&
-                        (decide.isPending ||
-                          (decide.isError && decide.variables?.row.id === row.id))) ||
-                      attention.isFetching
-                    }
-                    onDecide={(action) =>
-                      decide.mutate({ row, action, requestId: createRequestId() })
-                    }
-                  />
-                ))}
-                {extraNeedsYou.map((item) => (
-                  <ConversationWorkRow key={item.thread.id} item={item} />
-                ))}
-              </Card>
-            ) : null}
-          </>
-        )}
+        ) : needsYouCount > 0 ? (
+          <Card className="p-0 px-4">
+            {attentionRows.map((row) => (
+              <AttentionListRow
+                key={row.id}
+                row={row}
+                conversation={
+                  conversationByThread.get(
+                    row.threadId ?? ('threadId' in row.source ? (row.source.threadId ?? '') : '')
+                  ) ?? null
+                }
+                disabled={
+                  disconnected ||
+                  (currentDecision &&
+                    (decide.isPending ||
+                      (decide.isError && decide.variables?.row.id === row.id))) ||
+                  attention.isFetching
+                }
+                onDecide={(action) => decide.mutate({ row, action, requestId: createRequestId() })}
+              />
+            ))}
+            {extraNeedsYou.map((item) => (
+              <ConversationWorkRow key={item.thread.id} item={item} />
+            ))}
+          </Card>
+        ) : null}
       </section>
 
       {navigation.isLoading || navigation.isError || inProgress.length > 0 ? (

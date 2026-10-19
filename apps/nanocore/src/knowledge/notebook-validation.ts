@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { posix } from 'node:path';
 import type { KnowledgeOwnerScope } from '@openkit/protocol';
 import MarkdownIt from 'markdown-it';
@@ -124,6 +125,28 @@ export function validateNotebookCandidate(input: {
       if (Array.isArray(references))
         for (const reference of references)
           if (typeof reference === 'string') sources.add(reference);
+      // Subjects are affected objects, not supporting evidence or a new Source family.
+      if (parsed.document.frontmatter.type === 'Observation') {
+        const subjects = parsed.document.frontmatter.subject_refs;
+        if (Array.isArray(subjects))
+          for (const reference of subjects) {
+            const subject =
+              typeof reference === 'string'
+                ? parseKnowledgePageSourceReference(reference, input.pageScopeId)
+                : null;
+            const target = subject
+              ? input.candidate.files[`${subject.reference.objectId}.md`]
+              : undefined;
+            if (
+              !subject ||
+              target === undefined ||
+              (subject.contentDigest !== undefined &&
+                subject.contentDigest !==
+                  `sha256:${createHash('sha256').update(target).digest('hex')}`)
+            )
+              fail(pageId, 'notebook.invalid_subject_reference');
+          }
+      }
     }
     const links = pageLinks(path, parsed.document.body);
     for (const target of links) {

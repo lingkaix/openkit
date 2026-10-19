@@ -55,7 +55,6 @@ import type { RetrievalDocument, RetrievalScope } from './retrieval-service.js';
 import { type CoreDb, openWorkspaceDb, type UserDb } from './storage/db.js';
 import { readDataRootLayoutMarker, userDbPath } from './storage/fs-layout.js';
 import { assertCanonicalDirectory } from './storage/workspace-file-records.js';
-import { readWorkspaceKnowledgeConflictLedger } from './storage/workspace-portable-file-state.js';
 
 /** Current source and destination authority supplied by trusted operation assembly. */
 export interface KnowledgeRetrievalAccess {
@@ -888,24 +887,6 @@ export function readAuthorizedWorkspaceNotebookPages(input: Target): {
     pages: currentPages,
     referenceProofs: new Map([...referenceProofs].filter(([id]) => currentIds.has(id))),
   };
-}
-/** Source-bound conflict state stays an authoritative ledger decision, never an index flag. */
-export function knowledgePageConflicted(
-  workspaceRoot: string,
-  pageId: string,
-  pageScopeId: string
-): boolean {
-  const latest = new Map<string, { status: string; subjectReferences: string[] }>();
-  for (const rows of readWorkspaceKnowledgeConflictLedger(workspaceRoot).values())
-    for (const row of rows) latest.set(row.id, row);
-  return [...latest.values()].some(
-    (row) =>
-      !['resolved', 'superseded'].includes(row.status) &&
-      row.subjectReferences.some(
-        (reference) =>
-          parseKnowledgePageSourceReference(reference, pageScopeId)?.reference.objectId === pageId
-      )
-  );
 }
 /** Declares only body, description and tags as body fields; title has its own kernel weight. */
 function textRanges(content: string, body: string): { start: number; end: number }[] {

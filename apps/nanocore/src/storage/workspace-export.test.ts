@@ -91,10 +91,7 @@ function writeWorkspaceExportTree(input: WorkspaceExportTestInput) {
     workspaceMaterialRevisions: [],
     workspaceMaterials: [],
     portableFileState: input.portableFileState ?? {
-      claims: new Map(),
-      conflicts: new Map(),
       nativeKnowledgePages: new Map(),
-      observations: new Map(),
       retrievalTraceFiles: new Map(),
       workerContextPackageFiles: new Map(),
       workspaceConfig: JSON.stringify({
@@ -524,9 +521,6 @@ describe('workspace export verifier', () => {
       'records/artifact-reviews.jsonl',
       'records/evaluation-candidate-sets.jsonl',
       'records/item-revisions.jsonl',
-      'records/knowledge-claims.jsonl',
-      'records/knowledge-conflicts.jsonl',
-      'records/knowledge-observations.jsonl',
       'records/knowledge.jsonl',
       'records/recurring-expired-ranges.jsonl',
       'records/recurring-occurrences.jsonl',
@@ -1615,16 +1609,13 @@ describe('workspace export verifier', () => {
         suggestedWorkspaceId: 'ws_9e57e6ec-74d8-56ed-89aa-baf519ca4af6',
       },
       verification: {
-        fileCount: 22,
+        fileCount: 19,
         checkedFiles: [
           'records/agent-resource-catalog.json',
           'records/agent-sessions.jsonl',
           'records/artifact-reviews.jsonl',
           'records/evaluation-candidate-sets.jsonl',
           'records/item-revisions.jsonl',
-          'records/knowledge-claims.jsonl',
-          'records/knowledge-conflicts.jsonl',
-          'records/knowledge-observations.jsonl',
           'records/knowledge.jsonl',
           'records/recurring-expired-ranges.jsonl',
           'records/recurring-occurrences.jsonl',
@@ -2352,6 +2343,9 @@ describe('workspace export verifier', () => {
   it.each([
     'records/workspace-sync-evidence-bundles.jsonl',
     'records/knowledge-context-package-traces.jsonl',
+    'records/knowledge-observations.jsonl',
+    'records/knowledge-claims.jsonl',
+    'records/knowledge-conflicts.jsonl',
     'records/knowledge-proposals.jsonl',
     'records/knowledge-proposal-reviews.jsonl',
   ] as const)('rejects removed export record %s on import', (removedPath) => {
@@ -2379,7 +2373,54 @@ describe('workspace export verifier', () => {
       agentSessions: [],
       turnEvents: [],
     });
-    const removedContent = `${JSON.stringify({ id: 'removed_import', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' })}\n`;
+    // Retired fact fixtures retain their former complete rows, so refusal protects authored content.
+    const factFields = {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      sourceReferences: [],
+      producer: LOCAL_USER_ID,
+      createdAt: timestamp,
+    };
+    const retiredFactRows: Record<string, unknown> = {
+      'records/knowledge-observations.jsonl': {
+        ...factFields,
+        id: 'ko_00000000-0000-7000-8000-000000000001',
+        kind: 'maintenance',
+        summary: 'A retained release assessment must not disappear during import.',
+        scope: 'workspace',
+        confidence: 0.75,
+        freshness: 'current',
+        status: 'retained',
+        observedAt: timestamp,
+      },
+      'records/knowledge-claims.jsonl': {
+        ...factFields,
+        id: 'kc_00000000-0000-7000-8000-000000000001',
+        statement: 'The retained release cadence is fortnightly.',
+        scope: 'workspace',
+        confidence: 0.75,
+        freshness: 'current',
+        reviewState: 'needs-review',
+        conflictStatus: 'none',
+        updatedAt: timestamp,
+      },
+      'records/knowledge-conflicts.jsonl': {
+        ...factFields,
+        id: 'kf_00000000-0000-7000-8000-000000000001',
+        subjectReferences: [
+          'openkit:page/workspace/ws_00000000-0000-7000-8000-000000000001/kb_00000000-0000-7000-8000-000000000001/release-cadence',
+        ],
+        status: 'conflicting',
+        summary: 'Retained release evidence contains competing cadence assessments.',
+        suggestedActions: ['Inspect the competing evidence before publication.'],
+        updatedAt: timestamp,
+      },
+    };
+    const removedContent = `${JSON.stringify(
+      retiredFactRows[removedPath] ?? {
+        id: 'removed_import',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      }
+    )}\n`;
     writeFileSync(join(root, removedPath), removedContent);
     const manifestPath = join(root, WORKSPACE_EXPORT_MANIFEST_FILE);
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
