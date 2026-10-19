@@ -89,6 +89,7 @@ import {
 import { StructuredWorkerDelegationRequestSchema } from './internal-agents/delegation.js';
 import * as workerCoordinator from './internal-agents/worker-coordinator.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
+import { parseSourcePointer } from './knowledge/source-pointers.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import {
   ALREADY_DECIDED_PUBLICATION_ADMISSION,
@@ -199,6 +200,10 @@ import { recordTestNativeRuntimeTarget } from './test-support/native-environment
 import { notebookImportFixture } from './test-support/notebook-import.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
+import {
+  captureWorkspaceSourceFixture,
+  readWorkspaceSourceFixture,
+} from './test-support/workspace-source.js';
 import { recordTestWorkspaceReviewMaterialization } from './test-support/workspace-sync.js';
 import { startTurn as startNativeTurn } from './turn-routes.js';
 import { createVaultGrant, listVaultGrants } from './vault/vault-grants.js';
@@ -714,7 +719,7 @@ async function draftKnowledgeProposalFixture(
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          requestId: `knowledge-source-${suffix}`,
+          requestId: knowledgeProposalRequestId(`knowledge-source-${suffix}`),
           kind: 'document',
           title: `Proposal source ${suffix}`,
           uri: `file://proposal-source-${suffix}.md`,
@@ -2442,19 +2447,31 @@ describe('nanocore server', () => {
     }
   });
 
-  it('exports and imports knowledge source records as line-oriented records', async () => {
+  it('exports and imports canonical Source pointers and exact originals', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-knowledge-state-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
-    store.createKnowledgeSource(
-      {
+    ensureLocalUser(coreDb);
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
+    const sourceContent = 'Deployment note source material.';
+    const sourceDigest = artifactDigest(sourceContent);
+    const originalSource = await captureWorkspaceSourceFixture({
+      dataRoot,
+      store,
+      coreDb,
+      userId: LOCAL_USER_ID,
+      source: {
         id: 'ks_00000000-0000-7088-ae57-04f7708ec242',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         kind: 'document',
         title: 'Deployment note',
         uri: 'workspace://ws_00000000-0000-7000-8000-000000000001/docs/deployment.md',
-        contentDigest: 'sha256:deployment-note',
+        contentDigest: sourceDigest,
         originatingThreadId: null,
         originatingTurnId: null,
         originatingFileId: null,
@@ -2462,7 +2479,13 @@ describe('nanocore server', () => {
         createdAt: '2026-07-06T00:00:02.000Z',
         updatedAt: '2026-07-06T00:00:02.000Z',
       },
-      'Deployment note source material.'
+      content: sourceContent,
+    });
+    const sourceNotebook = fixtureNotebook(store);
+    const originalPointer = parseSourcePointer(
+      { dataRoot, ownerScope: { kind: 'workspace', workspaceId: originalSource.workspaceId } },
+      originalSource.id,
+      sourceNotebook.readSourcePointers(sourceNotebook.publishedRevision())[originalSource.id]!
     );
     const app = createApp({ coreDb, dataRoot, store });
     const exportRes = await app.request(
@@ -2474,13 +2497,28 @@ describe('nanocore server', () => {
     );
     const exported = WorkspaceExportResponseSchema.parse(await exportRes.json());
 
-    expect(exported.checkedFiles).toContain('records/knowledge-sources.jsonl');
-    expect(exported.checkedFiles).toContain(
-      'sources/materials/ks_00000000-0000-7088-ae57-04f7708ec242/content.txt'
+    expect(exported.checkedFiles).not.toContain('records/knowledge-sources.jsonl');
+    expect(
+      exported.checkedFiles.some((path) =>
+        /(^|\/)sources\/(registry|materials|derived)(\/|$)/.test(path)
+      )
+    ).toBe(false);
+    expect(
+      exported.checkedFiles.filter((path) => path.endsWith(`/sources/${originalSource.id}.md`))
+    ).toHaveLength(1);
+    const originalRaw = exported.checkedFiles.filter((path) =>
+      path.endsWith(`/raw/${originalPointer.fields.contentRef.locator.path}`)
     );
-    expect(exported.checkedFiles).toContain(
-      'sources/derived/ks_00000000-0000-7088-ae57-04f7708ec242/text.json'
-    );
+    expect(originalRaw).toHaveLength(1);
+    expect(
+      readFileSync(
+        join(
+          workspaceExportRoot(dataRoot, originalSource.workspaceId, exported.exportId),
+          originalRaw[0]!
+        ),
+        'utf8'
+      )
+    ).toBe(sourceContent);
 
     const importRes = await app.request(
       ...operationRequest(
@@ -2508,21 +2546,44 @@ describe('nanocore server', () => {
         id: importedSourceId,
         workspaceId: body.importedWorkspaceId,
         kind: 'document',
-        contentDigest: 'sha256:deployment-note',
+        contentDigest: sourceDigest,
       }),
     ]);
-    expect(store.readKnowledgeSourceMaterial(body.importedWorkspaceId, importedSourceId)).toBe(
-      'Deployment note source material.'
-    );
     expect(
-      store.listKnowledgeSourceDerivedRepresentations(body.importedWorkspaceId, importedSourceId)
-    ).toEqual([
-      expect.objectContaining({
+      await readWorkspaceSourceFixture({
+        dataRoot,
+        store,
+        coreDb,
+        userId: LOCAL_USER_ID,
+        workspaceId: body.importedWorkspaceId,
         sourceId: importedSourceId,
-        kind: 'text',
-        materialPath: `sources/materials/${importedSourceId}/content.txt`,
+      })
+    ).toEqual({ status: 'ok', value: sourceContent });
+    const importedNotebook = new KnowledgeNotebook({
+      repositoryPath: join(
+        dataRoot,
+        'workspaces',
+        body.importedWorkspaceId,
+        'knowledge',
+        'notebook.git'
+      ),
+    });
+    const importedPointer = parseSourcePointer(
+      { dataRoot, ownerScope: { kind: 'workspace', workspaceId: body.importedWorkspaceId } },
+      importedSourceId,
+      importedNotebook.readSourcePointers(importedNotebook.publishedRevision())[importedSourceId]!
+    );
+    expect(importedPointer.fields.contentRef).toMatchObject({
+      knowledgeBaseId: readDefaultKnowledgeBaseId({
+        dataRoot,
+        scope: { kind: 'workspace', workspaceId: body.importedWorkspaceId },
       }),
-    ]);
+      contentDigest: sourceDigest,
+      locator: { ownerScope: { kind: 'workspace', workspaceId: body.importedWorkspaceId } },
+    });
+    expect(importedPointer.fields.contentRef.knowledgeBaseId).not.toBe(
+      originalPointer.fields.contentRef.knowledgeBaseId
+    );
     expect(
       store.getKnowledgeSource(
         'ws_00000000-0000-7000-8000-000000000001',
@@ -2539,20 +2600,34 @@ describe('nanocore server', () => {
     applyMigrations(coreDb);
     const store = createDemoStore({ dataRoot });
     store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Round trip thread');
-
-    store.createKnowledgeSource({
-      id: 'ks_00000000-0000-763c-8bd1-03db28758e4d',
+    ensureLocalUser(coreDb);
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      kind: 'document',
-      title: 'Round trip source',
-      uri: 'workspace://ws_00000000-0000-7000-8000-000000000001/docs/round-trip.md',
-      contentDigest: 'sha256:round-trip-source',
-      originatingThreadId: null,
-      originatingTurnId: null,
-      originatingFileId: null,
-      capturedAt: '2026-07-06T00:00:02.000Z',
-      createdAt: '2026-07-06T00:00:02.000Z',
-      updatedAt: '2026-07-06T00:00:02.000Z',
+    });
+    const sourceContent = 'Round trip captured Source.';
+    const sourceDigest = artifactDigest(sourceContent);
+    const originalSource = await captureWorkspaceSourceFixture({
+      dataRoot,
+      store,
+      coreDb,
+      userId: LOCAL_USER_ID,
+      source: {
+        id: 'ks_00000000-0000-763c-8bd1-03db28758e4d',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        kind: 'document',
+        title: 'Round trip source',
+        uri: 'workspace://ws_00000000-0000-7000-8000-000000000001/docs/round-trip.md',
+        contentDigest: sourceDigest,
+        originatingThreadId: null,
+        originatingTurnId: null,
+        originatingFileId: null,
+        capturedAt: '2026-07-06T00:00:02.000Z',
+        createdAt: '2026-07-06T00:00:02.000Z',
+        updatedAt: '2026-07-06T00:00:02.000Z',
+      },
+      content: sourceContent,
     });
     const sourceReference = createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
@@ -2634,7 +2709,36 @@ describe('nanocore server', () => {
       reExported.exportId
     );
 
-    expect(reExported.checkedFiles).toEqual(expect.arrayContaining(exported.checkedFiles));
+    const sourceNotebook = fixtureNotebook(store);
+    const originalPointer = parseSourcePointer(
+      { dataRoot, ownerScope: { kind: 'workspace', workspaceId: originalSource.workspaceId } },
+      originalSource.id,
+      sourceNotebook.readSourcePointers(sourceNotebook.publishedRevision())[originalSource.id]!
+    );
+    const importedSource = store.listKnowledgeSources(imported.importedWorkspaceId)[0]!;
+    const importedNotebook = new KnowledgeNotebook({
+      repositoryPath: join(
+        dataRoot,
+        'workspaces',
+        imported.importedWorkspaceId,
+        'knowledge',
+        'notebook.git'
+      ),
+    });
+    const importedPointer = parseSourcePointer(
+      { dataRoot, ownerScope: { kind: 'workspace', workspaceId: imported.importedWorkspaceId } },
+      importedSource.id,
+      importedNotebook.readSourcePointers(importedNotebook.publishedRevision())[importedSource.id]!
+    );
+    const mappedFiles = exported.checkedFiles.map((path) =>
+      path
+        .replace(`/sources/${originalSource.id}.md`, `/sources/${importedSource.id}.md`)
+        .replace(
+          `/raw/${originalPointer.fields.contentRef.locator.path}`,
+          `/raw/${importedPointer.fields.contentRef.locator.path}`
+        )
+    );
+    expect(reExported.checkedFiles).toEqual(expect.arrayContaining(mappedFiles));
     expect(readExportJson(sourceRoot, 'records/workspace-record.json')).not.toHaveProperty(
       'counts'
     );
@@ -2653,13 +2757,26 @@ describe('nanocore server', () => {
     expect(
       readExportJsonl(reExportRoot, 'records/knowledge.jsonl').map((entry) => entry.title)
     ).toEqual(readExportJsonl(sourceRoot, 'records/knowledge.jsonl').map((entry) => entry.title));
-    expect(readExportJsonl(reExportRoot, 'records/knowledge-sources.jsonl')).toEqual([
-      expect.objectContaining({
-        contentDigest: 'sha256:round-trip-source',
-        uri: `workspace://${imported.importedWorkspaceId}/docs/round-trip.md`,
+    expect(reExported.checkedFiles).not.toContain('records/knowledge-sources.jsonl');
+    const pointerPath = reExported.checkedFiles.find((path) =>
+      path.endsWith(`/sources/${importedSource.id}.md`)
+    )!;
+    expect(readFileSync(join(reExportRoot, pointerPath), 'utf8')).toBe(importedPointer.content);
+    expect(importedSource).toMatchObject({
+      contentDigest: sourceDigest,
+      uri: `workspace://${imported.importedWorkspaceId}/docs/round-trip.md`,
+      workspaceId: imported.importedWorkspaceId,
+    });
+    expect(
+      await readWorkspaceSourceFixture({
+        dataRoot,
+        store,
+        coreDb,
+        userId: LOCAL_USER_ID,
         workspaceId: imported.importedWorkspaceId,
-      }),
-    ]);
+        sourceId: importedSource.id,
+      })
+    ).toEqual({ status: 'ok', value: sourceContent });
     expect(readExportJsonl(reExportRoot, 'records/audit-events.jsonl')).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -10379,7 +10496,7 @@ describe('nanocore server', () => {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
-            requestId: 'knowledge-source-unsafe-proposal',
+            requestId: knowledgeProposalRequestId('knowledge-source-unsafe-proposal'),
             kind: 'document',
             title: 'Unsafe proposal input source',
             uri: 'file://unsafe-proposal-source.md',
