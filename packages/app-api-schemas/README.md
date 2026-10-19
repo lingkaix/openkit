@@ -253,3 +253,5 @@ Claim and reusable Observation/conflict content use the ordinary Notebook operat
 `knowledge.notebook.*` owns the single public page lifecycle. List exposes the existing canonical page shape and selected Knowledge Base/commit. Create takes exact new path/full bytes/base; delete requires exact base/digest and human confirmation. Both use the same publication result as update. The retired entry CRUD operations, separate entry DTO and entry-kind metadata have no aliases.
 
 `knowledge-package-operations.ts` declares the two streaming Workspace Knowledge package bindings. Their query selectors, current Knowledge permissions and import publication result share the native operation registry. Package bytes remain outside JSON/model inputs; the Native package owner validates the manifest and current target authority.
+
+MCP binding requests, catalog entries and Worker projections expose only allowedTools supply. The retired approvalRequiredTools and deniedTools fields are absent; strict binding requests refuse them. Human Tool conditions use the existing full Policy candidate and confirmation contract.

@@ -31,8 +31,6 @@ function worker(overrides: Record<string, unknown> = {}) {
         {
           id: 'github',
           allowedTools: ['list_issues'],
-          deniedTools: ['delete_repo'],
-          approvalRequiredTools: ['create_issue'],
         },
       ],
       filesystem: { default: 'deny', enforcement: 'openshell', ruleCount: 1 },

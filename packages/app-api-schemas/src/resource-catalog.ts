@@ -121,8 +121,6 @@ export const McpCatalogEntrySchema = z
     enabled: z.boolean(),
     id: z.string().regex(CATALOG_ID),
     allowedTools: z.array(z.string().min(1)),
-    approvalRequiredTools: z.array(z.string().min(1)),
-    deniedTools: z.array(z.string().min(1)),
     schemaPolicy: z.enum(['pinned', 'tracking']).nullable(),
     timeoutMs: z.number().int().positive().nullable(),
     transportKind: z.enum(['stdio', 'http']).nullable(),
@@ -353,10 +351,8 @@ export const SelectMcpVersionRequestSchema = z
 export const UpdateMcpBindingRequestSchema = z
   .object({
     allowedTools: z.array(z.string().min(1)).min(1),
-    approvalRequiredTools: z.array(z.string().min(1)).default([]),
     bindingRevision: z.number().int().nonnegative(),
     credentialBindings: z.array(WorkspaceMcpCredentialBindingSchema).optional(),
-    deniedTools: z.array(z.string().min(1)).default([]),
     enabled: z.boolean(),
     expectedRevision: z.number().int().nonnegative(),
     requestId: RequestIdSchema,
