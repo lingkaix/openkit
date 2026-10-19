@@ -1,4 +1,4 @@
-import { WorkspaceIdSchema } from '@openkit/protocol';
+import { KnowledgeBaseIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import { KnowledgeMaintenanceSchema } from './knowledge-maintenance.js';
 import { AuthoredConfigRequiredFeaturesSchema } from './schema-evolution.js';
@@ -27,6 +27,8 @@ export const UserWorkspacePreferenceSchema = z
 export const UserConfigSchema = z
   .object({
     schemaVersion: z.literal(1),
+    /** Fixed scope binding after Knowledge Base creation; parsing never allocates an ID. */
+    defaultKnowledgeBaseId: KnowledgeBaseIdSchema.optional(),
     knowledgeMaintenance: KnowledgeMaintenanceSchema.optional(),
     requiredFeatures: AuthoredConfigRequiredFeaturesSchema.optional(),
     workspaces: z.array(UserWorkspacePreferenceSchema).default([]),

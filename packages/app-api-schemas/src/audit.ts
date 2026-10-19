@@ -2,6 +2,7 @@ import {
   AuditEventIdSchema,
   AuditEventSchema,
   PermissionDecisionIdSchema,
+  PolicyDecisionV1Schema,
   WorkspaceIdSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
@@ -31,6 +32,7 @@ export const WorkspacePermissionDecisionSchema = z
     result: PermissionDecisionResultSchema,
     reasonCode: z.string().min(1),
     enforcementPoint: z.string().min(1),
+    mediation: PolicyDecisionV1Schema.optional(),
     requiredApprovalKind: z.string().min(1).nullable(),
     approvalId: z.string().min(1).nullable(),
     auditEventId: AuditEventIdSchema.nullable(),
@@ -53,6 +55,7 @@ export const ServerPermissionDecisionSchema = z
     result: PermissionDecisionResultSchema,
     reasonCode: z.string().min(1),
     enforcementPoint: z.string().min(1),
+    mediation: PolicyDecisionV1Schema.optional(),
     requiredApprovalKind: z.string().min(1).nullable(),
     approvalId: z.string().min(1).nullable(),
     auditEventId: AuditEventIdSchema.nullable(),

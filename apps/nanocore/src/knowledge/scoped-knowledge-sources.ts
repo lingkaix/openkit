@@ -11,6 +11,7 @@ import {
 } from '@openkit/protocol';
 import { z } from 'zod';
 import { recordUserAuditEvent } from '../audit-events.js';
+import { initializeDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { OperationError } from '../operation-error.js';
 import {
   IdempotencyKeyConflictError,
@@ -320,6 +321,7 @@ export async function registerUserKnowledgeSource(
   const command = parsed.data;
   const ownerScope = { kind: 'user' as const, userId: input.userDb.userId };
   try {
+    initializeDefaultKnowledgeBaseId({ dataRoot: input.coreDb.dataRoot, scope: ownerScope });
     // Receipt lookup can prune expired rows, so physical root admission also precedes that existing UserDb write.
     sourceRoot(input, true);
     return await runIdempotentCommand({

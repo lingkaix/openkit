@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { operationToolName } from '@openkit/app-api-schemas';
 import { WorkspaceConfigSchema } from '@openkit/config-schema';
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, formatReferenceUri } from '@openkit/protocol';
 import { expect, it, onTestFinished, vi } from 'vitest';
 import {
   createOpenKitAccessTokenRecord,
@@ -16,6 +16,7 @@ import {
   listWorkspaceUsageRecords,
   startCapabilityCall,
 } from '../capability/usage-ledger.js';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
@@ -352,6 +353,10 @@ async function fixture(withServerKnowledge = false, emptyOverview = false) {
     });
   return {
     dataRoot,
+    workspaceScope: `page/workspace/${workspace.id}/${readDefaultKnowledgeBaseId({ dataRoot, scope: { kind: 'workspace', workspaceId: workspace.id } })}`,
+    serverScope: withServerKnowledge
+      ? `page/server/${readDefaultKnowledgeBaseId({ dataRoot, scope: { kind: 'server' } })}`
+      : undefined,
     store,
     coreDb,
     workspaceDb,
@@ -414,8 +419,8 @@ function toolOutput(request: TransportRequest, name: string, callId = `call-${na
 // Two real Git notebooks, Kernel selections and exact Source revalidation use the same allowance as bounded maintenance integration.
 it('keeps real Workspace and Server selections distinct while reading exact pages and Source bytes with isolated work usage', async () => {
   const f = await fixture(true);
-  const workspacePageId = `page/workspace/${f.workspace.id}/launch-evidence`;
-  const serverPageId = 'page/server/launch-evidence';
+  const workspacePageId = `openkit:${f.workspaceScope}/launch-evidence`;
+  const serverPageId = `openkit:${f.serverScope}/launch-evidence`;
   let step = 0;
   f.createResponses.mockImplementation(async (_provider, _request, context) => {
     context?.onUsage?.({ input_tokens: 9, output_tokens: 3, total_tokens: 12 });
@@ -454,7 +459,7 @@ it('keeps real Workspace and Server selections distinct while reading exact page
   expect(initial.overviews).toMatchObject([
     {
       source: 'workspace',
-      pageId: `page/workspace/${f.workspace.id}/index`,
+      pageId: `openkit:${f.workspaceScope}/index`,
       notebookRevision: f.revision,
       contentDigest: f.overviewDigest,
       readTool: 'knowledge.page.read',
@@ -463,7 +468,7 @@ it('keeps real Workspace and Server selections distinct while reading exact page
     },
     {
       source: 'server',
-      pageId: 'page/server/index',
+      pageId: `openkit:${f.serverScope}/index`,
       notebookRevision: f.server!.revision,
       contentDigest: f.server!.overviewDigest,
       readTool: 'knowledge.page.read',
@@ -482,7 +487,7 @@ it('keeps real Workspace and Server selections distinct while reading exact page
   expect(search.sources).toMatchObject([
     {
       source: 'workspace',
-      sourceScope: `page/workspace/${f.workspace.id}`,
+      sourceScope: f.workspaceScope,
       notebookRevision: f.revision,
       selected: [
         {
@@ -494,7 +499,7 @@ it('keeps real Workspace and Server selections distinct while reading exact page
     },
     {
       source: 'server',
-      sourceScope: 'page/server',
+      sourceScope: f.serverScope,
       notebookRevision: f.server!.revision,
       selected: [
         {
@@ -528,13 +533,19 @@ it('keeps real Workspace and Server selections distinct while reading exact page
     uncertainty: 'No launch date is documented.',
     citations: [
       {
-        reference: `page/workspace/${f.workspace.id}/launch-evidence@${f.revision}`,
+        reference: formatReferenceUri(
+          { scopeId: f.workspaceScope, objectId: 'launch-evidence' },
+          f.contentDigest
+        ),
         revision: f.revision,
         contentDigest: f.contentDigest,
         sourceReferences: [f.sourceReference],
       },
       {
-        reference: `${serverPageId}@${f.server!.revision}`,
+        reference: formatReferenceUri(
+          { scopeId: f.serverScope!, objectId: 'launch-evidence' },
+          f.server!.contentDigest
+        ),
         revision: f.server!.revision,
         contentDigest: f.server!.contentDigest,
         sourceReferences: [],
@@ -585,7 +596,7 @@ it('keeps real Workspace and Server selections distinct while reading exact page
   expect(traces).toHaveLength(2);
   expect(
     traces.map(({ trace }) => ('sourceScope' in trace ? trace.sourceScope : null)).sort()
-  ).toEqual(['page/server', `page/workspace/${f.workspace.id}`].sort());
+  ).toEqual([f.serverScope, f.workspaceScope].sort());
   for (const { trace } of traces)
     expect(trace.queryContext).toMatchObject({
       workspaceId: f.workspace.id,
@@ -639,7 +650,7 @@ it('binds Worker dispatch to its package Workspace and shared audience, refusing
       expect(search).not.toContain('launch-evidence');
       expect(search).not.toContain('cobalt gate');
       return call('knowledge.page.read', {
-        pageId: `page/workspace/${f.workspace.id}/launch-evidence`,
+        pageId: `openkit:${f.workspaceScope}/launch-evidence`,
       });
     }
     expect(toolOutput(request, 'knowledge.page.read')).toContain(
@@ -767,7 +778,7 @@ it('refuses an overview-only answer when its Server credential is revoked during
   expect(initial.overviews).toContainEqual(
     expect.objectContaining({
       source: 'server',
-      pageId: 'page/server/index',
+      pageId: `openkit:${f.serverScope}/index`,
       notebookRevision: f.server!.revision,
       contentDigest: f.server!.overviewDigest,
       content: expect.stringContaining('launch-evidence'),
@@ -796,7 +807,7 @@ it('refuses an overview-only answer when its Server credential is revoked during
 it('rejects an unread citation and retains a failed Knowledge Manager Turn instead of a completed answer', async () => {
   const f = await fixture();
   f.createResponses.mockResolvedValue(
-    message('Invented citation.', [`page/workspace/${f.workspace.id}/launch-evidence`], null)
+    message('Invented citation.', [`openkit:${f.workspaceScope}/launch-evidence`], null)
   );
   await expect(f.ask()).rejects.toThrow(
     'Knowledge query failed. Inspect the retained Turn before a new request.'
@@ -812,7 +823,7 @@ it('rejects an unread citation and retains a failed Knowledge Manager Turn inste
 it('requires stated uncertainty when admitted Server Knowledge is unavailable despite a valid Workspace citation', async () => {
   const f = await fixture(true);
   renameSync(f.server!.repositoryPath, `${f.server!.repositoryPath}.unavailable`);
-  const pageId = `page/workspace/${f.workspace.id}/launch-evidence`;
+  const pageId = `openkit:${f.workspaceScope}/launch-evidence`;
   let step = 0;
   f.createResponses.mockImplementation(async () => {
     if (++step === 1) return call('knowledge.retrieval', { query: 'heliotrope cobalt', limit: 5 });
@@ -939,11 +950,7 @@ it('refuses a reused call id during output repair without losing the original To
   const f = await fixture();
   f.createResponses
     .mockResolvedValueOnce(
-      call(
-        'knowledge.page.read',
-        { pageId: `page/workspace/${f.workspace.id}/index` },
-        'reused-call'
-      )
+      call('knowledge.page.read', { pageId: `openkit:${f.workspaceScope}/index` }, 'reused-call')
     )
     .mockResolvedValueOnce({
       id: 'markdown',
@@ -971,7 +978,7 @@ it('repairs an unsearched absence by indexing the pinned notebook, reading the u
   const f = await fixture(false, true);
   const retrievalRoot = join(f.dataRoot, 'workspaces', f.workspace.id, 'indexes', 'retrieval');
   expect(existsSync(retrievalRoot)).toBe(false);
-  const pageId = `page/workspace/${f.workspace.id}/launch-evidence`;
+  const pageId = `openkit:${f.workspaceScope}/launch-evidence`;
   f.createResponses
     .mockResolvedValueOnce(message('The notebook is empty.', [], 'Only the overview was read.'))
     .mockResolvedValueOnce(call('knowledge.retrieval', { query: 'heliotrope cobalt' }))
@@ -1095,7 +1102,18 @@ async function memoryFixture() {
     timeline,
     question,
     pageId,
-    citation: `page/user/${f.userId}/${pageId}`,
+    memoryPageDigest: `sha256:${createHash('sha256')
+      .update(
+        new KnowledgeNotebook({
+          repositoryPath: join(f.dataRoot, 'users', f.userId, 'memory', 'notebook.git'),
+        }).readRevision(publication.notebookRevision, [`${pageId}.md`]).files[`${pageId}.md`]!
+      )
+      .digest('hex')}`,
+    memoryScope: `page/user/${f.userId}/${readDefaultKnowledgeBaseId({ dataRoot: f.dataRoot, scope: { kind: 'user', userId: f.userId } })}`,
+    citation: formatReferenceUri({
+      scopeId: `page/user/${f.userId}/${readDefaultKnowledgeBaseId({ dataRoot: f.dataRoot, scope: { kind: 'user', userId: f.userId } })}`,
+      objectId: pageId,
+    }),
     askMemory: () => askKnowledgeAgent(f.dependencies, question),
   };
 }
@@ -1116,14 +1134,14 @@ it('answers from only current-self Memory through actual search, page and model-
     answer: 'You prefer violet tea.',
     citations: [
       {
-        reference: `${f.citation}@${f.publication.notebookRevision}`,
+        reference: `${f.citation}@${f.memoryPageDigest}`,
         sourceReferences: [`source:${f.source.id}@${f.source.contentDigest}`],
       },
     ],
   });
   const search = toolOutput(f.createResponses.mock.calls[1]![1], 'knowledge.retrieval');
   expect(JSON.parse(search).sources).toMatchObject([
-    { source: 'memory', sourceScope: `page/user/${f.userId}`, selected: [{ pageId: f.citation }] },
+    { source: 'memory', sourceScope: f.memoryScope, selected: [{ pageId: f.citation }] },
   ]);
   expect(search).not.toContain('page/workspace/');
   expect(search).not.toContain('page/server');
@@ -1143,7 +1161,7 @@ it('answers from only current-self Memory through actual search, page and model-
   ).toMatchObject([
     {
       trace: {
-        sourceScope: `page/user/${f.userId}`,
+        sourceScope: f.memoryScope,
         queryContext: { threadId: f.timeline.id, turnId: f.question.access.outputTurnId },
       },
     },
@@ -1235,4 +1253,66 @@ it('rechecks current User authority after Memory page reads before answer delive
   });
   await expect(f.askMemory()).rejects.toMatchObject({ code: 'memory_access_denied' });
   expect(readPage).toContain('USER_PRIVATE_PAGE');
+});
+
+it('exposes and forwards exact narrowing type/applicability arguments through the real KM search Tool', async () => {
+  const f = await fixture();
+  const notebook = new KnowledgeNotebook({
+    repositoryPath: join(f.dataRoot, 'workspaces', f.workspace.id, 'knowledge', 'notebook.git'),
+  });
+  const { updateOkfFrontmatter } = await import('./okf.js');
+  const { commandInputHash } = await import('../runtime/idempotent-command.js');
+  const baseRevision = notebook.publishedRevision();
+  const content = updateOkfFrontmatter({
+    path: 'launch-evidence.md',
+    content: f.page,
+    updates: { type: 'Rule', applies_to: ['tool:launch.check'] },
+  });
+  const candidateRevision = notebook.prepare({
+    baseRevision,
+    changes: { 'launch-evidence.md': content },
+    metadata: {
+      summary: 'Declare applicability',
+      producer: f.actor,
+      authority: { kind: 'direct', instructionReference: 'test:search-filters' },
+      sourceReferences: [f.sourceReference],
+      changeRequest: { requestId: randomUUID(), inputDigest: commandInputHash(content) },
+    },
+  });
+  notebook.publish({ baseRevision, candidateRevision });
+  let step = 0;
+  f.createResponses.mockImplementation(async () => {
+    if (++step === 1)
+      return call('knowledge.retrieval', {
+        query: 'heliotrope cobalt',
+        types: ['Rule'],
+        appliesTo: ['tool:launch.check'],
+      });
+    if (step === 2)
+      return call(
+        'knowledge.retrieval',
+        { query: 'heliotrope cobalt', types: ['Rule'], appliesTo: ['tool:launch'] },
+        'mismatch'
+      );
+    return message('No matching second selection.', [], 'Applicability differs.');
+  });
+  const outcome = await f.ask().catch((error: unknown) => error);
+  const tools = f.createResponses.mock.calls[0]![1].tools as Array<{
+    name: string;
+    parameters?: { properties?: Record<string, unknown> };
+  }>;
+  expect(
+    tools.find((tool) => tool.name === 'knowledge_retrieval')?.parameters?.properties
+  ).toMatchObject({ types: expect.anything(), appliesTo: expect.anything() });
+  expect(outcome).not.toBeInstanceOf(Error);
+  const first = JSON.parse(toolOutput(f.createResponses.mock.calls[1]![1], 'knowledge.retrieval'));
+  expect(first.sources[0].selected).toHaveLength(1);
+  expect(first.sources[0].retrievalParameters).toMatchObject({
+    types: ['Rule'],
+    appliesTo: ['tool:launch.check'],
+  });
+  const second = JSON.parse(
+    toolOutput(f.createResponses.mock.calls[2]![1], 'knowledge.retrieval', 'mismatch')
+  );
+  expect(second.sources[0].selected).toEqual([]);
 });

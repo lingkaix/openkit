@@ -6,9 +6,11 @@ import {
   ListHumanAttentionResponseSchema,
   type WorkspaceSyncReviewItem,
 } from '@openkit/app-api-schemas';
+import { formatReferenceUri } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { createArtifactReview, decideArtifactReview } from './artifact-reviews.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
+import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
 import { upsertWorkerCheckpoint } from './runtime/worker-checkpoints.js';
@@ -132,9 +134,14 @@ function createKnowledgeProposalFixture(
   const baseRevision = notebook.publishedRevision();
   const sourceBytes = notebook.readRevision(baseRevision).files[`${source.id}.md`];
   if (!sourceBytes) throw new Error('The Action Center source page is missing from its Git base.');
-  const sourceReference = `knowledge:${source.id}@sha256:${createHash('sha256')
-    .update(sourceBytes, 'utf8')
-    .digest('hex')}`;
+  const knowledgeBaseId = readDefaultKnowledgeBaseId({
+    dataRoot: store.getDataRoot()!,
+    scope: { kind: 'workspace', workspaceId },
+  });
+  const sourceReference = formatReferenceUri(
+    { scopeId: `page/workspace/${workspaceId}/${knowledgeBaseId}`, objectId: source.id },
+    `sha256:${createHash('sha256').update(sourceBytes, 'utf8').digest('hex')}`
+  );
   const knowledgePageId = `action-center/${label}`;
   const canonicalPageBytes = serializeUserAuthoredKnowledgePage(
     {

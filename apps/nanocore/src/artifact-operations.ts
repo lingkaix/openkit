@@ -28,6 +28,7 @@ import {
   selectArtifactReviewCandidate,
   serializeArtifactReviewFollowUpRequest,
 } from './artifact-reviews.js';
+import { commitArtifactVersionCommand } from './artifact-versions.js';
 import {
   isCurrentDeploymentAdministrator,
   isWorkspaceOperationAuthorized,
@@ -128,8 +129,12 @@ export function createArtifactOperationImplementations(
         input.workspaceId,
         input.artifactId
       );
-      const current = store.getArtifact(input.workspaceId, input.artifactId);
-      if (current.version !== input.artifactVersion || current.content.format !== 'file')
+      const current = store.getArtifactVersion(
+        input.workspaceId,
+        input.artifactId,
+        input.artifactVersion
+      ).artifact;
+      if (current.content.format !== 'file')
         throw new OperationError('not_found', 'The Artifact file version is unavailable.', 404);
     };
     assertAuthorized();
@@ -139,7 +144,11 @@ export function createArtifactOperationImplementations(
         'Folder extraction is unavailable.',
         503
       );
-    const artifact = store.getArtifact(input.workspaceId, input.artifactId);
+    const artifact = store.getArtifactVersion(
+      input.workspaceId,
+      input.artifactId,
+      input.artifactVersion
+    ).artifact;
     if (artifact.content.format !== 'file')
       throw new OperationError('not_found', 'The Artifact file version is unavailable.', 404);
     const source = {
@@ -206,8 +215,76 @@ export function createArtifactOperationImplementations(
     };
   };
   return {
-    'artifact.folder-read': (input, context) => folder(input, context, false),
-    'artifact.folder-extract': (input, context) => folder(input, context, true),
+    'artifact.version-list': (input, context) => {
+      assertArtifactWorkspaceLineage(
+        responsibleUserIdForActor(context.actorRef)!,
+        administratorEligible(context),
+        store,
+        input.workspaceId,
+        input.artifactId
+      );
+      try {
+        return { items: store.listArtifactVersions(input.workspaceId, input.artifactId) };
+      } catch (error) {
+        artifactOperationFailure(error);
+      }
+    },
+    'artifact.version-read': (input, context) => {
+      assertArtifactWorkspaceLineage(
+        responsibleUserIdForActor(context.actorRef)!,
+        administratorEligible(context),
+        store,
+        input.workspaceId,
+        input.artifactId
+      );
+      try {
+        return store.getArtifactVersion(input.workspaceId, input.artifactId, input.artifactVersion);
+      } catch (error) {
+        artifactOperationFailure(error);
+      }
+    },
+    'artifact.version-commit': async (input, context) => {
+      const workspaceDb = openReceiptDb(input.workspaceId);
+      try {
+        return await commitArtifactVersionCommand({
+          store,
+          workspaceDb,
+          inflightCommands,
+          context,
+          command: 'artifact.version-commit',
+          metadata: input,
+          ...(dependencies.fileAdmission ? { admission: dependencies.fileAdmission } : {}),
+          assertAuthorized: () => {
+            if (
+              context.kind !== 'public' ||
+              !coreDb ||
+              !isWorkspaceOperationAuthorized(
+                coreDb,
+                context.actor,
+                input.workspaceId,
+                ARTIFACT_OPERATION_DEFINITIONS['artifact.version-commit']
+              )
+            )
+              throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
+            assertArtifactWorkspaceLineage(
+              responsibleUserIdForActor(context.actorRef)!,
+              administratorEligible(context),
+              store,
+              input.workspaceId,
+              input.artifactId
+            );
+          },
+        });
+      } catch (error) {
+        artifactOperationFailure(error);
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+    },
+    'artifact.folder-read': (input, context) =>
+      folder(input, context, false).catch(artifactOperationFailure),
+    'artifact.folder-extract': (input, context) =>
+      folder(input, context, true).catch(artifactOperationFailure),
     'artifact.list': (input, context) => {
       const actor = context.actorRef;
       try {

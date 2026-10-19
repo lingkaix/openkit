@@ -5,6 +5,7 @@ import {
   ActivateWorkerEnvironmentRequestSchema,
   WorkerEnvironmentPrepareInputSchema,
 } from '@openkit/app-api-schemas';
+import { writeRetainedV1 } from '@openkit/protocol';
 import { z } from 'zod';
 import { canonical, noSecrets, save } from '../release-safety.mjs';
 import { updateApp, validateUpdate } from '../release-update-app.mjs';
@@ -277,6 +278,6 @@ export async function updateComponents(target, params, evidenceDir, io) {
         : `Component update: ${result.stage} incomplete or unavailable; inspect separate component evidence before any new effect.`;
     throw new ComponentUpdateStop(result.reason);
   } finally {
-    await save(path.join(evidenceDir, 'components-result.json'), result);
+    await save(path.join(evidenceDir, 'components-result.json'), writeRetainedV1(result));
   }
 }

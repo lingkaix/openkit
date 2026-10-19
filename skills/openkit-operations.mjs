@@ -370,6 +370,21 @@ const archiveBindings = {
         openWorkspaceArchive(input.sourcePath, 'artifact')
       ),
   },
+  'artifact.version-file-commit': {
+    clientMethod: 'artifactFiles.commitVersion',
+    inputSchema: strictShared(
+      appSchemas.ARTIFACT_OPERATION_DEFINITIONS[
+        'artifact.version-file-commit'
+      ].inputSchema.safeExtend({
+        sourcePath: z.string().min(1),
+      })
+    ),
+    handler: ({ client }, input) =>
+      client.artifactFiles.commitVersion(
+        bodyWithout(input, 'sourcePath'),
+        openWorkspaceArchive(input.sourcePath, 'artifact')
+      ),
+  },
   'artifact.download': {
     clientMethod: 'artifactFiles.download',
     inputSchema: strictShared(

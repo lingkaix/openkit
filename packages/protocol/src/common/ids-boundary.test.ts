@@ -47,21 +47,22 @@ describe('owned identifier admission boundaries', () => {
     expect(VaultGrantIdSchema.safeParse(`grant_${uuid7}`).success).toBe(true);
   });
   it('validates R2 scope components at their expected kinds without decoding them', () => {
-    expect(parseReferenceScope(`page/user/usr_${uuid7}`)).toEqual({
+    expect(parseReferenceScope(`page/user/usr_${uuid7}/kb_${uuid7}`)).toEqual({
       family: 'page',
       kind: 'user',
       userId: `usr_${uuid7}`,
+      knowledgeBaseId: `kb_${uuid7}`,
     });
     expect(
       parseReferenceScope(`retrieval-trace/turn/ws_${uuid5}/th_${uuid5}/tu_${uuid7}`)
     ).toMatchObject({ family: 'retrieval-trace', kind: 'turn' });
     for (const invalid of [
-      `page/user/user_local`,
-      `page/user/usr_${uuid5}`,
-      `page/workspace/th_${uuid7}`,
-      `page/workspace/ws_${uuid4}`,
+      `page/user/user_local/kb_${uuid7}`,
+      `page/user/usr_${uuid5}/kb_${uuid7}`,
+      `page/workspace/th_${uuid7}/kb_${uuid7}`,
+      `page/workspace/ws_${uuid4}/kb_${uuid7}`,
       `retrieval-trace/turn/ws_${uuid7}/th_${uuid7}/th_${uuid7}`,
-      `page/workspace/ws_%30${uuid7.slice(1)}`,
+      `page/workspace/ws_%30${uuid7.slice(1)}/kb_${uuid7}`,
     ]) {
       expect(parseReferenceScope(invalid)).toBeNull();
     }

@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
+import { readRetainedV1 } from '@openkit/protocol';
 import type {
   WorkerCanonicalEventRecord,
   WorkerCapabilityCallSummary,
@@ -27,6 +28,7 @@ import {
 } from './worker-control-records.js';
 
 interface WorkerControlRecordRow {
+  readonly schemaVersion: unknown;
   readonly acceptedAt: string;
   readonly operation: string;
   readonly recordJson: string;
@@ -190,7 +192,7 @@ function readAcceptedRecords(
   const rows = coreDb.sqlite
     .prepare(
       `
-      SELECT operation, record_json AS recordJson, accepted_at AS acceptedAt
+      SELECT schema_version AS schemaVersion, operation, record_json AS recordJson, accepted_at AS acceptedAt
       FROM worker_control_records
       WHERE agent_session_id = ?
         AND package_snapshot_id = ?
@@ -207,7 +209,7 @@ function readAcceptedRecords(
   };
 
   for (const row of rows) {
-    const record = JSON.parse(row.recordJson) as unknown;
+    const record = readRetainedV1(row, () => JSON.parse(row.recordJson) as unknown);
 
     if (row.operation === 'heartbeat') {
       result.heartbeat = record as WorkerControlHeartbeat;

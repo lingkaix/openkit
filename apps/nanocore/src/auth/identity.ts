@@ -13,6 +13,8 @@ export interface Actor {
   userId: string;
   /** Actor source kind. */
   kind: 'local' | 'session' | 'token';
+  /** Canonical browser authentication-session record id when supplied by authentication. */
+  sessionId?: string;
   /** Durable token id when the actor authenticated with an OpenKit access token. */
   tokenId?: string;
   /** Access-token scope when the actor authenticated with an OpenKit access token. */
@@ -63,6 +65,8 @@ export function actorFromRequest(_request: Request, mode: CoreMode, localUserId:
  * Minimal Better Auth session shape needed by the identity facade.
  */
 export interface AuthSessionIdentity {
+  /** Non-secret session record identity, separate from its cookie or bearer value. */
+  session?: { id: string };
   /** Better Auth user payload. */
   user: {
     /** Authenticated user id. */
@@ -79,7 +83,11 @@ export interface AuthSessionIdentity {
 export function actorFromSession(session: AuthSessionIdentity): Actor {
   if (!isEntityId('usr', session.user.id))
     throw new Error('Canonical session User authority is unavailable.');
-  return { userId: session.user.id, kind: 'session' };
+  return {
+    userId: session.user.id,
+    kind: 'session',
+    ...(isEntityId('auth', session.session?.id) ? { sessionId: session.session!.id } : {}),
+  };
 }
 
 /** Reads the unique recorded local User without creating or changing its lifecycle. */

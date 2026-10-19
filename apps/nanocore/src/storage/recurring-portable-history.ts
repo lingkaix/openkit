@@ -9,6 +9,7 @@ import {
   AutomationIdSchema,
   deriveEntityId,
   ReasoningEffortSchema,
+  readRetainedV1,
   TurnIdSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
@@ -310,9 +311,11 @@ export function exportRecurringPortableHistory(
   ) =>
     (
       coreDb.sqlite
-        .prepare(`SELECT record_json FROM ${table} WHERE workspace_id = ? ORDER BY id`)
-        .all(workspaceId) as { record_json: string }[]
-    ).map((row) => row.record_json);
+        .prepare(
+          `SELECT schema_version AS schemaVersion, record_json FROM ${table} WHERE workspace_id = ? ORDER BY id`
+        )
+        .all(workspaceId) as { schemaVersion: unknown; record_json: string }[]
+    ).map((row) => readRetainedV1(row, () => row.record_json));
   const turns = new Map(retainedTurns.map((turn) => [turn.id, turn.threadId]));
   const sourceSchedules = readRows('recurring_schedules').map(readRecurringSchedule);
   const externalAdmissions = listWorkspaceExternalTriggerAdmissions(coreDb, workspaceId);

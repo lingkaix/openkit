@@ -64,6 +64,7 @@ describe('boot audit recorder', () => {
       };
 
       expect(row).toMatchObject({
+        schema_version: 1,
         accepting_product_work: 0,
         boot_id: 'boot_start_test',
         created_at: '2026-07-05T00:00:00.000Z',

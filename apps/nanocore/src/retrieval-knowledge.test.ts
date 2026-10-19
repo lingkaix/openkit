@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { FsStore } from './lib/store.js';
 import { closeRetrievalServices } from './retrieval-service.js';
 import { openCoreDb } from './storage/db.js';
@@ -35,6 +36,10 @@ describe('Knowledge retrieval segmentation', () => {
     testRoots.push(dataRoot);
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Knowledge segmentation');
+    const knowledgeBaseId = readDefaultKnowledgeBaseId({
+      dataRoot,
+      scope: { kind: 'workspace', workspaceId: workspace.id },
+    });
     const coreDb = openCoreDb(dataRoot);
     databases.push(coreDb);
     applyMigrations(coreDb);
@@ -81,11 +86,21 @@ describe('Knowledge retrieval segmentation', () => {
       });
     expect((await retrieve(one)).selected).toEqual([
       expect.objectContaining({
-        reference: { scopeId: `page/workspace/${workspace.id}`, objectId: page.id },
+        reference: {
+          scopeId: `page/workspace/${workspace.id}/${knowledgeBaseId}`,
+          objectId: page.id,
+        },
       }),
     ]);
     expect(await retrieve(two)).toMatchObject({
-      selected: [{ reference: { scopeId: `page/workspace/${workspace.id}`, objectId: page.id } }],
+      selected: [
+        {
+          reference: {
+            scopeId: `page/workspace/${workspace.id}/${knowledgeBaseId}`,
+            objectId: page.id,
+          },
+        },
+      ],
     });
     const updated = await app.request(
       ...operationRequest(
@@ -101,7 +116,14 @@ describe('Knowledge retrieval segmentation', () => {
     );
     expect(updated.status, await updated.clone().text()).toBe(200);
     expect(await retrieve(one)).toMatchObject({
-      selected: [{ reference: { scopeId: `page/workspace/${workspace.id}`, objectId: page.id } }],
+      selected: [
+        {
+          reference: {
+            scopeId: `page/workspace/${workspace.id}/${knowledgeBaseId}`,
+            objectId: page.id,
+          },
+        },
+      ],
     });
   });
 });

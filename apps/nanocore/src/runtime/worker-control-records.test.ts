@@ -1,8 +1,8 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { WorkerCanonicalEventRecord, WorkerLineage } from '@openkit/worker-protocol';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
@@ -305,9 +305,13 @@ describe('worker control accepted event records', () => {
 });
 
 describe('durable failure diagnostics', () => {
-  it('retains admitted cause diagnostics online and after database reopen', () => {
+  it('writes v1 control records and retains cause diagnostics online and after database reopen', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-failure-cause-'));
     let coreDb = openCoreDb(dataRoot);
+    onTestFinished(() => {
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
+      rmSync(dataRoot, { force: true, recursive: true });
+    });
     applyMigrations(coreDb);
     const diagnostics = {
       failureCause: 'DeepSeek model returned a completed response with no content.',
@@ -323,10 +327,91 @@ describe('durable failure diagnostics', () => {
     });
     try {
       expect(getWorkerControlAcceptedFinalStatus(coreDb, lineage)).toMatchObject({ diagnostics });
+      const retained = coreDb.sqlite
+        .prepare(`SELECT schema_version AS schemaVersion,
+        record_json FROM worker_control_records`)
+        .get();
+      expect(retained).toMatchObject({ schemaVersion: 1 });
       coreDb.sqlite.close();
       coreDb = openCoreDb(dataRoot);
       expect(getWorkerControlAcceptedFinalStatus(coreDb, lineage)).toMatchObject({ diagnostics });
+      expect(
+        coreDb.sqlite
+          .prepare(`SELECT schema_version AS schemaVersion,
+        record_json FROM worker_control_records`)
+          .get()
+      ).toEqual(retained);
     } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('refuses unknown control versions before receipt decode, replay or closing token admission', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-15T00:00:02.000Z'));
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-control-version-'));
+    const coreDb = openCoreDb(dataRoot);
+    onTestFinished(() => {
+      vi.useRealTimers();
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
+      rmSync(dataRoot, { force: true, recursive: true });
+    });
+    try {
+      applyMigrations(coreDb);
+      createFinalStatusAttempt(coreDb);
+      const event = eventRecord(1);
+      const input = {
+        acceptedAt: '2026-07-15T00:00:03.000Z',
+        lineage,
+        operation: 'event_append' as const,
+        record: event,
+        recordKey: '1',
+        sequence: 1,
+      };
+      recordWorkerControlAcceptedRecord(coreDb, input);
+      recordWorkerControlAcceptedRecord(coreDb, {
+        acceptedAt: '2026-07-15T00:00:05.000Z',
+        lineage,
+        operation: 'final_status',
+        record: { sequence: 9, status: 'completed', stopReason: 'completed' },
+        recordKey: '9',
+        sequence: 9,
+      });
+      markSchedulerExecutionAttemptClosing(coreDb, {
+        attemptId: testEntityId('attempt', 'lease_events_final_status'),
+        now: () => '2026-07-15T00:00:04.000Z',
+        cause: 'worker-final-status',
+      });
+      coreDb.sqlite.exec("UPDATE worker_control_records SET schema_version = 2, record_json = '{'");
+      coreDb.sqlite.exec(`CREATE TRIGGER reject_unsupported_control_insert BEFORE INSERT ON worker_control_records
+        BEGIN SELECT RAISE(FAIL, 'Unsupported control record reached an INSERT'); END`);
+      expect(() => listWorkerControlAcceptedEvents(coreDb, lineage)).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(() => getWorkerControlAcceptedFinalStatus(coreDb, lineage)).toThrow(
+        'Unsupported retained record format.'
+      );
+      expect(() => recordWorkerControlAcceptedRecord(coreDb, input)).toThrow(
+        'Unsupported retained record format.'
+      );
+      vi.setSystemTime(new Date('2026-07-15T00:00:10.000Z'));
+      expect(() =>
+        resolveWorkerControlFinalStatusTokenBinding(coreDb, {
+          lineage,
+          sandboxBindingRef: 'lease-binding:events-final-status',
+        })
+      ).toThrow('Unsupported retained record format.');
+      expect(
+        coreDb.sqlite
+          .prepare(`SELECT schema_version AS schemaVersion, record_json
+        FROM worker_control_records ORDER BY sequence`)
+          .all()
+      ).toEqual([
+        { schemaVersion: 2, record_json: '{' },
+        { schemaVersion: 2, record_json: '{' },
+      ]);
+    } finally {
+      vi.useRealTimers();
       coreDb.sqlite.close();
     }
   });

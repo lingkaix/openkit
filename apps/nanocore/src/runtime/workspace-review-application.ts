@@ -9,6 +9,7 @@ import {
 } from '@openkit/app-api-schemas';
 import type { ActorRef } from '@openkit/protocol';
 import { listArtifactReviews } from '../artifact-reviews.js';
+import { auditAuthenticationFromActor } from '../auth/audit-attribution.js';
 import type { Actor } from '../auth/identity.js';
 import { authorizeWorkspace, currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import type { FsStore } from '../lib/store.js';
@@ -230,6 +231,10 @@ async function executeWorkspaceSyncReviewDecision(
     const persistDecision = (): void => {
       workspaceDb.sqlite.transaction(() => {
         updateWorkspaceSyncReviewDecision(workspaceDb, {
+          actor: input.authorityActor,
+          ...(input.requestActor
+            ? { authentication: auditAuthenticationFromActor(input.requestActor) }
+            : {}),
           requestId: input.requestId,
           reviewId,
           status: input.decision,
@@ -299,6 +304,8 @@ async function executeWorkspaceSyncReviewDecision(
 function recordAcceptedWorkspaceReview(
   workspaceDb: WorkspaceDb,
   input: {
+    readonly authorityActor: ActorRef;
+    readonly requestActor?: Actor;
     readonly decidedAt: string;
     readonly requestId: string;
     readonly reviewId: string;
@@ -306,7 +313,13 @@ function recordAcceptedWorkspaceReview(
   },
   result: WorkspaceApplyResult
 ): void {
-  recordWorkspaceApplyResult(workspaceDb, { requestId: input.requestId, result });
+  const attribution = {
+    actor: input.authorityActor,
+    ...(input.requestActor
+      ? { authentication: auditAuthenticationFromActor(input.requestActor) }
+      : {}),
+  };
+  recordWorkspaceApplyResult(workspaceDb, { ...attribution, requestId: input.requestId, result });
   if (result.status === 'applied') {
     const review = requireWorkspaceReview(workspaceDb, input.workspaceId, input.reviewId);
     acceptAppliedWorkspaceSnapshot(
@@ -317,6 +330,7 @@ function recordAcceptedWorkspaceReview(
     );
   }
   updateWorkspaceSyncReviewDecision(workspaceDb, {
+    ...attribution,
     requestId: input.requestId,
     reviewId: input.reviewId,
     status: 'accepted',

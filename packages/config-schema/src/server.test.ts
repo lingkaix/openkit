@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, RETAINED_FORMAT_VERSION } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -10,6 +10,20 @@ import {
 } from './index.js';
 
 describe('server config schema', () => {
+  it('admits authored Server format v1 with descriptive additions', () => {
+    expect(
+      OpenKitConfigSchema.parse({
+        schemaVersion: RETAINED_FORMAT_VERSION,
+        futureNote: 'retained description',
+      })
+    ).toEqual({ schemaVersion: RETAINED_FORMAT_VERSION });
+  });
+
+  it('refuses missing or unknown authored Server format versions', () => {
+    expect(OpenKitConfigSchema.safeParse({}).success).toBe(false);
+    expect(OpenKitConfigSchema.safeParse({ schemaVersion: 2 }).success).toBe(false);
+  });
+
   it('admits an explicit finite Worker Git-read maintenance assignment without changing omission', () => {
     const assignment = {
       responsibleUserId: allocateEntityId('usr'),
@@ -25,9 +39,14 @@ describe('server config schema', () => {
       enabled: true,
     };
     expect(
-      OpenKitConfigSchema.safeParse({ policy: { workerGitReadMaintenance: [assignment] } }).success
+      OpenKitConfigSchema.safeParse({
+        schemaVersion: RETAINED_FORMAT_VERSION,
+        policy: { workerGitReadMaintenance: [assignment] },
+      }).success
     ).toBe(true);
-    expect(OpenKitConfigSchema.parse({}).policy).toBeUndefined();
+    expect(
+      OpenKitConfigSchema.parse({ schemaVersion: RETAINED_FORMAT_VERSION }).policy
+    ).toBeUndefined();
     for (const change of [
       { enabled: undefined },
       { responsibleUserId: allocateEntityId('th') },
@@ -52,6 +71,7 @@ describe('server config schema', () => {
     ]) {
       expect(
         OpenKitConfigSchema.safeParse({
+          schemaVersion: RETAINED_FORMAT_VERSION,
           policy: { workerGitReadMaintenance: [{ ...assignment, ...change }] },
         }).success,
         JSON.stringify(change)
@@ -59,6 +79,7 @@ describe('server config schema', () => {
     }
     expect(
       OpenKitConfigSchema.safeParse({
+        schemaVersion: RETAINED_FORMAT_VERSION,
         policy: {
           workerGitReadMaintenance: [assignment, { ...assignment, enabled: false }],
         },
@@ -79,31 +100,46 @@ describe('server config schema', () => {
     };
     expect(NANO_HOST_DEFAULT_MAX_ACTIVE_TURNS).toBe(20);
     expect(
-      OpenKitConfigSchema.parse({ nanohost }).nanohost?.maxActiveTurnsPerSandbox
+      OpenKitConfigSchema.parse({ schemaVersion: RETAINED_FORMAT_VERSION, nanohost }).nanohost
+        ?.maxActiveTurnsPerSandbox
     ).toBeUndefined();
     expect(
-      OpenKitConfigSchema.parse({ nanohost: { ...nanohost, maxActiveTurnsPerSandbox: 8 } }).nanohost
-        ?.maxActiveTurnsPerSandbox
+      OpenKitConfigSchema.parse({
+        schemaVersion: RETAINED_FORMAT_VERSION,
+        nanohost: { ...nanohost, maxActiveTurnsPerSandbox: 8 },
+      }).nanohost?.maxActiveTurnsPerSandbox
     ).toBe(8);
     for (const maxActiveTurnsPerSandbox of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
       expect(
-        OpenKitConfigSchema.safeParse({ nanohost: { ...nanohost, maxActiveTurnsPerSandbox } })
-          .success
+        OpenKitConfigSchema.safeParse({
+          schemaVersion: RETAINED_FORMAT_VERSION,
+          nanohost: { ...nanohost, maxActiveTurnsPerSandbox },
+        }).success
       ).toBe(false);
     }
   });
 
   it('defaults work-data capture to off on the server policy switch', () => {
-    expect(OpenKitConfigSchema.parse({}).policy).toBeUndefined();
     expect(
-      OpenKitConfigSchema.parse({ policy: { workDataCapture: {} } }).policy?.workDataCapture
+      OpenKitConfigSchema.parse({ schemaVersion: RETAINED_FORMAT_VERSION }).policy
+    ).toBeUndefined();
+    expect(
+      OpenKitConfigSchema.parse({
+        schemaVersion: RETAINED_FORMAT_VERSION,
+        policy: { workDataCapture: {} },
+      }).policy?.workDataCapture
     ).toEqual({ value: 'off' });
     expect(
-      OpenKitConfigSchema.parse({ policy: { workDataCapture: { value: 'on' } } }).policy
-        ?.workDataCapture
+      OpenKitConfigSchema.parse({
+        schemaVersion: RETAINED_FORMAT_VERSION,
+        policy: { workDataCapture: { value: 'on' } },
+      }).policy?.workDataCapture
     ).toEqual({ value: 'on' });
     expect(
-      OpenKitConfigSchema.safeParse({ policy: { workDataCapture: { value: 'maybe' } } }).success
+      OpenKitConfigSchema.safeParse({
+        schemaVersion: RETAINED_FORMAT_VERSION,
+        policy: { workDataCapture: { value: 'maybe' } },
+      }).success
     ).toBe(false);
   });
 
@@ -114,12 +150,18 @@ describe('server config schema', () => {
         ws_review: { 'repo.push': 'require_human_approval' },
       },
     };
-    expect(OpenKitConfigSchema.parse({ policy }).policy).toEqual(policy);
-    expect(OpenKitConfigSchema.parse({}).policy).toBeUndefined();
+    expect(
+      OpenKitConfigSchema.parse({ schemaVersion: RETAINED_FORMAT_VERSION, policy }).policy
+    ).toEqual(policy);
+    expect(
+      OpenKitConfigSchema.parse({ schemaVersion: RETAINED_FORMAT_VERSION }).policy
+    ).toBeUndefined();
     for (const modes of [{ 'repo.push': 'allow' }, { 'tool.use': 'auto_allow' }]) {
       expect(
-        OpenKitConfigSchema.safeParse({ policy: { workspaceApprovalModes: { ws_trusted: modes } } })
-          .success
+        OpenKitConfigSchema.safeParse({
+          schemaVersion: RETAINED_FORMAT_VERSION,
+          policy: { workspaceApprovalModes: { ws_trusted: modes } },
+        }).success
       ).toBe(false);
     }
     expect(getConfigPolicyCatalog()).toContainEqual(
@@ -134,7 +176,10 @@ describe('server config schema', () => {
 
   it('accepts the final Server Agent fallback', () => {
     expect(
-      OpenKitConfigSchema.parse({ defaults: { defaultAgentId: 'agent_codex_host' } }).defaults
+      OpenKitConfigSchema.parse({
+        schemaVersion: RETAINED_FORMAT_VERSION,
+        defaults: { defaultAgentId: 'agent_codex_host' },
+      }).defaults
     ).toEqual({ defaultAgentId: 'agent_codex_host' });
   });
 
@@ -148,14 +193,25 @@ describe('server config schema', () => {
     { server: { publicBaseUrl: 'https://core.openkit.example/path' } },
     { server: { trustedProxies: ['127.0.0.1'] } },
   ])('rejects unsupported configuration instead of accepting ghost fields: %j', (config) => {
-    expect(() => OpenKitConfigSchema.parse(config)).toThrow();
+    expect(() =>
+      OpenKitConfigSchema.parse({ schemaVersion: RETAINED_FORMAT_VERSION, ...config })
+    ).toThrow();
   });
 
   it('strips unknown top-level fields while retaining strict known sections', () => {
     expect(
-      OpenKitConfigSchema.parse({ schemaVersion: 1, dataRoot: './data', unknownTopLevel: true })
-    ).toEqual({ schemaVersion: 1 });
-    expect(() => OpenKitConfigSchema.parse({ auth: { unknownTopLevel: true } })).toThrow();
+      OpenKitConfigSchema.parse({
+        schemaVersion: RETAINED_FORMAT_VERSION,
+        dataRoot: './data',
+        unknownTopLevel: true,
+      })
+    ).toEqual({ schemaVersion: RETAINED_FORMAT_VERSION });
+    expect(() =>
+      OpenKitConfigSchema.parse({
+        schemaVersion: RETAINED_FORMAT_VERSION,
+        auth: { unknownTopLevel: true },
+      })
+    ).toThrow();
   });
 
   it('keeps the config policy catalog free of inline secret modes', () => {
@@ -187,7 +243,7 @@ describe('server config schema', () => {
   ])('rejects the removed local vault backend selector value %s', (localDefaultBackend) => {
     expect(() =>
       OpenKitConfigSchema.parse({
-        schemaVersion: 1,
+        schemaVersion: RETAINED_FORMAT_VERSION,
         vault: {
           localDefaultBackend,
         },
@@ -203,7 +259,7 @@ describe('server config schema', () => {
   it('accepts an absolute encrypted-file vault key path', () => {
     expect(
       OpenKitConfigSchema.parse({
-        schemaVersion: 1,
+        schemaVersion: RETAINED_FORMAT_VERSION,
         vault: {
           encryptedFile: {
             keyFilePath: '/run/secrets/openkit-vault.key',
@@ -211,7 +267,7 @@ describe('server config schema', () => {
         },
       })
     ).toEqual({
-      schemaVersion: 1,
+      schemaVersion: RETAINED_FORMAT_VERSION,
       vault: {
         encryptedFile: {
           keyFilePath: '/run/secrets/openkit-vault.key',
@@ -223,6 +279,7 @@ describe('server config schema', () => {
   it('rejects relative key paths and unknown vault fields', () => {
     expect(() =>
       OpenKitConfigSchema.parse({
+        schemaVersion: RETAINED_FORMAT_VERSION,
         vault: {
           encryptedFile: {
             keyFilePath: './openkit-vault.key',
@@ -233,6 +290,7 @@ describe('server config schema', () => {
 
     expect(() =>
       OpenKitConfigSchema.parse({
+        schemaVersion: RETAINED_FORMAT_VERSION,
         vault: {
           encryptedFile: {
             keyFilePath: '/run/secrets/openkit-vault.key',
@@ -244,6 +302,7 @@ describe('server config schema', () => {
 
     expect(() =>
       OpenKitConfigSchema.parse({
+        schemaVersion: RETAINED_FORMAT_VERSION,
         vault: {
           encryptedFile: {
             keyFilePath: '/run/secrets/openkit-vault.key',
@@ -263,7 +322,7 @@ describe('server config schema', () => {
   it('accepts the secret-free NanoHost deployment projection', () => {
     expect(
       OpenKitConfigSchema.parse({
-        schemaVersion: 1,
+        schemaVersion: RETAINED_FORMAT_VERSION,
         nanohost: {
           bind: { host: '0.0.0.0', port: 4318 },
           identityId: 'integration_nanohost_primary',
@@ -283,7 +342,7 @@ describe('server config schema', () => {
         },
       })
     ).toEqual({
-      schemaVersion: 1,
+      schemaVersion: RETAINED_FORMAT_VERSION,
       nanohost: {
         bind: { host: '0.0.0.0', port: 4318 },
         identityId: 'integration_nanohost_primary',
@@ -307,6 +366,7 @@ describe('server config schema', () => {
   it('requires one exact dedicated NanoHost listener bind', () => {
     expect(() =>
       OpenKitConfigSchema.parse({
+        schemaVersion: RETAINED_FORMAT_VERSION,
         nanohost: {
           credentialRef: 'nanohost-transport:primary',
           credentialSlots: {
@@ -330,14 +390,14 @@ describe('server config schema', () => {
   it('ignores unknown top-level Cell topology keys and rejects raw NanoHost token material', () => {
     expect(
       OpenKitConfigSchema.parse({
-        schemaVersion: 1,
+        schemaVersion: RETAINED_FORMAT_VERSION,
         openshellCellSshTarget: 'root@127.0.0.1',
       })
-    ).toEqual({ schemaVersion: 1 });
+    ).toEqual({ schemaVersion: RETAINED_FORMAT_VERSION });
 
     expect(() =>
       OpenKitConfigSchema.parse({
-        schemaVersion: 1,
+        schemaVersion: RETAINED_FORMAT_VERSION,
         nanohost: {
           bind: { host: '127.0.0.1', port: 4318 },
           credentialSlots: {
@@ -376,6 +436,7 @@ describe('server config schema', () => {
   it('accepts optional app-update host identity with absolute key paths', () => {
     expect(
       OpenKitConfigSchema.parse({
+        schemaVersion: RETAINED_FORMAT_VERSION,
         appUpdate: {
           host: '127.0.0.1',
           user: 'openkit-update',
@@ -409,6 +470,7 @@ describe('server config schema', () => {
   ])('rejects app-update key paths that are relative or not distinct: %j', (paths) => {
     expect(() =>
       OpenKitConfigSchema.parse({
+        schemaVersion: RETAINED_FORMAT_VERSION,
         appUpdate: {
           host: '127.0.0.1',
           user: 'openkit-update',
@@ -426,6 +488,7 @@ describe('server config schema', () => {
   ])('rejects request-chosen app-update host fields: %j', (extra) => {
     expect(() =>
       OpenKitConfigSchema.parse({
+        schemaVersion: RETAINED_FORMAT_VERSION,
         appUpdate: {
           host: '127.0.0.1',
           user: 'openkit-update',
@@ -451,4 +514,14 @@ describe('server config schema', () => {
       ])
     );
   });
+});
+
+it('retains the authored Policy collection without conflating its format with a revision', () => {
+  const mediation = { schemaVersion: 1, statements: [] };
+  expect(OpenKitConfigSchema.parse({ policy: { mediation } }).policy?.mediation).toEqual(mediation);
+  expect(
+    OpenKitConfigSchema.safeParse({
+      policy: { mediation: { ...mediation, revision: 'mutable-label' } },
+    }).success
+  ).toBe(false);
 });

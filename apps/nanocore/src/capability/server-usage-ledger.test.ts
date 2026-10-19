@@ -35,6 +35,13 @@ it('retains Server calls and measured usage in Core without a Workspace and reco
       now: new Date('2026-10-18T00:00:00.000Z'),
     };
     const call = startCapabilityCall(input);
+    expect(
+      coreDb.sqlite
+        .prepare(
+          "SELECT actor_json FROM audit_events WHERE capability_call_id = ? AND action = 'capability.admit'"
+        )
+        .get(call.id)
+    ).toEqual({ actor_json: JSON.stringify(input.authorityActor) });
     expect(startCapabilityCall(input)).toMatchObject({ id: call.id, inserted: false });
     expect(() =>
       startCapabilityCall({ ...input, turnId: 'tu_00000000-0000-7000-8000-000000000002' })
@@ -104,7 +111,11 @@ it('retains Server calls and measured usage in Core without a Workspace and reco
     expect(
       coreDb.sqlite.prepare('SELECT workspace_id, capability_call_id FROM audit_events').get()
     ).toMatchObject({ workspace_id: null, capability_call_id: call.id });
-    const pending = startCapabilityCall({ ...input, requestId: null });
+    const pending = startCapabilityCall({
+      ...input,
+      requestId: null,
+      auditLineage: { commandRequestId: input.requestId },
+    });
     coreDb.sqlite.close();
     coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -113,6 +124,13 @@ it('retains Server calls and measured usage in Core without a Workspace and reco
       listServerCapabilityCalls(coreDb).find((entry) => entry.id === pending.id)
     ).toMatchObject({ status: 'unknown', errorCode: 'capability_call_recovered_after_restart' });
     expect(listServerUsageRecords(coreDb)).toHaveLength(1);
+    expect(
+      coreDb.sqlite
+        .prepare(
+          "SELECT actor_json, request_id FROM audit_events WHERE capability_call_id = ? AND action = 'capability.finish'"
+        )
+        .get(pending.id)
+    ).toEqual({ actor_json: JSON.stringify(input.authorityActor), request_id: input.requestId });
   } finally {
     if (coreDb.sqlite.open) coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });

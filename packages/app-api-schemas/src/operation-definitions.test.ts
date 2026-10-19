@@ -10,6 +10,7 @@ import {
   composeOperationTables,
   KERNEL_OPERATION_DEFINITIONS,
   OPERATION_DEFINITIONS,
+  OPERATION_REGISTRY,
   operationHttpPath,
   operationModelInput,
   operationToolName,
@@ -290,4 +291,40 @@ it('rejects a bootstrap-secret credential mixed with another credential during c
       'bootstrap.consume': { credentials: ['bootstrap-secret'] },
     })
   ).toHaveProperty('bootstrap.consume');
+});
+
+it('registers native MCP dispatch without exposing an API or model operation', () => {
+  const native = OPERATION_REGISTRY['mcp.call-tool'];
+  expect(native.binding).toBe('native');
+  expect(native.policyOperation).toBe('tool.use');
+  expect(native.crossings).toEqual(['dispatch']);
+  expect(native.stages).toContain('decide');
+  expect(OPERATION_DEFINITIONS).not.toHaveProperty('mcp.call-tool');
+  expect(
+    native.inputSchema.safeParse({ serverId: 'issues', toolName: 'read', arguments: {} }).success
+  ).toBe(true);
+  expect(
+    native.inputSchema.safeParse({
+      serverId: 'issues',
+      toolName: 'read',
+      arguments: {},
+      credentials: 'excluded',
+    }).success
+  ).toBe(false);
+  assertOperationNames(Object.keys(OPERATION_REGISTRY));
+});
+
+it('publishes the named-resource request and distinct confirmed apply contracts', () => {
+  expect(OPERATION_DEFINITIONS['workspace.resource-access-request'].policyOperation).toBe(
+    'workspace.write'
+  );
+  expect(OPERATION_DEFINITIONS['workspace.resource-access-apply'].policyOperation).toBe(
+    'workspace.configure'
+  );
+  expect(OPERATION_DEFINITIONS['workspace.resource-access-apply'].inputSchema.shape).toHaveProperty(
+    'approvalRequestId'
+  );
+  expect(
+    OPERATION_DEFINITIONS['workspace.resource-access-apply'].inputSchema.shape
+  ).not.toHaveProperty('requestId');
 });

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { parseWorkspaceMcpServerCatalog } from '@openkit/config-schema';
+import { RETAINED_FORMAT_VERSION } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 
 import { replaceWorkspaceEffectiveMcpCatalog } from '../catalog/resource-catalog.js';
@@ -45,6 +46,7 @@ function writeProviderConfig(dataRoot: string, model: string): void {
   writeFileSync(
     join(providersRoot, 'agent-openrouter.provider.jsonc'),
     JSON.stringify({
+      schemaVersion: RETAINED_FORMAT_VERSION,
       id: 'agent-openrouter',
       vendor: 'openrouter',
       kind: 'gateway',
@@ -422,6 +424,7 @@ describe('runtime config loading and reload planning', () => {
       baseRoot,
       'ws_00000000-0000-7000-8000-000000000001',
       `{
+        "schemaVersion": 1,
         "workspace": {
           "name": "Demo Workspace",
           "roots": [
@@ -434,6 +437,7 @@ describe('runtime config loading and reload planning', () => {
       nextRoot,
       'ws_00000000-0000-7000-8000-000000000001',
       `{
+        "schemaVersion": 1,
         "workspace": {
           "name": "Demo Workspace",
           "roots": [
@@ -843,6 +847,7 @@ describe('runtime config loading and reload planning', () => {
     writeFileSync(
       join(dataRoot, 'config', 'providers', 'duplicate.provider.jsonc'),
       JSON.stringify({
+        schemaVersion: RETAINED_FORMAT_VERSION,
         id: 'agent-openrouter',
         vendor: 'openrouter',
         kind: 'gateway',
@@ -912,6 +917,7 @@ describe('runtime config loading and reload planning', () => {
     writeFileSync(
       join(providersRoot, 'orca-custom.provider.jsonc'),
       JSON.stringify({
+        schemaVersion: RETAINED_FORMAT_VERSION,
         displayName: 'Orca',
         id: 'orca-custom',
         kind: 'custom',
@@ -957,6 +963,7 @@ describe('runtime config loading and reload planning', () => {
     writeFileSync(
       join(dataRoot, 'config', 'providers', 'orca-custom.provider.jsonc'),
       JSON.stringify({
+        schemaVersion: RETAINED_FORMAT_VERSION,
         displayName: 'Orca',
         id: 'orca-custom',
         kind: 'custom',

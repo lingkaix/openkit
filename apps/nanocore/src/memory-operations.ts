@@ -8,6 +8,7 @@ import {
 import { z } from 'zod';
 import { authorizeWorkspace } from './auth/operation-authorizer.js';
 import { finishCapabilityCall, startCapabilityCall } from './capability/usage-ledger.js';
+import { initializeDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { findAssistantTimeline } from './internal-agents/assistant-timeline.js';
 import { applyMemoryForget, prepareMemoryForgetCommand } from './knowledge/memory-forget.js';
 import {
@@ -62,7 +63,7 @@ import { userDbPath } from './storage/fs-layout.js';
 import { retrieveUserMemory } from './storage/index-rebuild.js';
 import { applyScopedMigrations } from './storage/migrate.js';
 
-/** First explicit save owns fresh scope creation; existing or lost notebooks are never initialized again. */
+/** First explicit save retains its default KB before Notebook publication; existing or lost notebooks are never initialized again. */
 function createFreshMemory(writer: MemoryWriter, input: OperationInput<'memory.create'>) {
   const owner = admitMemoryContext(writer);
   const path = `${input.pageId}.md`;
@@ -117,6 +118,11 @@ function createFreshMemory(writer: MemoryWriter, input: OperationInput<'memory.c
           .get()
       )
         throw new NotebookError('recovery_required');
+      // The explicit first save binds its base before Notebook publication; readers never allocate it.
+      const knowledgeBaseId = initializeDefaultKnowledgeBaseId({
+        dataRoot: writer.coreDb.dataRoot,
+        scope: ownerScope,
+      });
       const revalidate = () => {
         admitMemoryContext(writer);
         const maintenance = writer.runtimeConfigManager
@@ -126,6 +132,7 @@ function createFreshMemory(writer: MemoryWriter, input: OperationInput<'memory.c
         if (maintenance?.reviewRequiredPageIds.includes(input.pageId))
           throw new NotebookError('review_required');
         return {
+          pageScopeId: `page/user/${writer.userDb.userId}/${knowledgeBaseId}`,
           scopeSchemaText: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
           reviewRequiredPageIds: maintenance?.reviewRequiredPageIds ?? [],
           registeredSources: admitUserMemorySources(writer, { [path]: input.content })
@@ -438,6 +445,8 @@ export function createMemoryOperationImplementations(
             query: input.query,
             limit: input.limit,
             pinnedReferences: input.pinnedReferences,
+            types: input.types,
+            appliesTo: input.appliesTo,
             states: input.states,
             access: {
               store: writer.store,

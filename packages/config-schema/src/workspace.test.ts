@@ -2,6 +2,7 @@
 import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { RETAINED_FORMAT_VERSION } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -23,13 +24,36 @@ function createWorkspaceRoot(): string {
 }
 
 describe('workspace config schema', () => {
+  it('admits authored Workspace format v1 with descriptive additions', () => {
+    const parsed = WorkspaceConfigSchema.parse({
+      schemaVersion: RETAINED_FORMAT_VERSION,
+      workspace: { name: 'Versioned Workspace' },
+      futureNote: 'retained description',
+    });
+    expect(parsed).toMatchObject({
+      schemaVersion: RETAINED_FORMAT_VERSION,
+      workspace: { name: 'Versioned Workspace' },
+    });
+    expect(parsed).not.toHaveProperty('futureNote');
+  });
+
+  it('refuses missing or unknown authored Workspace format versions', () => {
+    expect(WorkspaceConfigSchema.safeParse({ workspace: { name: 'Missing marker' } }).success).toBe(
+      false
+    );
+    expect(
+      WorkspaceConfigSchema.safeParse({ schemaVersion: 2, workspace: { name: 'Unknown marker' } })
+        .success
+    ).toBe(false);
+  });
+
   it('preserves exact Assistant Skill IDs alongside retained repository inspection settings', () => {
     const assistant = {
       resources: { skillIds: ['skill-review', 'skill-research'] },
       repositoryInspection: { enabled: false, excludedPaths: ['private'] },
     };
     const parsed = WorkspaceConfigSchema.parse({
-      schemaVersion: 1,
+      schemaVersion: RETAINED_FORMAT_VERSION,
       workspace: { name: 'Selected Skills', assistant },
     });
 
@@ -42,6 +66,7 @@ describe('workspace config schema', () => {
     { resources: { skillIds: [] } },
   ])('admits empty or omitted Assistant resource selection: %j', (assistant) => {
     const parsed = WorkspaceConfigSchema.parse({
+      schemaVersion: RETAINED_FORMAT_VERSION,
       workspace: { name: 'No selected Skills', ...(assistant ? { assistant } : {}) },
     });
 
@@ -64,6 +89,7 @@ describe('workspace config schema', () => {
   ])('rejects malformed or duplicate Assistant Skill selections: %j', (resources) => {
     expect(
       WorkspaceConfigSchema.safeParse({
+        schemaVersion: RETAINED_FORMAT_VERSION,
         workspace: { name: 'Invalid selection', assistant: { resources } },
       }).success
     ).toBe(false);
@@ -82,6 +108,7 @@ describe('workspace config schema', () => {
   ])('rejects inline execution and authority fields in Assistant resources: %j', (extra) => {
     expect(
       WorkspaceConfigSchema.safeParse({
+        schemaVersion: RETAINED_FORMAT_VERSION,
         workspace: {
           name: 'Invalid resource authority',
           assistant: { resources: { skillIds: ['skill-review'], ...extra } },
@@ -92,7 +119,7 @@ describe('workspace config schema', () => {
 
   it('loads retained authored inspection settings and host-dir roots after host retirement', () => {
     const parsed = WorkspaceConfigSchema.parse({
-      schemaVersion: 1,
+      schemaVersion: RETAINED_FORMAT_VERSION,
       workspace: {
         name: 'Config schema workspace',
         defaultAgentId: 'agent_codex',
@@ -128,9 +155,12 @@ describe('workspace config schema', () => {
   });
 
   it('requires a name and rejects retired workspace-global execution defaults', () => {
-    expect(() => WorkspaceConfigSchema.parse({ workspace: {} })).toThrow();
+    expect(() =>
+      WorkspaceConfigSchema.parse({ schemaVersion: RETAINED_FORMAT_VERSION, workspace: {} })
+    ).toThrow();
     expect(() =>
       WorkspaceConfigSchema.parse({
+        schemaVersion: RETAINED_FORMAT_VERSION,
         workspace: {
           name: 'Retired defaults workspace',
           defaultModelId: 'reasoning',
@@ -142,7 +172,7 @@ describe('workspace config schema', () => {
 
   it('binds reusable Agent credential requirements and rejects direct Workspace grants', () => {
     const parsed = WorkspaceConfigSchema.parse({
-      schemaVersion: 1,
+      schemaVersion: RETAINED_FORMAT_VERSION,
       workspace: {
         name: 'Credential workspace',
         agents: [
@@ -175,6 +205,7 @@ describe('workspace config schema', () => {
     ]);
     expect(() =>
       WorkspaceConfigSchema.parse({
+        schemaVersion: RETAINED_FORMAT_VERSION,
         workspace: {
           name: 'Invalid direct grant workspace',
           agents: [
@@ -224,6 +255,7 @@ describe('workspace config schema', () => {
     ).toThrow();
     expect(() =>
       WorkspaceConfigSchema.parse({
+        schemaVersion: RETAINED_FORMAT_VERSION,
         workspace: {
           name: 'Duplicate roots workspace',
           roots: [
@@ -265,6 +297,7 @@ describe('workspace root materialization', () => {
     const roots = materializeWorkspaceRoots({
       workspaceRoot,
       config: {
+        schemaVersion: RETAINED_FORMAT_VERSION,
         workspace: {
           name: 'Materialized workspace',
           roots: [{ id: 'data', kind: 'host-dir', path: 'files/data', access: 'read-only' }],
@@ -291,6 +324,7 @@ describe('workspace root materialization', () => {
       materializeWorkspaceRoots({
         workspaceRoot,
         config: {
+          schemaVersion: RETAINED_FORMAT_VERSION,
           workspace: {
             name: 'Missing input workspace',
             roots: [{ id: 'data', kind: 'host-dir', path: 'files/data', access: 'read-only' }],
@@ -303,6 +337,7 @@ describe('workspace root materialization', () => {
       workspaceRoot,
       createMissing: true,
       config: {
+        schemaVersion: RETAINED_FORMAT_VERSION,
         workspace: {
           name: 'Output workspace',
           roots: [
@@ -330,6 +365,7 @@ describe('workspace root materialization', () => {
       materializeWorkspaceRoots({
         workspaceRoot,
         config: {
+          schemaVersion: RETAINED_FORMAT_VERSION,
           workspace: {
             name: 'Symlink workspace',
             roots: [{ id: 'linked', kind: 'host-dir', path: 'linked', access: 'read-only' }],
