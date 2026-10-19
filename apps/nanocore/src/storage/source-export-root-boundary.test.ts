@@ -4,8 +4,11 @@ import { createHash } from 'node:crypto';
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { WorkspaceConfigSchema } from '@openkit/config-schema';
 import { allocateEntityId } from '@openkit/protocol';
+import { applyEdits, modify } from 'jsonc-parser';
 import { describe, expect, it, onTestFinished } from 'vitest';
+import { parseJsoncObject } from '../config/jsonc.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { parseSourcePointer } from '../knowledge/source-pointers.js';
 import { FsStore } from '../lib/store.js';
@@ -115,7 +118,17 @@ async function sourceSnapshot() {
     turnEvents: [[turn.id, []]],
     portableFileState,
   };
-  return { root, workspaceRoot, source, pointer, revision, originalPath, captured };
+  return {
+    root,
+    dataRoot,
+    workspaceRoot,
+    notebook,
+    source,
+    pointer,
+    revision,
+    originalPath,
+    captured,
+  };
 }
 
 /** Checks exact canonical pointer text and digest-verified file-backed originals. */
@@ -138,6 +151,105 @@ function assertSourceExport(
 }
 
 describe('Source export explicit workspace root', () => {
+  it('refuses an unpublished Source-only candidate with valid captured fields', async () => {
+    const snapshot = await sourceSnapshot();
+    const exportRoot = join(snapshot.root, 'published-control-export');
+    assertSourceExport(
+      writeWorkspaceExportTree({
+        ...snapshot.captured,
+        sourceWorkspaceRoot: snapshot.workspaceRoot,
+        exportRoot,
+        exportId: allocateEntityId('wsexp'),
+      }),
+      exportRoot,
+      snapshot
+    );
+    const candidatePointer = `${snapshot.pointer}\nUnpublished Source summary.\n`;
+    const { workspaceId, ...sourceMetadata } = snapshot.source;
+    expect(
+      parseSourcePointer(
+        { dataRoot: snapshot.dataRoot, ownerScope: { kind: 'workspace', workspaceId } },
+        snapshot.source.id,
+        candidatePointer
+      ).source
+    ).toEqual(sourceMetadata);
+    const candidateRevision = snapshot.notebook.prepareSourcePointers({
+      baseRevision: snapshot.revision,
+      changes: { [snapshot.source.id]: candidatePointer },
+      metadata: snapshot.notebook.readRevision(snapshot.revision).metadata,
+    });
+    expect(candidateRevision).not.toBe(snapshot.revision);
+    expect(snapshot.notebook.readSourcePointers(candidateRevision)[snapshot.source.id]).toBe(
+      candidatePointer
+    );
+    expect(snapshot.notebook.publishedRevision()).toBe(snapshot.revision);
+    expect(() => snapshot.notebook.history({ revision: candidateRevision, limit: 1 })).toThrowError(
+      expect.objectContaining({ code: 'invalid_request' })
+    );
+    expect(() =>
+      writeWorkspaceExportTree({
+        ...snapshot.captured,
+        sourceWorkspaceRoot: snapshot.workspaceRoot,
+        exportRoot: join(snapshot.root, 'unpublished-export'),
+        exportId: allocateEntityId('wsexp'),
+        portableFileState: {
+          ...snapshot.captured.portableFileState!,
+          notebookRevision: candidateRevision,
+        },
+      })
+    ).toThrowError(expect.objectContaining({ code: 'invalid_request' }));
+    expect(snapshot.notebook.publishedRevision()).toBe(snapshot.revision);
+  });
+
+  it('refuses captured mount declarations that shadow the managed Source namespace', async () => {
+    const snapshot = await sourceSnapshot();
+    const exportRoot = join(snapshot.root, 'unshadowed-control-export');
+    assertSourceExport(
+      writeWorkspaceExportTree({
+        ...snapshot.captured,
+        sourceWorkspaceRoot: snapshot.workspaceRoot,
+        exportRoot,
+        exportId: allocateEntityId('wsexp'),
+      }),
+      exportRoot,
+      snapshot
+    );
+    const state = snapshot.captured.portableFileState!;
+    const configuration = state.workspaceConfig!;
+    const workspace = WorkspaceConfigSchema.parse(parseJsoncObject(configuration)).workspace;
+    const mounts = workspace.knowledgeMounts!;
+    const shadow = {
+      knowledgeBaseId: workspace.defaultKnowledgeBaseId!,
+      name: 'sources',
+      backend: 'local',
+      root: 'raw/sources',
+      default: false,
+    };
+    const shadowedConfiguration = applyEdits(
+      configuration,
+      modify(configuration, ['workspace', 'knowledgeMounts', mounts.length], shadow, {
+        formattingOptions: { insertSpaces: true, tabSize: 2 },
+      })
+    );
+    expect(
+      WorkspaceConfigSchema.parse(parseJsoncObject(shadowedConfiguration)).workspace.knowledgeMounts
+    ).toEqual([...mounts, shadow]);
+    expect(snapshot.originalPath).toBe(`knowledge/raw/sources/${snapshot.source.id}/original`);
+    expect(readFileSync(join(snapshot.workspaceRoot, snapshot.originalPath))).toEqual(original);
+    expect(snapshot.notebook.readSourcePointers(snapshot.revision)[snapshot.source.id]).toBe(
+      snapshot.pointer
+    );
+    expect(() =>
+      writeWorkspaceExportTree({
+        ...snapshot.captured,
+        sourceWorkspaceRoot: snapshot.workspaceRoot,
+        exportRoot: join(snapshot.root, 'shadowed-export'),
+        exportId: allocateEntityId('wsexp'),
+        portableFileState: { ...state, workspaceConfig: shadowedConfiguration },
+      })
+    ).toThrow();
+  });
+
   it('exports the pinned PNG Source from a detached snapshot and refuses a changed snapshot original', async () => {
     const snapshot = await sourceSnapshot();
     const canonicalExportRoot = join(snapshot.root, 'canonical-export');
