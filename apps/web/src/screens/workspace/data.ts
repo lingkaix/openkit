@@ -108,10 +108,10 @@ export type AgentEntry = Awaited<
 export type WorkspaceWorkerRow = Awaited<
   ReturnType<CoreClient['operations']['worker.list']>
 >['items'][number];
-/** Knowledge entry from `operations['knowledge.list']`. */
-export type KnowledgeItem = Awaited<
-  ReturnType<CoreClient['operations']['knowledge.list']>
->['items'][number];
+/** One authorized Notebook page from `operations['knowledge.notebook.list']`. */
+export type KnowledgeNotebookPage = Awaited<
+  ReturnType<CoreClient['operations']['knowledge.notebook.list']>
+>['pages'][number];
 /** Bounded Knowledge Store projection returned by the three live list reads. */
 export type KnowledgeStoreProjection = {
   sources: Awaited<ReturnType<CoreClient['operations']['knowledge.source.list']>>['items'];
@@ -130,28 +130,20 @@ export type KnowledgeProposalDecisionInput = {
   source: Extract<AttentionRow['source'], { type: 'knowledge' }>;
   decision: KnowledgeProposalDecision;
 };
-/** Exact replayable Knowledge entry create bound to one Workspace. */
+/** Exact replayable Notebook page create bound to one Workspace. */
 export type CreateKnowledgeCommand = {
   workspaceId: string;
-  input: Omit<Parameters<CoreClient['operations']['knowledge.create']>[0], 'workspaceId'>;
+  input: Omit<Parameters<CoreClient['operations']['knowledge.notebook.create']>[0], 'workspaceId'>;
 };
-/** Exact replayable Knowledge entry update bound to one Workspace. */
+/** Exact replayable Notebook page update bound to one Workspace. */
 export type UpdateKnowledgeCommand = {
   workspaceId: string;
-  knowledgeEntryId: string;
-  input: Omit<
-    Parameters<CoreClient['operations']['knowledge.update']>[0],
-    'workspaceId' | 'knowledgeEntryId'
-  >;
+  input: Omit<Parameters<CoreClient['operations']['knowledge.notebook.update']>[0], 'workspaceId'>;
 };
-/** Exact replayable Knowledge entry delete bound to one Workspace. */
+/** Exact replayable Notebook page delete bound to one Workspace. */
 export type DeleteKnowledgeCommand = {
   workspaceId: string;
-  knowledgeEntryId: string;
-  input: Omit<
-    Parameters<CoreClient['operations']['knowledge.delete']>[0],
-    'workspaceId' | 'knowledgeEntryId'
-  >;
+  input: Omit<Parameters<CoreClient['operations']['knowledge.notebook.delete']>[0], 'workspaceId'>;
 };
 /** Exact replayable Knowledge Source registration bound to one Workspace. */
 export type RegisterKnowledgeSourceCommand = {
@@ -308,12 +300,13 @@ export function useRefreshAgentHealth() {
   });
 }
 
-/** List workspace knowledge entries. */
+/** List workspace Notebook pages. */
 export function useKnowledge(workspaceId: string | null) {
   const client = useCoreClient();
   return useQuery({
     queryKey: workspaceKeys.knowledge(workspaceId ?? ''),
-    queryFn: () => client.operations['knowledge.list']({ workspaceId: workspaceId as string }),
+    queryFn: () =>
+      client.operations['knowledge.notebook.list']({ workspaceId: workspaceId as string }),
     enabled: Boolean(workspaceId),
   });
 }
@@ -561,13 +554,16 @@ export function useSubmitKnowledgeProposalDecision() {
   });
 }
 
-/** @returns Mutation that creates one Knowledge entry from a Workspace-bound command. */
+/** @returns Mutation that creates one Notebook page from a Workspace-bound command. */
 export function useCreateKnowledge() {
   const client = useCoreClient();
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (command: CreateKnowledgeCommand) =>
-      client.operations['knowledge.create']({ workspaceId: command.workspaceId, ...command.input }),
+      client.operations['knowledge.notebook.create']({
+        workspaceId: command.workspaceId,
+        ...command.input,
+      }),
     retry: false,
     onSuccess: (_data, command) => {
       void queryClient.invalidateQueries({
@@ -577,28 +573,26 @@ export function useCreateKnowledge() {
   });
 }
 
-/** @returns Mutation that updates one Knowledge entry from a Workspace-bound command. */
+/** @returns Mutation that updates one Notebook page from a Workspace-bound command. */
 export function useUpdateKnowledge() {
   const client = useCoreClient();
   return useMutation({
     mutationFn: (command: UpdateKnowledgeCommand) =>
-      client.operations['knowledge.update']({
+      client.operations['knowledge.notebook.update']({
         workspaceId: command.workspaceId,
-        knowledgeEntryId: command.knowledgeEntryId,
         ...command.input,
       }),
     retry: false,
   });
 }
 
-/** @returns Mutation that deletes one Knowledge entry from a Workspace-bound command. */
+/** @returns Mutation that deletes one Notebook page from a Workspace-bound command. */
 export function useDeleteKnowledge() {
   const client = useCoreClient();
   return useMutation({
     mutationFn: (command: DeleteKnowledgeCommand) =>
-      client.operations['knowledge.delete']({
+      client.operations['knowledge.notebook.delete']({
         workspaceId: command.workspaceId,
-        knowledgeEntryId: command.knowledgeEntryId,
         ...command.input,
       }),
     retry: false,

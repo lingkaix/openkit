@@ -60,11 +60,11 @@ function renderNotebook({
             registryRevision: 1,
           })),
         });
-      case operationHttpPath('knowledge.list'):
+      case operationHttpPath('knowledge.notebook.list'):
         return Response.json({
           knowledgeBaseId: KNOWLEDGE_BASE_ID,
           notebookRevision: currentRevision,
-          items: [],
+          pages: [],
         });
       case operationHttpPath('knowledge.indexes'):
         return Response.json({
