@@ -293,6 +293,11 @@ async function supervise(
   const exited = new Promise<void>((resolve) => {
     resolveExited = resolve;
   });
+  // Stop and close join every exit; the Harness receives only an unrequested host loss.
+  let resolveUnexpectedExit!: () => void;
+  const unexpectedExit = new Promise<void>((resolve) => {
+    resolveUnexpectedExit = resolve;
+  });
   const child = spawnServer(
     binary,
     ['serve', '--stdio', '--hostname', '127.0.0.1', '--port', '0'],
@@ -336,6 +341,7 @@ async function supervise(
     exitObserved = true;
     childState = 'absent';
     resolveExited();
+    if (!closing) resolveUnexpectedExit();
     nativeExit.abort();
   };
   // A spawn `error` is not process exit. Resolving `exited` there let a live server look dead.
@@ -493,7 +499,7 @@ async function supervise(
 
   function refusedSession(failure: Error): WorkerResidentSession {
     return {
-      exited,
+      exited: unexpectedExit,
       childState: () => childState,
       nativeEvidence,
       close: closeHost,
@@ -521,7 +527,7 @@ async function supervise(
     let durable = input.resumeReference !== null && proved.sessionId !== null;
 
     const session: WorkerResidentSession = {
-      exited,
+      exited: unexpectedExit,
       childState: () => childState,
       nativeEvidence,
       close: closeHost,

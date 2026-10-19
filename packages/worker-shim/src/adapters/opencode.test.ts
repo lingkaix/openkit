@@ -2,7 +2,7 @@
 
 import { type ChildProcess, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { EventEmitter, getEventListeners } from 'node:events';
+import { EventEmitter, getEventListeners, once } from 'node:events';
 import {
   existsSync,
   mkdirSync,
@@ -140,6 +140,150 @@ describe('OpenCode resident adapter', () => {
     });
     return { adapter, child, client, layout, creds, environment: () => environment };
   }
+
+  it.each([
+    { exit: 'owned stop', diagnostic: 'OpenCode assistant finish is unknown.' },
+    { exit: 'unexpected exit', diagnostic: 'Resident host ended during the Turn.' },
+  ])('preserves the deciding cause through the shared Turn after $exit', async (testCase) => {
+    const f = timelineFixture('new');
+    let release!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let prompted = false;
+    const prompt = f.client.session.prompt;
+    f.client.session.prompt = async (input) => {
+      const result = await prompt(input);
+      prompted = true;
+      return result;
+    };
+    const get = f.client.session.get;
+    f.client.session.get = async (...args) => {
+      if (prompted) {
+        await ready;
+        if (testCase.exit === 'unexpected exit') {
+          Object.assign(f.child, { exitCode: 17 });
+          f.child.emit('exit', 17, null);
+          f.child.emit('close', 17, null);
+        }
+      }
+      return get(...args);
+    };
+    const list = f.client.message.list;
+    f.client.message.list = async (...args) => {
+      const response = await list(...args);
+      return {
+        ...response,
+        data: response.data.map((row) =>
+          row.type === 'assistant' ? { ...row, finish: 'mystery' } : row
+        ),
+      } as never;
+    };
+    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+    sessions.push(session);
+    const unexpectedExit = vi.fn();
+    void session.exited.then(unexpectedExit);
+    const lineage = {
+      agentSessionId: 'as_00000000-0000-76f1-a900-7cc7b6acc18c',
+      packageSnapshotId: 'pkg-owned-stop',
+      requestId: 'req-owned-stop',
+      threadId: 'th_00000000-0000-79de-8040-f554386267ad',
+      turnId: 'tu_00000000-0000-7f8a-b8c9-d153483d39f0',
+      workspaceId: 'ws_00000000-0000-735c-bd4b-c71fce1d4dd7',
+    };
+    const packagePath = join(f.layout.root, 'owned-stop-package.json');
+    const sessionDir = join(f.layout.root, 'owned-stop-capture');
+    writeFileSync(
+      packagePath,
+      JSON.stringify({
+        control: {
+          adapter: { kind: 'openkit-worker-shim', targetRuntime: 'opencode' },
+          mode: 'sandbox-integration',
+          bindings: {
+            capabilities: {
+              pathPrefix: '/capabilities/',
+              tokenRef: 'runtime://openkit/capability-token',
+            },
+            inference: { pathPrefix: '/inference/', tokenRef: 'runtime://openkit/inference-token' },
+            workerControl: {
+              pathPrefix: '/worker-control/',
+              tokenRef: 'runtime://openkit/worker-control-token',
+            },
+          },
+        },
+        extensions: { openkit: { turnInput: 'Collect this Turn.' } },
+        llm: {
+          mode: 'gateway',
+          preferredLogicalModelId: 'prompt-model',
+          routes: [
+            {
+              ...acceptedRoute(f.creds, 'prompt-model'),
+              endpoint: { kind: 'openai-compatible', upstream: { kind: 'nanocore-gateway' } },
+            },
+          ],
+        },
+        observability: { captureCoverage: { scope: 'server', value: 'off' } },
+        runtime: { command: { argv: ['openkit-worker-shim'], workingDirectory: f.layout.work } },
+        scope: lineage,
+      })
+    );
+    const finals: Array<Record<string, unknown>> = [];
+    const fetch: WorkerControlFetch = async (url, init) => {
+      const body = JSON.parse(init.body);
+      if (url.endsWith('/events/append') && body.record.event.type === 'worker.ready') release();
+      if (url.endsWith('/final-status')) finals.push(body.body);
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ accepted: true, diagnostics: [], schemaVersion: 2 }),
+      };
+    };
+    const result = await nativeTestBound(
+      runResidentTurn({
+        adapterId: 'opencode',
+        credentialValues: [],
+        environment: {},
+        fetch,
+        integration: {
+          ready: Promise.resolve(),
+          bindTurnRouteTokens() {},
+          clearTurnRouteTokens() {},
+          drainTurn: async () => 0,
+        } as unknown as SandboxIntegrationClient,
+        lineage,
+        nativeEnvironment: null,
+        onStarted() {},
+        packagePath,
+        resident: session,
+        runtimeEnvironmentNames: new Set(),
+        sessionDir,
+        signal: new AbortController().signal,
+        tokens: {
+          capabilityToken: 'owned-stop-capability',
+          controlToken: 'owned-stop-control',
+          inferenceToken: 'owned-stop-inference',
+        },
+        turnDirectory: join(f.layout.root, 'owned-stop-turn'),
+      }).catch((error: unknown) => error),
+      2_000,
+      'The shared Turn did not settle after native stop proof.'
+    );
+    expect(finals).toEqual([
+      expect.objectContaining({
+        status: 'failed',
+        stopReason: 'error',
+        diagnostics: expect.objectContaining({ native: testCase.diagnostic }),
+      }),
+    ]);
+    expect(session.childState()).toBe('absent');
+    if (testCase.exit === 'owned stop') {
+      expect(result).toMatchObject({ status: 'failed', nativeEvidence: { processExited: true } });
+      expect(unexpectedExit).not.toHaveBeenCalled();
+    } else {
+      expect(result).toBeInstanceOf(Error);
+      expect(unexpectedExit).toHaveBeenCalledOnce();
+    }
+  });
 
   it.each([
     {
@@ -930,6 +1074,33 @@ describe('OpenCode resident adapter', () => {
     } finally {
       release();
     }
+  });
+
+  it('proves a graceful close without reporting unexpected host loss', async () => {
+    const f = timelineFixture('new');
+    Object.assign(f.child, {
+      stdin: Object.assign(new EventEmitter(), {
+        end() {
+          f.child.stdout?.emit('end');
+          f.child.stderr?.emit('end');
+          Object.assign(f.child, { exitCode: 0 });
+          f.child.emit('exit', 0, null);
+          f.child.emit('close', 0, null);
+        },
+      }),
+    });
+    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+    sessions.push(session);
+    const unexpectedExit = vi.fn();
+    void session.exited.then(unexpectedExit);
+    await session.close();
+    expect(session.childState()).toBe('absent');
+    expect(session.nativeEvidence?.()).toMatchObject({
+      processExited: true,
+      pipesDrained: true,
+      persistencePreservingClose: true,
+    });
+    expect(unexpectedExit).not.toHaveBeenCalled();
   });
 
   it('round-three: interrupt settles held structural finalization with capture off', async () => {
@@ -1987,7 +2158,7 @@ describe('OpenCode resident adapter', () => {
     expect(failed.status).toBe('failed');
     expect(failed.diagnostics?.native).toMatch(/prompt acceptance is unknown/);
     expect(session.childState()).toBe('absent');
-    await session.exited;
+    expect(session.nativeEvidence?.()).toMatchObject({ processExited: true });
     expect(processAlive(pid)).toBe(false);
   }, 120_000);
 
@@ -2064,7 +2235,7 @@ describe('OpenCode resident adapter', () => {
     const first = session.close();
     expect(session.close()).toBe(first);
     await expect(first).rejects.toThrow(/post-close/);
-    await session.exited;
+    expect(session.nativeEvidence?.()).toMatchObject({ processExited: true });
     expect(session.childState()).toBe('absent');
   });
 
@@ -2577,7 +2748,7 @@ describe('OpenCode resident adapter', () => {
     await expect(firstClose).rejects.toThrow(/drain or persistence flush was not proved/);
     expect((await dying.settled).status).toBe('failed');
     expect(session.childState()).toBe('absent');
-    await session.exited;
+    expect(session.nativeEvidence?.()).toMatchObject({ processExited: true });
     expect(readFileSync(join(layout.stateRoot, 'home', 'retained.txt'), 'utf8')).toBe('kept');
     expect(existsSync(layout.controlRoot)).toBe(true);
   }, 180_000);
@@ -4639,8 +4810,9 @@ describe('W4 round-seven collection proof', () => {
       await expect(fenced.settled).rejects.toThrow(/not running/);
     } finally {
       native.kill = kill;
+      const stopped = once(native, 'exit');
       kill('SIGKILL');
-      await session.exited;
+      await stopped;
     }
   }, 60000);
 });
@@ -4988,8 +5160,9 @@ describe('W4 round-eight refused setup cleanup', () => {
         } finally {
           if (stop === 'unproved') {
             native.kill = kill;
+            const stopped = once(native, 'exit');
             kill('SIGKILL');
-            await residents[0]!.exited;
+            await stopped;
           }
           for (const id of [
             'as_00000000-0000-72e9-8940-31943ef35325',

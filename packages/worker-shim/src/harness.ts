@@ -555,6 +555,8 @@ export class WorkerHarness {
     const settled = promise
       .catch(() => undefined)
       .finally(() => {
+        // Adapter-owned stops settle or reject the Turn without reporting unexpected host loss.
+        if (session.resident.childState() === 'absent') session.failed = true;
         // Capacity returns only after native settlement and local input cleanup are proved.
         if (session.cleanupState === 'clean' && session.activeTurn?.turnId === body.turnId) {
           session.activeTurn = null;
