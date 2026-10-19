@@ -128,6 +128,10 @@ import { createOperationInvocation } from './operation-composition.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import { createAgentPolicyParticipant } from './policy/agent-gate-provider.js';
 import { createGoalDomainPolicyService } from './policy/goal-domains.js';
+import {
+  createGoalTaskPolicyService,
+  type GoalTaskPolicyService,
+} from './policy/goal-task-policy.js';
 import { type DeterministicPolicyParticipant, PolicyInterception } from './policy/interception.js';
 import {
   checkResourcePolicyCommandIntent,
@@ -1868,6 +1872,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   );
   const workerMcpRouteInput: RegisterWorkerMcpRoutesInput = {
     interception: policyInterception,
+    goalTaskPolicy,
     ...(automationStore ? { automationStore } : {}),
     turnStartServices: {
       ...setupProviderSupply,
@@ -2081,6 +2086,16 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     runtimeConfigFiles: (actor) => runtimeConfigFileService({ get: () => actor }),
   };
 
+  /** Reads native Goal Policy with the caller-owned DB; the file reader supplies no authority. */
+  function goalTaskPolicy(db: WorkspaceDb, responsibleUserId: string): GoalTaskPolicyService {
+    const domain = goalServices().goalDomain;
+    if (!options.coreDb || !domain) throw new Error('Goal Task Policy is unavailable.');
+    return createGoalTaskPolicyService({
+      coreDb: options.coreDb,
+      store: sharedStore,
+      domains: domain.forActor({ kind: 'session', userId: responsibleUserId }, db),
+    });
+  }
   const goalServices = (): GoalOwnerServices => ({
     ...(options.coreDb ? { coreDb: options.coreDb } : {}),
     ...(options.coreDb
@@ -2168,6 +2183,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         workspaceMutationAdmission,
         goalId,
         coordinatorTurnId,
+        goalTaskPolicy,
       }),
   });
   const currentRequesterAuthority = (

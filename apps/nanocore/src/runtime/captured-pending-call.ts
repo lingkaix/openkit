@@ -445,6 +445,16 @@ export async function executeCapturedPendingCall(input: {
   const observeOutcome = async (
     outcome: CapturedPendingCallExecution
   ): Promise<CapturedPendingCallExecution> => {
+    if (outcome.result !== null && input.prepared?.mediation) {
+      let current = false;
+      try {
+        current = input.prepared.mediation.current();
+      } catch {
+        // A settled effect grants no disclosure when current authority cannot be read.
+      }
+      if (!current)
+        outcome = { ...outcome, reason: 'authority-changed-after-execution', result: null };
+    }
     try {
       await input.prepared?.mediation?.observe?.();
     } catch {
