@@ -381,7 +381,7 @@ fn unit_properties(pid: u32) -> String {
             "ExecStart",
             "{ path=/usr/lib/openkit/nanohost ; argv[]=/usr/lib/openkit/nanohost ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0 }",
         ),
-        ("ExecStop", kill),
+        ("ExecStop", ""),
         ("ExecStopPost", kill),
         ("PrivateMounts", "yes"),
         ("InaccessiblePaths", "/run/docker.sock"),
