@@ -41,7 +41,7 @@ describe('administration configuration Tools', () => {
       additionalProperties: false,
       properties: {
         agentId: { minLength: 1, type: 'string' },
-        targetFamily: { enum: ['agent', 'provider', 'gateway'] },
+        targetFamily: { enum: ['agent', 'provider', 'gateway', 'policy'] },
         targetId: { minLength: 1, type: 'string' },
       },
       required: ['targetFamily'],
