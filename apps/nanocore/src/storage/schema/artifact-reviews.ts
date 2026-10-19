@@ -1,8 +1,4 @@
-import type {
-  ArtifactReviewCandidateSelection,
-  ArtifactReviewRangeFeedback,
-  JudgementRecord,
-} from '@openkit/app-api-schemas';
+import type { ArtifactReviewRangeFeedback, JudgementRecord } from '@openkit/app-api-schemas';
 import { writeRetainedV1 } from '@openkit/protocol';
 import { sql } from 'drizzle-orm';
 import {
@@ -60,11 +56,6 @@ export const artifactReviews = sqliteTable(
     feedback: text('feedback'),
     /** Exact original-source range owned by the accepted decision. */
     rangeFeedback: text('range_feedback', { mode: 'json' }).$type<ArtifactReviewRangeFeedback>(),
-    /** Ordered attributable choices; choosing never changes decision authority. */
-    candidateSelections: text('candidate_selections', { mode: 'json' })
-      .$type<ArtifactReviewCandidateSelection[]>()
-      .notNull()
-      .default(sql`'[]'`),
     /** Append-only human assessments on this exact version, independent of decision effects. */
     judgements: text('judgements', { mode: 'json' })
       .$type<JudgementRecord[]>()

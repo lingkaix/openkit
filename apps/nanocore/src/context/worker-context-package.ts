@@ -244,6 +244,18 @@ const WorkerContextPackageTraceSchema = WorkerContextPackageManifestSchema.omit(
   workspaceMaterializationRecordId: IdSchema,
 });
 
+/** Payload facts belong only to the canonical Worker-visible manifest. */
+const traceManifestFields = [
+  'fileInventory',
+  'includedItemIds',
+  'knowledgeSelections',
+  'materialSelections',
+  'policyVersion',
+  'sourceFiles',
+  'workerRequestDigest',
+  'workerRequestItemId',
+] as const;
+
 /** Exact file inventory entry used by the package root and immutable trace. */
 export interface WorkerContextPackageFileInventoryEntry {
   /** Package-relative POSIX path. */
@@ -906,7 +918,14 @@ export async function writeWorkerContextPackageFiles(
   if (existsSync(tracePath)) {
     // A retained trace fences every historical byte: verify it, never rebuild it from current inputs.
     workerContextPackageRoot(workspaceRoot, packageFiles.threadId, packageFiles.turnId);
-    const trace = parseWorkerContextPackageTrace(JSON.parse(readCanonicalTextFile(tracePath)));
+    const trace = parseWorkerContextPackageTrace(
+      JSON.parse(readCanonicalTextFile(tracePath)),
+      readCanonicalPackageFile(
+        workerContextPackageRoot(workspaceRoot, packageFiles.threadId, packageFiles.turnId),
+        'package.json',
+        16_777_216
+      )
+    );
     if (
       trace.workspaceId !== packageFiles.workspaceId ||
       trace.threadId !== packageFiles.threadId ||
@@ -1312,7 +1331,14 @@ export function readPortableWorkerContextPackageTrace(input: {
   if (!lstatSync(path, { throwIfNoEntry: false })) {
     throw new Error('Worker Context Package trace is unavailable.');
   }
-  const trace = JSON.parse(readCanonicalTextFile(path)) as WorkerContextPackageTrace;
+  const trace = parseWorkerContextPackageTrace(
+    JSON.parse(readCanonicalTextFile(path)),
+    readCanonicalPackageFile(
+      workerContextPackageRoot(input.workspaceRoot, input.threadId, input.turnId),
+      'package.json',
+      16_777_216
+    )
+  );
   if (
     trace.workspaceId !== input.workspaceId ||
     trace.threadId !== input.threadId ||
@@ -1330,11 +1356,50 @@ export function readPortableWorkerContextPackageTrace(input: {
 /**
  * Verifies the original trace digest and parses known descriptive fields while retaining original JSON.
  *
- * @param value Untrusted source trace value.
+ * @param value Native trace view, or compact retained trace when manifest bytes are supplied.
+ * @param manifestBytes Exact canonical manifest bytes required to reopen retained trace metadata.
  * @returns Normalized trace with its original representation available only to integrity and serialization.
  * @throws Error when the trace shape, paths, ordering, closed selections, original digest or retained core agreement are invalid.
  */
-export function parseWorkerContextPackageTrace(value: unknown): WorkerContextPackageTrace {
+export function parseWorkerContextPackageTrace(
+  value: unknown,
+  manifestBytes?: Uint8Array
+): WorkerContextPackageTrace {
+  if (manifestBytes !== undefined) {
+    const metadata = value as Record<string, unknown> | null;
+    if (
+      !metadata ||
+      typeof metadata !== 'object' ||
+      Array.isArray(metadata) ||
+      traceManifestFields.some((field) => Object.hasOwn(metadata, field))
+    ) {
+      throw new Error('Worker Context Package retained trace must use its manifest payload.');
+    }
+    const text = Buffer.from(manifestBytes).toString('utf8');
+    const manifest = JSON.parse(text);
+    if (
+      !WorkerContextPackageManifestSchema.safeParse(manifest).success ||
+      text !== canonicalJson(manifest)
+    ) {
+      throw new Error('Worker Context Package manifest is malformed.');
+    }
+    value = {
+      ...metadata,
+      ...Object.fromEntries(
+        traceManifestFields
+          .filter((field) => Object.hasOwn(manifest, field))
+          .map((field) => [field, manifest[field]])
+      ),
+      fileInventory: [
+        ...manifest.fileInventory,
+        {
+          path: 'package.json',
+          byteLength: manifestBytes.byteLength,
+          contentDigest: sha256(manifestBytes),
+        },
+      ].sort((left, right) => left.path.localeCompare(right.path)),
+    };
+  }
   const original = value as WorkerContextPackageTrace & { readonly retainedTrace?: unknown };
   const retained =
     original &&
@@ -1366,13 +1431,22 @@ export function parseWorkerContextPackageTrace(value: unknown): WorkerContextPac
  * Serializes one digest-valid trace with the canonical S39 JSON ordering.
  *
  * @param trace Worker Context Package trace to serialize.
- * @returns Exact canonical UTF-8 text used by the immutable trace owner.
+ * @returns Compact canonical UTF-8 metadata; payload facts remain in the exact manifest.
  * @throws Error when the trace shape, paths, ordering, closed selections, original digest or retained core agreement are invalid.
  */
 export function serializeWorkerContextPackageTrace(trace: WorkerContextPackageTrace): string {
   const parsed = parseWorkerContextPackageTrace(trace);
+  const retained = (
+    parsed as WorkerContextPackageTrace & {
+      readonly retainedTrace: Record<string, unknown>;
+    }
+  ).retainedTrace;
   return canonicalJson(
-    (parsed as WorkerContextPackageTrace & { readonly retainedTrace: unknown }).retainedTrace
+    Object.fromEntries(
+      Object.entries(retained).filter(
+        ([key]) => !traceManifestFields.some((field) => field === key)
+      )
+    )
   );
 }
 

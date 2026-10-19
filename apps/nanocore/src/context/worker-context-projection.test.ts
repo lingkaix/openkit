@@ -1,21 +1,33 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createStructuredWorkerDelegationRequest,
   serializeStructuredWorkerDelegationRequest,
 } from '../internal-agents/delegation.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { resolveDataRootPath } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { createWorkerContextPackageAuthorityReader } from './worker-context-authorities.js';
 import {
+  buildWorkerContextPackageWorkspaceInput,
+  createWorkerContextPackageFiles,
+  createWorkerContextPackagePolicyDigest,
+  createWorkerContextPackageTrace,
+  readPortableWorkerContextPackageTrace,
   readWorkerContextPackageTrace,
+  type WorkerContextPackageAuthorityReader,
   type WorkerContextPackageTrace,
+  writeWorkerContextPackageFiles,
+  writeWorkerContextPackageTrace,
 } from './worker-context-package.js';
 import {
   projectThreadMaterialContext,
@@ -67,6 +79,207 @@ function verifiedTrace(
 }
 
 describe('worker Context Package read projection', () => {
+  it('projects the exact Material revision from a retained compact trace and canonical manifest', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-material-compact-trace-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    const store = createDemoStore({ dataRoot });
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+    applyScopedMigrations(workspaceDb);
+    const thread = store.createThread(workspaceId, 'Compact trace Material projection');
+    const actor = { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' };
+    const turn = store.createTurn(workspaceId, thread.id, 'Read the selected revision.', actor);
+    const agentSessionId = 'as_00000000-0000-7000-8000-000000000004';
+    const itemId = 'it_00000000-0000-7000-8000-000000000003';
+    const requestId = 'material_compact_trace';
+    const request = structuredRequestText('Read the selected revision.');
+    const workspaceRoot = resolveDataRootPath(dataRoot, 'workspaces', workspaceId);
+    const material = {
+      materialId: 'mat_00000000-0000-780b-aa01-5f7fb6dd4093',
+      revisionId: 'mrev_00000000-0000-73b7-bfe3-9b5c8390209e',
+      parentRevisionId: null,
+      mediaType: 'text/markdown' as const,
+      content: '# Exact selected revision\n',
+      contentDigest: `sha256:${createHash('sha256').update('# Exact selected revision\n').digest('hex')}`,
+      sensitivity: 'internal' as const,
+    };
+    try {
+      store.updateTurn(turn.id, { agentSessionId });
+      const files = createWorkerContextPackageFiles({
+        workspaceId,
+        threadId: thread.id,
+        turnId: turn.id,
+        workerRequestBytes: request,
+        workerRequestItemId: itemId,
+        includedItemIds: [itemId],
+        contextBudgetTokens: 4096,
+        materialSelections: [
+          { ...material, inclusionReason: 'thread_binding', bindingMutationRequestId: 'bind_1' },
+        ],
+      });
+      await writeWorkerContextPackageFiles(workspaceRoot, files, {
+        admission: new FileStorageAdmission(dataRoot, () => 0n),
+      });
+      const contextInput = buildWorkerContextPackageWorkspaceInput({
+        agentSessionId,
+        threadId: thread.id,
+        turnId: turn.id,
+        packageRootDigest: files.packageRootDigest,
+      });
+      const unresolved = resolveAgentEnvironmentPackage({
+        agentSessionId,
+        agentSetup: createTestAgentSetup(),
+        backend: { kind: 'openshell' },
+        captureCoverage: { scope: 'server', value: 'off' },
+        requestId,
+        triggerActor: actor,
+        turn,
+        turnInput: request,
+        workspaceCwd: '/workspace',
+        workspaceRoots: [],
+      });
+      const environmentPackage = AgentEnvironmentPackageSchema.parse({
+        ...unresolved,
+        scope: { ...unresolved.scope, itemId },
+        workspace: { ...unresolved.workspace, inputs: [contextInput] },
+      });
+      const packageSnapshotId = environmentPackage.snapshotId;
+      const fullTrace = createWorkerContextPackageTrace({
+        agentSessionId,
+        excludedItems: [],
+        goalId: 'goal_history',
+        taskId: 'task_history',
+        packageFiles: files,
+        packageSnapshotId,
+        requestId,
+      });
+      const readinessEvidence = [{ kind: 'backend.ready', ref: 'fixture' }];
+      const base = { commit: null, contentDigest: files.packageRootDigest };
+      const authorities: WorkerContextPackageAuthorityReader = {
+        readAdmission: () => ({
+          workspaceId,
+          threadId: thread.id,
+          turnId: turn.id,
+          requestId,
+          status: 'admitted',
+        }),
+        readAgentEnvironmentPackage: () => environmentPackage,
+        readAgentSession: () => ({
+          id: agentSessionId,
+          workspaceId,
+          threadId: thread.id,
+          environmentPackageSnapshotId: packageSnapshotId,
+          stale: false,
+        }),
+        readBackendHandoff: () => ({
+          workspaceId,
+          threadId: thread.id,
+          turnId: turn.id,
+          agentSessionId,
+          packageSnapshotId,
+          backendKind: 'openshell',
+          backendSessionId: 'sandbox_projection',
+          workspaceHandoffState: 'complete',
+          readinessEvidence,
+        }),
+        readMaterialRevision: () => ({ ...material, workspaceId }),
+        readThreadItems: () => [
+          {
+            id: itemId,
+            workspaceId,
+            threadId: thread.id,
+            turnId: turn.id,
+            type: 'user-message',
+            status: 'completed',
+            text: request,
+          },
+        ],
+        readThreadParent: () => null,
+        readTurn: () => ({ ...turn, agentSessionId }),
+        readWorkspaceImportedFrom: () => null,
+        readWorkspaceInputSnapshot: () => ({
+          backend: {
+            capabilitySummary: [...environmentPackage.backend.requiredCapabilities],
+            kind: 'openshell',
+            label: 'openshell worker backend',
+          },
+          base,
+          createdAt: turn.startedAt,
+          generatedFiles: [],
+          id: fullTrace.workspaceInputSnapshotId,
+          ignoredPaths: [],
+          pathScope: [`context_${turn.id}`],
+          resourceId: `context_${turn.id}`,
+          resourceKind: 'filesystem',
+          strategy: 'filesystem',
+          workspaceId,
+          writableRoots: [],
+        }),
+        readWorkspaceMaterializationRecord: () => ({
+          backendKind: 'openshell',
+          base,
+          createdAt: turn.startedAt,
+          id: fullTrace.workspaceMaterializationRecordId,
+          inputSnapshotId: fullTrace.workspaceInputSnapshotId,
+          materializedRootRef: contextInput.target,
+          packageSnapshotId,
+          policyDigest: createWorkerContextPackagePolicyDigest({
+            backendKind: 'openshell',
+            packageSnapshotId,
+            requiredCapabilities: environmentPackage.backend.requiredCapabilities,
+          }),
+          readinessEvidence,
+          strategy: 'filesystem',
+          workerSessionId: 'sandbox_projection',
+          workspaceId,
+        }),
+      };
+      writeWorkerContextPackageTrace({ authorities, trace: fullTrace, workspaceRoot });
+      const turnRoot = join(workspaceRoot, 'threads', thread.id, 'turns', turn.id);
+      expect(
+        JSON.parse(readFileSync(join(turnRoot, 'context-package.json'), 'utf8'))
+      ).not.toHaveProperty('materialSelections');
+      expect(
+        readPortableWorkerContextPackageTrace({
+          authorities,
+          workspaceId,
+          threadId: thread.id,
+          turnId: turn.id,
+          workspaceRoot,
+        }).trace.materialSelections
+      ).toMatchObject([{ materialId: material.materialId, revisionId: material.revisionId }]);
+      vi.mocked(createWorkerContextPackageAuthorityReader).mockReturnValue(authorities);
+      const input = {
+        coreDb,
+        workspaceDb,
+        store,
+        threadId: thread.id,
+        materialId: material.materialId,
+      };
+      const expected = {
+        lastWorkerSeenRevisionId: material.revisionId,
+        currentTurnRevisionId: material.revisionId,
+        activeDelivery: null,
+      };
+      expect
+        .soft(() => expect(projectThreadMaterialContext(input)).toEqual(expected))
+        .not.toThrow();
+      const manifestPath = join(turnRoot, 'context-package/package.json');
+      const originalBytes = readFileSync(manifestPath);
+      chmodSync(manifestPath, 0o600);
+      writeFileSync(manifestPath, Buffer.concat([originalBytes, Buffer.from('\n')]));
+      expect(() => projectThreadMaterialContext(input)).toThrow(
+        'Worker Context Package authority is inconsistent.'
+      );
+    } finally {
+      vi.mocked(createWorkerContextPackageAuthorityReader).mockRestore();
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     {
       name: 'orders last-seen traces by startedAt and then Turn id descending',

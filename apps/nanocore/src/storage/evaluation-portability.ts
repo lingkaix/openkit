@@ -77,7 +77,7 @@ export function remintPortableJudgements(
         (source.artifactId !== owner.artifactId ||
           source.artifactVersion !== owner.artifactVersion ||
           source.contentDigest !== owner.contentDigest ||
-          !['accept', 'reject', 'rate'].includes(record.kind))) ||
+          !['accept', 'reject', 'rate', 'select'].includes(record.kind))) ||
       (source.kind === 'material-range' &&
         owner.kind === 'material-range' &&
         (source.materialId !== owner.materialId ||
@@ -94,6 +94,9 @@ export function remintPortableJudgements(
     switch (source.kind) {
       case 'artifact-version':
         target = { ...raw.target, ...remintCandidate(source, context) };
+        if (record.kind === 'select') {
+          choice = { ...raw.choice, ...remintCandidate(record.choice, context) };
+        }
         break;
       case 'candidate-set':
         target = {

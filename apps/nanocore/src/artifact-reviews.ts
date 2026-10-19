@@ -198,15 +198,14 @@ export type DecideArtifactReviewInput = ReplayArtifactReviewDecisionInput & {
 /** Raw Artifact Review authority row including private request proof. */
 type ArtifactReviewRow = Omit<
   typeof artifactReviews.$inferSelect,
-  'rangeFeedback' | 'candidateSelections' | 'judgements'
+  'rangeFeedback' | 'judgements'
 > & {
   readonly rangeFeedbackJson: string | null;
-  readonly candidateSelectionsJson: string;
   readonly judgementsJson: string;
 };
 
 /** Portable Review owner retaining private decision request lineage. */
-export type ExportableArtifactReview = ArtifactReviewView & {
+export type ExportableArtifactReview = Omit<ArtifactReviewView, 'candidateSelections'> & {
   /** Historical request proof excluded from public Review views. */
   readonly decisionRequestId: string | null;
 };
@@ -220,7 +219,7 @@ const REVIEW_SELECT = `SELECT schema_version AS schemaVersion,
   proposal_base_content_digest AS proposalBaseContentDigest,
   decision, decision_actor_id AS decisionActorId,
   decision_request_id AS decisionRequestId, feedback, decided_at AS decidedAt,
-  range_feedback AS rangeFeedbackJson, candidate_selections AS candidateSelectionsJson,
+  range_feedback AS rangeFeedbackJson,
   judgements AS judgementsJson,
   follow_up_turn_id AS followUpTurnId,
   applied_material_revision_id AS appliedMaterialRevisionId, created_at AS createdAt
@@ -265,8 +264,8 @@ export function createArtifactReview(
         source_thread_id, source_turn_id, source_agent_id,
         proposal_material_id, proposal_base_revision_id, proposal_base_content_digest,
         decision, decision_actor_id, decision_request_id, feedback, decided_at,
-        follow_up_turn_id, applied_material_revision_id, range_feedback, candidate_selections, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, '[]', ?)`)
+        follow_up_turn_id, applied_material_revision_id, range_feedback, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?)`)
       .run(
         writeRetainedV1({}).schemaVersion,
         workspaceDb.workspaceId,
@@ -390,7 +389,7 @@ export function appendArtifactReviewJudgement(
   return parsed.data;
 }
 
-/** A version Review cannot retain another target, a selection or a correction effect. */
+/** A version Review owns assessments and choices on its exact target; correction effects stay Material-owned. */
 function assertJudgementOwner(
   row: ArtifactReviewRow,
   judgement: JudgementRecord,
@@ -403,7 +402,7 @@ function assertJudgementOwner(
     target.artifactId !== row.artifactId ||
     target.artifactVersion !== row.artifactVersion ||
     target.contentDigest !== row.contentDigest ||
-    !['accept', 'reject', 'rate'].includes(judgement.kind)
+    !['accept', 'reject', 'rate', 'select'].includes(judgement.kind)
   )
     throw reviewError(code, 'The judgement does not identify its owning Artifact Review.');
 }
@@ -538,46 +537,54 @@ export function selectArtifactReviewCandidate(
   ) {
     throw reviewError('invalid_request', 'The Artifact candidate choice input is invalid.');
   }
-  const row = requireReview(workspaceDb, input.artifactId, input.artifactVersion);
-  assertStoredReview(workspaceDb, row);
-  if (row.contentDigest !== input.contentDigest)
-    throw reviewError('stale', 'The exact candidate digest is unavailable.');
-  const review = toView(row);
-  const prior = review.candidateSelections.find(
-    (selection) => selection.requestId === input.requestId
-  );
-  if (prior) {
-    if (prior.actorId !== input.actorId || prior.reason !== (input.reason ?? null))
+  return workspaceDb.sqlite.transaction(() => {
+    const row = requireReview(workspaceDb, input.artifactId, input.artifactVersion);
+    assertStoredReview(workspaceDb, row);
+    if (row.contentDigest !== input.contentDigest)
+      throw reviewError('stale', 'The exact candidate digest is unavailable.');
+    const review = toView(row);
+    const prior = review.judgements.find((judgement) => judgement.requestId === input.requestId);
+    if (prior) {
+      if (
+        prior.kind !== 'select' ||
+        prior.actor.kind !== 'user' ||
+        prior.actor.id !== input.actorId ||
+        prior.note !== (input.reason ?? null)
+      )
+        throw reviewError(
+          'idempotency_key_conflict',
+          'The requestId was already used for different candidate choice input.'
+        );
+      if (!replay)
+        throw reviewError('recovery_required', 'The candidate choice has no command receipt.');
+      return review;
+    }
+    if (replay)
       throw reviewError(
-        'idempotency_key_conflict',
-        'The requestId was already used for different candidate choice input.'
+        'recovery_required',
+        'The candidate choice receipt has no matching choice.'
       );
-    if (!replay)
-      throw reviewError('recovery_required', 'The candidate choice has no command receipt.');
-    return review;
-  }
-  if (replay)
-    throw reviewError('recovery_required', 'The candidate choice receipt has no matching choice.');
-  const candidateSelections = [
-    ...readStoredReviewV1(row).candidateSelections,
-    {
-      actorId: input.actorId,
-      requestId: input.requestId,
-      reason: input.reason ?? null,
-      selectedAt: input.selectedAt,
-    },
-  ];
-  workspaceDb.sqlite
-    .prepare(
-      'UPDATE artifact_reviews SET candidate_selections = ? WHERE workspace_id = ? AND artifact_id = ? AND artifact_version = ?'
-    )
-    .run(
-      JSON.stringify(candidateSelections),
-      workspaceDb.workspaceId,
-      row.artifactId,
-      row.artifactVersion
+    const choice = {
+      artifactId: row.artifactId,
+      artifactVersion: row.artifactVersion,
+      contentDigest: row.contentDigest,
+    };
+    appendArtifactReviewJudgement(
+      workspaceDb,
+      writeRetainedV1({
+        workspaceId: workspaceDb.workspaceId,
+        requestId: input.requestId,
+        actor: { kind: 'user', id: input.actorId },
+        recordedAt: input.selectedAt,
+        note: input.reason ?? null,
+        extensions: {},
+        kind: 'select',
+        target: { kind: 'artifact-version', ...choice },
+        choice,
+      })
     );
-  return getArtifactReview(workspaceDb, row.artifactId, row.artifactVersion);
+    return getArtifactReview(workspaceDb, row.artifactId, row.artifactVersion);
+  })();
 }
 
 /** Parses the existing Review's JSON columns without masking corrupt retained evidence. @param value Stored JSON or null. @returns Parsed value. @throws ArtifactReviewError for invalid JSON. */
@@ -1014,14 +1021,6 @@ function assertStoredReview(workspaceDb: WorkspaceDb, row: ArtifactReviewRow): v
   if (proposal) {
     requireProposalAuthority(workspaceDb, proposal);
   }
-  if (
-    new Set(view.candidateSelections.map((selection) => selection.requestId)).size !==
-    view.candidateSelections.length
-  )
-    throw reviewError(
-      'recovery_required',
-      'The retained candidate choice request identity is duplicated.'
-    );
   const range = view.rangeFeedback;
   if (range != null) assertRangeFeedback(workspaceDb, row, range, true);
   if (row.decision !== null) {
@@ -1046,7 +1045,6 @@ function readStoredReviewV1(row: ArtifactReviewRow): z.infer<typeof StoredArtifa
     decisionActorId: row.decisionActorId,
     feedback: row.feedback,
     rangeFeedback: parseReviewJson(row.rangeFeedbackJson),
-    candidateSelections: parseReviewJson(row.candidateSelectionsJson),
     judgements: parseReviewJson(row.judgementsJson),
     decidedAt: row.decidedAt,
     followUpTurnId: row.followUpTurnId,
@@ -1085,14 +1083,16 @@ function toView(row: ArtifactReviewRow): ArtifactReviewView {
             end: range.end,
             originalText: range.originalText,
           },
-    candidateSelections: stored.candidateSelections.map(
-      ({ actorId, requestId, reason, selectedAt }) => ({
-        actorId,
-        requestId,
-        reason,
-        selectedAt,
-      })
-    ),
+    candidateSelections: stored.judgements
+      .filter(
+        (judgement) => judgement.kind === 'select' && judgement.target.kind === 'artifact-version'
+      )
+      .map((judgement) => ({
+        actorId: judgement.actor.id,
+        requestId: judgement.requestId,
+        reason: judgement.note,
+        selectedAt: judgement.recordedAt,
+      })),
   };
 }
 

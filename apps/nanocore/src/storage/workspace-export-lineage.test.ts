@@ -98,6 +98,15 @@ import {
 } from './workspace-portable-file-state.js';
 
 const timestamp = '2026-07-12T00:00:00.000Z';
+/** Reopens the compact trace through the same exact manifest bytes carried by portability. */
+function readRetainedContextTrace(text: string, files: ReadonlyMap<string, string>) {
+  const trace = JSON.parse(text);
+  const path = `threads/${trace.threadId}/turns/${trace.turnId}/context-package/package.json`;
+  const manifest = files.get(path);
+  if (manifest === undefined) throw new Error('The retained Context manifest is missing.');
+  return parseWorkerContextPackageTrace(trace, Buffer.from(manifest, 'utf8'));
+}
+
 const source = {
   approvalId: 'apr_source',
   approvalItemId: 'it_00000000-0000-75b1-b567-8dba93fffe22',
@@ -1362,20 +1371,28 @@ function createWorkResourceLineageExportInput(
         end: 15,
         originalText: 'Portable base',
       },
-      candidateSelections: [
-        {
-          actorId: 'usr_00000000-0000-7000-8000-000000000001',
-          requestId: 'choose-first',
-          reason: 'Keep the first reason.',
-          selectedAt: timestamp,
-        },
-        {
-          actorId: 'usr_00000000-0000-7000-8000-000000000001',
-          requestId: 'choose-second',
-          reason: 'Keep the second reason.',
-          selectedAt: timestamp,
-        },
-      ],
+      judgements: ['first', 'second'].map((ordinal) =>
+        writeRetainedV1({
+          workspaceId: source.workspaceId,
+          requestId: `choose-${ordinal}`,
+          actor: { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' },
+          recordedAt: timestamp,
+          note: `Keep the ${ordinal} reason.`,
+          extensions: {},
+          kind: 'select' as const,
+          target: {
+            kind: 'artifact-version' as const,
+            artifactId: source.artifactId,
+            artifactVersion: 1,
+            contentDigest: appliedContentDigest,
+          },
+          choice: {
+            artifactId: source.artifactId,
+            artifactVersion: 1,
+            contentDigest: appliedContentDigest,
+          },
+        })
+      ),
       followUpTurnId: null,
       materialProposal: { materialId, baseRevisionId, baseContentDigest },
       reviewId: deriveArtifactReviewId(source.workspaceId, source.artifactId, 1),
@@ -2176,7 +2193,10 @@ describe('workspace auxiliary lineage reminting', () => {
     const sourceTraceText = [...input.portableFileState!.workerContextPackageFiles.entries()].find(
       ([path]) => path.endsWith('/context-package.json')
     )?.[1];
-    const sourceTrace = parseWorkerContextPackageTrace(JSON.parse(sourceTraceText ?? '{}'));
+    const sourceTrace = readRetainedContextTrace(
+      sourceTraceText ?? '{}',
+      input.portableFileState!.workerContextPackageFiles
+    );
     const knowledge = {
       id: 'mem_1',
       kind: 'task-summary' as const,
@@ -2211,7 +2231,10 @@ describe('workspace auxiliary lineage reminting', () => {
     const targetTraceText = [
       ...imported.portableFileState.workerContextPackageFiles.entries(),
     ].find(([path]) => path.endsWith('/context-package.json'))?.[1];
-    const targetTrace = parseWorkerContextPackageTrace(JSON.parse(targetTraceText ?? '{}'));
+    const targetTrace = readRetainedContextTrace(
+      targetTraceText ?? '{}',
+      imported.portableFileState.workerContextPackageFiles
+    );
     const expectedReference = `context-package:${targetTrace.turnId}@${targetTrace.contextPackageDigest}`;
     const [pagePath, pageContent] = [
       ...imported.portableFileState.nativeKnowledgePages.entries(),
@@ -2282,15 +2305,22 @@ describe('workspace auxiliary lineage reminting', () => {
     };
     const packagePath = `workspace-files/threads/${source.threadId}/turns/${source.turnId}/context-package/package.json`;
     const tracePath = `workspace-files/threads/${source.threadId}/turns/${source.turnId}/context-package.json`;
+    const sourceTrace = JSON.parse(
+      JSON.stringify(
+        parseWorkerContextPackageTrace(
+          JSON.parse(readFileSync(join(input.exportRoot, tracePath), 'utf8')),
+          readFileSync(join(input.exportRoot, packagePath))
+        )
+      )
+    );
     const packageManifest = JSON.parse(readFileSync(join(input.exportRoot, packagePath), 'utf8'));
     packageManifest.annotation = { '10': 'ten', '2': 'two' };
     packageManifest.materialSelections[0].annotation = 'source Material selection';
     packageManifest.knowledgeSelections[0].annotation = 'source Knowledge selection';
     const packageBytes = canonical(packageManifest);
-    const sourceTrace = JSON.parse(readFileSync(join(input.exportRoot, tracePath), 'utf8'));
     sourceTrace.annotation = 'source trace';
-    sourceTrace.materialSelections[0].annotation = 'source selection';
-    sourceTrace.knowledgeSelections[0].annotation = 'source Knowledge';
+    sourceTrace.materialSelections = structuredClone(packageManifest.materialSelections);
+    sourceTrace.knowledgeSelections = structuredClone(packageManifest.knowledgeSelections);
     sourceTrace.knowledgeSelectionInput.annotation = 'source retrieval';
     const packageEntry = sourceTrace.fileInventory.find(
       (entry: { path: string }) => entry.path === 'package.json'
@@ -2302,7 +2332,7 @@ describe('workspace auxiliary lineage reminting', () => {
     const packageRootDigest = `sha256:${createHash('sha256').update(canonical(sourceTrace.fileInventory)).digest('hex')}`;
     for (const [path, bytes] of [
       [packagePath, packageBytes],
-      [tracePath, canonical(sourceTrace)],
+      [tracePath, serializeWorkerContextPackageTrace(sourceTrace)],
     ]) {
       writeFileSync(join(input.exportRoot, path!), bytes!);
       const entry = manifest.contentInventory.find(
@@ -2543,7 +2573,10 @@ describe('workspace auxiliary lineage reminting', () => {
       const [traceText] = [...imported.portableFileState.workerContextPackageFiles]
         .filter(([path]) => path.endsWith('/context-package.json'))
         .map(([, text]) => text);
-      const trace = parseWorkerContextPackageTrace(JSON.parse(traceText!));
+      const trace = readRetainedContextTrace(
+        traceText!,
+        imported.portableFileState.workerContextPackageFiles
+      );
       expect(trace.sourceFiles).toHaveLength(2);
       const material = trace.sourceFiles!.find((entry) => entry.source.kind === 'material')!;
       const binary = trace.sourceFiles!.find((entry) => entry.source.kind === 'turn-input')!;
@@ -2688,7 +2721,10 @@ describe('workspace auxiliary lineage reminting', () => {
     const traceText = [...imported.portableFileState.workerContextPackageFiles.entries()].find(
       ([path]) => path.endsWith('/context-package.json')
     )![1];
-    const trace = parseWorkerContextPackageTrace(JSON.parse(traceText));
+    const trace = readRetainedContextTrace(
+      traceText,
+      imported.portableFileState.workerContextPackageFiles
+    );
     const targetOverviewPath = `threads/${trace.threadId}/turns/${trace.turnId}/context-package/knowledge-overview.md`;
     const targetOverviewText =
       imported.portableFileState.workerContextPackageFiles.get(targetOverviewPath)!;
@@ -2823,7 +2859,10 @@ describe('workspace auxiliary lineage reminting', () => {
     const traceText = [...imported.portableFileState.workerContextPackageFiles.entries()].find(
       ([path]) => path.endsWith('/context-package.json')
     )?.[1];
-    const trace = parseWorkerContextPackageTrace(JSON.parse(traceText ?? '{}'));
+    const trace = readRetainedContextTrace(
+      traceText ?? '{}',
+      imported.portableFileState.workerContextPackageFiles
+    );
     writeWorkspacePortableFileState(stagedRoot, imported.portableFileState);
     expect(() => verifyImportedWorkerContextPackageSnapshot(imported, stagedRoot)).not.toThrow();
 
@@ -2862,14 +2901,15 @@ describe('workspace auxiliary lineage reminting', () => {
       end: 15,
       originalText: 'Portable base',
     });
-    expect(review?.candidateSelections.map((choice) => choice.reason)).toEqual([
-      'Keep the first reason.',
-      'Keep the second reason.',
-    ]);
     expect(
-      review?.candidateSelections.every((choice) =>
-        choice.requestId.startsWith('import-lineage:sha256:')
-      )
+      review?.judgements
+        .filter((judgement) => judgement.kind === 'select')
+        .map((choice) => choice.note)
+    ).toEqual(['Keep the first reason.', 'Keep the second reason.']);
+    expect(
+      review?.judgements
+        .filter((judgement) => judgement.kind === 'select')
+        .every((choice) => choice.requestId.startsWith('import-lineage:sha256:'))
     ).toBe(true);
     expect(material?.lastMutationRequestId).toBe(review?.decisionRequestId);
     expect(revisions[1]?.createdByRequestId).toBe(review?.decisionRequestId);

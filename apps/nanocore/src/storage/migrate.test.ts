@@ -735,6 +735,7 @@ describe('database setup', () => {
         'workspace_0006_audit_authentication',
         'workspace_0007_evaluation_candidates',
         'workspace_0008_evaluation_judgements',
+        'workspace_0009_review_selection_judgements',
       ]);
       expect(listTableNames(workspaceDb)).toEqual(WORKSPACE_TABLES);
       const idempotencyRequestColumns = [
@@ -1070,7 +1071,7 @@ describe('native Drizzle migrate', () => {
     }
   });
 
-  it('adds range and choice columns without changing retained Review decisions', () => {
+  it('retains range and judgement columns without changing Review decisions', () => {
     const journal = JSON.parse(
       readFileSync(join(process.cwd(), 'drizzle/workspace/meta/_journal.json'), 'utf8')
     ) as { entries: Array<{ tag: string; when: number }> };
@@ -1105,7 +1106,6 @@ describe('native Drizzle migrate', () => {
       expect(db.sqlite.prepare('SELECT * FROM artifact_reviews').get()).toEqual({
         ...before,
         range_feedback: null,
-        candidate_selections: '[]',
         schema_version: 1,
         judgements: '[]',
       });
@@ -1119,6 +1119,7 @@ describe('native Drizzle migrate', () => {
         'workspace_0006_audit_authentication',
         'workspace_0007_evaluation_candidates',
         'workspace_0008_evaluation_judgements',
+        'workspace_0009_review_selection_judgements',
       ]);
     } finally {
       db.sqlite.close();
