@@ -1,7 +1,12 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { type ArtifactVersionRecord, ArtifactVersionRecordSchema } from '@openkit/protocol';
+import {
+  type ArtifactVersionRecord,
+  ArtifactVersionRecordSchema,
+  readRetainedV1,
+  writeRetainedV1,
+} from '@openkit/protocol';
 import {
   ActorRefReaderSchema,
   ArtifactReaderSchema,
@@ -39,7 +44,9 @@ export function readArtifactVersionRecord(
     assertCanonicalDirectory(parent);
     parent = dirname(parent);
   }
-  const raw = JSON.parse(readCanonicalTextFile(path));
+  const raw = readRetainedV1(JSON.parse(readCanonicalTextFile(path)), (record) => record) as {
+    artifact?: { content?: { format?: unknown } };
+  };
   const payload =
     raw?.artifact?.content?.format === 'file'
       ? null
@@ -64,15 +71,12 @@ export function parseArtifactVersionDescriptor(
   value: unknown,
   payload: Uint8Array | null
 ): ArtifactVersionRecord {
-  const raw = value as {
-    formatVersion?: unknown;
+  const raw = readRetainedV1(value, (record) => record) as {
     artifact?: Record<string, unknown> & {
       content?: Record<string, unknown>;
     };
     version?: Record<string, unknown>;
-  } | null;
-  if (raw?.formatVersion !== 1)
-    throw new Error('The Artifact version record format is unsupported.');
+  };
   const content = raw.artifact?.content;
   if (!content || typeof content !== 'object' || Object.hasOwn(content, 'body'))
     throw new Error('The Artifact version descriptor must not embed original bytes.');
@@ -123,15 +127,14 @@ export function stageArtifactVersionRecord(
     (artifact.content.format === 'file' && measured.byteLength !== artifact.content.byteLength)
   )
     throw new Error('The retained Artifact original failed integrity verification.');
-  const descriptor = {
-    formatVersion: 1,
+  const descriptor = writeRetainedV1({
     ...record,
     artifact: {
       ...artifact,
       content:
         artifact.content.format === 'file' ? artifact.content : { format: artifact.content.format },
     },
-  };
+  });
   writeFileAtomic(join(versionRoot, 'version-record.json'), `${JSON.stringify(descriptor)}\n`);
 }
 

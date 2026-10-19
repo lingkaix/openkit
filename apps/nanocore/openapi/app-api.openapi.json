@@ -31797,6 +31797,51 @@
               "maxFilterBytes"
             ],
             "additionalProperties": false
+          },
+          "meaning": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "reference": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "available"
+                    },
+                    "content": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "reference",
+                    "status",
+                    "content"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "reference": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "unavailable"
+                    }
+                  },
+                  "required": [
+                    "reference",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
           }
         },
         "required": [
@@ -32556,6 +32601,51 @@
               "maxFilterBytes"
             ],
             "additionalProperties": false
+          },
+          "meaning": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "reference": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "available"
+                    },
+                    "content": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "reference",
+                    "status",
+                    "content"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "reference": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "unavailable"
+                    }
+                  },
+                  "required": [
+                    "reference",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
           }
         },
         "required": [
@@ -33073,6 +33163,51 @@
               "maxFilterBytes"
             ],
             "additionalProperties": false
+          },
+          "meaning": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "reference": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "available"
+                    },
+                    "content": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "reference",
+                    "status",
+                    "content"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "reference": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "unavailable"
+                    }
+                  },
+                  "required": [
+                    "reference",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
           }
         },
         "required": [
@@ -33433,6 +33568,51 @@
               "maxFilterBytes"
             ],
             "additionalProperties": false
+          },
+          "meaning": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "reference": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "available"
+                    },
+                    "content": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "reference",
+                    "status",
+                    "content"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "reference": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "unavailable"
+                    }
+                  },
+                  "required": [
+                    "reference",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
           }
         },
         "required": [
@@ -67657,7 +67837,7 @@
                       {
                         "type": "object",
                         "properties": {
-                          "formatVersion": {
+                          "schemaVersion": {
                             "type": "number",
                             "const": 1
                           },
@@ -67816,7 +67996,7 @@
                           }
                         },
                         "required": [
-                          "formatVersion",
+                          "schemaVersion",
                           "workspaceId",
                           "requestId",
                           "actor",
@@ -67832,7 +68012,7 @@
                       {
                         "type": "object",
                         "properties": {
-                          "formatVersion": {
+                          "schemaVersion": {
                             "type": "number",
                             "const": 1
                           },
@@ -67991,7 +68171,7 @@
                           }
                         },
                         "required": [
-                          "formatVersion",
+                          "schemaVersion",
                           "workspaceId",
                           "requestId",
                           "actor",
@@ -68007,7 +68187,7 @@
                       {
                         "type": "object",
                         "properties": {
-                          "formatVersion": {
+                          "schemaVersion": {
                             "type": "number",
                             "const": 1
                           },
@@ -68178,7 +68358,7 @@
                           }
                         },
                         "required": [
-                          "formatVersion",
+                          "schemaVersion",
                           "workspaceId",
                           "requestId",
                           "actor",
@@ -68194,7 +68374,7 @@
                       {
                         "type": "object",
                         "properties": {
-                          "formatVersion": {
+                          "schemaVersion": {
                             "type": "number",
                             "const": 1
                           },
@@ -68296,7 +68476,7 @@
                           }
                         },
                         "required": [
-                          "formatVersion",
+                          "schemaVersion",
                           "workspaceId",
                           "requestId",
                           "actor",
@@ -68312,7 +68492,7 @@
                       {
                         "type": "object",
                         "properties": {
-                          "formatVersion": {
+                          "schemaVersion": {
                             "type": "number",
                             "const": 1
                           },
@@ -68488,7 +68668,7 @@
                           }
                         },
                         "required": [
-                          "formatVersion",
+                          "schemaVersion",
                           "workspaceId",
                           "requestId",
                           "actor",
@@ -68862,7 +69042,7 @@
                     {
                       "type": "object",
                       "properties": {
-                        "formatVersion": {
+                        "schemaVersion": {
                           "type": "number",
                           "const": 1
                         },
@@ -69021,7 +69201,7 @@
                         }
                       },
                       "required": [
-                        "formatVersion",
+                        "schemaVersion",
                         "workspaceId",
                         "requestId",
                         "actor",
@@ -69037,7 +69217,7 @@
                     {
                       "type": "object",
                       "properties": {
-                        "formatVersion": {
+                        "schemaVersion": {
                           "type": "number",
                           "const": 1
                         },
@@ -69196,7 +69376,7 @@
                         }
                       },
                       "required": [
-                        "formatVersion",
+                        "schemaVersion",
                         "workspaceId",
                         "requestId",
                         "actor",
@@ -69212,7 +69392,7 @@
                     {
                       "type": "object",
                       "properties": {
-                        "formatVersion": {
+                        "schemaVersion": {
                           "type": "number",
                           "const": 1
                         },
@@ -69383,7 +69563,7 @@
                         }
                       },
                       "required": [
-                        "formatVersion",
+                        "schemaVersion",
                         "workspaceId",
                         "requestId",
                         "actor",
@@ -69399,7 +69579,7 @@
                     {
                       "type": "object",
                       "properties": {
-                        "formatVersion": {
+                        "schemaVersion": {
                           "type": "number",
                           "const": 1
                         },
@@ -69501,7 +69681,7 @@
                         }
                       },
                       "required": [
-                        "formatVersion",
+                        "schemaVersion",
                         "workspaceId",
                         "requestId",
                         "actor",
@@ -69517,7 +69697,7 @@
                     {
                       "type": "object",
                       "properties": {
-                        "formatVersion": {
+                        "schemaVersion": {
                           "type": "number",
                           "const": 1
                         },
@@ -69693,7 +69873,7 @@
                         }
                       },
                       "required": [
-                        "formatVersion",
+                        "schemaVersion",
                         "workspaceId",
                         "requestId",
                         "actor",
@@ -102887,6 +103067,51 @@
               "maxFilterBytes"
             ],
             "additionalProperties": false
+          },
+          "meaning": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "reference": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "available"
+                    },
+                    "content": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "reference",
+                    "status",
+                    "content"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "reference": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "unavailable"
+                    }
+                  },
+                  "required": [
+                    "reference",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
           }
         },
         "required": [
@@ -103262,6 +103487,51 @@
               "maxFilterBytes"
             ],
             "additionalProperties": false
+          },
+          "meaning": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "reference": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "available"
+                    },
+                    "content": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "reference",
+                    "status",
+                    "content"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "reference": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "unavailable"
+                    }
+                  },
+                  "required": [
+                    "reference",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
           }
         },
         "required": [
@@ -103716,6 +103986,51 @@
               "maxFilterBytes"
             ],
             "additionalProperties": false
+          },
+          "meaning": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "reference": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "available"
+                    },
+                    "content": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "reference",
+                    "status",
+                    "content"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "reference": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "unavailable"
+                    }
+                  },
+                  "required": [
+                    "reference",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
           }
         },
         "required": [
@@ -104076,6 +104391,51 @@
               "maxFilterBytes"
             ],
             "additionalProperties": false
+          },
+          "meaning": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "reference": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "available"
+                    },
+                    "content": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "reference",
+                    "status",
+                    "content"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "reference": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "unavailable"
+                    }
+                  },
+                  "required": [
+                    "reference",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
           }
         },
         "required": [
@@ -109842,7 +110202,7 @@
                     {
                       "type": "object",
                       "properties": {
-                        "formatVersion": {
+                        "schemaVersion": {
                           "type": "number",
                           "const": 1
                         },
@@ -110001,7 +110361,7 @@
                         }
                       },
                       "required": [
-                        "formatVersion",
+                        "schemaVersion",
                         "workspaceId",
                         "requestId",
                         "actor",
@@ -110017,7 +110377,7 @@
                     {
                       "type": "object",
                       "properties": {
-                        "formatVersion": {
+                        "schemaVersion": {
                           "type": "number",
                           "const": 1
                         },
@@ -110176,7 +110536,7 @@
                         }
                       },
                       "required": [
-                        "formatVersion",
+                        "schemaVersion",
                         "workspaceId",
                         "requestId",
                         "actor",
@@ -110192,7 +110552,7 @@
                     {
                       "type": "object",
                       "properties": {
-                        "formatVersion": {
+                        "schemaVersion": {
                           "type": "number",
                           "const": 1
                         },
@@ -110363,7 +110723,7 @@
                         }
                       },
                       "required": [
-                        "formatVersion",
+                        "schemaVersion",
                         "workspaceId",
                         "requestId",
                         "actor",
@@ -110379,7 +110739,7 @@
                     {
                       "type": "object",
                       "properties": {
-                        "formatVersion": {
+                        "schemaVersion": {
                           "type": "number",
                           "const": 1
                         },
@@ -110481,7 +110841,7 @@
                         }
                       },
                       "required": [
-                        "formatVersion",
+                        "schemaVersion",
                         "workspaceId",
                         "requestId",
                         "actor",
@@ -110497,7 +110857,7 @@
                     {
                       "type": "object",
                       "properties": {
-                        "formatVersion": {
+                        "schemaVersion": {
                           "type": "number",
                           "const": 1
                         },
@@ -110673,7 +111033,7 @@
                         }
                       },
                       "required": [
-                        "formatVersion",
+                        "schemaVersion",
                         "workspaceId",
                         "requestId",
                         "actor",
@@ -111310,7 +111670,7 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "formatVersion": {
+          "schemaVersion": {
             "type": "number",
             "const": 1
           },
@@ -111379,7 +111739,7 @@
                 {
                   "type": "object",
                   "properties": {
-                    "formatVersion": {
+                    "schemaVersion": {
                       "type": "number",
                       "const": 1
                     },
@@ -111538,7 +111898,7 @@
                     }
                   },
                   "required": [
-                    "formatVersion",
+                    "schemaVersion",
                     "workspaceId",
                     "requestId",
                     "actor",
@@ -111554,7 +111914,7 @@
                 {
                   "type": "object",
                   "properties": {
-                    "formatVersion": {
+                    "schemaVersion": {
                       "type": "number",
                       "const": 1
                     },
@@ -111713,7 +112073,7 @@
                     }
                   },
                   "required": [
-                    "formatVersion",
+                    "schemaVersion",
                     "workspaceId",
                     "requestId",
                     "actor",
@@ -111729,7 +112089,7 @@
                 {
                   "type": "object",
                   "properties": {
-                    "formatVersion": {
+                    "schemaVersion": {
                       "type": "number",
                       "const": 1
                     },
@@ -111900,7 +112260,7 @@
                     }
                   },
                   "required": [
-                    "formatVersion",
+                    "schemaVersion",
                     "workspaceId",
                     "requestId",
                     "actor",
@@ -111916,7 +112276,7 @@
                 {
                   "type": "object",
                   "properties": {
-                    "formatVersion": {
+                    "schemaVersion": {
                       "type": "number",
                       "const": 1
                     },
@@ -112018,7 +112378,7 @@
                     }
                   },
                   "required": [
-                    "formatVersion",
+                    "schemaVersion",
                     "workspaceId",
                     "requestId",
                     "actor",
@@ -112034,7 +112394,7 @@
                 {
                   "type": "object",
                   "properties": {
-                    "formatVersion": {
+                    "schemaVersion": {
                       "type": "number",
                       "const": 1
                     },
@@ -112210,7 +112570,7 @@
                     }
                   },
                   "required": [
-                    "formatVersion",
+                    "schemaVersion",
                     "workspaceId",
                     "requestId",
                     "actor",
@@ -112237,7 +112597,7 @@
           }
         },
         "required": [
-          "formatVersion",
+          "schemaVersion",
           "workspaceId",
           "candidateSetId",
           "createdBy",
@@ -112304,7 +112664,7 @@
             "items": {
               "type": "object",
               "properties": {
-                "formatVersion": {
+                "schemaVersion": {
                   "type": "number",
                   "const": 1
                 },
@@ -112373,7 +112733,7 @@
                       {
                         "type": "object",
                         "properties": {
-                          "formatVersion": {
+                          "schemaVersion": {
                             "type": "number",
                             "const": 1
                           },
@@ -112532,7 +112892,7 @@
                           }
                         },
                         "required": [
-                          "formatVersion",
+                          "schemaVersion",
                           "workspaceId",
                           "requestId",
                           "actor",
@@ -112548,7 +112908,7 @@
                       {
                         "type": "object",
                         "properties": {
-                          "formatVersion": {
+                          "schemaVersion": {
                             "type": "number",
                             "const": 1
                           },
@@ -112707,7 +113067,7 @@
                           }
                         },
                         "required": [
-                          "formatVersion",
+                          "schemaVersion",
                           "workspaceId",
                           "requestId",
                           "actor",
@@ -112723,7 +113083,7 @@
                       {
                         "type": "object",
                         "properties": {
-                          "formatVersion": {
+                          "schemaVersion": {
                             "type": "number",
                             "const": 1
                           },
@@ -112894,7 +113254,7 @@
                           }
                         },
                         "required": [
-                          "formatVersion",
+                          "schemaVersion",
                           "workspaceId",
                           "requestId",
                           "actor",
@@ -112910,7 +113270,7 @@
                       {
                         "type": "object",
                         "properties": {
-                          "formatVersion": {
+                          "schemaVersion": {
                             "type": "number",
                             "const": 1
                           },
@@ -113012,7 +113372,7 @@
                           }
                         },
                         "required": [
-                          "formatVersion",
+                          "schemaVersion",
                           "workspaceId",
                           "requestId",
                           "actor",
@@ -113028,7 +113388,7 @@
                       {
                         "type": "object",
                         "properties": {
-                          "formatVersion": {
+                          "schemaVersion": {
                             "type": "number",
                             "const": 1
                           },
@@ -113204,7 +113564,7 @@
                           }
                         },
                         "required": [
-                          "formatVersion",
+                          "schemaVersion",
                           "workspaceId",
                           "requestId",
                           "actor",
@@ -113231,7 +113591,7 @@
                 }
               },
               "required": [
-                "formatVersion",
+                "schemaVersion",
                 "workspaceId",
                 "candidateSetId",
                 "createdBy",
@@ -113305,7 +113665,7 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "formatVersion": {
+          "schemaVersion": {
             "type": "number",
             "const": 1
           },
@@ -113374,7 +113734,7 @@
                 {
                   "type": "object",
                   "properties": {
-                    "formatVersion": {
+                    "schemaVersion": {
                       "type": "number",
                       "const": 1
                     },
@@ -113533,7 +113893,7 @@
                     }
                   },
                   "required": [
-                    "formatVersion",
+                    "schemaVersion",
                     "workspaceId",
                     "requestId",
                     "actor",
@@ -113549,7 +113909,7 @@
                 {
                   "type": "object",
                   "properties": {
-                    "formatVersion": {
+                    "schemaVersion": {
                       "type": "number",
                       "const": 1
                     },
@@ -113708,7 +114068,7 @@
                     }
                   },
                   "required": [
-                    "formatVersion",
+                    "schemaVersion",
                     "workspaceId",
                     "requestId",
                     "actor",
@@ -113724,7 +114084,7 @@
                 {
                   "type": "object",
                   "properties": {
-                    "formatVersion": {
+                    "schemaVersion": {
                       "type": "number",
                       "const": 1
                     },
@@ -113895,7 +114255,7 @@
                     }
                   },
                   "required": [
-                    "formatVersion",
+                    "schemaVersion",
                     "workspaceId",
                     "requestId",
                     "actor",
@@ -113911,7 +114271,7 @@
                 {
                   "type": "object",
                   "properties": {
-                    "formatVersion": {
+                    "schemaVersion": {
                       "type": "number",
                       "const": 1
                     },
@@ -114013,7 +114373,7 @@
                     }
                   },
                   "required": [
-                    "formatVersion",
+                    "schemaVersion",
                     "workspaceId",
                     "requestId",
                     "actor",
@@ -114029,7 +114389,7 @@
                 {
                   "type": "object",
                   "properties": {
-                    "formatVersion": {
+                    "schemaVersion": {
                       "type": "number",
                       "const": 1
                     },
@@ -114205,7 +114565,7 @@
                     }
                   },
                   "required": [
-                    "formatVersion",
+                    "schemaVersion",
                     "workspaceId",
                     "requestId",
                     "actor",
@@ -114232,7 +114592,7 @@
           }
         },
         "required": [
-          "formatVersion",
+          "schemaVersion",
           "workspaceId",
           "candidateSetId",
           "createdBy",
@@ -114328,7 +114688,7 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
-          "formatVersion": {
+          "schemaVersion": {
             "type": "number",
             "const": 1
           },
@@ -114397,7 +114757,7 @@
                 {
                   "type": "object",
                   "properties": {
-                    "formatVersion": {
+                    "schemaVersion": {
                       "type": "number",
                       "const": 1
                     },
@@ -114556,7 +114916,7 @@
                     }
                   },
                   "required": [
-                    "formatVersion",
+                    "schemaVersion",
                     "workspaceId",
                     "requestId",
                     "actor",
@@ -114572,7 +114932,7 @@
                 {
                   "type": "object",
                   "properties": {
-                    "formatVersion": {
+                    "schemaVersion": {
                       "type": "number",
                       "const": 1
                     },
@@ -114731,7 +115091,7 @@
                     }
                   },
                   "required": [
-                    "formatVersion",
+                    "schemaVersion",
                     "workspaceId",
                     "requestId",
                     "actor",
@@ -114747,7 +115107,7 @@
                 {
                   "type": "object",
                   "properties": {
-                    "formatVersion": {
+                    "schemaVersion": {
                       "type": "number",
                       "const": 1
                     },
@@ -114918,7 +115278,7 @@
                     }
                   },
                   "required": [
-                    "formatVersion",
+                    "schemaVersion",
                     "workspaceId",
                     "requestId",
                     "actor",
@@ -114934,7 +115294,7 @@
                 {
                   "type": "object",
                   "properties": {
-                    "formatVersion": {
+                    "schemaVersion": {
                       "type": "number",
                       "const": 1
                     },
@@ -115036,7 +115396,7 @@
                     }
                   },
                   "required": [
-                    "formatVersion",
+                    "schemaVersion",
                     "workspaceId",
                     "requestId",
                     "actor",
@@ -115052,7 +115412,7 @@
                 {
                   "type": "object",
                   "properties": {
-                    "formatVersion": {
+                    "schemaVersion": {
                       "type": "number",
                       "const": 1
                     },
@@ -115228,7 +115588,7 @@
                     }
                   },
                   "required": [
-                    "formatVersion",
+                    "schemaVersion",
                     "workspaceId",
                     "requestId",
                     "actor",
@@ -115255,7 +115615,7 @@
           }
         },
         "required": [
-          "formatVersion",
+          "schemaVersion",
           "workspaceId",
           "candidateSetId",
           "createdBy",
@@ -115791,7 +116151,7 @@
               {
                 "type": "object",
                 "properties": {
-                  "formatVersion": {
+                  "schemaVersion": {
                     "type": "number",
                     "const": 1
                   },
@@ -115950,7 +116310,7 @@
                   }
                 },
                 "required": [
-                  "formatVersion",
+                  "schemaVersion",
                   "workspaceId",
                   "requestId",
                   "actor",
@@ -115966,7 +116326,7 @@
               {
                 "type": "object",
                 "properties": {
-                  "formatVersion": {
+                  "schemaVersion": {
                     "type": "number",
                     "const": 1
                   },
@@ -116125,7 +116485,7 @@
                   }
                 },
                 "required": [
-                  "formatVersion",
+                  "schemaVersion",
                   "workspaceId",
                   "requestId",
                   "actor",
@@ -116141,7 +116501,7 @@
               {
                 "type": "object",
                 "properties": {
-                  "formatVersion": {
+                  "schemaVersion": {
                     "type": "number",
                     "const": 1
                   },
@@ -116312,7 +116672,7 @@
                   }
                 },
                 "required": [
-                  "formatVersion",
+                  "schemaVersion",
                   "workspaceId",
                   "requestId",
                   "actor",
@@ -116328,7 +116688,7 @@
               {
                 "type": "object",
                 "properties": {
-                  "formatVersion": {
+                  "schemaVersion": {
                     "type": "number",
                     "const": 1
                   },
@@ -116430,7 +116790,7 @@
                   }
                 },
                 "required": [
-                  "formatVersion",
+                  "schemaVersion",
                   "workspaceId",
                   "requestId",
                   "actor",
@@ -116446,7 +116806,7 @@
               {
                 "type": "object",
                 "properties": {
-                  "formatVersion": {
+                  "schemaVersion": {
                     "type": "number",
                     "const": 1
                   },
@@ -116622,7 +116982,7 @@
                   }
                 },
                 "required": [
-                  "formatVersion",
+                  "schemaVersion",
                   "workspaceId",
                   "requestId",
                   "actor",
@@ -116814,7 +117174,7 @@
               {
                 "type": "object",
                 "properties": {
-                  "formatVersion": {
+                  "schemaVersion": {
                     "type": "number",
                     "const": 1
                   },
@@ -116973,7 +117333,7 @@
                   }
                 },
                 "required": [
-                  "formatVersion",
+                  "schemaVersion",
                   "workspaceId",
                   "requestId",
                   "actor",
@@ -116989,7 +117349,7 @@
               {
                 "type": "object",
                 "properties": {
-                  "formatVersion": {
+                  "schemaVersion": {
                     "type": "number",
                     "const": 1
                   },
@@ -117148,7 +117508,7 @@
                   }
                 },
                 "required": [
-                  "formatVersion",
+                  "schemaVersion",
                   "workspaceId",
                   "requestId",
                   "actor",
@@ -117164,7 +117524,7 @@
               {
                 "type": "object",
                 "properties": {
-                  "formatVersion": {
+                  "schemaVersion": {
                     "type": "number",
                     "const": 1
                   },
@@ -117335,7 +117695,7 @@
                   }
                 },
                 "required": [
-                  "formatVersion",
+                  "schemaVersion",
                   "workspaceId",
                   "requestId",
                   "actor",
@@ -117351,7 +117711,7 @@
               {
                 "type": "object",
                 "properties": {
-                  "formatVersion": {
+                  "schemaVersion": {
                     "type": "number",
                     "const": 1
                   },
@@ -117453,7 +117813,7 @@
                   }
                 },
                 "required": [
-                  "formatVersion",
+                  "schemaVersion",
                   "workspaceId",
                   "requestId",
                   "actor",
@@ -117469,7 +117829,7 @@
               {
                 "type": "object",
                 "properties": {
-                  "formatVersion": {
+                  "schemaVersion": {
                     "type": "number",
                     "const": 1
                   },
@@ -117645,7 +118005,7 @@
                   }
                 },
                 "required": [
-                  "formatVersion",
+                  "schemaVersion",
                   "workspaceId",
                   "requestId",
                   "actor",
@@ -137598,5 +137958,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:4222f3ce66e1256600bdf13ce1ba4bc2322c3252091535d6cbbc1aa09e7e9518"
+  "x-openkit-source-digest": "sha256:ea4bfe3851fd0a6489fd18623a0aa8cffe0f73072dcdd86137503f6ce57cba4b"
 }

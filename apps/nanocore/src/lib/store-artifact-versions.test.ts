@@ -160,22 +160,93 @@ describe('Artifact immutable version authority', () => {
     ).toHaveLength(2);
   });
 
-  it('rejects absent and unknown physical version formats without a legacy reader', () => {
+  it('rejects absent, unknown and legacy physical retained markers without a fallback reader', () => {
     const state = fixture();
     const root = join(state.dataRoot, 'workspaces', state.workspace.id);
     const path = artifactVersionRecordPath(root, state.artifact.id, 1);
     const record = JSON.parse(readFileSync(path, 'utf8'));
-    expect(record.formatVersion).toBe(1);
-    record.formatVersion = 2;
+    expect.soft(record.schemaVersion).toBe(1);
+    expect.soft(record).not.toHaveProperty('formatVersion');
+    record.schemaVersion = 2;
     writeFileSync(path, JSON.stringify(record));
-    expect(() => readArtifactVersionRecord(root, state.artifact.id, 1)).toThrow(
-      'The Artifact version record format is unsupported.'
-    );
+    expect
+      .soft(() => readArtifactVersionRecord(root, state.artifact.id, 1))
+      .toThrow(/unsupported.*format|format.*unsupported/i);
+    delete record.schemaVersion;
     delete record.formatVersion;
     writeFileSync(path, JSON.stringify(record));
     expect(() => readArtifactVersionRecord(root, state.artifact.id, 1)).toThrow(
-      'The Artifact version record format is unsupported.'
+      /unsupported.*format|format.*unsupported/i
     );
+    record.formatVersion = 1;
+    writeFileSync(path, JSON.stringify(record));
+    expect
+      .soft(() => readArtifactVersionRecord(root, state.artifact.id, 1))
+      .toThrow(/unsupported.*format|format.*unsupported/i);
+  });
+
+  it('stores snapshot facts once and preserves distinct version producers after restart', () => {
+    const state = fixture();
+    const laterActor = {
+      kind: 'user' as const,
+      id: 'usr_00000000-0000-7000-8000-000000000002',
+    };
+    const committed = state.store.commitArtifactVersion({
+      workspaceId: state.workspace.id,
+      artifactId: state.artifact.id,
+      threadId: state.thread.id,
+      expectedArtifactVersion: 1,
+      actor: laterActor,
+      requestId: 'distinct-producer-revision',
+      recordedAt: '2026-10-17T00:03:00.000Z',
+      title: 'Later producer output',
+      summary: 'Produced by another user.',
+      content: { format: 'text', body: '\uFEFFsecond\r\noriginal\n' },
+    });
+    const root = join(state.dataRoot, 'workspaces', state.workspace.id);
+    for (const version of [1, 2]) {
+      const path = artifactVersionRecordPath(root, state.artifact.id, version);
+      const retained = JSON.parse(readFileSync(path, 'utf8'));
+      expect.soft(retained.schemaVersion).toBe(1);
+      expect.soft(retained).not.toHaveProperty('formatVersion');
+      for (const field of ['parentVersion', 'requestId', 'recordedAt'])
+        expect.soft(retained.version).not.toHaveProperty(field);
+      expect(retained.artifact.content).toEqual({ format: 'text' });
+      expect(readFileSync(join(path, '..', 'payload'))).toEqual(
+        Buffer.from(version === 1 ? '\uFEFFfirst\r\noriginal\n' : '\uFEFFsecond\r\noriginal\n')
+      );
+    }
+    const reopened = new FsStore({ dataRoot: state.dataRoot });
+    const original = reopened.getArtifactVersion(state.workspace.id, state.artifact.id, 1);
+    const revised = reopened.getArtifactVersion(state.workspace.id, state.artifact.id, 2);
+    expect(original.artifact).toEqual(state.artifact);
+    expect(original.version).toMatchObject({
+      actor,
+      threadId: null,
+      turnId: null,
+      artifactVersion: 1,
+      parentVersion: null,
+      requestId: 'import-original',
+      recordedAt: '2026-10-17T00:00:00.000Z',
+    });
+    expect(revised).toEqual(committed);
+    expect(revised.artifact.origin).toEqual(state.artifact.origin);
+    expect(revised.artifact.threadId).toBeNull();
+    expect(revised.artifact.turnId).toBeNull();
+    expect(revised.version).toMatchObject({
+      actor: laterActor,
+      threadId: state.thread.id,
+      turnId: expect.any(String),
+      artifactVersion: 2,
+      parentVersion: 1,
+      requestId: 'distinct-producer-revision',
+      recordedAt: '2026-10-17T00:03:00.000Z',
+    });
+    expect(ReadArtifactVersionResponseSchema.parse(revised)).toEqual(revised);
+    expect(reopened.listArtifactVersions(state.workspace.id, state.artifact.id)).toEqual([
+      original.version,
+      revised.version,
+    ]);
   });
   it('fails closed for absent real version history and never bootstraps it from a head projection', () => {
     const state = fixture();
@@ -283,14 +354,7 @@ describe('Artifact immutable version authority', () => {
       2
     );
     const corrupted = JSON.parse(readFileSync(path, 'utf8'));
-    expect(Object.keys(corrupted.version).sort()).toEqual([
-      'actor',
-      'parentVersion',
-      'recordedAt',
-      'requestId',
-      'threadId',
-      'turnId',
-    ]);
+    expect(Object.keys(corrupted.version).sort()).toEqual(['actor', 'threadId', 'turnId']);
     expect(ReadArtifactVersionResponseSchema.parse(result)).toEqual(result);
     expect(
       ReadArtifactVersionResponseSchema.safeParse({

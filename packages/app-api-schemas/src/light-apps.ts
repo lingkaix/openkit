@@ -374,10 +374,26 @@ export const ListLightAppsResponseSchema = z
   })
   .strict();
 
-/** App get result with admitted schema and capabilities. */
+/** Current exact-reference read; unavailable targets expose no content or private metadata. */
+export const LightAppMeaningResolutionSchema = z.discriminatedUnion('status', [
+  z
+    .object({
+      reference: meaningReferenceSchema,
+      status: z.literal('available'),
+      content: z.string(),
+    })
+    .strict(),
+  z.object({ reference: meaningReferenceSchema, status: z.literal('unavailable') }).strict(),
+]);
+
+/** Request-local meaning projection; it is never part of an admitted definition. */
+export type LightAppMeaningResolution = z.infer<typeof LightAppMeaningResolutionSchema>;
+
+/** App get result with admitted schema, capabilities and optional current meaning reads. */
 export const GetLightAppResponseSchema = LightAppCatalogItemSchema.extend({
   schema: LightAppAdmittedSchemaSchema.nullable(),
   capabilities: LightAppCapabilitiesSchema,
+  meaning: z.array(LightAppMeaningResolutionSchema).optional(),
 }).strict();
 
 /** Snapshot restore returns the app authority selected by the recovery copy. */

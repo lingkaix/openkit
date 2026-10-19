@@ -14,7 +14,12 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
-import { isEntityId } from '@openkit/protocol';
+import {
+  isEntityId,
+  type RETAINED_FORMAT_VERSION,
+  readRetainedV1,
+  writeRetainedV1,
+} from '@openkit/protocol';
 
 import {
   assertVaultEntryMetadata,
@@ -26,9 +31,6 @@ import {
   ensureEncryptedFileVaultChildDirectory,
   ensureEncryptedFileVaultStoreDirectory,
 } from './vault-store-directory.js';
-
-/** Current encrypted-file vault store format version. */
-const ENCRYPTED_FILE_STORE_FORMAT_VERSION = 1;
 
 /** Required mode for encrypted-file vault store files. */
 const REQUIRED_STORE_FILE_MODE = 0o600;
@@ -54,7 +56,7 @@ type RandomBytes = (size: number) => Buffer;
 /** Durable encrypted-file vault store header. */
 interface EncryptedFileVaultStoreHeader {
   /** Store format version. */
-  readonly formatVersion: typeof ENCRYPTED_FILE_STORE_FORMAT_VERSION;
+  readonly schemaVersion: typeof RETAINED_FORMAT_VERSION;
   /** KDF metadata. */
   readonly kdf: { readonly kind: 'raw-key-file' };
   /** Master-key verification metadata. */
@@ -99,7 +101,7 @@ export interface EncryptedFileVaultEntryAssociatedData {
 /** Durable encrypted-file vault entry envelope. */
 export interface EncryptedFileVaultEntry {
   /** Store format version. */
-  readonly formatVersion: typeof ENCRYPTED_FILE_STORE_FORMAT_VERSION;
+  readonly schemaVersion: typeof RETAINED_FORMAT_VERSION;
   /** Vault reference id. */
   readonly referenceId: string;
   /** Material version. */
@@ -228,16 +230,15 @@ export function initializeOrVerifyEncryptedFileVaultStore(input: {
         nonce,
         headerAssociatedDataBuffer(createdAt)
       );
-      const header: EncryptedFileVaultStoreHeader = {
+      const header = writeRetainedV1<Omit<EncryptedFileVaultStoreHeader, 'schemaVersion'>>({
         createdAt,
-        formatVersion: ENCRYPTED_FILE_STORE_FORMAT_VERSION,
         kdf: { kind: 'raw-key-file' },
         masterKeyVerification: {
           algorithm: ENCRYPTED_FILE_AEAD_ALGORITHM,
           nonce: nonce.toString('base64'),
           tag: verification.tag,
         },
-      };
+      });
 
       writeEncryptedFileVaultJsonAtomically(path, header);
     } catch (error) {
@@ -289,7 +290,7 @@ export function writeEncryptedFileVaultEntry(
   assertVaultEntryMetadata(input.metadata);
   const versionExpirations = validateVersionExpirations(input.versionExpirations ?? {});
 
-  const entry: EncryptedFileVaultEntry = {
+  const entry = writeRetainedV1<Omit<EncryptedFileVaultEntry, 'schemaVersion'>>({
     algorithm: ENCRYPTED_FILE_AEAD_ALGORITHM,
     associatedData: {
       createdAt: input.createdAt,
@@ -301,13 +302,12 @@ export function writeEncryptedFileVaultEntry(
     ciphertext: input.ciphertext,
     createdAt: input.createdAt,
     dataKey: input.dataKey,
-    formatVersion: ENCRYPTED_FILE_STORE_FORMAT_VERSION,
     metadata: input.metadata,
     nonce: input.nonce,
     referenceId: input.referenceId,
     tag: input.tag,
     version: input.version,
-  };
+  });
   const entriesDir = ensureEncryptedFileVaultChildDirectory({
     childName: 'entries',
     parentDir: canonicalStoreDir,
@@ -345,7 +345,7 @@ export function readEncryptedFileVaultEntry(
   let value: unknown;
 
   try {
-    value = JSON.parse(readEncryptedFileVaultText(path));
+    value = readRetainedV1(JSON.parse(readEncryptedFileVaultText(path)), (record) => record);
   } catch {
     throw invalidStoreFormatError('Encrypted-file vault entry is invalid.');
   }
@@ -358,7 +358,7 @@ export function readEncryptedFileVaultEntry(
       'ciphertext',
       'createdAt',
       'dataKey',
-      'formatVersion',
+      'schemaVersion',
       'metadata',
       'nonce',
       'referenceId',
@@ -372,7 +372,6 @@ export function readEncryptedFileVaultEntry(
   const entry = value as unknown as EncryptedFileVaultEntry;
 
   if (
-    entry.formatVersion !== ENCRYPTED_FILE_STORE_FORMAT_VERSION ||
     entry.referenceId !== input.referenceId ||
     entry.version !== input.version ||
     !isRecord(entry.associatedData) ||
@@ -536,14 +535,14 @@ function readEncryptedFileVaultStoreHeader(path: string): EncryptedFileVaultStor
   let value: unknown;
 
   try {
-    value = JSON.parse(readEncryptedFileVaultText(path));
+    value = readRetainedV1(JSON.parse(readEncryptedFileVaultText(path)), (record) => record);
   } catch {
     throw invalidStoreFormatError('Encrypted-file vault header is invalid.');
   }
 
   if (
     !isRecord(value) ||
-    !hasExactKeys(value, ['createdAt', 'formatVersion', 'kdf', 'masterKeyVerification'])
+    !hasExactKeys(value, ['createdAt', 'schemaVersion', 'kdf', 'masterKeyVerification'])
   ) {
     throw invalidStoreFormatError('Encrypted-file vault header is invalid.');
   }
@@ -552,7 +551,6 @@ function readEncryptedFileVaultStoreHeader(path: string): EncryptedFileVaultStor
   const verification = value.masterKeyVerification;
 
   if (
-    value.formatVersion !== ENCRYPTED_FILE_STORE_FORMAT_VERSION ||
     typeof value.createdAt !== 'string' ||
     !Number.isFinite(Date.parse(value.createdAt)) ||
     !isRecord(kdf) ||
@@ -620,12 +618,13 @@ function entrySourcePath(input: ReadEncryptedFileVaultEntryInput): string {
  */
 function headerAssociatedDataBuffer(createdAt: string): Buffer {
   return Buffer.from(
-    JSON.stringify({
-      createdAt,
-      formatVersion: ENCRYPTED_FILE_STORE_FORMAT_VERSION,
-      kdf: { kind: 'raw-key-file' },
-      purpose: 'openkit.encrypted-file.master-key-verification',
-    }),
+    JSON.stringify(
+      writeRetainedV1({
+        createdAt,
+        kdf: { kind: 'raw-key-file' },
+        purpose: 'openkit.encrypted-file.master-key-verification',
+      })
+    ),
     'utf8'
   );
 }
