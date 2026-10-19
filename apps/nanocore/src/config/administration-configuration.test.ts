@@ -203,7 +203,7 @@ describe('administration catalog configuration', () => {
           id: 'tool-rule',
           kind: 'permission' as const,
           effect: 'require_approval' as const,
-          grant: { kind: 'gateway-tool-rule' as const, toolNames: ['issues.read'] },
+          grant: { kind: 'ordinary' as const },
         },
       ],
     };
