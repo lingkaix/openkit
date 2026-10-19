@@ -33,6 +33,7 @@ import {
 import {
   dispatchNanoHostHarnessOperation,
   markNanoHostHarnessOperationUnknown,
+  NANO_HOST_HARNESS_RESULT_BUDGET_MS,
   type NanoHostHarnessCommand,
   type NanoHostHarnessResult,
   settleNanoHostHarnessOperation,
@@ -89,6 +90,43 @@ const FILE_DATA_HEADERS = {
 const INTEGRATION_BINDING_HEADER = 'x-openkit-integration-binding';
 const HARNESS_POLL_PATH = '/worker-control/harness/poll';
 const HARNESS_RESULT_PATH = '/worker-control/harness/result';
+/** One serial poll interval plus one response-header bound; never the result deadline. */
+const HARNESS_DELIVERY_PROOF_MS = 1_250;
+
+/** Original private wire bytes for one unsettled, proof-capable live delivery. */
+interface HarnessDelivery {
+  readonly command: NanoHostHarnessCommand;
+  readonly wire: string;
+  readonly integrationBindingRef: string;
+  readonly releaseTimer: ReturnType<typeof setTimeout>;
+  carriage: number;
+  proofExpiresAt?: number;
+  proofTimer?: ReturnType<typeof setTimeout>;
+}
+
+/** Reads optional serial-loop progress; malformed or duplicate authority-bearing hints fail closed. */
+function readHarnessPollProgress(value: Record<string, unknown>): Map<string, number> | undefined {
+  if (!Object.hasOwn(value, 'harnesses')) return undefined;
+  if (!Array.isArray(value.harnesses))
+    throw new Error('NanoHost Harness poll progress is invalid.');
+  const progress = new Map<string, number>();
+  for (const entry of value.harnesses) {
+    if (
+      !entry ||
+      typeof entry !== 'object' ||
+      Array.isArray(entry) ||
+      typeof entry.harnessInstanceId !== 'string' ||
+      !entry.harnessInstanceId ||
+      entry.harnessInstanceId.length > 512 ||
+      !Number.isSafeInteger(entry.nextSequence) ||
+      entry.nextSequence < 0 ||
+      progress.has(entry.harnessInstanceId)
+    )
+      throw new Error('NanoHost Harness poll progress is invalid.');
+    progress.set(entry.harnessInstanceId, entry.nextSequence);
+  }
+  return progress;
+}
 
 /** Closed NanoHost-owned runtime effect vocabulary. */
 export const NANO_HOST_EFFECT_OPERATIONS = [
@@ -1315,6 +1353,43 @@ function removePendingEffectGroup(
 export function registerNanoHostSessionSemanticRoutes(
   input: RegisterNanoHostSessionSemanticRoutesInput
 ): void {
+  // Only this live transport owner holds raw command bytes. Neither restart nor changed binding can replay them.
+  const deliveries = new Map<string, HarnessDelivery>();
+  /** Drops private bytes and both bounded timers after settlement or loss of the live owner. */
+  const releaseDelivery = (delivery: HarnessDelivery) => {
+    if (deliveries.get(delivery.command.harnessInstanceId) !== delivery) return;
+    deliveries.delete(delivery.command.harnessInstanceId);
+    clearTimeout(delivery.releaseTimer);
+    if (delivery.proofTimer) clearTimeout(delivery.proofTimer);
+  };
+  /** Reads exact dispatched authority; an accepted result or fenced successor always wins. */
+  const pendingDelivery = (command: NanoHostHarnessCommand) =>
+    input.coreDb?.sqlite
+      .prepare(
+        `SELECT harness_binding_ref AS harnessBindingRef FROM harness_instance_records
+       WHERE harness_instance_id = ? AND operation_id = ? AND operation_state = 'dispatched'`
+      )
+      .get(command.harnessInstanceId, command.operationId) as
+      | { harnessBindingRef: string }
+      | undefined;
+  /** Settles incomplete delivery immediately through the existing unknown/cleanup owner. */
+  const failDelivery = (command: NanoHostHarnessCommand) => {
+    const delivery = deliveries.get(command.harnessInstanceId);
+    if (delivery?.command.operationId === command.operationId) releaseDelivery(delivery);
+    try {
+      const pending = pendingDelivery(command);
+      if (!pending || !input.coreDb) return;
+      markNanoHostHarnessOperationUnknown(input.coreDb, {
+        harnessBindingRef: pending.harnessBindingRef,
+        operationId: command.operationId,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (failure) {
+      input.harnessCommandDeliveryFailed?.(command, failure);
+      return;
+    }
+    input.harnessCommandDeliveryFailed?.(command);
+  };
   input.app.use('/api/nanohost/transport/session/readiness', async (context) => {
     if (context.req.method !== 'POST') {
       return context.body(null, 405, { allow: 'POST' });
@@ -1413,60 +1488,115 @@ export function registerNanoHostSessionSemanticRoutes(
           ) {
             return context.body(null, 204);
           }
-          let command = dispatchNanoHostHarnessOperation(input.coreDb, {
-            sandboxIntegrationBindingRef,
-          });
+          const progress = readHarnessPollProgress(value);
+          let delivery: HarnessDelivery | undefined;
+          for (const candidate of deliveries.values()) {
+            if (!pendingDelivery(candidate.command)) {
+              releaseDelivery(candidate);
+              continue;
+            }
+            if (
+              candidate.proofExpiresAt !== undefined &&
+              performance.now() >= candidate.proofExpiresAt
+            ) {
+              failDelivery(candidate.command);
+              continue;
+            }
+            if (
+              candidate.integrationBindingRef === sandboxIntegrationBindingRef &&
+              progress?.get(candidate.command.harnessInstanceId) === candidate.command.sequence
+            ) {
+              delivery = candidate;
+              break;
+            }
+          }
+          const dispatchStarted = performance.now();
+          let command =
+            delivery?.command ??
+            dispatchNanoHostHarnessOperation(input.coreDb, {
+              sandboxIntegrationBindingRef,
+            });
           const committedAt = performance.now();
-          if (command) {
+          if (command && !delivery) {
             command = input.harnessCommandDispatched?.(command) ?? command;
           }
-          if (command) {
-            // Dispatch is committed; response handoff is evidence, never receipt or retry authority.
-            try {
-              console.error(
-                JSON.stringify({
-                  event: 'worker.harness.dispatched',
-                  harnessInstanceId: command.harnessInstanceId,
-                  operationId: command.operationId,
-                  operation: command.operation,
-                  sequence: command.sequence,
-                  at: new Date().toISOString(),
-                })
-              );
-            } catch {
-              /* Diagnostic sink failure has no execution authority. */
-            }
-            const coreDb = input.coreDb;
-            const identity = {
-              harnessInstanceId: command.harnessInstanceId,
-              operationId: command.operationId,
+          const boundAt = performance.now();
+          if (!command) return context.body(null, 204);
+          const wire = delivery?.wire ?? JSON.stringify(command);
+          const encodedAt = performance.now();
+          if (!delivery && progress?.get(command.harnessInstanceId) === command.sequence) {
+            const selected = command;
+            const releaseTimer = setTimeout(() => {
+              const current = deliveries.get(selected.harnessInstanceId);
+              if (current?.command.operationId === selected.operationId) releaseDelivery(current);
+            }, NANO_HOST_HARNESS_RESULT_BUDGET_MS);
+            releaseTimer.unref();
+            delivery = {
+              command,
+              wire,
+              integrationBindingRef: sandboxIntegrationBindingRef,
+              releaseTimer,
+              carriage: 0,
             };
-            observeHarnessResponse(context, command, { receivedAt, committedAt }, () => {
-              // An accepted result may win before the reset observer; never fence a settled successor.
-              try {
-                const pending = coreDb.sqlite
-                  .prepare(
-                    `SELECT harness_binding_ref AS harnessBindingRef FROM harness_instance_records
-                   WHERE harness_instance_id = ? AND operation_id = ? AND operation_state = 'dispatched'`
-                  )
-                  .get(identity.harnessInstanceId, identity.operationId) as
-                  | { harnessBindingRef: string }
-                  | undefined;
-                if (!pending) return;
-                markNanoHostHarnessOperationUnknown(coreDb, {
-                  harnessBindingRef: pending.harnessBindingRef,
-                  operationId: identity.operationId,
-                  timestamp: new Date().toISOString(),
-                });
-              } catch (failure) {
-                // A storage refusal must fail the live owner, not escape a native event callback.
-                input.harnessCommandDeliveryFailed?.(identity, failure);
+            deliveries.set(command.harnessInstanceId, delivery);
+          }
+          if (delivery?.proofTimer) clearTimeout(delivery.proofTimer);
+          if (delivery) {
+            delete delivery.proofTimer;
+            delete delivery.proofExpiresAt;
+          }
+          const selectedDelivery = delivery;
+          const carriage = delivery ? ++delivery.carriage : 0;
+          const selected = command;
+          try {
+            console.error(
+              JSON.stringify({
+                event: 'worker.harness.dispatched',
+                harnessInstanceId: command.harnessInstanceId,
+                operationId: command.operationId,
+                operation: command.operation,
+                sequence: command.sequence,
+                bodyBytes: Buffer.byteLength(wire),
+                redelivered: carriage > 1,
+                dispatchMs: Math.round(committedAt - dispatchStarted),
+                bindingMs: Math.round(boundAt - committedAt),
+                encodingMs: Math.round(encodedAt - boundAt),
+                at: new Date().toISOString(),
+              })
+            );
+          } catch {
+            /* Diagnostic sink failure has no execution authority. */
+          }
+          observeHarnessResponse(context, command, { receivedAt, committedAt }, () => {
+            if (!selectedDelivery) {
+              failDelivery(selected);
+              return;
+            }
+            // A subsequent serial proof already resolved an older carriage's ambiguity.
+            if (
+              deliveries.get(selected.harnessInstanceId) !== selectedDelivery ||
+              selectedDelivery.carriage !== carriage
+            )
+              return;
+            try {
+              if (!pendingDelivery(selected)) {
+                releaseDelivery(selectedDelivery);
                 return;
               }
-              input.harnessCommandDeliveryFailed?.(identity);
-            });
-          }
-          return command ? context.json(command, 200) : context.body(null, 204);
+            } catch {
+              // Storage refusal must settle the live waiter, not escape a native event callback.
+              failDelivery(selected);
+              return;
+            }
+            if (selectedDelivery.proofExpiresAt !== undefined) return;
+            selectedDelivery.proofExpiresAt = performance.now() + HARNESS_DELIVERY_PROOF_MS;
+            selectedDelivery.proofTimer = setTimeout(
+              () => failDelivery(selected),
+              HARNESS_DELIVERY_PROOF_MS
+            );
+            selectedDelivery.proofTimer.unref();
+          });
+          return context.body(wire, 200, { 'content-type': 'application/json' });
         }
         const result = value as unknown as NanoHostHarnessResult;
         settleNanoHostHarnessOperation(input.coreDb, {
@@ -1475,6 +1605,9 @@ export function registerNanoHostSessionSemanticRoutes(
           timestamp: new Date().toISOString(),
           onSettled: input.harnessResultSettled,
         });
+        const settledDelivery = deliveries.get(result.harnessInstanceId);
+        if (settledDelivery?.command.operationId === result.operationId)
+          releaseDelivery(settledDelivery);
         try {
           console.error(
             JSON.stringify({
@@ -1577,14 +1710,25 @@ function observeHarnessResponse(
   if (!outgoing) return;
   const started = performance.now();
   const { harnessInstanceId, operationId, operation, sequence } = command;
-  let settled = false;
-  /** Emits a single fixed terminal disposition and removes every observer. */
-  const finish = (outcome: 'completed' | 'reset' | 'aborted') => {
-    if (settled) return;
-    settled = true;
-    outgoing.off('finish', terminal);
-    outgoing.off('close', terminal);
+  let completedReported = false;
+  let failed = false;
+  /** Removes native observers only when carriage closes, not when local writes finish. */
+  const cleanup = () => {
+    outgoing.off('finish', written);
+    outgoing.off('close', closed);
     bindings?.incoming?.off('aborted', aborted);
+    bindings?.incoming?.stream.off('close', closed);
+  };
+  /** Reports local completion as evidence while retaining late peer-reset observation. */
+  const finish = (outcome: 'completed' | 'reset' | 'aborted') => {
+    const resetCode = bindings?.incoming?.stream.rstCode ?? null;
+    const incomplete = Boolean(resetCode) || outcome !== 'completed';
+    if (failed || (!incomplete && completedReported)) return;
+    if (incomplete) {
+      failed = true;
+      cleanup();
+      onIncompleteDelivery();
+    } else completedReported = true;
     const observedAt = performance.now();
     const sampledMaximum = harnessResponseEventLoopDelay.max;
     const eventLoopDelayMaxMs = Math.round(
@@ -1603,8 +1747,6 @@ function observeHarnessResponse(
       harnessResponseDelayResetPending = true;
       setImmediate(resetHarnessResponseDelayAfterSample).unref();
     }
-    const resetCode = bindings?.incoming?.stream.rstCode ?? null;
-    if (resetCode && !outgoing.writableFinished) onIncompleteDelivery();
     try {
       console.error(
         JSON.stringify({
@@ -1627,15 +1769,20 @@ function observeHarnessResponse(
       /* Diagnostic sink failure has no execution authority. */
     }
   };
-  // Native H2 may emit finish on closure after end() even when DATA never completed.
-  const terminal = () =>
+  // Finish means only local write completion; a later native close may still carry peer CANCEL.
+  const written = () =>
     finish(
       bindings?.incoming?.stream.rstCode || !outgoing.writableFinished ? 'reset' : 'completed'
     );
+  const closed = () => {
+    written();
+    cleanup();
+  };
   const aborted = () => finish('aborted');
-  outgoing.once('finish', terminal);
-  outgoing.once('close', terminal);
+  outgoing.once('finish', written);
+  outgoing.once('close', closed);
   bindings?.incoming?.once('aborted', aborted);
+  bindings?.incoming?.stream.once('close', closed);
 }
 
 /**
