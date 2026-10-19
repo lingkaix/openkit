@@ -1,3 +1,5 @@
+// openkit-test-platform: posix
+// Native managed-original confinement checks inspect physical paths and link boundaries.
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
