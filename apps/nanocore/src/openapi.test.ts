@@ -2275,9 +2275,9 @@ describe('Knowledge OpenAPI derivation', () => {
       'knowledge.conflict.record',
       'knowledge.conflict.resolve',
     ]) {
-      expect(document.paths).not.toHaveProperty(operationHttpPath(id));
-      expect(document.components.schemas).not.toHaveProperty(`${id}.input`);
-      expect(document.components.schemas).not.toHaveProperty(`${id}.output`);
+      expect(document.paths[operationHttpPath(id)]).toBeUndefined();
+      expect(document.components.schemas[`${id}.input`]).toBeUndefined();
+      expect(document.components.schemas[`${id}.output`]).toBeUndefined();
     }
     expect(Object.keys(definitions)).toEqual(
       expect.arrayContaining([

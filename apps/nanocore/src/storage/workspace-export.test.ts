@@ -1606,7 +1606,7 @@ describe('workspace export verifier', () => {
         suggestedWorkspaceId: 'ws_9e57e6ec-74d8-56ed-89aa-baf519ca4af6',
       },
       verification: {
-        fileCount: 22,
+        fileCount: 19,
         checkedFiles: [
           'records/agent-resource-catalog.json',
           'records/agent-sessions.jsonl',
