@@ -7,6 +7,9 @@ import { parseWorkspaceMcpServerCatalog } from '@openkit/config-schema';
 import { deriveEntityId } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { listWorkspaceAuditEvents } from '../audit-events.js';
+import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
+import type { Actor } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
@@ -48,6 +51,9 @@ import {
 } from './captured-pending-call.js';
 import {
   acceptSchedulerExecutionObservation,
+  closeSchedulerExecutionAttemptWithFence,
+  markSchedulerExecutionAttemptClosing,
+  recordSchedulerExecutionOperation,
   schedulerExecutionCorrelation,
 } from './execution-attempt-records.js';
 import { executeGoalOperation, readGoalView } from './goal-owner.js';
@@ -55,9 +61,14 @@ import { reserveGoalTask } from './goal-task-admission.js';
 import { readGoalTaskPolicyContext } from './goal-task-policy-context.js';
 import { commandInputHash } from './idempotent-command.js';
 import { respondRecordedApproval } from './pending-request-flow.js';
-import { executionCallIdForRequest, listThreadPendingRequests } from './pending-requests.js';
+import {
+  executionCallIdForRequest,
+  listThreadPendingRequests,
+  readPendingRequest,
+  validateCanonicalLoad,
+} from './pending-requests.js';
 import { createCoordinatorTaskTool } from './task-admission.js';
-import { upsertWorkerCheckpoint } from './worker-checkpoints.js';
+import { clearWorkerCheckpoint, upsertWorkerCheckpoint } from './worker-checkpoints.js';
 import type { WorkerControlGateway } from './worker-control-gateway.js';
 import type { WorkerMcpGateway } from './worker-mcp-gateway.js';
 
@@ -262,7 +273,7 @@ async function fixture(
     );
     return { result, startWorker };
   };
-  const setupMcp = async () => {
+  const setupMcp = async (administratorContinuation = false) => {
     const requestId = randomUUID();
     const thread = store.createThread(
       workspace.id,
@@ -276,7 +287,7 @@ async function fixture(
     )();
     const prompt = serializeStructuredWorkerDelegationRequest(request);
     const agentSessionId = testEntityId('as', requestId);
-    const turn = store.createTurn(
+    let turn = store.createTurn(
       workspace.id,
       thread.id,
       prompt,
@@ -334,7 +345,7 @@ async function fixture(
         },
       ],
     });
-    const environmentPackage = resolveAgentEnvironmentPackage({
+    let environmentPackage = resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agentSessionId,
       agentSetup: createTestAgentSetup({ agentId, mcpIds: ['issues'] }),
@@ -392,6 +403,148 @@ async function fixture(
       environmentPackage,
       createdAt: new Date().toISOString(),
     });
+    let administrator: Actor | null = null;
+    if (administratorContinuation) {
+      // A later native Turn keeps the terminal Task's immutable request and accountability.
+      const terminal = recordSchedulerExecutionOperation(coreDb, {
+        attemptId: attempt.attemptId,
+        operationId: `completed:${turn.id}`,
+      });
+      const correlation = schedulerExecutionCorrelation(terminal);
+      expect(
+        acceptSchedulerExecutionObservation(coreDb, {
+          ...correlation,
+          disposition: 'accepted',
+          execution: 'terminal',
+          outcomeRef: `completed:${turn.id}`,
+          fenceRef: null,
+        })
+      ).not.toBeNull();
+      markSchedulerExecutionAttemptClosing(coreDb, {
+        attemptId: attempt.attemptId,
+        cause: 'turn-completed',
+      });
+      closeSchedulerExecutionAttemptWithFence(coreDb, {
+        correlation,
+        fenceRef: `fence:${turn.id}`,
+        proof: {
+          terminalHandoff: true,
+          output: true,
+          evidence: true,
+          outsideWorkspaceCollection: true,
+          integrationDrain: true,
+          routesRevoked: true,
+        },
+      });
+      store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
+      clearWorkerCheckpoint(db, workspace.id, thread.id, turn.id);
+      store.updateAgentSession(agentSessionId, {
+        status: 'closed',
+        updatedAt: new Date().toISOString(),
+      });
+      const now = new Date().toISOString();
+      const administratorId = testEntityId('usr', `${requestId}:administrator`);
+      coreDb.sqlite
+        .prepare(
+          "INSERT INTO users (id,kind,display_name,email,email_verified,created_at,updated_at,status) VALUES (?,'human','Continuation administrator','',0,?,?,'active')"
+        )
+        .run(administratorId, now, now);
+      const token = createOpenKitAccessTokenRecord(coreDb, {
+        ownerUserId: administratorId,
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      });
+      administrator = {
+        kind: 'token',
+        userId: administratorId,
+        tokenId: token.tokenId,
+        tokenScope: 'server-admin',
+      };
+      const followupInput = 'Continue the same bounded issue review.';
+      const followupSessionId = testEntityId('as', `${requestId}:continuation`);
+      turn = store.createTurn(
+        workspace.id,
+        thread.id,
+        followupInput,
+        { kind: 'user', id: administratorId },
+        null,
+        {
+          agentId,
+          agentSessionId: followupSessionId,
+          executorKind: 'worker',
+          triggerSource: { kind: 'user-input', summary: 'Administrator continuation.' },
+        }
+      );
+      store.createItem({
+        id: deriveEntityId('it', ['task-user', turn.id]),
+        workspaceId: workspace.id,
+        threadId: thread.id,
+        turnId: turn.id,
+        type: 'user-message',
+        status: 'completed',
+        actor: turn.triggerActor,
+        text: followupInput,
+        createdAt: turn.startedAt!,
+        completedAt: turn.startedAt!,
+      });
+      store.createAgentSession({
+        id: followupSessionId,
+        agentId,
+        workspaceId: workspace.id,
+        threadId: thread.id,
+        status: 'busy',
+        message: null,
+        createdAt: turn.startedAt!,
+        updatedAt: turn.startedAt!,
+      });
+      const followupRequestId = randomUUID();
+      environmentPackage = resolveAgentEnvironmentPackage({
+        captureCoverage: { scope: 'server', value: 'off' },
+        agentSessionId: followupSessionId,
+        agentSetup: createTestAgentSetup({ agentId, mcpIds: ['issues'] }),
+        backend: { kind: 'openshell' },
+        createdAt: now,
+        requestId: followupRequestId,
+        triggerActor: turn.triggerActor,
+        turn,
+        workspaceCwd: '/workspace',
+        workspaceRoots: [],
+        workspaceMcpServerCatalog: catalog,
+      });
+      const followupEntry = createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
+        queueEntryId: `queue_${turn.id}`,
+        requestId: followupRequestId,
+        triggerActor: turn.triggerActor,
+        workspaceId: workspace.id,
+        threadId: thread.id,
+        turnId: turn.id,
+        turnInput: followupInput,
+        requestedAgentId: agentId,
+        serverAdminTokenId: token.tokenId,
+      });
+      const followupAttempt = recordTestExecutionAttempt(coreDb, {
+        entry: followupEntry,
+        attemptId: testEntityId('attempt', `${requestId}:continuation`),
+        agentSessionId: followupSessionId,
+        inputRef: environmentPackage.snapshotId,
+        bindingRef: `continuation-binding:${requestId}`,
+        sessionCompatibilityKey: 'fixture',
+        now: () => now,
+        operationId: `continuation:${turn.id}`,
+      });
+      expect(
+        acceptSchedulerExecutionObservation(coreDb, {
+          ...schedulerExecutionCorrelation(followupAttempt),
+          disposition: 'accepted',
+          execution: 'running',
+          fenceRef: null,
+          outcomeRef: null,
+        })?.disposition
+      ).toBe('accepted');
+      recordAgentEnvironmentPackageSnapshot(db, { environmentPackage, createdAt: now });
+    }
     expect(
       readGoalTaskPolicyContext({
         coreDb,
@@ -402,6 +555,7 @@ async function fixture(
     ).toMatchObject({
       goalId: goal.goalId,
       agentId,
+      responsibleUserId: userId,
       resources: options.taskGrant === false ? [] : [resource],
     });
     const gateway: WorkerMcpGateway = {
@@ -467,7 +621,7 @@ async function fixture(
       listExportableWorkspacePermissionDecisions(db, workspace.id).filter(
         (row) => row.mediation?.role === 'final'
       );
-    return { client, gateway, call, decisions, turn, routes, catalog, interception };
+    return { client, gateway, call, decisions, turn, routes, catalog, interception, administrator };
   };
   return { coreDb, db, store, actor, scope, domain, domains, plan, agentId, dispatch, setupMcp };
 }
@@ -675,6 +829,128 @@ describe('Goal-domain Task consumers', () => {
         .all(callId)
     ).toEqual([{ quantity: 1 }]);
     expect(JSON.stringify(settled.heldResult)).not.toContain('ISSUE_RESULT_CANARY');
+  });
+
+  it('executes captured approval from a later administrator Turn with original Goal accountability', async () => {
+    const f = await fixture({ approval: true });
+    const mcp = await f.setupMcp(true);
+    const administrator = mcp.administrator!;
+    expect(administrator.userId).not.toBe(f.actor.userId);
+    expect(mcp.turn.triggerActor).toEqual({ kind: 'user', id: administrator.userId });
+    expect(await mcp.call()).toMatchObject({
+      isError: true,
+      structuredContent: { status: 'pending-approval' },
+    });
+    const record = listThreadPendingRequests(
+      f.db.sqlite,
+      f.scope.workspaceId,
+      mcp.turn.threadId
+    )[0]!;
+    expect(
+      mcp.decisions().find((decision) => decision.decisionId === record.policyDecisionId)
+    ).toMatchObject({
+      result: 'require_approval',
+      mediation: {
+        subject: {
+          principal: { kind: 'agent', id: f.agentId },
+          actor: { responsibleUserId: f.actor.userId },
+          responsibleHumanId: f.actor.userId,
+        },
+      },
+    });
+    let prepared: PreparedCapturedPendingCall | undefined;
+    let executionCall: ReturnType<typeof admitCapturedPendingCall> | undefined;
+    const settled = await respondRecordedApproval({
+      store: f.store,
+      sqlite: f.db.sqlite,
+      workspaceId: f.scope.workspaceId,
+      threadId: mcp.turn.threadId,
+      approvalRequestId: record.requestId,
+      decision: 'granted',
+      actorId: administrator.userId,
+      coreDb: f.coreDb,
+      requestActor: administrator,
+      dependencies: { coreDb: f.coreDb, openWorkspace: () => f.db },
+      prepare: async () => {
+        prepared = await prepareCapturedPendingCall({
+          actor: administrator,
+          record,
+          catalog: mcp.catalog,
+          coreDb: f.coreDb,
+          vaultBackend: undefined,
+          workerMcpGateway: mcp.gateway,
+          workspaceDb: f.db,
+          reviewPolicy: () =>
+            reviewCapturedMcpPolicy({
+              record,
+              actor: administrator,
+              workspaceDb: f.db,
+              routes: mcp.routes,
+              catalog: mcp.catalog,
+              interception: mcp.interception,
+            }),
+        });
+        expect(prepared.failed).toBe(false);
+      },
+      evaluate: () =>
+        evaluateCapturedPendingCall({
+          manifest: createTestAgentSetup({ agentId: f.agentId, mcpIds: ['issues'] }).manifest,
+          catalog: mcp.catalog,
+          coreDb: f.coreDb,
+          record,
+          sqlite: f.db.sqlite,
+          prepared,
+        }),
+      admitExecution: () => {
+        executionCall = admitCapturedPendingCall(record, f.db, randomUUID(), prepared);
+      },
+      execute: (claimed) =>
+        executeCapturedPendingCall({
+          catalog: mcp.catalog,
+          coreDb: f.coreDb,
+          record: claimed,
+          workerMcpGateway: mcp.gateway,
+          workspaceDb: f.db,
+          prepared,
+          executionCall,
+        }),
+    });
+    expect(settled).toMatchObject({
+      claim: 'finished',
+      disposition: 'approved-executed',
+      responsibleUserId: f.actor.userId,
+      authorizationContext: { responsibleUserId: f.actor.userId },
+      decidingActor: { kind: 'user', id: administrator.userId },
+      decidingActorContext: administrator,
+      heldResult: { content: [{ text: 'ISSUE_RESULT_CANARY' }] },
+    });
+    expect(mcp.gateway.callTool).toHaveBeenCalledTimes(1);
+    const executionDecision = listExportableWorkspacePermissionDecisions(
+      f.db,
+      f.scope.workspaceId
+    ).find((decision) => decision.approvalId === record.requestId)!;
+    expect(executionDecision).toMatchObject({
+      result: 'allow',
+      mediation: {
+        subject: {
+          principal: { kind: 'agent', id: f.agentId },
+          responsibleHumanId: f.actor.userId,
+        },
+      },
+    });
+    expect(
+      listWorkspaceAuditEvents(f.db, f.scope.workspaceId).find(
+        (event) => event.id === executionDecision.auditEventId
+      )
+    ).toMatchObject({ actor: { kind: 'user', id: administrator.userId } });
+    const reloaded = readPendingRequest(f.db.sqlite, record.requestId)!;
+    const reopenedStore = new FsStore({ dataRoot: f.store.getDataRoot()! });
+    expect(
+      validateCanonicalLoad(
+        reloaded,
+        reopenedStore.listThreadTurns(f.scope.workspaceId, mcp.turn.threadId)
+      )
+    ).toBeNull();
   });
 
   it('invalidates a captured human response when Goal authority ends without a Policy revision change', async () => {
