@@ -62,10 +62,9 @@ describe('server config schema', () => {
     ).toBe(false);
   });
 
-  it('admits an explicit finite Worker Git-read maintenance assignment without changing omission', () => {
+  it('admits scope-owned finite Worker Git-read permissions without changing omission', () => {
     const assignment = {
-      responsibleUserId: allocateEntityId('usr'),
-      agentId: randomUUID(),
+      kind: 'worker-git-read-maintenance',
       networkGrantId: 'git-read',
       host: 'git.example.com',
       port: 443,
@@ -73,22 +72,35 @@ describe('server config schema', () => {
       repositoryPaths: ['/team/project.git'],
       binaries: ['/usr/bin/git'],
       validFrom: '2026-01-01T00:00:00.000Z',
-      expiresAt: '2099-01-01T00:00:00.000Z',
-      enabled: true,
+    };
+    const userId = allocateEntityId('usr');
+    const container = { owner: { kind: 'server' }, kind: 'agent', id: 'agent_worker' };
+    const statement = {
+      kind: 'permission',
+      id: 'git-read-maintenance',
+      author: { kind: 'human', id: userId },
+      authority: { kind: 'human', userId },
+      authoredAt: '2026-01-01T00:00:00.000Z',
+      state: 'active',
+      scope: {
+        subjects: [{ kind: 'human', id: userId }],
+        actions: ['administration.configuration.apply'],
+        resources: [{ kind: 'container', container }],
+      },
+      lifetime: { anchor: container, notAfter: '2099-01-01T00:00:00.000Z' },
+      effect: 'allow',
+      grant: assignment,
     };
     expect(
       OpenKitConfigSchema.safeParse({
         schemaVersion: RETAINED_FORMAT_VERSION,
-        policy: { workerGitReadMaintenance: [assignment] },
+        policy: { mediation: { schemaVersion: 1, statements: [statement] } },
       }).success
     ).toBe(true);
     expect(
       OpenKitConfigSchema.parse({ schemaVersion: RETAINED_FORMAT_VERSION }).policy
     ).toBeUndefined();
     for (const change of [
-      { enabled: undefined },
-      { responsibleUserId: allocateEntityId('th') },
-      { responsibleUserId: randomUUID() },
       { protocol: 'grpc' },
       { port: 0 },
       { host: '*.example.com' },
@@ -103,23 +115,53 @@ describe('server config schema', () => {
       { repositoryPaths: ['/team/project.git', '/team/project.git'] },
       { binaries: ['git'] },
       { binaries: ['/usr/bin/../bin/git'] },
-      { expiresAt: assignment.validFrom },
       { validFrom: '2026-01-01T00:00:00+00:00' },
       { action: 'arbitrary' },
     ]) {
       expect(
         OpenKitConfigSchema.safeParse({
           schemaVersion: RETAINED_FORMAT_VERSION,
-          policy: { workerGitReadMaintenance: [{ ...assignment, ...change }] },
+          policy: {
+            mediation: {
+              schemaVersion: 1,
+              statements: [{ ...statement, grant: { ...assignment, ...change } }],
+            },
+          },
         }).success,
         JSON.stringify(change)
+      ).toBe(false);
+    }
+    for (const change of [
+      { state: undefined },
+      { scope: { ...statement.scope, subjects: [{ kind: 'human', id: allocateEntityId('th') }] } },
+      { scope: { ...statement.scope, subjects: [{ kind: 'human', id: randomUUID() }] } },
+    ]) {
+      expect(
+        OpenKitConfigSchema.safeParse({
+          schemaVersion: RETAINED_FORMAT_VERSION,
+          policy: { mediation: { schemaVersion: 1, statements: [{ ...statement, ...change }] } },
+        }).success
+      ).toBe(false);
+    }
+    for (const lifetime of [
+      { anchor: container },
+      { anchor: container, notAfter: assignment.validFrom },
+    ]) {
+      expect(
+        OpenKitConfigSchema.safeParse({
+          schemaVersion: RETAINED_FORMAT_VERSION,
+          policy: { mediation: { schemaVersion: 1, statements: [{ ...statement, lifetime }] } },
+        }).success
       ).toBe(false);
     }
     expect(
       OpenKitConfigSchema.safeParse({
         schemaVersion: RETAINED_FORMAT_VERSION,
         policy: {
-          workerGitReadMaintenance: [assignment, { ...assignment, enabled: false }],
+          mediation: {
+            schemaVersion: 1,
+            statements: [statement, { ...statement, id: 'duplicate-tuple', state: 'inactive' }],
+          },
         },
       }).success
     ).toBe(false);
@@ -181,27 +223,7 @@ describe('server config schema', () => {
     ).toBe(false);
   });
 
-  it('accepts deployment-owned approval modes for exact Workspaces', () => {
-    const policy = {
-      workspaceApprovalModes: {
-        ws_trusted: { 'repo.push': 'auto_allow' },
-        ws_review: { 'repo.push': 'require_human_approval' },
-      },
-    };
-    expect(
-      OpenKitConfigSchema.parse({ schemaVersion: RETAINED_FORMAT_VERSION, policy }).policy
-    ).toEqual(policy);
-    expect(
-      OpenKitConfigSchema.parse({ schemaVersion: RETAINED_FORMAT_VERSION }).policy
-    ).toBeUndefined();
-    for (const modes of [{ 'repo.push': 'allow' }, { 'tool.use': 'auto_allow' }]) {
-      expect(
-        OpenKitConfigSchema.safeParse({
-          schemaVersion: RETAINED_FORMAT_VERSION,
-          policy: { workspaceApprovalModes: { ws_trusted: modes } },
-        }).success
-      ).toBe(false);
-    }
+  it('keeps Server Policy overrides deployment-owned', () => {
     expect(getConfigPolicyCatalog()).toContainEqual(
       expect.objectContaining({
         kind: 'server',
