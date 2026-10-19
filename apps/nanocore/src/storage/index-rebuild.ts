@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { join, posix, relative, sep } from 'node:path';
+import { join, posix, relative, resolve, sep } from 'node:path';
 import {
   type KnowledgeRetrievalResponse,
   KnowledgeRetrievalResponseSchema,
@@ -16,6 +16,7 @@ import {
 } from '@openkit/protocol';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { readWorkspaceNotebookIndexSource } from '../knowledge/notebook-index-source.js';
+import { readSourcePointers } from '../knowledge/source-pointers.js';
 import {
   DEFAULT_SCOPE_KNOWLEDGE_SCHEMA,
   isActiveOpenKitKnowledgePage,
@@ -1701,7 +1702,7 @@ function readKnowledgePageIds(pages: ReadonlyMap<string, string>): Set<string> {
 }
 
 /**
- * Reads registered Source ids and digests from the owning Workspace registry.
+ * Reads current Source identities and digests from the sole published Notebook pointer tree.
  *
  * @param workspaceRoot Workspace root path.
  * @param workspaceId Workspace id.
@@ -1711,21 +1712,14 @@ function readRegisteredSources(
   workspaceRoot: string,
   workspaceId: string
 ): Map<string, string | null> {
-  const registryRoot = join(workspaceRoot, 'sources', 'registry');
-  const sources = new Map<string, string | null>();
-
-  for (const fileName of listFiles(registryRoot).filter((name) => name.endsWith('.json'))) {
-    const source = readJsonRecord(join(registryRoot, fileName)) as Record<string, unknown>;
-
-    if (stringField(source, 'workspaceId') === workspaceId) {
-      sources.set(
-        stringField(source, 'id'),
-        typeof source.contentDigest === 'string' ? source.contentDigest : null
-      );
-    }
-  }
-
-  return sources;
+  return new Map(
+    [
+      ...readSourcePointers({
+        dataRoot: resolve(workspaceRoot, '../..'),
+        ownerScope: { kind: 'workspace', workspaceId },
+      }).values(),
+    ].map(({ source }) => [source.id, source.contentDigest])
+  );
 }
 
 /** Checks only exact same-base page bytes in the selected Notebook tree; native retrieval still owns current access. */
