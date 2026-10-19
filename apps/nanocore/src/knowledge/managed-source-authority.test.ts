@@ -14,9 +14,17 @@ import { FsStore } from '../lib/store.js';
 import type { KnowledgeRetrievalAccess } from '../retrieval-knowledge-adapter.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
-import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import {
+  recordWorkspaceOwnerMembership,
+  resolveWorkspaceMembershipRelation,
+} from '../workspace-membership.js';
+import {
+  acceptWorkspaceInvitation,
+  createWorkspaceInvitation,
+  removeWorkspaceMember,
+} from '../workspace-sharing.js';
 
-// The factory is a pending implementation seam. Its draft cases must not block the independent Storage case's collection.
+// Keep the Storage contract case independently runnable from the Native admission owner.
 const nativeFactoryModule = './managed-source-access.js';
 
 /** Real current human memberships and scoped KBs; no Policy statement, lease or host mount is created. */
@@ -196,13 +204,41 @@ describe('request-local managed Source authority', () => {
   it('denies the next native read admission after current Workspace membership is removed', async () => {
     const { deriveManagedSourceAccess } = await import(nativeFactoryModule);
     const f = fixture();
-    expect(deriveManagedSourceAccess(f.a.input)).toMatchObject(f.knowledgeAccess);
-    f.coreDb.sqlite
-      .prepare(
-        "UPDATE workspace_members SET status = 'removed', removed_at = ?, revision = revision + 1 WHERE workspace_id = ? AND user_id = ?"
-      )
-      .run(new Date().toISOString(), f.a.workspaceId, f.a.userId);
-    expect(deriveManagedSourceAccess(f.a.input)).toBeNull();
+    const invitation = f.coreDb.sqlite.transaction(() =>
+      createWorkspaceInvitation({
+        coreDb: f.coreDb,
+        workspaceId: f.a.workspaceId,
+        inviterUserId: f.a.userId,
+        inviteeEmail: `${f.b.userId}@example.invalid`,
+      })
+    )();
+    expect(invitation.kind).toBe('created');
+    if (invitation.kind !== 'created') throw new Error('Fixture member invitation failed.');
+    const accepted = f.coreDb.sqlite.transaction(() =>
+      acceptWorkspaceInvitation({
+        coreDb: f.coreDb,
+        workspaceId: f.a.workspaceId,
+        invitationId: invitation.invitation.invitationId,
+        inviteeUserId: f.b.userId,
+        expectedRevision: invitation.invitation.revision,
+      })
+    )();
+    expect(accepted.kind).toBe('accepted');
+    if (accepted.kind !== 'accepted') throw new Error('Fixture member admission failed.');
+    const memberInput = { ...f.a.input, access: f.b.input.access };
+    expect(deriveManagedSourceAccess(memberInput)).toMatchObject(f.knowledgeAccess);
+    const removed = f.coreDb.sqlite.transaction(() =>
+      removeWorkspaceMember({
+        coreDb: f.coreDb,
+        workspaceId: f.a.workspaceId,
+        actorUserId: f.a.userId,
+        memberUserId: f.b.userId,
+        expectedRevision: accepted.member.revision,
+      })
+    )();
+    expect(removed.kind).toBe('removed');
+    expect(resolveWorkspaceMembershipRelation(f.coreDb, f.a.workspaceId, f.a.userId)).toBe('owner');
+    expect(deriveManagedSourceAccess(memberInput)).toBeNull();
   });
 
   it('does not turn responsible human Knowledge authority into Worker raw exposure', async () => {
