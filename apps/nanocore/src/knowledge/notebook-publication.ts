@@ -4,6 +4,7 @@ import {
   type KnowledgeNotebookAdmission,
   KnowledgeNotebookAdmissionSchema,
   type KnowledgeOwnerScope,
+  parseReferenceScope,
 } from '@openkit/protocol';
 import {
   recordServerAuditEvent,
@@ -22,6 +23,7 @@ import type { CoreDb, UserDb, WorkspaceDb } from '../storage/db.js';
 import { type KnowledgeNotebook, type NotebookCommitMetadata, NotebookError } from './notebook.js';
 import { validateNotebookCandidate } from './notebook-validation.js';
 import { parseOkfDocument, updateOkfFrontmatter, validateOpenKitKnowledgeProfile } from './okf.js';
+import { decodeSourcePointer } from './source-pointers.js';
 
 const OPERATION = 'knowledge.notebook.update';
 
@@ -32,7 +34,8 @@ export type NotebookPublicationOperation =
   | 'knowledge.notebook.create'
   | 'knowledge.proposal.decide'
   | 'knowledge.proposal.reverse'
-  | 'knowledge.notebook.delete';
+  | 'knowledge.notebook.delete'
+  | 'knowledge.package.import';
 
 /** Exact human edit submitted through native admission; paths are bundle-relative, never host paths. */
 export interface NotebookUpdate {
@@ -74,6 +77,8 @@ export interface NotebookPublicationAdmission {
 /** Native dependencies; revalidation must throw on revoked scope, source disclosure or required human authority. */
 export interface NotebookPublicationDependencies {
   /** Server-bound original command input; native convenience projections must not create a nested receipt. */
+  /** Native package owner supplies the complete validated Source additions; ordinary edits cannot set captured facts. */
+  readonly sourcePointers?: Readonly<Record<string, string>>;
   readonly command?: { readonly name: NotebookPublicationOperation; readonly input: unknown };
   readonly store: FsStore;
   readonly workspaceDb: WorkspaceDb;
@@ -464,8 +469,25 @@ export async function publishNotebook(
                   dependencies.producer.kind === 'agent' ? 'delegated' : 'user-authored'
                 );
       }
-      const check = (facts: NotebookPublicationAdmission) =>
-        validateNotebookCandidate({ ownerScope, base, candidate: { files }, ...facts });
+      const check = (facts: NotebookPublicationAdmission) => {
+        if (dependencies.sourcePointers) {
+          if (operation !== 'knowledge.package.import') throw new NotebookError('invalid_request');
+          const pageScope = parseReferenceScope(facts.pageScopeId ?? '');
+          if (pageScope?.family !== 'page') throw new NotebookError('invalid_request');
+          for (const [id, content] of Object.entries(dependencies.sourcePointers)) {
+            const pointer = decodeSourcePointer({
+              ownerScope,
+              knowledgeBaseId: pageScope.knowledgeBaseId,
+              scopeSchemaText: facts.scopeSchemaText,
+              id,
+              content,
+            });
+            if (facts.registeredSources.get(id) !== pointer.source.contentDigest)
+              throw new NotebookError('invalid_request');
+          }
+        }
+        return validateNotebookCandidate({ ownerScope, base, candidate: { files }, ...facts });
+      };
       const admission = dependencies.revalidate();
       const validated = check(admission);
       if (validated.errors.length) throw new NotebookError('invalid_request');
@@ -493,6 +515,7 @@ export async function publishNotebook(
               content === null ? null : files[path]!,
             ])
           ),
+          ...(dependencies.sourcePointers ? { sourcePointers: dependencies.sourcePointers } : {}),
           metadata: {
             summary: request.summary,
             changeRequest: { requestId: request.requestId, inputDigest },
