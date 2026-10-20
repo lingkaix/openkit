@@ -749,6 +749,12 @@ export function prepareKnowledgeMaintenance(
                 !diagnostics.length
               )
                 diagnostics.push('notebook.script_failed');
+              else if (
+                name === 'knowledge.notebook.update' &&
+                errorCode === 'invalid_request' &&
+                !diagnostics.length
+              )
+                diagnostics.push('notebook.submission_refused');
               // Class labels are native constants; exception text and constructor names are untrusted.
               const exceptionClass =
                 error instanceof NotebookError
