@@ -10,6 +10,7 @@ import {
 import type { Context as TelemetryContext } from '@opentelemetry/api';
 import type { Context, Hono } from 'hono';
 import { createScanner } from 'jsonc-parser';
+import { z } from 'zod';
 import { asApiError } from '../api-errors.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import {
@@ -895,6 +896,12 @@ export function createNanoHostSessionDispatch(
       }
       const requestId = readRequestId(result);
       result = readNanoHostEffectResult(operation, result);
+      const resourceSummary = result.resourceSummary;
+      // Host observations do not participate in receipt identity or cleanup decisions.
+      if (Object.hasOwn(result, 'resourceSummary')) {
+        const { resourceSummary: _diagnostic, ...receipt } = result;
+        result = receipt;
+      }
       const resultNames = Object.keys(result);
       const carriesFailureCode = resultNames.includes('failureCode');
       const isExactEffectFailure =
@@ -1068,8 +1075,10 @@ export function createNanoHostSessionDispatch(
           : {}),
       });
       recordNanoHostEffectAcceptance(telemetryHeaders);
+      const callerResult =
+        resourceSummary === undefined ? resultBody : { ...resultBody, resourceSummary };
       pending.resolve(
-        pending.resultOnlyGroup ? { kind: operation, result: resultBody } : resultBody
+        pending.resultOnlyGroup ? { kind: operation, result: callerResult } : callerResult
       );
     },
 
@@ -3083,7 +3092,23 @@ function settledImageResult(
   return { digest: known.outcome.imageDigest };
 }
 
-/** Strips descriptive effect-result additions before receipt identity or any consumer sees them. */
+/** Closed Host lifetime facts; this diagnostic payload supplies no cleanup or outcome authority. */
+const NanoHostResourceSummarySchema = z
+  .object({
+    memoryPeakBytes: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+    oomKillCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+    backendOomKilled: z.boolean().optional(),
+    cpuUsageSeconds: z.number().finite().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+    cpuThrottledSeconds: z.number().finite().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+    pidsPeak: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+    exitState: z
+      .enum(['created', 'running', 'paused', 'restarting', 'removing', 'exited', 'dead'])
+      .optional(),
+  })
+  .strict()
+  .refine((summary) => Buffer.byteLength(JSON.stringify(summary), 'utf8') <= 1024);
+
+/** Admits delete diagnostics separately from the known effect fields used for receipt identity. */
 function readNanoHostEffectResult(
   operation: NanoHostEffectOperation,
   result: Readonly<Record<string, unknown>>
@@ -3101,7 +3126,11 @@ function readNanoHostEffectResult(
     case 'image.acquire':
     case 'image.build':
       return resultFields(result, ['requestId', 'digest']);
-    case 'sandbox.delete':
+    case 'sandbox.delete': {
+      const receipt = resultFields(result, ['requestId', 'sandboxId', 'state']);
+      const summary = NanoHostResourceSummarySchema.safeParse(result.resourceSummary);
+      return summary.success ? { ...receipt, resourceSummary: summary.data } : receipt;
+    }
     case 'bridge.close':
       return resultFields(result, ['requestId', 'sandboxId', 'state']);
     case 'bridge.open':
