@@ -40,8 +40,8 @@ use crate::image_acquisition::{
 use crate::image_store::{ImageStore, StoreError};
 use crate::nanocore_session::OuterRouteProjection;
 use crate::openshell_client::{
-    LifecycleEffectKind, LifecycleEffectRequest, LifecycleEffectResult, NanoHostOpenShellClient,
-    WorkerBootstrapMonitor, WorkerBootstrapRequest,
+    HarnessTaskHandles, LifecycleEffectKind, LifecycleEffectRequest, LifecycleEffectResult,
+    NanoHostOpenShellClient, WorkerBootstrapMonitor, WorkerBootstrapRequest,
 };
 use crate::openshell_release;
 use crate::persistent_volume::{PersistentVolumeStore, StorageAttachmentRequest, StorageMount};
@@ -1293,7 +1293,7 @@ struct EpochMemberMonitor {
     fence: mpsc::SyncSender<Option<EpochFault>>,
     member_failure: mpsc::Receiver<EpochFault>,
     worker: Option<JoinHandle<()>>,
-    harness_tasks: Arc<Mutex<Option<(AbortHandle, AbortHandle)>>>,
+    harness_tasks: Arc<Mutex<Option<HarnessTaskHandles>>>,
     readiness: Arc<AtomicU8>,
     inspection: Option<Arc<crate::live_inspection::InspectionState>>,
 }
@@ -1598,7 +1598,7 @@ impl EpochMemberMonitor {
     fn observe_members(
         children: &mut [Child],
         requests: &mpsc::Receiver<Option<EpochFault>>,
-        harness_tasks: &Mutex<Option<(AbortHandle, AbortHandle)>>,
+        harness_tasks: &Mutex<Option<HarnessTaskHandles>>,
     ) -> Option<EpochFault> {
         loop {
             if let Some(failure) = Self::watched_task_failure(harness_tasks) {
@@ -1622,9 +1622,7 @@ impl EpochMemberMonitor {
     /// Classifies a poisoned lock or the first finished watched task.
     ///
     /// Response is checked before route. An unwatched pair is not a failure.
-    fn watched_task_failure(
-        tasks: &Mutex<Option<(AbortHandle, AbortHandle)>>,
-    ) -> Option<MemberFailure> {
+    fn watched_task_failure(tasks: &Mutex<Option<HarnessTaskHandles>>) -> Option<MemberFailure> {
         match tasks.lock() {
             Err(_) => Some(MemberFailure::new(
                 MemberFailureSubject::Unknown,
@@ -3088,14 +3086,151 @@ fn invalidation_trigger(fault: &EpochFault) -> EpochInvalidationTrigger {
     }
 }
 
-/// Names the first finished watched task, response before route.
-fn finished_watched_task(tasks: &(AbortHandle, AbortHandle)) -> Option<MemberFailure> {
+/// Shares an existing join handle only for diagnostics; liveness remains its abort handle.
+///
+/// A completed join is consumed once, never cached. Reading it cannot choose a
+/// member fault, wait for completion, or add a second task to supervision.
+pub(crate) struct WatchedTask<T> {
+    abort: AbortHandle,
+    join: Arc<Mutex<Option<tokio::task::JoinHandle<T>>>>,
+}
+
+impl<T> Clone for WatchedTask<T> {
+    fn clone(&self) -> Self {
+        Self {
+            abort: self.abort.clone(),
+            join: Arc::clone(&self.join),
+        }
+    }
+}
+
+impl<T> WatchedTask<T> {
+    /// Retains the original task identity and join ownership without another runner.
+    pub(crate) fn new(join: tokio::task::JoinHandle<T>) -> Self {
+        Self {
+            abort: join.abort_handle(),
+            join: Arc::new(Mutex::new(Some(join))),
+        }
+    }
+
+    /// Uses exactly the prior abort-handle completion proof.
+    pub(crate) fn is_finished(&self) -> bool {
+        self.abort.is_finished()
+    }
+
+    /// Preserves the existing abort operation; callers separately log their intent.
+    pub(crate) fn abort(&self) {
+        self.abort.abort();
+    }
+
+    /// Observes only a ready JoinError, without waiting, catching panics or reading payloads.
+    fn record_join_failure(&self, member: MemberFailureSubject) {
+        if self.is_finished() {
+            let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+            let _ = self.poll_completion(&mut context, member);
+        }
+    }
+
+    /// Delegates to the same join for startup and the nonblocking diagnostic observation.
+    fn poll_completion(
+        &self,
+        context: &mut std::task::Context<'_>,
+        member: MemberFailureSubject,
+    ) -> std::task::Poll<()> {
+        let Ok(mut slot) = self.join.try_lock() else {
+            if self.is_finished() {
+                return std::task::Poll::Ready(());
+            }
+            context.waker().wake_by_ref();
+            return std::task::Poll::Pending;
+        };
+        let Some(join) = slot.as_mut() else {
+            return std::task::Poll::Ready(());
+        };
+        let std::task::Poll::Ready(result) =
+            std::future::Future::poll(std::pin::Pin::new(join), context)
+        else {
+            return std::task::Poll::Pending;
+        };
+        slot.take();
+        drop(slot);
+        if let Err(error) = result {
+            let outcome = if error.is_panic() {
+                "panicked"
+            } else {
+                "cancelled"
+            };
+            record_task_outcome(member, outcome, "none");
+        }
+        std::task::Poll::Ready(())
+    }
+}
+
+/// Preserves the existing pre-watch response/bridge select on the original join.
+impl std::future::Future
+    for WatchedTask<Result<crate::openshell_client::WorkerBootstrapCompletion, EpochFault>>
+{
+    type Output = ();
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        self.poll_completion(context, MemberFailureSubject::HarnessResponse)
+    }
+}
+
+/// Logs a producer's actual return without raw error text or authority-bearing fields.
+pub(crate) fn record_task_return(member: MemberFailureSubject, error_kind: Option<&str>) {
+    record_task_outcome(
+        member,
+        if error_kind.is_some() {
+            "returned-err"
+        } else {
+            "returned-ok"
+        },
+        error_kind.unwrap_or("none"),
+    );
+}
+
+/// Records an actual owner abort request, not proof that cancellation completed.
+pub(crate) fn record_task_abort(member: MemberFailureSubject) {
+    let _ = writeln!(
+        io::stderr().lock(),
+        "nanohost watched task abort member={} action=requested",
+        member.token()
+    );
+}
+
+/// Uses the existing private journal path; sink failure cannot choose a member fault.
+fn record_task_outcome(member: MemberFailureSubject, outcome: &str, error_kind: &str) {
+    let _ = writeln!(
+        io::stderr().lock(),
+        "nanohost watched task outcome member={} outcome={outcome} error_kind={error_kind}",
+        member.token()
+    );
+}
+
+/// Names the first finished watched task, response before route, independently of diagnostics.
+fn finished_watched_task(tasks: &HarnessTaskHandles) -> Option<MemberFailure> {
     if tasks.0.is_finished() {
+        tasks
+            .0
+            .record_join_failure(MemberFailureSubject::HarnessResponse);
+        tasks
+            .1
+            .record_join_failure(MemberFailureSubject::HarnessRoute);
         Some(MemberFailure::new(
             MemberFailureSubject::HarnessResponse,
             MemberObservation::Finished,
         ))
     } else if tasks.1.is_finished() {
+        tasks
+            .1
+            .record_join_failure(MemberFailureSubject::HarnessRoute);
+        tasks
+            .0
+            .record_join_failure(MemberFailureSubject::HarnessResponse);
         Some(MemberFailure::new(
             MemberFailureSubject::HarnessRoute,
             MemberObservation::Finished,
@@ -3103,6 +3238,12 @@ fn finished_watched_task(tasks: &(AbortHandle, AbortHandle)) -> Option<MemberFai
     } else {
         None
     }
+}
+
+/// Exercises the production completion point without exposing it as a runtime interface.
+#[cfg(test)]
+pub(crate) fn fixture_finished_watched_task(tasks: &HarnessTaskHandles) -> MemberFailure {
+    finished_watched_task(tasks).expect("fixture must establish actual task completion")
 }
 
 /// Projects one fault into the closed private invalidation-report fields.
@@ -3798,7 +3939,6 @@ mod tests {
     #[cfg(target_os = "linux")]
     use std::thread;
     use std::time::{Duration, Instant};
-    use tokio::task::AbortHandle;
 
     use sha2::{Digest, Sha256};
 
@@ -3820,23 +3960,24 @@ mod tests {
     use crate::openshell_client::{LifecycleEffectKind, LifecycleEffectRequest};
 
     /// Keeps a real bridge route task pending until its ordinary Drop cleanup.
-    fn liveness_test_bridge() -> (crate::sandbox_bridge::OpenSandboxBridge, AbortHandle) {
+    fn liveness_test_bridge() -> (
+        crate::sandbox_bridge::OpenSandboxBridge,
+        super::WatchedTask<Result<(), h2::Error>>,
+    ) {
         let route = tokio::spawn(std::future::pending());
-        let watched_route = route.abort_handle();
-        (
-            crate::sandbox_bridge::OpenSandboxBridge::new(
-                route,
-                "fixture-authorization".to_string(),
-                "fixture-integration-binding".to_string(),
-                true,
-            ),
-            watched_route,
-        )
+        let bridge = crate::sandbox_bridge::OpenSandboxBridge::new(
+            route,
+            "fixture-authorization".to_string(),
+            "fixture-integration-binding".to_string(),
+            true,
+        );
+        let watched_route = bridge.task_handle();
+        (bridge, watched_route)
     }
 
     /// Creates a real pending bootstrap response task whose completion is controllable.
     fn liveness_test_bootstrap(
-        route: AbortHandle,
+        route: super::WatchedTask<Result<(), h2::Error>>,
     ) -> (
         crate::openshell_client::WorkerBootstrapMonitor,
         tokio::task::AbortHandle,
