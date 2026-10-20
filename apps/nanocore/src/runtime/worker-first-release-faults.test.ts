@@ -588,6 +588,7 @@ describe('Workspace execution journal producer boundaries', () => {
     const workspaceRoot = dirname(dirname(workspaceDbPath(f.coreDb.dataRoot, workspaceId)));
     const heldRoot = join(f.coreDb.dataRoot, 'unavailable-workspace');
     let moved = false;
+    let acknowledgedStart: NanoHostHarnessCommand | null = null;
     try {
       if (operation === 'turn.start') {
         const opened = await f.dispatch('session.open');
@@ -624,6 +625,9 @@ describe('Workspace execution journal producer boundaries', () => {
             },
           })
         : await f.poll();
+      if (operation === 'turn.start' && command && response.status === 204) {
+        acknowledgedStart = command;
+      }
       // A Core receipt alone cannot acknowledge an unconsumed Workspace outcome. Do not print credential-bearing wire bodies.
       expect
         .soft({
@@ -642,6 +646,32 @@ describe('Workspace execution journal producer boundaries', () => {
         if (existsSync(workspaceRoot))
           renameSync(workspaceRoot, join(f.coreDb.dataRoot, 'unexpected-workspace'));
         renameSync(heldRoot, workspaceRoot);
+      }
+      if (acknowledgedStart && !f.isSettled()) {
+        // Finish the controlled Worker only after the fault assertions; advancing time before its monitor exists can strand teardown.
+        f.sealTranscript(acknowledgedStart);
+        expect(
+          await f.controlClient(acknowledgedStart).recordFinalStatus({
+            sequence: 1,
+            status: 'completed',
+            stopReason: 'completed',
+          })
+        ).toMatchObject({ accepted: true });
+        // Let the existing completion poll consume the final status before waiting for inspection.
+        await vi.advanceTimersByTimeAsync(100);
+        await f.waitQueued('session.inspect').then(
+          async () => {
+            await f.result(await f.dispatch('session.inspect'), {
+              ...ready,
+              state: 'open',
+              childState: 'running',
+              cleanupState: 'clean',
+            });
+          },
+          (error: unknown) => {
+            if (!f.isSettled()) throw error;
+          }
+        );
       }
       await vi.advanceTimersByTimeAsync(600_000);
       await f.running.catch(() => undefined);
