@@ -1,6 +1,7 @@
 import { PrepareWorkerEnvironmentRequestSchema } from '@openkit/app-api-schemas';
 import { describe, expect, it, vi } from 'vitest';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
+import { RuntimeConfigFileServiceError } from '../config/runtime-config-files.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { createAdministrationConfigurationTools } from './configuration-tools.js';
@@ -146,5 +147,37 @@ describe('administration configuration Tools', () => {
       'networkGrantId',
       'rules',
     ]);
+  });
+
+  it('surfaces policy_mcp_tool_unobserved from the propose Tool', async () => {
+    const snapshot = createInMemoryRuntimeConfigSnapshot({ dataRoot: null });
+    const tools = createAdministrationConfigurationTools(snapshot, configFiles({}), {
+      read: vi.fn(),
+      schema: vi.fn(),
+      propose: () => {
+        throw new RuntimeConfigFileServiceError(
+          'policy_mcp_tool_unobserved',
+          'MCP Tool has no admitted schema observation.',
+          409
+        );
+      },
+      applyDelegated: vi.fn(),
+    });
+    const result = await tools[2].execute(
+      {
+        targetFamily: 'policy',
+        targetId: 'server',
+        expectedRevision: CONFIG_REVISION,
+        changes: {},
+      },
+      { callId: 'policy', toolOccurrence: 1, signal: new AbortController().signal }
+    );
+    expect(result.isError).toBe(true);
+    const payload = JSON.parse(result.content[0]!.type === 'text' ? result.content[0]!.text : '{}');
+    expect(payload).toEqual({
+      code: 'policy_mcp_tool_unobserved',
+      message:
+        "A proposed MCP Tool has no admitted schema observation in its Workspace. A Turn in that Workspace must discover that MCP server's Tools before a Policy can name them. Do not retry this proposal unchanged.",
+    });
   });
 });
