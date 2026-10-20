@@ -8,11 +8,13 @@ import {
   type ControlProductContentMount,
   ControlProductContentMountSchema,
   type ControlProductOwner,
+  type ControlProductTransition,
+  ControlProductTransitionSchema,
 } from './control-store-products.js';
 import { StoredWorkOwnerV1Schema } from './retained-work-metadata-v1.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 3;
+export const CONTROL_WORKER_VERSION = 4;
 
 /** Fixed, qualified batching and per-database pending admission bounds. */
 export const CONTROL_WORKER_LIMITS = {
@@ -79,6 +81,7 @@ export type ControlWorkerCommand =
         }
       | { readonly operation: 'write'; readonly statements: readonly ControlSqlStatement[] }
       | { readonly operation: 'transition'; readonly transition: ControlAdmission }
+      | { readonly operation: 'products'; readonly transition: ControlProductTransition }
       | { readonly operation: 'checkpoint' | 'reclaim' | 'close' }
     ));
 
@@ -115,7 +118,7 @@ export type ControlWorkerReply = {
   readonly version: typeof CONTROL_WORKER_VERSION;
   readonly id: number;
 } & (
-  | { readonly status: 'ok'; readonly operation: 'open' | 'close' | 'shutdown' }
+  | { readonly status: 'ok'; readonly operation: 'open' | 'close' | 'shutdown' | 'products' }
   | {
       readonly status: 'ok';
       readonly operation: 'write';
@@ -205,7 +208,12 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     );
   }
   if (reply.status !== 'ok') return false;
-  if (reply.operation === 'open' || reply.operation === 'close' || reply.operation === 'shutdown')
+  if (
+    reply.operation === 'open' ||
+    reply.operation === 'close' ||
+    reply.operation === 'shutdown' ||
+    reply.operation === 'products'
+  )
     return true;
   if (reply.operation === 'write')
     return Array.isArray(reply.results) && reply.results.every(isSqlResult);
@@ -329,11 +337,13 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
         value.initialize === 'workspace')
     );
   }
-  if (value.operation === 'transition') {
+  if (value.operation === 'transition' || value.operation === 'products') {
     try {
+      const schema =
+        value.operation === 'transition' ? ControlAdmissionSchema : ControlProductTransitionSchema;
       return (
         exactFields(value, [...scoped, 'transition']) &&
-        ControlAdmissionSchema.safeParse(value.transition).success &&
+        schema.safeParse(value.transition).success &&
         JSON.stringify(value.transition).length <= 2 * 1024 * 1024
       );
     } catch {

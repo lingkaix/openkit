@@ -312,14 +312,14 @@ function captureIntent(
 }
 
 /** Prepares the actual person's idle command without a provider, Worker or caller-selected historical Turn. */
-export function prepareMemoryForgetCommand(
+export async function prepareMemoryForgetCommand(
   writer: MemoryForgetWriter,
   input: Omit<PrepareMemoryForgetInput, 'threadId' | 'turnId'>
 ) {
   admitWriter(writer, { workspaceId: input.workspaceId });
   const previous = readPendingRequest(writer.workspaceDb.sqlite, input.requestId);
   if (previous)
-    return prepareMemoryForget(writer, {
+    return await prepareMemoryForget(writer, {
       ...input,
       threadId: previous.threadId,
       turnId: previous.raisingTurnId,
@@ -345,13 +345,13 @@ export function prepareMemoryForgetCommand(
     refuse('request_limit_reached', 'The Thread already has 16 pending requests.');
   const timeline =
     existing ??
-    openAssistantTimeline(
+    (await openAssistantTimeline(
       writer.store,
       input.workspaceId,
       writer.actor!.userId,
       'Personal Assistant'
-    );
-  const turn = writer.store.createTurn(
+    ));
+  const turn = await writer.store.createTurn(
     input.workspaceId,
     timeline.id,
     'Prepare personal Memory forget confirmation',
@@ -367,18 +367,18 @@ export function prepareMemoryForgetCommand(
     }
   );
   try {
-    const result = prepareMemoryForget(writer, {
+    const result = await prepareMemoryForget(writer, {
       ...input,
       threadId: timeline.id,
       turnId: turn.id,
     });
     const at = new Date().toISOString();
-    writer.store.updateTurn(turn.id, { status: 'completed', completedAt: at });
+    await writer.store.updateTurn(turn.id, { status: 'completed', completedAt: at });
     proveFrozenDelivery(writer.workspaceDb.sqlite, turn.id, at);
     return result;
   } catch (error) {
     if (!isSealedTurnTerminal(writer.store.getTurnById(turn.id).status))
-      writer.store.updateTurn(turn.id, {
+      await writer.store.updateTurn(turn.id, {
         status: 'failed',
         completedAt: new Date().toISOString(),
         error: {
@@ -403,7 +403,10 @@ function checkProtectedPage(writer: MemoryForgetWriter, pageId: string): void {
 }
 
 /** Captures an exact self page and raises one canonical destructive-action Item on the admitted command Turn. */
-export function prepareMemoryForget(writer: MemoryForgetWriter, input: PrepareMemoryForgetInput) {
+export async function prepareMemoryForget(
+  writer: MemoryForgetWriter,
+  input: PrepareMemoryForgetInput
+) {
   const turn = admitWriter(writer, input)!;
   const previous = readPendingRequest(writer.workspaceDb.sqlite, input.requestId);
   if (previous) {
@@ -449,7 +452,7 @@ export function prepareMemoryForget(writer: MemoryForgetWriter, input: PrepareMe
     approval: { kind: 'destructive-action', title, description },
     now,
   });
-  writer.store.createItem({
+  await writer.store.createItem({
     id: record.requestItemId,
     owner: { kind: 'workspace', workspaceId: record.workspaceId },
     threadId: record.threadId,

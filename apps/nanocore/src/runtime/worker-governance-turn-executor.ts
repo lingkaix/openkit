@@ -2561,7 +2561,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       } else {
         try {
           if (workerFinalStatus) {
-            this.recordAcceptedWorkerOutcome(
+            await this.recordAcceptedWorkerOutcome(
               store,
               turn,
               agentSessionId,
@@ -2570,7 +2570,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
               environmentPackage?.snapshotId ?? null
             );
           } else {
-            this.completeTurn(store, turn, agentSessionId, requestId);
+            await this.completeTurn(store, turn, agentSessionId, requestId);
           }
         } catch (error) {
           errors.push(error);
@@ -2609,7 +2609,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             primaryError instanceof TurnStartValidationError &&
             primaryError.code === 'workspace_access_denied'
           ) {
-            terminalizeGovernedWorkerTurn({
+            await terminalizeGovernedWorkerTurn({
               agentSessionId,
               completedAt: this.now(),
               errorCode: primaryError.code,
@@ -2620,7 +2620,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
               turnId: turn.id,
             });
           } else {
-            this.failTurn(store, turn, agentSessionId, requestId, error, primaryError);
+            await this.failTurn(store, turn, agentSessionId, requestId, error, primaryError);
           }
         } catch (failureError) {
           throw new AggregateError(
@@ -2736,7 +2736,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         currentTurn.status === 'interrupted' &&
         currentTurn.error?.code === restartFailure.errorCode
       ) {
-        terminalizeGovernedWorkerTurn(restartFailure);
+        await terminalizeGovernedWorkerTurn(restartFailure);
         if (session.state !== 'cleaned') {
           await this.cleanupBackendLifecycle(
             lifecycle,
@@ -2763,7 +2763,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           );
         } catch (error) {
           try {
-            terminalizeGovernedWorkerTurn(restartFailure);
+            await terminalizeGovernedWorkerTurn(restartFailure);
           } catch (terminalError) {
             throw new AggregateError(
               [error, terminalError],
@@ -2800,7 +2800,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         return recoveredStatus;
       }
 
-      this.recordAcceptedWorkerOutcome(
+      await this.recordAcceptedWorkerOutcome(
         store,
         turn,
         environmentPackage.scope.agentSessionId,
@@ -3114,7 +3114,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           403
         );
       }
-      const importResult = importWorkerTranscript(store, environmentPackage, transcript, {
+      const importResult = await importWorkerTranscript(store, environmentPackage, transcript, {
         acceptedLiveEvents,
         recordedAt,
       });
@@ -3784,14 +3784,14 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
    * @param packageSnapshotId Exact package whose last inference call may explain failure.
    * @throws Error when the accepted status has no supported canonical StopReason.
    */
-  private recordAcceptedWorkerOutcome(
+  private async recordAcceptedWorkerOutcome(
     store: FsStore,
     turnScope: ReturnType<FsStore['getTurnById']>,
     agentSessionId: string,
     requestId: string | null,
     accepted: AcceptedWorkerFinalStatus,
     packageSnapshotId: string | null
-  ): void {
+  ): Promise<void> {
     const terminalCause = this.coreDb
       ? listSchedulerExecutionAttemptsForTurn(this.coreDb, {
           workspaceId: workspaceIdForOwner(turnScope.owner),
@@ -3817,11 +3817,11 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       stopReason === 'length' ||
       stopReason === 'budget_exhausted'
     ) {
-      this.completeTurn(store, turnScope, agentSessionId, requestId, stopReason);
+      await this.completeTurn(store, turnScope, agentSessionId, requestId, stopReason);
       return;
     }
     if (stopReason === 'aborted') {
-      terminalizeGovernedWorkerTurn({
+      await terminalizeGovernedWorkerTurn({
         agentSessionId,
         agentSessionRetained,
         completedAt: this.now(),
@@ -3884,7 +3884,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     }
     if (unsupportedInference) {
       // Project only the known Gateway category, never the request or bridge feature text.
-      terminalizeGovernedWorkerTurn({
+      await terminalizeGovernedWorkerTurn({
         agentSessionId,
         agentSessionRetained,
         completedAt: this.now(),
@@ -3904,7 +3904,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     const failure = new Error(
       cause || `Worker reported terminal status: ${accepted.status}.${inferenceDetail}`
     );
-    this.failTurn(
+    await this.failTurn(
       store,
       turnScope,
       agentSessionId,
@@ -3924,26 +3924,26 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
    * @param requestId Request id.
    * @param stopReason Canonical successful terminal reason.
    */
-  private completeTurn(
+  private async completeTurn(
     store: FsStore,
     turnScope: ReturnType<FsStore['getTurnById']>,
     agentSessionId: string,
     requestId: string | null,
     stopReason: Extract<StopReason, 'budget_exhausted' | 'completed' | 'length'> = 'completed'
-  ): void {
+  ): Promise<void> {
     const completedAt = this.now();
-    const agentSession = store.updateAgentSession(agentSessionId, {
+    const agentSession = await store.updateAgentSession(agentSessionId, {
       message: null,
       status: 'idle',
       updatedAt: completedAt,
     });
-    const turn = store.updateTurn(turnScope.id, {
+    const turn = await store.updateTurn(turnScope.id, {
       completedAt,
       error: null,
       status: 'completed',
     });
 
-    store.emitTurnEvent(
+    await store.emitTurnEvent(
       turnScope.id,
       {
         data: { agentSession, type: 'agent-session-updated' },
@@ -3955,7 +3955,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       },
       ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
-    store.emitTurnEvent(
+    await store.emitTurnEvent(
       turnScope.id,
       {
         data: { stopReason, turn, type: 'turn-completed' },
@@ -3981,7 +3981,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
    * @param agentSessionRetained Whether the backend still holds the AgentSession's reusable binding.
    * @throws AggregateError when one or more terminal writes report a partial failure.
    */
-  private failTurn(
+  private async failTurn(
     store: FsStore,
     turnScope: ReturnType<FsStore['getTurnById']>,
     agentSessionId: string | null,
@@ -3989,7 +3989,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     error: unknown,
     primaryError: unknown = error,
     agentSessionRetained = false
-  ): void {
+  ): Promise<void> {
     const cancellationWon =
       this.coreDb &&
       agentSessionId !== null &&
@@ -4007,7 +4007,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         : undefined
     );
     const message = publishedErrorMessage(error, 'The governed worker turn failed.');
-    terminalizeGovernedWorkerTurn({
+    await terminalizeGovernedWorkerTurn({
       agentSessionId,
       agentSessionRetained,
       completedAt: this.now(),

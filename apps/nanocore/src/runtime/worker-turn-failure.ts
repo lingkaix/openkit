@@ -44,12 +44,12 @@ export interface MissingGovernedWorkerTurnResult {
  * Idempotently terminalizes a governed-worker turn and repairs partial product-store writes.
  *
  * @param input Store, lineage, outcome, diagnostic, request, and timestamp.
- * @returns The authoritative turn, or `missing` when no product turn exists.
+ * @returns The authoritative Turn after publication acknowledgement, or `missing` when no product Turn exists.
  * @throws AggregateError when a durable write reports failure; a later retry can repair it.
  */
-export function terminalizeGovernedWorkerTurn(
+export async function terminalizeGovernedWorkerTurn(
   input: TerminalizeGovernedWorkerTurnInput
-): ReturnType<FsStore['getTurnById']> | MissingGovernedWorkerTurnResult {
+): Promise<ReturnType<FsStore['getTurnById']> | MissingGovernedWorkerTurnResult> {
   const initialTurn = readTurn(input.store, input.turnId);
   if (!initialTurn) {
     return { status: 'missing' };
@@ -64,10 +64,10 @@ export function terminalizeGovernedWorkerTurn(
         event.data.stopReason === 'completed'
     );
   if (successfulTerminalEvent?.data.type === 'turn-completed') {
-    return reconcileCompletedTurn(input, initialTurn, successfulTerminalEvent.data.turn);
+    return await reconcileCompletedTurn(input, initialTurn, successfulTerminalEvent.data.turn);
   }
   if (initialTurn.status === 'completed') {
-    return reconcileCompletedTurn(input, initialTurn, initialTurn);
+    return await reconcileCompletedTurn(input, initialTurn, initialTurn);
   }
 
   // Exact callers may finish an already decided typed failure; they never replace its diagnostic.
@@ -106,7 +106,7 @@ export function terminalizeGovernedWorkerTurn(
 
   if (!turnMatchesOutcome(terminalTurn, input.outcome, errorCode, message)) {
     try {
-      terminalTurn = input.store.updateTurn(
+      terminalTurn = await input.store.updateTurn(
         input.turnId,
         turnPatch,
         ALREADY_DECIDED_PUBLICATION_ADMISSION
@@ -133,7 +133,7 @@ export function terminalizeGovernedWorkerTurn(
       terminalSession.message !== terminalSessionMessage)
   ) {
     try {
-      terminalSession = input.store.updateAgentSession(input.agentSessionId, {
+      terminalSession = await input.store.updateAgentSession(input.agentSessionId, {
         message: terminalSessionMessage,
         status: terminalSessionStatus,
         updatedAt: completedAt,
@@ -158,7 +158,7 @@ export function terminalizeGovernedWorkerTurn(
   );
   if (terminalSession?.status === terminalSessionStatus && !sessionEventExists) {
     try {
-      input.store.emitTurnEvent(
+      await input.store.emitTurnEvent(
         input.turnId,
         {
           data: { agentSession: terminalSession, type: 'agent-session-updated' },
@@ -180,7 +180,7 @@ export function terminalizeGovernedWorkerTurn(
     .some((event) => event.event === 'turn.completed' && event.data.type === 'turn-completed');
   if (turnMatchesOutcome(terminalTurn, input.outcome, errorCode, message) && !terminalEventExists) {
     try {
-      input.store.emitTurnEvent(
+      await input.store.emitTurnEvent(
         input.turnId,
         {
           data: {
@@ -216,14 +216,14 @@ export function terminalizeGovernedWorkerTurn(
  * @param input Recovery input with store and lineage.
  * @param currentTurn Current durable turn row.
  * @param authoritativeTurn Completed turn from the row or terminal event.
- * @returns Reconciled completed turn.
+ * @returns The reconciled completed Turn after publication acknowledgement.
  * @throws AggregateError when a durable write reports failure.
  */
-function reconcileCompletedTurn(
+async function reconcileCompletedTurn(
   input: TerminalizeGovernedWorkerTurnInput,
   currentTurn: ReturnType<FsStore['getTurnById']>,
   authoritativeTurn: ReturnType<FsStore['getTurnById']>
-): ReturnType<FsStore['getTurnById']> {
+): Promise<ReturnType<FsStore['getTurnById']>> {
   const errors: unknown[] = [];
   let completedTurn = currentTurn;
   if (
@@ -232,7 +232,7 @@ function reconcileCompletedTurn(
     currentTurn.error !== null
   ) {
     try {
-      completedTurn = input.store.updateTurn(
+      completedTurn = await input.store.updateTurn(
         input.turnId,
         {
           completedAt: authoritativeTurn.completedAt,
@@ -252,7 +252,7 @@ function reconcileCompletedTurn(
     : null;
   if (input.agentSessionId && idleSession && idleSession.status !== 'idle') {
     try {
-      idleSession = input.store.updateAgentSession(input.agentSessionId, {
+      idleSession = await input.store.updateAgentSession(input.agentSessionId, {
         message: null,
         status: 'idle',
         updatedAt: authoritativeTurn.completedAt ?? input.completedAt,
@@ -275,7 +275,7 @@ function reconcileCompletedTurn(
     )
   ) {
     try {
-      input.store.emitTurnEvent(
+      await input.store.emitTurnEvent(
         input.turnId,
         {
           data: { agentSession: idleSession, type: 'agent-session-updated' },
@@ -302,7 +302,7 @@ function reconcileCompletedTurn(
       )
   ) {
     try {
-      input.store.emitTurnEvent(
+      await input.store.emitTurnEvent(
         input.turnId,
         {
           data: { stopReason: 'completed', turn: completedTurn, type: 'turn-completed' },

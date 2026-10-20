@@ -82,10 +82,10 @@ function resourcePolicyRequestView(
 export function createResourcePolicyOperationImplementations(
   dependencies: OperationInvocationDependencies
 ) {
-  const withDatabase = <T>(
+  const withDatabase = async <T>(
     workspaceId: string,
     run: (db: ResourcePolicyRequestDependencies['workspaceDb']) => T
-  ): T => {
+  ): Promise<Awaited<T>> => {
     if (!dependencies.repositoryWorkspaceDb)
       throw new OperationError(
         'resource_policy_unavailable',
@@ -94,7 +94,7 @@ export function createResourcePolicyOperationImplementations(
       );
     const db = dependencies.repositoryWorkspaceDb(workspaceId);
     try {
-      return run(db);
+      return await run(db);
     } catch (error) {
       if (error instanceof PendingRequestCommandError)
         throw new OperationError(error.code, error.message, error.status, { cause: error });
@@ -113,7 +113,7 @@ export function createResourcePolicyOperationImplementations(
       },
       context: AdmittedOperationContext
     ) =>
-      withDatabase(input.workspaceId, (db) => {
+      withDatabase(input.workspaceId, async (db) => {
         const worker = context.kind === 'worker';
         const responsibleUserId = worker
           ? responsibleUserIdForActor(context.actor)
@@ -205,7 +205,7 @@ export function createResourcePolicyOperationImplementations(
         };
         preflightPendingRequest(db.sqlite, { ...raised, kind: 'approval' });
         if (!worker)
-          services.store.createTurn(
+          await services.store.createTurn(
             input.workspaceId,
             input.threadId,
             'Request resource access change',
@@ -214,16 +214,19 @@ export function createResourcePolicyOperationImplementations(
             { turnId: raised.raisingTurnId, status: 'running' }
           );
         try {
-          const record = raiseResourcePolicyRequest(services, raised, change, origin);
+          const record = await raiseResourcePolicyRequest(services, raised, change, origin);
           if (!worker)
-            services.store.updateTurn(raised.raisingTurnId, {
+            await services.store.updateTurn(raised.raisingTurnId, {
               status: 'completed',
               completedAt: now,
             });
           return resourcePolicyRequestView(record);
         } catch (error) {
           if (!worker)
-            services.store.updateTurn(raised.raisingTurnId, { status: 'failed', completedAt: now });
+            await services.store.updateTurn(raised.raisingTurnId, {
+              status: 'failed',
+              completedAt: now,
+            });
           throw error;
         }
       }),

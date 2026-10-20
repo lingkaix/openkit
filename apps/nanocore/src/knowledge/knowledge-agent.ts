@@ -145,7 +145,7 @@ export async function askKnowledgeAgent(
   const parent = input.access.outputThreadId
     ? store.getThread(input.workspaceId, input.access.outputThreadId)
     : undefined;
-  const thread = store.createThread(
+  const thread = await store.createThread(
     input.workspaceId,
     'Knowledge question',
     undefined,

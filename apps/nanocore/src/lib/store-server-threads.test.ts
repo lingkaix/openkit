@@ -3,6 +3,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { openCoreDb } from '../storage/db.js';
+import { applyMigrations } from '../storage/migrate.js';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION, FsStore } from './store.js';
 
 const actor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
@@ -192,4 +195,113 @@ describe('Server-owned canonical history', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
+});
+
+it.each([
+  'workspace',
+  'server',
+] as const)('retains acknowledged %s history without the former product files', async (scope) => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'sql-history-'));
+  const coreDb = openCoreDb(dataRoot);
+  applyMigrations(coreDb);
+  try {
+    const store = new FsStore({ dataRoot });
+    const workspace = await store.createWorkspace('History');
+    const thread =
+      scope === 'server'
+        ? await store.createServerThread('History')
+        : await store.createThread(workspace.id, 'History');
+    const turn =
+      scope === 'server'
+        ? await store.createServerTurn(thread.id, 'Recorded', actor)
+        : await store.createTurn(workspace.id, thread.id, 'Recorded', actor);
+    const item = {
+      id: allocateEntityId('it'),
+      owner: thread.owner,
+      threadId: thread.id,
+      turnId: turn.id,
+      type: 'assistant-message' as const,
+      text: 'Original bytes',
+      status: 'in_progress' as const,
+      createdAt: turn.startedAt!,
+      completedAt: null,
+    };
+    if (scope === 'server') await store.createServerItem(item);
+    else await store.createItem(item);
+    await getControlStoreWorkerClient().shutdown();
+    rmSync(
+      join(
+        dataRoot,
+        ...(scope === 'server' ? ['server', 'threads'] : ['workspaces', workspace.id, 'threads'])
+      ),
+      { recursive: true, force: true }
+    );
+    const reopened = new FsStore({ dataRoot });
+    const threads =
+      scope === 'server' ? reopened.listServerThreads() : reopened.listThreads(workspace.id);
+    expect(threads.map((entry) => entry.id)).toEqual([thread.id]);
+    const items =
+      scope === 'server'
+        ? reopened.listServerThreadItems(thread.id)
+        : reopened.listThreadItems(workspace.id, thread.id);
+    expect(items).toEqual([item]);
+  } finally {
+    await getControlStoreWorkerClient().shutdown();
+    coreDb.sqlite.close();
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
+
+it.each([
+  'workspace',
+  'server',
+  'agent-session',
+] as const)('enforces %s single flight across independently opened product readers', async (scope) => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'sql-exclusion-'));
+  const coreDb = openCoreDb(dataRoot);
+  applyMigrations(coreDb);
+  try {
+    const store = new FsStore({ dataRoot });
+    const workspace = await store.createWorkspace('Exclusion');
+    const thread =
+      scope === 'server'
+        ? await store.createServerThread('Exclusion')
+        : await store.createThread(workspace.id, 'Exclusion');
+    const other = new FsStore({ dataRoot });
+    const results = await Promise.allSettled(
+      [store, other].map(async (producer) => {
+        if (scope === 'server') return await producer.createServerTurn(thread.id, 'Work', actor);
+        if (scope === 'workspace')
+          return await producer.createTurn(workspace.id, thread.id, 'Work', actor);
+        const timestamp = new Date().toISOString();
+        return await producer.createAgentSession({
+          id: allocateEntityId('as'),
+          workspaceId: workspace.id,
+          threadId: thread.id,
+          agentId: 'agent_codex_host',
+          status: 'idle',
+          message: null,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        });
+      })
+    );
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    await getControlStoreWorkerClient().shutdown();
+    const reopened = new FsStore({ dataRoot });
+    const retained =
+      scope === 'server'
+        ? reopened.listServerThreadTurns(thread.id)
+        : scope === 'workspace'
+          ? reopened.listThreadTurns(workspace.id, thread.id)
+          : reopened.listThreadAgentSessions(workspace.id, thread.id);
+    expect(retained.map((entry) => entry.id)).toEqual(
+      results.flatMap((result) => (result.status === 'fulfilled' ? [result.value.id] : []))
+    );
+  } finally {
+    await getControlStoreWorkerClient().shutdown();
+    coreDb.sqlite.close();
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
 });

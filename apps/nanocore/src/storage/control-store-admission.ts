@@ -15,7 +15,9 @@ import {
   ControlProductMutationSchema,
   type ControlProductOwner,
   ControlProductPreconditionError,
+  decode as decodeControlProduct,
   type PreparedControlEntry,
+  readProduct,
 } from './control-store-products.js';
 
 /** Exact prepared operation families; B2 must exclude these from legacy receipt insert/prune paths before activation. */
@@ -117,7 +119,7 @@ export function applyControlAdmission(
     receipt.expiresAt <= receipt.createdAt
   )
     throw new ControlProductPreconditionError();
-  const response = normalizeCommandRequestResponse(
+  let response = normalizeCommandRequestResponse(
     receipt.command,
     receipt.response as CommandRequestResponse
   );
@@ -138,7 +140,40 @@ export function applyControlAdmission(
       throw new ControlProductPreconditionError();
     return { replayed: true, response: retained.response };
   }
-  const event = input.audit;
+  let products = input.products;
+  let event = input.audit;
+  if (receipt.command === 'thread.create' && owner.kind === 'workspace') {
+    const threads = input.products.filter((product) => product.kind === 'thread');
+    if (threads.length === 1) {
+      const candidate = decodeControlProduct('thread', threads[0]!.record, owner);
+      if (candidate.visibility === 'private' && candidate.entryPath === 'conversation') {
+        if (
+          threads[0]!.expectedRevision !== 0 ||
+          typeof candidate.privateOwnerUserId !== 'string' ||
+          input.entries.length > 0 ||
+          input.products.some(
+            (product) => product.kind !== 'thread' && product.kind !== 'workspace'
+          )
+        )
+          throw new ControlProductPreconditionError();
+        for (const product of input.products)
+          decodeControlProduct(product.kind, product.record, owner);
+        const selected = sqlite
+          .prepare(
+            "SELECT id FROM control_threads WHERE json_extract(record_json,'$.visibility')='private' AND json_extract(record_json,'$.entryPath')='conversation' AND json_extract(record_json,'$.privateOwnerUserId')=? ORDER BY julianday(json_extract(record_json,'$.createdAt')),id LIMIT 1"
+          )
+          .get(candidate.privateOwnerUserId) as { id: string } | undefined;
+        if (selected) {
+          // Selection is native and preserves existing, including archived, history even when fresh commands race.
+          const existing = readProduct(sqlite, owner, 'thread', selected.id);
+          if (!existing) throw new ControlProductPreconditionError();
+          response = { kind: 'thread', id: selected.id };
+          products = [];
+          event = { ...event, threadId: selected.id, resource: `thread:${selected.id}` };
+        }
+      }
+    }
+  }
   if (
     event.action !== receipt.command ||
     event.requestId !== receipt.requestId ||
@@ -147,7 +182,7 @@ export function applyControlAdmission(
   )
     throw new ControlProductPreconditionError();
   pruneControlAdmissionReceipts(sqlite, owner, receipt.createdAt);
-  applyControlProducts(sqlite, owner, input.products, entries);
+  applyControlProducts(sqlite, owner, products, entries);
   const targetKind =
     response.kind === 'thread' ? 'thread' : response.kind === 'turn' ? 'turn' : null;
   if (

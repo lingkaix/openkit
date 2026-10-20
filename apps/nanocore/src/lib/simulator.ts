@@ -857,7 +857,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
         userInputRequestId: randomUUID(),
       };
 
-      this.emitStartedEnvelope(
+      await this.emitStartedEnvelope(
         store,
         state,
         agentSession,
@@ -1036,22 +1036,22 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
         });
       }
 
-      this.emitAssistant(store, state);
-      this.emitReasoning(store, state);
-      this.emitCommand(store, state);
+      await this.emitAssistant(store, state);
+      await this.emitReasoning(store, state);
+      await this.emitCommand(store, state);
       if (workerInput !== input) {
         const outcomes = JSON.parse(workerInput).pendingOutcomes as Array<{
           answers: Record<string, string[]> | null;
         }>;
         const tone = outcomes.find((outcome) => outcome.answers?.tone)?.answers?.tone?.[0];
         if (!state.requestId) throw new Error('Simulator outcome request identity is unavailable.');
-        this.emitArtifactAndComplete(store, state, tone ?? 'Concise', state.requestId);
+        await this.emitArtifactAndComplete(store, state, tone ?? 'Concise', state.requestId);
       } else {
         if (!this.coreDb) {
           await this.emitUserInputRequest(store, state, null, null);
         }
         if (state.requestId) {
-          this.emitArtifactAndComplete(store, state, 'Concise', state.requestId);
+          await this.emitArtifactAndComplete(store, state, 'Concise', state.requestId);
           return;
         }
         const completedAt = new Date().toISOString();
@@ -1064,8 +1064,8 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
           status: 'completed',
           completedAt,
         });
-        this.emitTurnUpdated(store, state, completedTurn);
-        this.emitAgentSessionUpdated(store, state, idleSession);
+        await this.emitTurnUpdated(store, state, completedTurn);
+        await this.emitAgentSessionUpdated(store, state, idleSession);
         await store.emitTurnEvent(
           state.turnId,
           {
@@ -1247,16 +1247,16 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
   /**
    * Emits turn-start, retained request input with its author, and AgentSession events.
    */
-  private emitStartedEnvelope(
+  private async emitStartedEnvelope(
     store: FsStore,
     state: SimulatedTurnState,
     agentSession: Awaited<ReturnType<FsStore['createAgentSession']>>,
     input: string,
     actor: ActorRef
-  ): void {
+  ): Promise<void> {
     const turn = store.getTurnById(state.turnId);
     const timestamp = turn.startedAt ?? new Date().toISOString();
-    const userItem = store.createItem({
+    const userItem = await store.createItem({
       id: deriveEntityId('it', ['task-user', state.turnId]),
       owner: { kind: 'workspace', workspaceId: state.workspaceId },
       threadId: state.threadId,
@@ -1269,7 +1269,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       completedAt: timestamp,
     });
 
-    store.emitTurnEvent(state.turnId, {
+    await store.emitTurnEvent(state.turnId, {
       event: 'turn.started',
       requestId: state.requestId,
       workspaceId: state.workspaceId,
@@ -1277,17 +1277,17 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       turnId: state.turnId,
       data: { type: 'turn-started', turnId: state.turnId, status: 'running' },
     });
-    this.emitItemCreated(store, state, userItem);
-    this.emitItemCompleted(store, state, userItem);
-    this.emitAgentSessionUpdated(store, state, agentSession);
+    await this.emitItemCreated(store, state, userItem);
+    await this.emitItemCompleted(store, state, userItem);
+    await this.emitAgentSessionUpdated(store, state, agentSession);
   }
 
   /**
    * Emits an assistant message with text deltas.
    */
-  private emitAssistant(store: FsStore, state: SimulatedTurnState): void {
+  private async emitAssistant(store: FsStore, state: SimulatedTurnState): Promise<void> {
     const timestamp = new Date().toISOString();
-    const assistantItem = store.createItem({
+    const assistantItem = await store.createItem({
       id: deriveEntityId('it', ['assistant', state.turnId]),
       owner: { kind: 'workspace', workspaceId: state.workspaceId },
       threadId: state.threadId,
@@ -1299,8 +1299,8 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       completedAt: null,
     });
 
-    this.emitItemCreated(store, state, assistantItem);
-    this.emitItemDelta(
+    await this.emitItemCreated(store, state, assistantItem);
+    await this.emitItemDelta(
       store,
       state,
       assistantItem.id,
@@ -1308,7 +1308,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       'Reviewing workspace context. ',
       'assistant-message'
     );
-    this.emitItemDelta(
+    await this.emitItemDelta(
       store,
       state,
       assistantItem.id,
@@ -1316,20 +1316,20 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       'Preparing a deterministic plan.',
       'assistant-message'
     );
-    const completedAssistantItem = store.updateItem(assistantItem.id, {
+    const completedAssistantItem = await store.updateItem(assistantItem.id, {
       status: 'completed',
       text: 'Reviewing workspace context. Preparing a deterministic plan.',
       completedAt: timestamp,
     });
-    this.emitItemCompleted(store, state, completedAssistantItem);
+    await this.emitItemCompleted(store, state, completedAssistantItem);
   }
 
   /**
    * Emits a reasoning item with indexed text deltas.
    */
-  private emitReasoning(store: FsStore, state: SimulatedTurnState): void {
+  private async emitReasoning(store: FsStore, state: SimulatedTurnState): Promise<void> {
     const timestamp = new Date().toISOString();
-    const reasoningItem = store.createItem({
+    const reasoningItem = await store.createItem({
       id: deriveEntityId('it', ['reasoning', state.turnId]),
       owner: { kind: 'workspace', workspaceId: state.workspaceId },
       threadId: state.threadId,
@@ -1342,8 +1342,8 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       completedAt: null,
     });
 
-    this.emitItemCreated(store, state, reasoningItem);
-    this.emitItemDelta(
+    await this.emitItemCreated(store, state, reasoningItem);
+    await this.emitItemDelta(
       store,
       state,
       reasoningItem.id,
@@ -1351,21 +1351,21 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       'Check simulator branch coverage.',
       'reasoning'
     );
-    const completedReasoningItem = store.updateItem(reasoningItem.id, {
+    const completedReasoningItem = await store.updateItem(reasoningItem.id, {
       status: 'completed',
       summary: ['Simulator path covered.'],
       content: ['Check simulator branch coverage.'],
       completedAt: timestamp,
     });
-    this.emitItemCompleted(store, state, completedReasoningItem);
+    await this.emitItemCompleted(store, state, completedReasoningItem);
   }
 
   /**
    * Emits a command-execution item with output deltas.
    */
-  private emitCommand(store: FsStore, state: SimulatedTurnState): void {
+  private async emitCommand(store: FsStore, state: SimulatedTurnState): Promise<void> {
     const timestamp = new Date().toISOString();
-    const commandItem = store.createItem({
+    const commandItem = await store.createItem({
       id: deriveEntityId('it', ['command', state.turnId]),
       owner: { kind: 'workspace', workspaceId: state.workspaceId },
       threadId: state.threadId,
@@ -1381,8 +1381,8 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       completedAt: null,
     });
 
-    this.emitItemCreated(store, state, commandItem);
-    this.emitItemDelta(
+    await this.emitItemCreated(store, state, commandItem);
+    await this.emitItemDelta(
       store,
       state,
       commandItem.id,
@@ -1390,14 +1390,14 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       'simulator: ok',
       'command-execution'
     );
-    store.updateItem(commandItem.id, { output: 'simulator: ok' });
-    const completedCommandItem = store.updateItem(commandItem.id, {
+    await store.updateItem(commandItem.id, { output: 'simulator: ok' });
+    const completedCommandItem = await store.updateItem(commandItem.id, {
       status: 'completed',
       exitCode: 0,
       durationMs: 12,
       completedAt: timestamp,
     });
-    this.emitItemCompleted(store, state, completedCommandItem);
+    await this.emitItemCompleted(store, state, completedCommandItem);
   }
 
   /**
@@ -1578,8 +1578,8 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
     }
     // A repeated question returns its existing Item without publishing it on another Turn.
     if (requestItem.turnId === state.turnId) {
-      this.emitItemCreated(store, state, requestItem);
-      this.emitItemCompleted(store, state, requestItem);
+      await this.emitItemCreated(store, state, requestItem);
+      await this.emitItemCompleted(store, state, requestItem);
     }
   }
 
@@ -1591,15 +1591,15 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
    * @param input Accepted user answer.
    * @param requestId Request proof validated before any response mutation.
    */
-  private emitArtifactAndComplete(
+  private async emitArtifactAndComplete(
     store: FsStore,
     state: SimulatedTurnState,
     input: string,
     requestId: string
-  ): void {
+  ): Promise<void> {
     const timestamp = new Date().toISOString();
     const body = `Simulator answer: ${input}`;
-    const artifact = store.createArtifact({
+    const artifact = await store.createArtifact({
       id: deriveEntityId('ar', state.turnId),
       workspaceId: state.workspaceId,
       threadId: state.threadId,
@@ -1636,17 +1636,17 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       throw new Error(`Artifact reference was not persisted: ${artifact.id}`);
     }
     const completedAt = new Date().toISOString();
-    const agentSession = store.updateAgentSession(state.agentSessionId, {
+    const agentSession = await store.updateAgentSession(state.agentSessionId, {
       status: 'idle',
       message: null,
       updatedAt: completedAt,
     });
-    const turn = store.updateTurn(state.turnId, {
+    const turn = await store.updateTurn(state.turnId, {
       status: 'completed',
       completedAt,
     });
 
-    store.emitTurnEvent(
+    await store.emitTurnEvent(
       state.turnId,
       {
         event: 'artifact.created',
@@ -1658,8 +1658,8 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       },
       ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
-    this.emitItemCreated(store, state, artifactItem);
-    this.emitItemDelta(
+    await this.emitItemCreated(store, state, artifactItem);
+    await this.emitItemDelta(
       store,
       state,
       artifactItem.id,
@@ -1667,9 +1667,9 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       artifact.id,
       'artifact-reference'
     );
-    this.emitItemCompleted(store, state, artifactItem);
-    this.emitAgentSessionUpdated(store, state, agentSession);
-    store.emitTurnEvent(
+    await this.emitItemCompleted(store, state, artifactItem);
+    await this.emitAgentSessionUpdated(store, state, agentSession);
+    await store.emitTurnEvent(
       state.turnId,
       {
         event: 'turn.completed',
@@ -1686,12 +1686,12 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
   /**
    * Emits one item creation event.
    */
-  private emitItemCreated(
+  private async emitItemCreated(
     store: FsStore,
     state: SimulatedTurnState,
     item: Awaited<ReturnType<FsStore['createItem']>>
-  ): void {
-    store.emitTurnEvent(
+  ): Promise<void> {
+    await store.emitTurnEvent(
       state.turnId,
       {
         event: 'item.created',
@@ -1708,7 +1708,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
   /**
    * Emits one item delta event.
    */
-  private emitItemDelta(
+  private async emitItemDelta(
     store: FsStore,
     state: SimulatedTurnState,
     itemId: string,
@@ -1720,7 +1720,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       | 'artifact-updated',
     delta: string,
     itemType: ItemType
-  ): void {
+  ): Promise<void> {
     const base = {
       type: 'item-delta' as const,
       itemId,
@@ -1734,7 +1734,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
           : { ...base, deltaKind, delta }
     );
 
-    store.emitTurnEvent(
+    await store.emitTurnEvent(
       state.turnId,
       {
         event: 'item.delta',
@@ -1751,8 +1751,12 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
   /**
    * Emits one item completion event.
    */
-  private emitItemCompleted(store: FsStore, state: SimulatedTurnState, item: RuntimeItem): void {
-    store.emitTurnEvent(
+  private async emitItemCompleted(
+    store: FsStore,
+    state: SimulatedTurnState,
+    item: RuntimeItem
+  ): Promise<void> {
+    await store.emitTurnEvent(
       state.turnId,
       {
         event: 'item.completed',
@@ -1769,12 +1773,12 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
   /**
    * Emits one turn update event.
    */
-  private emitTurnUpdated(
+  private async emitTurnUpdated(
     store: FsStore,
     state: SimulatedTurnState,
     turn: Awaited<ReturnType<FsStore['updateTurn']>>
-  ): void {
-    store.emitTurnEvent(
+  ): Promise<void> {
+    await store.emitTurnEvent(
       state.turnId,
       {
         event: 'turn.updated',
@@ -1791,12 +1795,12 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
   /**
    * Emits one AgentSession update event.
    */
-  private emitAgentSessionUpdated(
+  private async emitAgentSessionUpdated(
     store: FsStore,
     state: SimulatedTurnState,
     agentSession: Awaited<ReturnType<FsStore['updateAgentSession']>>
-  ): void {
-    store.emitTurnEvent(
+  ): Promise<void> {
+    await store.emitTurnEvent(
       state.turnId,
       {
         event: 'agent.session.updated',

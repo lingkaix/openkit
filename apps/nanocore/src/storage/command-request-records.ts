@@ -33,6 +33,8 @@ import type {
 } from '../lib/store.js';
 import type { AppDb } from './app-db.js';
 import { lightAppDbPath, openExistingAppDb } from './app-db.js';
+import { CONTROL_ADMISSION_COMMANDS } from './control-store-admission.js';
+import { openControlStoreProductReadHandle } from './control-store-products.js';
 import {
   type CoreDb,
   openCoreDb,
@@ -256,6 +258,12 @@ export function recordCommandRequestRecordInDb(
   record: CommandRequestRecord
 ): void {
   assertCommandRequestDbOwner(db, record.scope);
+  if (
+    (db.scope === 'core' || db.scope === 'workspace') &&
+    CONTROL_ADMISSION_COMMANDS.some((command) => command === record.command)
+  ) {
+    throw new Error('Native admission receipts belong to the database worker.');
+  }
   const scope = StoredCommandScopeV1Schema.parse(record.scope);
   const response = normalizeCommandRequestResponse(record.command, record.response);
   const previous = db.sqlite
@@ -314,6 +322,8 @@ export function recordCommandRequestRecordInDb(
 /**
  * Gets one active command idempotency request from its owning scoped database.
  *
+ * Native product lookups do not prune; unrelated Main-owned families retain their existing expiry maintenance.
+ *
  * @param dataRoot Data root that owns the databases.
  * @param scope Exact Core, User, or Workspace request owner.
  * @param key Stable command request key.
@@ -352,6 +362,11 @@ export function getCommandRequestRecord(
   const db = openCommandRequestDb(dataRoot, owner);
 
   try {
+    // commandRequestKey owns the operation prefix; this selects maintenance, never authority.
+    const workerOwnedKey =
+      (db.scope === 'core' || db.scope === 'workspace') &&
+      CONTROL_ADMISSION_COMMANDS.some((command) => key.startsWith(`${command}|`));
+    if (!workerOwnedKey) pruneCommandRequestRecords(db, referenceTime);
     return getCommandRequestRecordFromDb(db, key, referenceTime);
   } finally {
     db.sqlite.close();
@@ -359,7 +374,7 @@ export function getCommandRequestRecord(
 }
 
 /**
- * Returns whether one Workspace has the current canonical record and rejects the retired name.
+ * Reads whether the published Workspace has native canonical metadata, without a file-authority fallback or migration.
  *
  * @param dataRoot Data root that owns the Workspace.
  * @param workspaceId Workspace identity to inspect.
@@ -371,7 +386,14 @@ function workspaceRecordExists(dataRoot: string, workspaceId: string): boolean {
   if (existsSync(retiredPath)) {
     throw new Error(`Unsupported canonical workspace file workspace.json: ${workspaceId}.`);
   }
-  return existsSync(join(workspaceRoot, 'workspace-record.json'));
+  const path = workspaceDbPath(dataRoot, workspaceId);
+  if (!existsSync(path)) return false;
+  const reader = openControlStoreProductReadHandle(path, { kind: 'workspace', workspaceId });
+  try {
+    return reader.get('workspace', workspaceId) !== undefined;
+  } finally {
+    reader.close();
+  }
 }
 
 /**
@@ -387,7 +409,6 @@ export function getCommandRequestRecordFromDb(
   key: string,
   referenceTime: string
 ): CommandRequestRecord | null {
-  pruneCommandRequestRecords(db, referenceTime);
   const row = db.sqlite.prepare(`${commandRequestSelect(db)} WHERE request_key = ?`).get(key) as
     | CommandRequestRow
     | undefined;
@@ -399,11 +420,14 @@ export function getCommandRequestRecordFromDb(
   const record =
     db.scope === 'app' ? decodeCommandRequestPayloadV1(row) : mapCommandRequestRow(row);
   assertCommandRequestDbOwner(db, record.scope);
-  if (db.scope === 'app' && record.expiresAt <= referenceTime) {
-    throw new KernelCommandError(
-      'recovery_required',
-      'The original request requires recovery and cannot be replayed.'
-    );
+  if (record.expiresAt <= referenceTime) {
+    if (db.scope === 'app') {
+      throw new KernelCommandError(
+        'recovery_required',
+        'The original request requires recovery and cannot be replayed.'
+      );
+    }
+    return null;
   }
   return record;
 }
@@ -547,16 +571,17 @@ export function listCommandRequestRecords(
     const db = openCommandRequestDb(dataRoot, owner);
 
     try {
-      pruneCommandRequestRecords(db, referenceTime);
       return (
         db.sqlite
           .prepare(`${COMMAND_REQUEST_SELECT} ORDER BY created_at ASC, request_key ASC`)
           .all() as CommandRequestRow[]
-      ).map((row) => {
-        const record = mapCommandRequestRow(row);
-        assertCommandRequestDbOwner(db, record.scope);
-        return record;
-      });
+      )
+        .map((row) => {
+          const record = mapCommandRequestRow(row);
+          assertCommandRequestDbOwner(db, record.scope);
+          return record;
+        })
+        .filter((record) => record.expiresAt > referenceTime);
     } finally {
       db.sqlite.close();
     }
@@ -666,7 +691,7 @@ function assertCommandRequestDbOwner(db: CommandRequestDb, scope: CommandRequest
 }
 
 /**
- * Removes expired command requests from one open database.
+ * Removes expired main-owned receipts after a main-owned write; worker receipts remain with their tuple owner.
  *
  * @param db Scoped database to prune.
  * @param referenceTime Current ISO timestamp used for expiry.
@@ -675,12 +700,16 @@ function pruneCommandRequestRecords(db: CommandRequestDb, referenceTime: string)
   if (db.scope === 'app') {
     return;
   }
-  if (db.scope === 'core' || db.scope === 'user') {
+  if (db.scope === 'user') {
     db.sqlite.prepare('DELETE FROM idempotency_requests WHERE expires_at <= ?').run(referenceTime);
     return;
   }
 
-  db.sqlite.prepare('DELETE FROM idempotency_requests WHERE expires_at <= ?').run(referenceTime);
+  db.sqlite
+    .prepare(
+      `DELETE FROM idempotency_requests WHERE expires_at <= ? AND command_name NOT IN (${CONTROL_ADMISSION_COMMANDS.map(() => '?').join(',')})`
+    )
+    .run(referenceTime, ...CONTROL_ADMISSION_COMMANDS);
 }
 
 /**
