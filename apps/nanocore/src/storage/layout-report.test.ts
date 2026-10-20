@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -27,6 +27,44 @@ function createDataRoot(): string {
 }
 
 describe('storage layout report', () => {
+  it('T1 reports Workspace0012 only for its native owner and leaves Core0014 intact', ({
+    skip,
+  }) => {
+    const root = createDataRoot();
+    const core = openCoreDb(root);
+    const workspaceId = 'ws_00000000-0000-73c3-900f-8d310e4ba201';
+    const workspace = openWorkspaceDb(root, workspaceId);
+    try {
+      applyMigrations(core);
+      applyScopedMigrations(workspace);
+      const tables = workspace.sqlite
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('control_executions', 'control_execution_steps') ORDER BY name"
+        )
+        .all();
+      if (
+        tables.length === 0 &&
+        !existsSync(new URL('../../drizzle/workspace/0012_execution_journal.sql', import.meta.url))
+      )
+        skip('schema-pending: Workspace0012 execution journal');
+      expect(tables).toEqual([{ name: 'control_execution_steps' }, { name: 'control_executions' }]);
+      const before = workspace.sqlite.serialize();
+      const report = createStorageLayoutReport(root);
+      expect(report.workspaces).toHaveLength(1);
+      expect(report.workspaces[0]?.workspaceId).toBe(workspaceId);
+      expect(report.workspaces[0]?.workspaceDb.appliedMigrations.slice(-2)).toEqual([
+        'workspace_0011_workspace_capture_protection',
+        'workspace_0012_execution_journal',
+      ]);
+      expect(report.serverDb.appliedMigrations.slice(-1)).toEqual(['core_0014_execution_journal']);
+      expect(report.serverDb.appliedMigrations).not.toContain('workspace_0012_execution_journal');
+      expect(workspace.sqlite.serialize().equals(before)).toBe(true);
+    } finally {
+      workspace.sqlite.close();
+      core.sqlite.close();
+    }
+  });
+
   it('reports target database ledgers', () => {
     const dataRoot = createDataRoot();
     const coreDb = openCoreDb(dataRoot);

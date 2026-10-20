@@ -64,6 +64,62 @@ function initializeUnmigratedScopedDb(scopedDb: UserDb | WorkspaceDb): void {
 }
 
 describe('scoped storage databases', () => {
+  it('T1 reopens the native Workspace journal under FULL without changing its closed column contract', ({
+    skip,
+  }) => {
+    const root = createDataRoot();
+    const workspaceId = 'ws_00000000-0000-73c3-900f-8d310e4ba201';
+    let db = openWorkspaceDb(root, workspaceId);
+    try {
+      applyScopedMigrations(db);
+      const tables = listTables(db.sqlite).filter((name) =>
+        ['control_execution_steps', 'control_executions'].includes(name)
+      );
+      if (
+        tables.length === 0 &&
+        !existsSync(new URL('../../drizzle/workspace/0012_execution_journal.sql', import.meta.url))
+      )
+        skip('schema-pending: Workspace0012 execution journal');
+      expect(tables).toEqual(['control_execution_steps', 'control_executions']);
+      const before = db.sqlite.serialize();
+      db.sqlite.close();
+      db = openBootVerifiedWorkspaceDb(root, workspaceId);
+      expect(db.sqlite.pragma('synchronous', { simple: true })).toBe(2);
+      expect(db.sqlite.pragma('foreign_keys', { simple: true })).toBe(1);
+      expect(tableColumns(db.sqlite, 'control_executions')).toEqual([
+        'id',
+        'schema_version',
+        'owner_json',
+        'work_id',
+        'definition_version',
+        'input_fingerprint',
+        'phase',
+        'revision',
+        'terminal_cause',
+        'exclusion_refs_json',
+        'span_json',
+      ]);
+      expect(tableColumns(db.sqlite, 'control_execution_steps')).toEqual([
+        'execution_id',
+        'step_id',
+        'schema_version',
+        'ordinal',
+        'parent_step_id',
+        'state',
+        'invocation_id',
+        'control_json',
+        'invocation_json',
+        'span_json',
+        'inspected_execution_id',
+        'inspected_step_id',
+      ]);
+      expect(db.sqlite.serialize().equals(before)).toBe(true);
+    } finally {
+      if (db.sqlite.open) db.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     { name: 'openCoreDb', open: openCoreDb },
     { name: 'openCoreDbWithIntegrityCheck', open: openCoreDbWithIntegrityCheck },
