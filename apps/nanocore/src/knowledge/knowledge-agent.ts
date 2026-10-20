@@ -154,7 +154,7 @@ export async function askKnowledgeAgent(
       ? { visibility: 'workspace' }
       : { visibility: 'private', privateOwnerUserId: userId }
   );
-  const turn = store.createTurn(
+  const turn = await store.createTurn(
     input.workspaceId,
     thread.id,
     input.question,
@@ -727,7 +727,7 @@ export async function askKnowledgeAgent(
     }
   } catch (error) {
     if (store.getTurnById(turn.id).status === 'running')
-      store.updateTurn(turn.id, {
+      await store.updateTurn(turn.id, {
         status: 'failed',
         completedAt: new Date().toISOString(),
         error: {

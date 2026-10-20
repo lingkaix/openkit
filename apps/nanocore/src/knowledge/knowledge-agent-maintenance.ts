@@ -683,7 +683,7 @@ export function prepareKnowledgeMaintenance(
                 workspaceId: input.workspaceId,
                 sourceReferences: refs,
               }).verifiedExternalReferences;
-              const proposal = store.createKnowledgeProposal({
+              const proposal = await store.createKnowledgeProposal({
                 ...edit,
                 workspaceId: input.workspaceId,
                 sourceReferences: refs,
