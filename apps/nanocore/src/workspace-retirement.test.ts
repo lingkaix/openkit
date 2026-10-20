@@ -651,22 +651,41 @@ describe('retained-only quarantine retirement: native operation and Core authori
     }
   });
 
-  it('exposes bounded quarantine metadata from registry without content listing, paths or private material', async () => {
+  it('exposes bounded quarantine and retirement metadata without content listing, paths or private material', async () => {
     const f = fixture();
     const content = vi.spyOn(f.store, 'getWorkspace');
     const listing = vi.spyOn(f.store, 'listWorkspaces');
     const open = vi.spyOn(databases, 'openWorkspaceDb');
-    const response = await f.call('administration.cleanup-read');
-    expect(response.status).toBe(200);
-    const text = await response.text();
-    const body = JSON.parse(text) as { items: Array<Record<string, unknown>> };
-    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(262144);
-    expect(body.items.length).toBeLessThanOrEqual(100);
-    expect(text).not.toContain(f.dataRoot);
-    expect(text).not.toContain('Retained private canary');
-    expect(content).not.toHaveBeenCalled();
-    expect(listing).not.toHaveBeenCalled();
-    expect(open).not.toHaveBeenCalled();
-    expect(body.items.some((item) => item.workspaceId === f.workspaceId)).toBe(true);
+    for (const status of ['active', 'retired'] as const) {
+      if (status === 'retired') await expectRetired(f, await f.call(OPERATION, f.request));
+      const response = await f.call('administration.cleanup-read');
+      expect(response.status).toBe(200);
+      const text = await response.text();
+      const body = JSON.parse(text) as { items: Array<{ target: Record<string, unknown> }> };
+      expect(Buffer.byteLength(text)).toBeLessThanOrEqual(262144);
+      expect(body.items.length).toBeLessThanOrEqual(100);
+      expect(text).not.toContain(f.dataRoot);
+      expect(text).not.toContain('Retained private canary');
+      expect(content).not.toHaveBeenCalled();
+      expect(listing).not.toHaveBeenCalled();
+      expect(open).not.toHaveBeenCalled();
+      expect(body.items.find((item) => item.target.workspaceId === f.workspaceId)).toMatchObject({
+        source: 'workspace-registry',
+        target: { kind: 'workspace-registry', workspaceId: f.workspaceId },
+        state:
+          status === 'active'
+            ? {
+                registryStatus: 'active',
+                registryRevision: 1,
+                quarantineCheck: 'database',
+                retirement: null,
+              }
+            : {
+                registryStatus: 'retired',
+                registryRevision: 2,
+                retirement: { dataRetained: true, storageReclaimed: false },
+              },
+      });
+    }
   });
 });

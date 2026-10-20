@@ -1,3 +1,5 @@
+// openkit-test-platform: posix
+import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   copyFileSync,
@@ -9,8 +11,11 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../app.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
@@ -108,6 +113,9 @@ function fixture(fault: 'corrupt' | 'missing' | 'records', personal = false) {
     workspaceId,
   });
   workspaceDb.sqlite.close();
+  const originalWorkspaceRecord = readFileSync(
+    join(dataRoot, 'workspaces', workspaceId, 'workspace-record.json')
+  );
   if (fault === 'missing') rmSync(workspaceDbPath(dataRoot, workspaceId));
   if (fault === 'corrupt')
     writeFileSync(workspaceDbPath(dataRoot, workspaceId), 'Retained corrupt authority');
@@ -147,10 +155,202 @@ function fixture(fault: 'corrupt' | 'missing' | 'records', personal = false) {
     member,
     request,
     call,
+    originalWorkspaceRecord,
   };
 }
 
+/** Runs the real source entry in a separate process, with no watcher, built-App dependency or Host fixture. */
+async function startRetirementProcess(dataRoot: string) {
+  const reservation = createServer();
+  await new Promise<void>((resolve, reject) => {
+    reservation.once('error', reject);
+    reservation.listen(0, '127.0.0.1', resolve);
+  });
+  const address = reservation.address();
+  if (!address || typeof address === 'string')
+    throw new Error('Fixture listener address is unavailable.');
+  const port = address.port;
+  await new Promise<void>((resolve, reject) =>
+    reservation.close((error) => (error ? reject(error) : resolve()))
+  );
+  const appRoot = fileURLToPath(new URL('../../', import.meta.url));
+  const child = spawn(process.execPath, ['--import', 'tsx', 'src/index.ts'], {
+    cwd: appRoot,
+    env: {
+      PATH: process.env.PATH,
+      TMPDIR: tmpdir(),
+      HOME: dataRoot,
+      OPENKIT_DATA_ROOT: dataRoot,
+      OPENKIT_CORE_MODE: 'server',
+      OPENKIT_BIND_HOST: '127.0.0.1',
+      PORT: String(port),
+      OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR: '1',
+      BETTER_AUTH_SECRET: 'retirement-process-fixture-only-secret-at-least-32-characters',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let output = '';
+  let exited = false;
+  const done = new Promise<void>((resolve) => {
+    child.once('exit', () => {
+      exited = true;
+      resolve();
+    });
+    child.once('error', (error) => {
+      output += error.message;
+      exited = true;
+      resolve();
+    });
+  });
+  for (const stream of [child.stdout, child.stderr])
+    stream.on('data', (chunk) => {
+      output = (output + chunk.toString()).slice(-65536);
+    });
+  const stop = async () => {
+    if (exited) return;
+    const deadline = setTimeout(() => child.kill('SIGKILL'), 5000);
+    deadline.unref();
+    try {
+      child.kill('SIGTERM');
+      await done;
+    } finally {
+      clearTimeout(deadline);
+    }
+  };
+  disposals.push(stop);
+  const baseUrl = `http://127.0.0.1:${port}`;
+  try {
+    await vi.waitFor(
+      async () => {
+        if (exited) throw new Error(`Fixture process exited before health: ${output}`);
+        const response = await fetch(`${baseUrl}/api/health`, {
+          signal: AbortSignal.timeout(1000),
+        });
+        expect(response.status).toBe(200);
+      },
+      { timeout: 20000, interval: 100 }
+    );
+  } catch (error) {
+    await stop();
+    throw new Error(`Real index.ts boot failed. ${output}`, { cause: error });
+  }
+  const call = (operation: string, input: Record<string, unknown>, secret: string) =>
+    fetch(`${baseUrl}/api/app/operations/${operation}`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${secret}`,
+        'content-type': 'application/json',
+        ...(typeof input.requestId === 'string' ? { 'x-openkit-request-id': input.requestId } : {}),
+      },
+      body: JSON.stringify(input),
+      signal: AbortSignal.timeout(10000),
+    });
+  return { call, stop };
+}
+
 describe('retired registry consumers and retained Core migration', () => {
+  it.each([
+    { status: 'active', fault: 'records' },
+    { status: 'retired', fault: 'records' },
+    { status: 'retired', fault: 'corrupt' },
+    { status: 'retired', fault: 'missing' },
+  ] as const)('real index.ts process: $status registry with $fault fault decides exclusion before scoped work', async ({
+    status,
+    fault,
+  }) => {
+    const f = fixture(fault);
+    if (status === 'retired') {
+      const response = await f.call('workspace.retire-quarantined', f.request);
+      expect(response.status, await response.clone().text()).toBe(200);
+      expect(await response.json()).toEqual({
+        retirement: {
+          workspaceId: f.workspaceId,
+          ownerUserId: FIXTURE_LOCAL_USER_ID,
+          registryRevision: 2,
+          status: 'retired',
+          dataRetained: true,
+          storageReclaimed: false,
+        },
+      });
+    }
+    await f.gateway.close();
+    f.coreDb.sqlite.close();
+    // Reverse only the injected fixture fault while stopped. This is not a product repair path.
+    // Readable retained bytes must not revive a retired identity. They make a late boot fence observable.
+    const targetRoot = join(f.dataRoot, 'workspaces', f.workspaceId);
+    if (fault === 'records')
+      writeFileSync(join(targetRoot, 'workspace-record.json'), f.originalWorkspaceRecord);
+    const before = bytes(targetRoot);
+    const readCallStatus = () => {
+      const db = new Database(workspaceDbPath(f.dataRoot, f.workspaceId), {
+        readonly: true,
+        fileMustExist: true,
+      });
+      try {
+        return db
+          .prepare('SELECT status FROM capability_calls WHERE call_id = ?')
+          .pluck()
+          .get(testEntityId('cap', 'retirement-running-call'));
+      } finally {
+        db.close();
+      }
+    };
+    if (fault === 'records') expect(readCallStatus()).toBe('running');
+    const process = await startRetirementProcess(f.dataRoot);
+    const sibling = await process.call(
+      'thread.create',
+      { workspaceId: f.siblingId, name: 'Progress after real boot', requestId: randomUUID() },
+      f.member.secret
+    );
+    expect(sibling.status, await sibling.clone().text()).toBe(200);
+    const thread = (await sibling.json()) as { id: string };
+    const readBack = await process.call(
+      'thread.dashboard',
+      { workspaceId: f.siblingId, threadId: thread.id },
+      f.member.secret
+    );
+    expect(readBack.status).toBe(200);
+    expect(await readBack.json()).toMatchObject({ thread: { id: thread.id } });
+    const ordinary = await process.call(
+      'workspace.member-list',
+      { workspaceId: f.workspaceId },
+      f.member.secret
+    );
+    if (status === 'retired') {
+      expect([403, 409]).toContain(ordinary.status);
+      const replay = await process.call('workspace.retire-quarantined', f.request, f.admin.secret);
+      expect(replay.status, await replay.clone().text()).toBe(200);
+      expect(await replay.json()).toMatchObject({
+        retirement: {
+          registryRevision: 2,
+          status: 'retired',
+          dataRetained: true,
+          storageReclaimed: false,
+        },
+      });
+      const recovery = await process.call(
+        'workspace.deleted-recover',
+        {
+          workspaceId: f.workspaceId,
+          requestId: randomUUID(),
+          deletionRequestId: f.request.requestId,
+        },
+        f.admin.secret
+      );
+      expect([403, 409]).toContain(recovery.status);
+    } else {
+      expect(ordinary.status).toBe(200);
+    }
+    await process.stop();
+    // The active control proves the same real startup changes the canary; a no-op child cannot pass both cases.
+    if (fault === 'records')
+      expect(readCallStatus()).toBe(status === 'retired' ? 'running' : 'unknown');
+    if (fault === 'missing')
+      expect(existsSync(workspaceDbPath(f.dataRoot, f.workspaceId))).toBe(false);
+    if (status === 'retired') expect(bytes(targetRoot)).toEqual(before);
+    else expect(bytes(targetRoot)).not.toEqual(before);
+  }, 40000);
+
   it('CONTROL: upgrades populated Core 0011 through the ordinary migrator without losing lineage, foreign keys or owner guards', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'retirement-core0011-'));
     const coreDb = openCoreDb(dataRoot);
