@@ -1,5 +1,6 @@
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -11,7 +12,7 @@ import {
   workerEnvironmentActivationConfirmation,
 } from '@openkit/app-api-schemas';
 import { parse } from 'jsonc-parser';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { Actor } from '../auth/identity.js';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import type { RuntimeConfigFileService } from '../config/runtime-config-files.js';
@@ -295,6 +296,132 @@ function reloadResult(status: 'applied' | 'failed') {
 }
 
 describe('Worker environment activation', () => {
+  it('makes the receiving Workspace locally eligible after process loss before the source outcome', () => {
+    const fixture = createResidentFixture();
+    const root = fixture.coreDb.dataRoot;
+    onTestFinished(() => rmSync(root, { recursive: true, force: true }));
+    const pair = candidatePair(
+      fixture,
+      [
+        {
+          storageRef: fixture.storageRef,
+          expectedRevision: fixture.bindingRevision,
+        },
+      ],
+      fixture.replaceNow
+    );
+    const request = activationRequest(pair);
+    const initialTurns = fixture.store.listThreadTurns(
+      fixture.workspaceId,
+      fixture.replaceNow.threadId
+    );
+    const input = JSON.stringify({
+      pair,
+      request,
+      actor: ACTOR,
+      now: NOW,
+      layout: LAYOUT,
+      writtenRevision: WRITTEN_REVISION,
+      configuration: configurationService().readFile(CONFIGURATION.fileId),
+    });
+    const probe = (phase: string) =>
+      spawnSync(
+        process.execPath,
+        [
+          '--import',
+          'tsx',
+          'src/test-support/pending-publication-crash.ts',
+          'activation-local',
+          phase,
+          root,
+          input,
+        ],
+        { cwd: process.cwd(), encoding: 'utf8', timeout: 60_000 }
+      );
+    const crashed = probe('before-source-outcome');
+    expect(crashed.error, crashed.stderr).toBeUndefined();
+    expect(crashed.signal, `${crashed.stdout}\n${crashed.stderr}`).toBe('SIGKILL');
+    const checkpoint = JSON.parse(crashed.stdout.trim().split('\n').at(-1)!);
+    expect(checkpoint).toEqual({
+      checkpoint: 'target-admitted-before-source-outcome',
+      turnId: expect.any(String),
+    });
+    const inspected = probe('inspect');
+    expect(inspected.error, inspected.stderr).toBeUndefined();
+    expect(inspected.status, `${inspected.stdout}\n${inspected.stderr}`).toBe(0);
+    const cold = JSON.parse(inspected.stdout.trim().split('\n').at(-1)!);
+    const admissions = cold.target.admissions.filter(
+      (entry: { requestId: string }) => entry.requestId === request.requestId
+    );
+    expect(admissions).toHaveLength(1);
+    expect(admissions[0]).toMatchObject({
+      turnId: checkpoint.turnId,
+      turnInput: fixture.replaceNow.prompt,
+    });
+    expect(cold.target.turns).toHaveLength(initialTurns.length + 1);
+    expect(
+      cold.target.turns.find((turn: { id: string }) => turn.id === checkpoint.turnId)
+    ).toMatchObject({ status: 'pending' });
+    // The native prepare observer records actual reads of A's receipt table during B selection.
+    expect
+      .soft(cold.target.receipts, 'B must commit its own keyed admission receipt')
+      .toEqual([
+        expect.objectContaining({ request_id: request.requestId, response_id: checkpoint.turnId }),
+      ]);
+    expect.soft(cold.sourceReads, 'B eligibility cannot scan A receipts').toEqual([]);
+    expect
+      .soft(cold.selected, 'ordinary dispatch must select the committed B admission')
+      .toEqual([admissions[0].queueEntryId]);
+    const replayed = probe('replay');
+    expect(replayed.error, replayed.stderr).toBeUndefined();
+    expect(replayed.status, `${replayed.stdout}\n${replayed.stderr}`).toBe(0);
+    const replay = JSON.parse(replayed.stdout.trim().split('\n').at(-1)!);
+    expect([null, 'recovery_required']).toContain(replay.errorCode);
+    expect
+      .soft(replay.errorCode, 'A must recover B result instead of requiring publication repair')
+      .toBeNull();
+    expect.soft(replay.response).toMatchObject({
+      requestId: request.requestId,
+      target: TARGET,
+      replaceNow: fixture.replaceNow,
+    });
+    // Recovery may inspect or idempotently reapply B's key; neither route may admit another Turn.
+    for (const id of replay.acceptedTurnIds) expect(id).toBe(checkpoint.turnId);
+    expect(replay.target.turns.map((turn: { id: string }) => turn.id).sort()).toEqual(
+      cold.target.turns.map((turn: { id: string }) => turn.id).sort()
+    );
+    for (const phase of ['target-replay', 'target-conflict']) {
+      const checked = probe(phase);
+      expect(checked.error, checked.stderr).toBeUndefined();
+      expect(checked.status, `${checked.stdout}\n${checked.stderr}`).toBe(0);
+      const control = JSON.parse(checked.stdout.trim().split('\n').at(-1)!);
+      if (phase === 'target-replay') {
+        expect(control.errorCode).toBeNull();
+        expect(control.acceptedTurnIds).toEqual([checkpoint.turnId]);
+      } else {
+        expect(control.errorStatus).toBe(409);
+        expect(control.acceptedTurnIds).toEqual([]);
+      }
+      const retained = control.target.admissions.filter(
+        (entry: { requestId: string }) => entry.requestId === request.requestId
+      );
+      expect(retained).toHaveLength(1);
+      expect(retained[0]).toMatchObject({
+        turnId: checkpoint.turnId,
+        turnInput: fixture.replaceNow.prompt,
+        requestedAgentId: TARGET.agentId,
+      });
+      expect(control.target.turns.map((turn: { id: string }) => turn.id).sort()).toEqual(
+        cold.target.turns.map((turn: { id: string }) => turn.id).sort()
+      );
+      expect(
+        control.target.receipts.map((receipt: { response_id: string }) => receipt.response_id)
+      ).toEqual(
+        cold.target.receipts.map((receipt: { response_id: string }) => receipt.response_id)
+      );
+    }
+  }, 90_000);
+
   it.each([
     'before-inspection',
     'during-inspection',

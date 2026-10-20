@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeSync } from 'node:fs';
 import { type FileHandle, open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,7 +7,13 @@ import { Readable } from 'node:stream';
 import type Database from 'better-sqlite3';
 import { createApp } from '../app.js';
 import { importArtifactFile } from '../artifact-file-commands.js';
+import {
+  createInMemoryRuntimeConfigSnapshot,
+  type RuntimeConfigManager,
+} from '../config/runtime-config.js';
+import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
+import { ProviderRegistry } from '../providers/registry.js';
 import {
   raiseRecordedPendingRequest,
   recoverPendingRequestsAtBoot,
@@ -17,14 +23,225 @@ import {
   readPendingRequest,
   validateCanonicalLoad,
 } from '../runtime/pending-requests.js';
+import { startProductTurn } from '../runtime/product-turn-start.js';
+import { runSchedulerDispatchLoop } from '../runtime/scheduler-dispatch-loop.js';
+import { listSchedulerAdmissionEntriesForWorkspace } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { artifactFilePayloadPath } from '../storage/artifacts/file-records.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import { workspaceDbPath } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import {
+  createWorkerEnvironmentActivation,
+  type ReplaceWorkerEnvironmentResidentWork,
+} from '../worker-environments/worker-environment-activation.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { createTestAgentSetup, createTestGatewayConfig } from './agent-environment.js';
 import { createDemoStore } from './demo-store.js';
 import { ensureLocalUser } from './local-user.js';
+import { admitTestNativeEnvironment } from './native-environment.js';
 import { operationRequest } from './operation-request.js';
+
+/** Crosses real activation and product-admission owners, with configuration and image observations outside the tested boundary. */
+async function probeCrossWorkspaceActivation(): Promise<void> {
+  const fixture = JSON.parse(process.argv[5]!);
+  const { pair, request, actor } = fixture;
+  const manifest = createTestAgentSetup({
+    agentId: request.target.agentId,
+    imageRef: pair.resolved.image.digest,
+  }).manifest;
+  const providerRegistry = new ProviderRegistry([
+    {
+      baseUrl: 'http://127.0.0.1:11434/v1',
+      defaultModel: 'openai/gpt-5.2',
+      displayName: 'Activation fixture provider',
+      id: 'agent-openrouter',
+      kind: 'local',
+      models: ['openai/gpt-5.2'],
+      modelMetadata: { 'openai/gpt-5.2': { temperature: false } },
+    },
+  ]);
+  const snapshot = createInMemoryRuntimeConfigSnapshot({
+    agentManifests: [manifest],
+    dataRoot: null,
+    gatewayConfig: createTestGatewayConfig(),
+    providerRegistry,
+  });
+  const executor = new SimulatedTurnExecutor({ coreDb });
+  const observeTarget = () => ({
+    turns: store.listThreadTurns(request.replaceNow.workspaceId, request.replaceNow.threadId),
+    admissions: listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+      workspaceId: request.replaceNow.workspaceId,
+      statuses: ['queued', 'admitted', 'denied', 'cancelled'],
+    }),
+    receipts: db.sqlite
+      .prepare('SELECT * FROM idempotency_requests WHERE request_id = ?')
+      .all(request.requestId),
+  });
+  if (phase === 'inspect') {
+    const target = observeTarget();
+    const sourceReads: string[] = [];
+    const selected: Array<string | null> = [];
+    const prototype = Object.getPrototypeOf(coreDb.sqlite);
+    const originalPrepare = prototype.prepare;
+    prototype.prepare = function (this: Database.Database, sql: string) {
+      if (
+        this.name === workspaceDbPath(dataRoot, pair.workspaceId) &&
+        /SELECT[\s\S]*idempotency_requests/i.test(sql)
+      )
+        sourceReads.push(sql);
+      return originalPrepare.call(this, sql);
+    };
+    let dispatchResult: unknown;
+    let dispatchError: string | null = null;
+    try {
+      dispatchResult = await runSchedulerDispatchLoop({
+        coreDb,
+        store,
+        turnExecutor: executor,
+        executionBackend: executor.executionBackend,
+        agentManifests: [manifest],
+        providerRegistry,
+        gatewayConfig: snapshot.gatewayConfig,
+        dependencies: { providerCredentialResolver: () => null },
+        maxDispatches: 2,
+        onDispatchAttribution(id) {
+          selected.push(id);
+          throw new Error('activation-test-stop-before-physical-effects');
+        },
+      });
+    } catch (error) {
+      dispatchError = error instanceof Error ? error.message : String(error);
+      if (dispatchError !== 'activation-test-stop-before-physical-effects') throw error;
+    } finally {
+      prototype.prepare = originalPrepare;
+    }
+    console.log(JSON.stringify({ target, selected, sourceReads, dispatchResult, dispatchError }));
+    return;
+  }
+  if (phase === 'before-source-outcome') {
+    admitTestNativeEnvironment(coreDb, manifest);
+  }
+  const acceptedTurnIds: string[] = [];
+  // Same-key target admission remains permitted on replay; the existing callback stops before physical preparation.
+  const admitTarget: ReplaceWorkerEnvironmentResidentWork = async (input) => {
+    const observedAcceptance = new Error('activation-test-observed-durable-acceptance');
+    try {
+      await startProductTurn({
+        coreDb,
+        store,
+        turnExecutor: executor,
+        snapshot,
+        workerPlacement: 'local',
+        providerCredentialResolver: () => null,
+        triggerActor: { kind: 'user', id: input.actor.userId },
+        requestActor: input.actor,
+        requestedAgentId: input.target.agentId,
+        workerStorageChoice: {
+          kind: 'selected',
+          storageRef: input.affectedStorage[0]!.storageRef,
+          expectedRevision: input.affectedStorage[0]!.expectedRevision,
+          purpose: 'work',
+          goalId: null,
+          taskId: null,
+        },
+        input: {
+          requestId: input.requestId,
+          workspaceId: input.replaceNow.workspaceId,
+          threadId: input.replaceNow.threadId,
+          input: input.replaceNow.prompt,
+        },
+        onTurnCreated(turn) {
+          acceptedTurnIds.push(turn.id);
+          if (phase === 'before-source-outcome') {
+            writeSync(
+              1,
+              `${JSON.stringify({ checkpoint: 'target-admitted-before-source-outcome', turnId: turn.id })}\n`
+            );
+            process.kill(process.pid, 'SIGKILL');
+            throw new Error('Activation fixture missed SIGKILL.');
+          }
+          throw observedAcceptance;
+        },
+      });
+      throw new Error('Activation fixture missed its acceptance callback.');
+    } catch (error) {
+      if (error !== observedAcceptance) throw error;
+    }
+    // Host replacement is outside this fixture; its retained association has not changed.
+    return input.affectedStorage.map((ref) => ({ ...ref, disposition: 'unchanged' as const }));
+  };
+  if (phase === 'target-replay' || phase === 'target-conflict') {
+    let errorCode: string | null = null;
+    let errorStatus: number | null = null;
+    try {
+      await admitTarget({
+        actor,
+        affectedStorage: request.affectedStorage,
+        residentMembers: [],
+        configuration: { fileId: request.configuration.fileId, revision: fixture.writtenRevision },
+        replaceNow: {
+          ...request.replaceNow,
+          prompt: request.replaceNow.prompt + (phase === 'target-conflict' ? ' changed' : ''),
+        },
+        requestId: request.requestId,
+        resolvedCandidate: request.resolvedCandidate,
+        target: request.target,
+      });
+    } catch (error) {
+      if (!error || typeof error !== 'object' || !('code' in error)) throw error;
+      errorCode = String(error.code);
+      errorStatus = 'status' in error ? Number(error.status) : null;
+    }
+    console.log(
+      JSON.stringify({ errorCode, errorStatus, acceptedTurnIds, target: observeTarget() })
+    );
+    return;
+  }
+  let configuration = fixture.configuration;
+  const activation = createWorkerEnvironmentActivation({
+    coreDb,
+    store,
+    now: () => fixture.now,
+    preparation: { readResolved: () => pair },
+    requireCurrentAdministrator: () => undefined,
+    runtimeEffects: {
+      inspectImage: async () => ({
+        imageDigest: pair.resolved.image.digest,
+        layout: fixture.layout,
+        layoutDigest: `sha256:${'f'.repeat(64)}`,
+        environmentDefaults: {
+          defaultsDigest: pair.resolved.image.environmentDefaults.defaultsDigest,
+          values: {},
+        },
+      }),
+    },
+    configFilesForActor: () => ({
+      readFile: () => configuration,
+      updateFile(input) {
+        if (input.expectedRevision !== configuration.file.revision || !input.content)
+          throw new Error('Activation fixture CAS failed.');
+        configuration = {
+          content: input.content,
+          file: { ...configuration.file, revision: fixture.writtenRevision },
+        };
+        return { diagnostics: [], file: configuration.file };
+      },
+    }),
+    reloadRuntimeConfig: () =>
+      ({ status: 'applied' }) as ReturnType<RuntimeConfigManager['reload']>,
+    replaceResidentWork: admitTarget,
+  });
+  let response: unknown = null;
+  let errorCode: string | null = null;
+  try {
+    response = await activation.activate({ actor }, request);
+  } catch (error) {
+    if (!error || typeof error !== 'object' || !('code' in error)) throw error;
+    errorCode = String(error.code);
+  }
+  console.log(JSON.stringify({ response, errorCode, acceptedTurnIds, target: observeTarget() }));
+}
 
 // Separate processes cross the actual retained-file/SQLite boundary, not an in-memory restart.
 const [mode, phase, retainedRoot] = process.argv.slice(2);
@@ -35,9 +252,10 @@ ensureLocalUser(coreDb);
 const store = retainedRoot ? new FsStore({ dataRoot }) : createDemoStore({ dataRoot });
 const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 applyScopedMigrations(db);
-if (mode === 'command-commit' || mode === 'artifact-commit') {
+if (mode === 'command-commit' || mode === 'artifact-commit' || mode === 'activation-local') {
   if (mode === 'command-commit') await probeCommandCommit();
-  else await probeArtifactCommit();
+  else if (mode === 'artifact-commit') await probeArtifactCommit();
+  else await probeCrossWorkspaceActivation();
   db.sqlite.close();
   coreDb.sqlite.close();
   process.exit(0);
