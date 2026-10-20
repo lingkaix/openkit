@@ -41,6 +41,7 @@ import {
 } from '../workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { publishArtifactVersionRecord } from './artifacts/artifact-version-records.js';
+import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
 import {
@@ -66,6 +67,129 @@ import {
 const timestamp = '2026-07-05T00:00:00.000Z';
 const localActor = { kind: 'user', id: LOCAL_USER_ID } as const;
 const workspaceKnowledgeBaseId = 'kb_00000000-0000-7000-8000-000000000001';
+
+it.each([
+  'export',
+  'import',
+] as const)('uses native product history for public Workspace %s without a product-file fallback', async (boundary) => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'native-history-transfer-'));
+  const coreDb = openCoreDb(dataRoot);
+  applyMigrations(coreDb);
+  const userId = ensureLocalUser(coreDb);
+  try {
+    const store = new FsStore({ dataRoot });
+    const workspace = await store.createWorkspace('Portable SQL history');
+    recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
+    const thread = await store.createThread(workspace.id, 'Portable Thread');
+    const turn = await store.createTurn(workspace.id, thread.id, 'Record history', {
+      kind: 'user',
+      id: userId,
+    });
+    const item = await store.createItem({
+      id: allocateEntityId('it'),
+      owner: { kind: 'workspace', workspaceId: workspace.id },
+      threadId: thread.id,
+      turnId: turn.id,
+      type: 'assistant-message',
+      text: 'First revision',
+      status: 'in_progress',
+      createdAt: turn.startedAt!,
+      completedAt: null,
+    });
+    await store.updateItem(item.id, { text: 'Second revision' });
+    await store.emitTurnEvent(turn.id, {
+      event: 'error',
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: turn.id,
+      data: { type: 'error', code: 'fixture', message: 'Retained event' },
+    });
+    const app = createApp({ coreDb, dataRoot, store });
+    if (boundary === 'export') {
+      rmSync(join(dataRoot, 'workspaces', workspace.id, 'threads'), {
+        recursive: true,
+        force: true,
+      });
+    }
+    const exported = await app.request(
+      ...operationRequest(
+        'workspace.export',
+        {
+          workspaceId: workspace.id,
+        },
+        { method: 'POST' }
+      )
+    );
+    expect(exported.status, await exported.clone().text()).toBe(200);
+    const { exportId } = (await exported.json()) as { exportId: string };
+    const imported = await app.request(
+      ...operationRequest(
+        'workspace.import',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            sourceWorkspaceId: workspace.id,
+            exportId,
+            requestId: randomUUID(),
+          }),
+        }
+      )
+    );
+    expect(imported.status, await imported.clone().text()).toBe(200);
+    const { importedWorkspaceId } = (await imported.json()) as { importedWorkspaceId: string };
+    await getControlStoreWorkerClient().shutdown();
+    const db = openWorkspaceDb(dataRoot, importedWorkspaceId);
+    try {
+      expect(db.sqlite.prepare('SELECT COUNT(*) AS count FROM control_workspaces').get()).toEqual({
+        count: 1,
+      });
+      expect(db.sqlite.prepare('SELECT COUNT(*) AS count FROM control_threads').get()).toEqual({
+        count: 1,
+      });
+      expect(db.sqlite.prepare('SELECT COUNT(*) AS count FROM control_turns').get()).toEqual({
+        count: 1,
+      });
+      expect(
+        db.sqlite
+          .prepare(
+            'SELECT kind, COUNT(*) AS count FROM control_product_entries GROUP BY kind ORDER BY kind'
+          )
+          .all()
+      ).toEqual([
+        { kind: 'event', count: 1 },
+        { kind: 'item', count: 2 },
+      ]);
+    } finally {
+      db.sqlite.close();
+    }
+    rmSync(join(dataRoot, 'workspaces', importedWorkspaceId, 'threads'), {
+      recursive: true,
+      force: true,
+    });
+    const reopened = new FsStore({ dataRoot });
+    const [importedThread] = reopened.listThreads(importedWorkspaceId);
+    expect(importedThread?.id).not.toBe(thread.id);
+    expect(
+      reopened
+        .listWorkspaceItemRevisions(importedWorkspaceId)
+        .map((revision) => (revision.type === 'assistant-message' ? revision.text : revision.type))
+    ).toEqual(['First revision', 'Second revision']);
+    const [importedTurn] = reopened.listThreadTurns(importedWorkspaceId, importedThread!.id);
+    expect(reopened.getTurnEventsForExport(importedTurn!.id)).toEqual([
+      expect.objectContaining({
+        sequence: 1,
+        turnId: importedTurn!.id,
+        threadId: importedThread!.id,
+      }),
+    ]);
+  } finally {
+    await getControlStoreWorkerClient().shutdown();
+    coreDb.sqlite.close();
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
 
 /** Export fixture input with empty Material owner families supplied by the local writer wrapper. */
 type WorkspaceExportTestInput = Omit<
