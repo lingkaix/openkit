@@ -2,7 +2,6 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { KnowledgeMaintenanceResponseSchema } from '@openkit/app-api-schemas';
-import { KNOWLEDGE_MANAGER_RUN_DEADLINE_MS } from '@openkit/config-schema';
 import {
   type ActorRef,
   allocateEntityId,
@@ -406,7 +405,14 @@ export function prepareServerKnowledgeMaintenance(
           files,
           sources,
           signal: input.signal,
-          deadlineMs: Date.now() + KNOWLEDGE_MANAGER_RUN_DEADLINE_MS,
+          /** The editor exists before pinning; Tool access reads the actual admitted budget. */
+          get deadlineMs() {
+            const pinned = store.getServerTurnById(turn.id);
+            const limit = pinned.internalExecution?.limits?.deadlineMs;
+            if (limit === undefined || pinned.startedAt === null)
+              throw new NotebookError('invalid_request');
+            return Date.parse(pinned.startedAt) + limit;
+          },
           revalidate: assertCurrent,
           submit: async (edit) => {
             assertCurrent();

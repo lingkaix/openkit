@@ -7,6 +7,7 @@ import {
   ProtocolValidationError,
 } from '@openkit/core-client';
 import { PROTOCOL_VERSION } from '@openkit/protocol';
+import { getGlobalDispatcher } from 'undici';
 
 import packageMetadata from '../package.json' with { type: 'json' };
 import { describeOperation, operationCatalog, searchOperations } from './openkit-operations.mjs';
@@ -290,7 +291,28 @@ async function callOperation(operationId, env, state, destination) {
   }
   state.requestId =
     typeof input.requestId === 'string' && input.requestId ? input.requestId : createRequestId();
-  const client = createClient(endpoint, credential);
+  if (!/^(?:knowledge(?:\.server)?|memory)\.(?:ask|tell|maintain)$/.test(operationId)) {
+    const client = createClient(endpoint, credential);
+    return operation.handler({ client, credentialStore, endpoint }, input);
+  }
+
+  // Current KM inputs carry no admitted deadline. Use the finite fallback, not a new input field.
+  const transportMs = 660_000;
+  const deadline = AbortSignal.timeout(transportMs);
+  // Fetch supplies its own phase defaults. Override only this invocation, retaining proxy/TLS routing.
+  const dispatcher = getGlobalDispatcher().compose(
+    (dispatch) => (options, handler) =>
+      dispatch({ ...options, headersTimeout: transportMs, bodyTimeout: transportMs }, handler)
+  );
+  const client = createClient(endpoint, credential, (resource, options) => {
+    const callerSignal =
+      options?.signal ?? (resource instanceof Request ? resource.signal : undefined);
+    return globalThis.fetch(resource, {
+      ...options,
+      dispatcher,
+      signal: callerSignal ? AbortSignal.any([callerSignal, deadline]) : deadline,
+    });
+  });
   return operation.handler({ client, credentialStore, endpoint }, input);
 }
 
@@ -329,11 +351,13 @@ function validateInput(operation, rawInput) {
  *
  * @param {string} endpoint NanoCore endpoint.
  * @param {{token: string} | null} credential Optional bearer credential.
+ * @param {typeof globalThis.fetch} [fetcher] Optional invocation-local transport policy.
  * @returns {ReturnType<typeof createCoreClient>} Public client.
  */
-function createClient(endpoint, credential) {
+function createClient(endpoint, credential, fetcher) {
   return createCoreClient({
     baseUrl: endpoint,
+    ...(fetcher === undefined ? {} : { fetch: fetcher }),
     headers: {
       'x-openkit-client-channel': 'openkit-cli',
       'x-openkit-client-source': 'agent-skill',
@@ -417,7 +441,10 @@ function classifyFailure(error) {
       exitCode: 3,
     };
   }
-  if (error instanceof TypeError) {
+  if (
+    error instanceof TypeError ||
+    (error instanceof DOMException && ['AbortError', 'TimeoutError'].includes(error.name))
+  ) {
     return { code: 'connection_failed', message: error.message, exitCode: 3 };
   }
   if (

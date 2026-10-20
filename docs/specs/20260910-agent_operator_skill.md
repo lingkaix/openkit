@@ -3,7 +3,7 @@ status: Accepted
 implementation: Partial
 kind: boundary
 date: "2026-09-10"
-updated: "2026-10-15"
+updated: "2026-10-20"
 ---
 # Agent Operator Skill
 
@@ -144,6 +144,8 @@ Exit status is `0` for success, `2` for local input or usage failure, `3` for co
 The CLI generates an idempotency request id for mutating operations when the public operation permits client generation and the caller did not supply one. The generated id is returned in the envelope.
 
 SIGINT or a transport abort stops only the local wait and must not be reported as product cancellation. Product cancellation or interruption requires an explicit catalog operation followed by a durable state read; the CLI does not infer the remote outcome from local process termination.
+
+Workspace Knowledge, Server Knowledge and User Memory `ask`, `tell` and `maintain` calls execute bounded Knowledge Manager work. Their CLI transport uses a finite invocation-local envelope greater than the role budget, without changing the global dispatcher or unrelated operations. An already known admitted budget receives a fixed 60-second margin; current strict request inputs carry no admitted budget, so the fallback is 660 seconds. Do not query or invent a budget field to widen a request. The envelope covers the entire wait, including headers and body, preserves existing caller cancellation and routing, and never retries an operation. A locally expired or aborted wait is a connection failure with an unknown remote outcome; inspect existing records before any new request.
 
 ### Authentication and secret handling
 

@@ -104,6 +104,7 @@ function fixture(enabled = true) {
         internalExecution: {
           roleId: 'knowledge-manager',
           logicalModelId: 'fixture-model',
+          limits: { maxModelTurns: 16, maxToolCalls: 48, deadlineMs: 300_000 },
           contextStrategy: 'compaction',
           threshold: 1000,
           knowledge: run.inputs!,
