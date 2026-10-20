@@ -510,9 +510,12 @@ it('qualifies the held-reader WAL instrument without claiming a Core checkpoint 
   const writer = new Database(path);
   writer.pragma('journal_mode = WAL');
   writer.pragma('synchronous = FULL');
-  writer.exec(
-    'CREATE TABLE idempotency_requests (id INTEGER); INSERT INTO idempotency_requests VALUES (1)'
+  // Reuse the owned journal from a37139a1f's worker fixture, not a shadow schema.
+  writer.exec(readFileSync(new URL('../../drizzle/user/0000_setup.sql', import.meta.url), 'utf8'));
+  const insertReceipt = writer.prepare(
+    "INSERT INTO idempotency_requests (request_key, command_name, request_id, scope_json, input_hash, response_kind, response_id, created_at, expires_at) VALUES (?, 'fixture', ?, '{}', 'fixture', 'thread', ?, 'fixture', 'fixture')"
   );
+  insertReceipt.run('first', 'first', 'first');
   const worker = new Worker(heldReaderSource, {
     eval: true,
     workerData: {
@@ -526,7 +529,7 @@ it('qualifies the held-reader WAL instrument without claiming a Core checkpoint 
     expect(held).toMatchObject({ held: true, journalMode: 'wal', initialCount: 1 });
     const finished = once(worker, 'message', { signal: AbortSignal.timeout(60_000) });
     worker.postMessage('start');
-    writer.exec('INSERT INTO idempotency_requests VALUES (2)');
+    insertReceipt.run('second', 'second', 'second');
     worker.postMessage('finish');
     const [result] = await finished;
     expect(result.pinnedCount).toBe(1);
