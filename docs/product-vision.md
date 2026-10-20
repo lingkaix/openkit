@@ -84,6 +84,14 @@ OpenKit 的基本架构是 `App + Core + Agent`。
 
 产品应把复杂且 runtime-specific 的执行交给 specialized agents，同时为用户保持一致的 coordination 体验。持久的 Core-versus-runtime boundary 由 [Foundation](./core/foundation.md) 所有。
 
+### 4.4 计算资源与 Agent 平台中立
+
+OpenKit 对计算资源与 agent 平台保持中立，这是 OpenKit 中 "Open" 的一部分。Core 统一承担权限、Knowledge、Policy、Gateway、Audit 与 durable execution，为用户保持一致的工作体验；agent 实际在哪里运行，由用户与 Policy 选择。NanoHost 是第一方提供的资源平台之一，外部的商业或自部署平台（例如 OpenAI Agents API、E2B、Cloudflare Agents）与它平级接入。
+
+- 中立性在 Core 层成立：Core 直接对接各平台，不要求经过 NanoHost 中转，也不把任何一个平台的实现方式当作通用记录的必然含义。
+- 治理放在边界：不同平台能保证的边界能力不同，例如出口网络、凭据隔离、循环内可见性与清理证明。每种接入如实声明自己的能力与降级，Policy 据此决定一个 Workspace 可以使用哪些平台；无法满足的约束拒绝放置，而不是假装覆盖。
+- 外部平台为严肃工作与计算资源紧张的场景提供额外的稳定选择；平台的选择不改变 Knowledge、BWM、MCP、Skills 等已有的工作方式。
+
 ## 5. 用户体验
 
 ### 5.1 Conversation-First 界面

@@ -22,6 +22,10 @@ OpenKit coordinates work across changing product surfaces, agent runtimes, adapt
 - Deployment, storage, and release-artifact choices preserve the Core semantic invariant stated below; they select placement and packaging, not product meaning.
 - Workspace services expose governed Core contracts rather than raw storage, provider, sandbox, or adapter internals.
 
+## Compute And Harness Neutrality
+
+NanoCore MUST remain neutral to compute substrate and agent-harness location. NanoCore integrates platforms directly; NanoHost is one first-party resource platform and a peer of external platforms, never a mandatory intermediary. Governance stays at each integration boundary. Each integration MUST declare its actual capabilities and limitations, and Policy MUST refuse placement that cannot satisfy the Workspace's required constraints. OpenKit retains the authority, Knowledge, BWM, MCP, and Skills plane across placements. The [neutrality decision](../decisions/20261020-compute_and_harness_neutrality.md) records the reason and delivery timing.
+
 ## Architecture Shape
 
 OpenKit uses an `App + Core + Agent` architecture.
