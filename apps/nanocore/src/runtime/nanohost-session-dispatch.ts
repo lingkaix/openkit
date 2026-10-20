@@ -1,5 +1,5 @@
 import { Buffer } from 'node:buffer';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { mkdtemp, open, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
@@ -7,6 +7,7 @@ import {
   AgentEnvironmentDockerfileInputSchema,
   DOCKERFILE_INPUT_MAX_BYTES,
 } from '@openkit/config-schema';
+import { type ActorRef, ActorRefSchema } from '@openkit/protocol';
 import type { Context as TelemetryContext } from '@opentelemetry/api';
 import type { Context, Hono } from 'hono';
 import { createScanner } from 'jsonc-parser';
@@ -20,6 +21,7 @@ import {
 } from '../auth/nanohost-transport-session.js';
 import { OperationError } from '../operation-error.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { controlStoreFor } from '../storage/control-store.js';
 import type { CoreDb } from '../storage/db.js';
 import { ensureCanonicalDirectoryAsync } from '../storage/workspace-file-records.js';
 import {
@@ -27,6 +29,18 @@ import {
   injectTelemetryContext,
   recordNanoHostEffectAcceptance,
 } from '../telemetry.js';
+import {
+  CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION,
+  createExecutionStepJournalReader,
+  settleExecutionJournalStep,
+  writeExecutionJournalIntent,
+} from './execution-journal.js';
+import type {
+  ExecutionJournalIntent,
+  ExecutionJournalSpan,
+  ExecutionStepRef,
+} from './execution-step-journal.js';
+import { commandInputHash } from './idempotent-command.js';
 import {
   createNanoHostEffectRequest,
   nanoHostSandboxIdFromBackendSessionId,
@@ -242,6 +256,12 @@ export interface NanoHostSessionRouteRequest {
 export interface NanoHostSessionEffectRequest {
   /** Private preparation lineage; never copied into a command body. */
   readonly imageSettlement?: WorkerImageSettlementIdentity;
+  /** Authenticated administrative provenance and current authorization; never carried on the wire. */
+  readonly imageExecution?: {
+    readonly actor: Readonly<ActorRef>;
+    readonly workId: string;
+    readonly authorize: () => boolean;
+  };
   /** Process-private live capture cancellation; never hashed or carried on the wire. */
   readonly signal?: AbortSignal | undefined;
   readonly input: Readonly<Record<string, unknown>>;
@@ -372,6 +392,16 @@ interface PendingNanoHostEffect {
   collectionAbort?: AbortController | undefined;
   imageSettlement?: WorkerImageSettlementIdentity;
   imageSettlementDeferred?: boolean;
+  /** Selected administrative acquisition only; lifecycle removal cannot erase its uncertain intent. */
+  imageExecution?: {
+    readonly ref: ExecutionStepRef;
+    readonly authorize: () => boolean;
+    readonly abandon: (accepted: boolean) => void;
+    /** Process-local wake-up only; never transported or treated as execution authority. */
+    readonly deadlineMonotonicNano: bigint;
+    readonly deadlineUnixNano: bigint;
+    timer?: ReturnType<typeof setTimeout>;
+  };
   acceptedConnection?: object;
   command: Readonly<Record<string, unknown>> | null;
   /** Rejects the existing caller promise for one acknowledged definite failure. */
@@ -437,6 +467,82 @@ export interface RegisterNanoHostSessionSemanticRoutesInput {
   readonly nanoHostConfig?: {
     readonly deploymentId: string;
     readonly identityId: string;
+  };
+}
+
+/** Ends local cancellation or uncertain carriage without claiming a remote stop or physical release. */
+function abandonImageExecution(coreDb: CoreDb, ref: ExecutionStepRef, accepted: boolean): void {
+  const current = coreDb.sqlite
+    .prepare(
+      'SELECT schema_version, state FROM control_execution_steps WHERE execution_id = ? AND step_id = ?'
+    )
+    .get(ref.execution.executionId, ref.stepId);
+  const parsed = z
+    .object({
+      schema_version: z.literal(1),
+      state: z.enum(['intent', 'completed', 'failed', 'unknown', 'cancelled']),
+    })
+    .parse(current);
+  if (parsed.state !== 'intent') return;
+  controlStoreFor(coreDb.sqlite).write((sqlite) => {
+    if (sqlite !== coreDb.sqlite) throw new Error('Image journal requires its owning connection.');
+    const row = sqlite
+      .prepare(`SELECT s.state, s.span_json, r.revision
+      FROM control_execution_steps s JOIN control_executions r ON r.id = s.execution_id
+      WHERE s.execution_id = ? AND s.step_id = ?`)
+      .get(ref.execution.executionId, ref.stepId) as
+      | { state: string; span_json: string; revision: number }
+      | undefined;
+    if (!row) throw new Error('Image invocation authority is missing.');
+    if (row.state !== 'intent') return;
+    // The journal primitive validates/decodes the full stored span, including decimal nanoseconds.
+    const span = JSON.parse(row.span_json);
+    const now = BigInt(Date.now()) * 1_000_000n;
+    const start = BigInt(span.startTimeUnixNano);
+    settleExecutionJournalStep(coreDb, {
+      ref,
+      expectedExecutionRevision: row.revision,
+      state: accepted ? 'unknown' : 'cancelled',
+      outputRefs: [],
+      span: { ...span, endTimeUnixNano: now < start ? start : now, status: { code: 'ERROR' } },
+      nextPhase: accepted ? 'closing' : 'closed',
+      terminalCause: accepted
+        ? 'Image acquisition outcome is unknown.'
+        : 'Image acquisition was not delivered.',
+      exclusionRefs: accepted
+        ? [`native-image-invocation/v1:${ref.execution.executionId}:${ref.stepId}`]
+        : [],
+    });
+  });
+}
+
+/** Builds bounded private spans; diagnostic ids never become invocation identity or authority. */
+function imageExecutionSpan(
+  traceId: string,
+  name: string
+): ExecutionJournalSpan & { endTimeUnixNano: null } {
+  return {
+    traceId,
+    spanId: randomBytes(8).toString('hex'),
+    flags: 0,
+    name,
+    kind: 'INTERNAL',
+    startTimeUnixNano: BigInt(Date.now()) * 1_000_000n,
+    endTimeUnixNano: null,
+    status: { code: 'UNSET' },
+    attributes: [],
+    droppedAttributesCount: 0,
+    events: [],
+    droppedEventsCount: 0,
+    links: [],
+    droppedLinksCount: 0,
+    instrumentationScope: {
+      name: 'openkit.execution',
+      version: CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION,
+      attributes: [],
+      droppedAttributesCount: 0,
+    },
+    resource: { attributes: [], droppedAttributesCount: 0 },
   };
 }
 
@@ -606,6 +712,110 @@ export function createNanoHostSessionDispatch(
           throw new Error('NanoHost effect dispatch has no current physical Epoch authority.');
         }
         const originPhysicalEpoch = requireCurrentReadiness(readiness);
+        let imageExecution: PendingNanoHostEffect['imageExecution'];
+        if (operation === 'image.acquire' && request.imageSettlement) {
+          const coreDb = input.coreDb!;
+          const provenance = request.imageExecution;
+          if (!provenance || !provenance.authorize())
+            throw new Error('Image execution provenance is unavailable.');
+          const actor = ActorRefSchema.parse(provenance.actor);
+          const workId = z.string().min(1).parse(provenance.workId);
+          const previous = coreDb.sqlite
+            .prepare(`SELECT execution_id, step_id FROM control_execution_steps
+            WHERE json_extract(invocation_json, '$.carriage.operation') = 'image.acquire'
+            AND json_extract(invocation_json, '$.carriage.requestId') = ?
+            AND json_extract(control_json, '$.kind') = 'resolve-setup'`)
+            .all(requestId) as { execution_id: string; step_id: string }[];
+          if (previous.length !== 0) {
+            if (previous.length !== 1) throw new WorkerImageSettlementConflict();
+            const original = previous[0]!;
+            abandonImageExecution(
+              coreDb,
+              {
+                execution: { owner: { kind: 'server' }, executionId: original.execution_id },
+                stepId: original.step_id,
+              },
+              true
+            );
+            throw new Error(
+              'Image intent already exists; only result reconciliation is permitted.'
+            );
+          }
+          const executionId = randomUUID();
+          const stepId = randomUUID();
+          const invocationId = randomUUID();
+          const rootSpan = imageExecutionSpan(
+            randomBytes(16).toString('hex'),
+            'Core image preparation'
+          );
+          const bindingRef = `nanohost-target/v1:${readiness.runtimeTarget.deploymentId}:${readiness.runtimeTarget.targetId}:${readiness.connectionGeneration}:${originPhysicalEpoch}`;
+          const fingerprint = commandInputHash({
+            candidate: request.imageSettlement,
+            input: request.input,
+          });
+          const intent: ExecutionJournalIntent = {
+            execution: {
+              ref: { owner: { kind: 'server' }, executionId },
+              definitionVersion: CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION,
+              workId,
+              fingerprint,
+              exclusionRefs: [`native-image-invocation/v1:${executionId}:${stepId}`],
+              span: rootSpan,
+            },
+            stepId,
+            parentStepId: null,
+            parent: null,
+            inspectedStep: null,
+            carriage: { operation, requestId, sequence: null, bindingRef },
+            control: {
+              definitionVersion: CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION,
+              kind: 'resolve-setup',
+              target: {
+                backendKind: 'nanohost',
+                targetId: readiness.runtimeTarget.targetId,
+                allocationRef: null,
+              },
+              workId,
+              operationId: null,
+              attemptId: null,
+              invocationId,
+              actor,
+              inputRefs: [
+                `artifact/v1:${request.imageSettlement.authoredArtifactId}:1:${request.imageSettlement.authoredContentDigest}`,
+                `image-input/v1:${request.imageSettlement.inputDigest}`,
+              ],
+              outputRefs: [],
+              fingerprint,
+              permittingDecisionRef: null,
+              authorityRefs: [`turn/v1:${workId}`, bindingRef],
+              retryDeclarationRef: CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION,
+              retryPermitted: false,
+              // Reuse the existing 15-minute registry acquisition ceiling (image_acquisition.rs),
+              // measured from Core admission, including local wait. Native deadline carriage is a later cut.
+              deadlineUnixNano: rootSpan.startTimeUnixNano + 900_000_000_000n,
+              physicalFenceRefs: [],
+            },
+            span: {
+              ...imageExecutionSpan(rootSpan.traceId, operation),
+              parentSpanId: rootSpan.spanId,
+            },
+          };
+          const admitted = controlStoreFor(coreDb.sqlite).write((sqlite) => {
+            if (sqlite !== coreDb.sqlite)
+              throw new Error('Image journal requires its owning connection.');
+            return writeExecutionJournalIntent(coreDb, intent);
+          });
+          imageExecution = {
+            ref: admitted.ref,
+            authorize: provenance.authorize,
+            abandon: (accepted) => abandonImageExecution(coreDb, admitted.ref, accepted),
+            deadlineUnixNano: admitted.control.deadlineUnixNano!,
+            deadlineMonotonicNano:
+              admitted.clock.admittedMonotonicNano +
+              admitted.control.deadlineUnixNano! -
+              admitted.clock.admittedUnixNano,
+          };
+        }
         completedEffects.delete(operation);
         return new Promise<unknown>((resolve, reject) => {
           const collectionAbort =
@@ -615,6 +825,7 @@ export function createNanoHostSessionDispatch(
             ...(collectionAbort ? { collectionAbort } : {}),
             accepted: false,
             ...(request.imageSettlement ? { imageSettlement: request.imageSettlement } : {}),
+            ...(imageExecution ? { imageExecution } : {}),
             command,
             originPhysicalEpoch,
             reject,
@@ -623,6 +834,34 @@ export function createNanoHostSessionDispatch(
           });
           if (operation === 'file.export' && request.input.purpose === 'artifact-submission') {
             armLiveFileExportWait(pendingEffects, pendingEffects.get(operation)!, request.signal);
+          }
+          if (imageExecution) {
+            const journal = imageExecution;
+            const pending = pendingEffects.get(operation)!;
+            const wallRemaining = journal.deadlineUnixNano - BigInt(Date.now()) * 1_000_000n;
+            const monotonicRemaining = journal.deadlineMonotonicNano - process.hrtime.bigint();
+            const remaining =
+              wallRemaining < monotonicRemaining ? wallRemaining : monotonicRemaining;
+            journal.timer = setTimeout(
+              () => {
+                if (pendingEffects.get(operation) !== pending) return;
+                try {
+                  journal.abandon(pending.accepted);
+                  if (!pending.accepted)
+                    removePendingEffectGroup(pendingEffects, operation, pending);
+                  pending.reject(
+                    new Error(
+                      'Image acquisition deadline ended; result-only reconciliation is required.'
+                    )
+                  );
+                } catch {
+                  // Retain the intent and pending exclusion when its outcome cannot be committed.
+                  pending.reject(new WorkerImageSettlementDeferred());
+                }
+              },
+              Math.max(0, Number(remaining / 1_000_000n))
+            );
+            journal.timer.unref();
           }
           if (operation === 'workspace.collect') {
             // NanoHost owns the scan clock; Core bounds the pre-delivery wait by both fixed phase allowances.
@@ -696,6 +935,27 @@ export function createNanoHostSessionDispatch(
           pendingEffects.has(expectation.kind)
         ) {
           throw new Error('NanoHost result-only expectation conflicts with current effect state.');
+        }
+      }
+      if (input.coreDb) {
+        for (const expectation of expectations) {
+          if (expectation.kind !== 'image.acquire' || !expectation.imageSettlement) continue;
+          const rows = input.coreDb.sqlite
+            .prepare(`SELECT execution_id, step_id FROM control_execution_steps
+            WHERE json_extract(invocation_json, '$.carriage.operation') = 'image.acquire'
+            AND json_extract(invocation_json, '$.carriage.requestId') = ?
+            AND json_extract(control_json, '$.kind') = 'resolve-setup'`)
+            .all(expectation.requestId) as { execution_id: string; step_id: string }[];
+          if (rows.length > 1) throw new WorkerImageSettlementConflict();
+          if (rows[0])
+            abandonImageExecution(
+              input.coreDb,
+              {
+                execution: { owner: { kind: 'server' }, executionId: rows[0].execution_id },
+                stepId: rows[0].step_id,
+              },
+              true
+            );
         }
       }
       const resultPromise = new Promise<NanoHostResultOnlySettlement>((resolve, reject) => {
@@ -798,6 +1058,23 @@ export function createNanoHostSessionDispatch(
       if (pending.accepted || !pending.command) {
         completedEffectPollConnections.add(physicalConnection);
         return null;
+      }
+      if (pending.imageExecution) {
+        const original = await createExecutionStepJournalReader(input.coreDb!, {
+          kind: 'server',
+        }).readInvocation(pending.imageExecution.ref);
+        requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
+        requireCurrentReadiness(pollingReadiness);
+        if (pendingEffects.get(operation) !== pending || pending.accepted) return null;
+        if (
+          !pending.imageExecution.authorize() ||
+          original.remainingMs <= 0 ||
+          original.state !== 'intent'
+        ) {
+          removePendingEffectGroup(pendingEffects, operation, pending);
+          pending.reject(new Error('Image delivery authority is no longer usable.'));
+          return null;
+        }
       }
       pending.accepted = true;
       pending.acceptedConnection = physicalConnection;
@@ -1011,6 +1288,14 @@ export function createNanoHostSessionDispatch(
         const coreDb = input.coreDb;
         if (!coreDb) throw new Error('Missing image settlement database.');
         try {
+          if (pending.imageExecution) {
+            const original = await createExecutionStepJournalReader(coreDb, {
+              kind: 'server',
+            }).readInvocation(pending.imageExecution.ref);
+            requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
+            if (original.state === 'intent' && original.remainingMs <= 0)
+              pending.imageExecution.abandon(true);
+          }
           writeWorkerImageSettlement(coreDb, settlement);
         } catch (error) {
           if (error instanceof WorkerImageSettlementConflict) throw error;
@@ -1332,6 +1617,8 @@ function removePendingEffectGroup(
   operation: NanoHostEffectOperation,
   pending: PendingNanoHostEffect
 ): void {
+  pending.imageExecution?.abandon(pending.accepted);
+  clearTimeout(pending.imageExecution?.timer);
   clearTimeout(pending.collectionTimeout);
   pending.fileExportWaitCleanup?.();
   if (operation === 'workspace.collect') {

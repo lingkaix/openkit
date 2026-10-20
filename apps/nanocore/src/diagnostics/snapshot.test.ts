@@ -7,24 +7,23 @@ import type { AgentManifest } from '../agents/manifest.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { createDiagnosticsSnapshot } from './snapshot.js';
 
 /**
- * Creates a minimal agent manifest for diagnostics tests.
+ * Creates a current authored manifest without changing the diagnostic identity or readiness oracle.
  *
  * @returns Agent manifest.
  */
 function agentManifest(): AgentManifest {
   return {
-    adapter: 'custom-http',
-    deployments: ['local'],
-    displayName: 'Self Check Agent',
-    id: 'agent_self_check',
-    kind: 'custom',
+    ...createTestAgentSetup({
+      adapter: 'custom-http',
+      agentId: 'agent_self_check',
+      displayName: 'Self Check Agent',
+    }).manifest,
     readiness: { status: 'ready' },
-    runtime: 'custom',
-    version: '0.0.2',
   };
 }
 
@@ -71,6 +70,7 @@ describe('createDiagnosticsSnapshot', () => {
             'core_0011_audit_authentication',
             'core_0012_quarantined_workspace_retirement',
             'core_0013_control_store',
+            'core_0014_execution_journal',
           ],
         },
         mode: 'local',

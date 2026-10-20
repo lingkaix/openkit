@@ -57,6 +57,7 @@ describe('storage layout report', () => {
         'core_0011_audit_authentication',
         'core_0012_quarantined_workspace_retirement',
         'core_0013_control_store',
+        'core_0014_execution_journal',
       ]);
       expect(report.users).toEqual(
         expect.arrayContaining([

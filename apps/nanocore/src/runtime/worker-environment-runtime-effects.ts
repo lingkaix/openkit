@@ -5,6 +5,7 @@ import {
   EMPTY_BUILD_CONTEXT_DIGEST,
   EMPTY_BUILD_CONTEXT_REF,
 } from '@openkit/config-schema';
+import type { ActorRef } from '@openkit/protocol';
 import {
   canonicalNativeEnvironment,
   NativeEnvironmentValuesSchema,
@@ -58,6 +59,10 @@ export interface WorkerEnvironmentStorageInspection {
 export interface WorkerEnvironmentRuntimeEffects {
   /** Acquires/builds and inspects one exact authored image without mounting or draining work. */
   prepareImage(input: {
+    /** Actual initiating actor, supplied by the authenticated caller. */
+    readonly actor: Readonly<ActorRef>;
+    /** Canonical publication Turn id, never inferred from an input hash or trace. */
+    readonly workId: string;
     readonly authorize: () => boolean;
     readonly candidate: WorkerEnvironmentCandidateRef;
     readonly image: AgentEnvironmentPackage['runtime']['image'];
@@ -109,6 +114,11 @@ export function createWorkerEnvironmentRuntimeEffects(
           await dispatch.effect({
             input: { imageReference: image.ref },
             kind: 'image.acquire',
+            imageExecution: {
+              actor: input.actor,
+              workId: input.workId,
+              authorize: input.authorize,
+            },
             imageSettlement: imageSettlementIdentity(input.candidate, image),
             requestId: effectRequestId(preparationId, 'image.acquire'),
           })

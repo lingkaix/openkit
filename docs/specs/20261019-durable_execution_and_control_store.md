@@ -140,7 +140,7 @@ One NanoCore reconciler advances executions, steps, existing signals and timers.
 
 | Primitive | Retained contract |
 | --- | --- |
-| Execution | Existing work/operation identity, immutable scope/input identity, execution-definition version, current step, terminal cause and exclusion. Worker execution belongs to one Turn; Task lineage remains unchanged. |
+| Execution | Existing work/operation identity, immutable scope/input identity, execution-definition version, current steps, terminal cause and exclusion. Worker execution belongs to one Turn; Task lineage remains unchanged. |
 | Step | Exact invocation/actor, intent/outcome, fingerprint, permitting decision, authority/fences, references, retry declaration and deadline. Intent precedes effects; outcome and next transition commit together. |
 | Signal | Existing Pending Request identity, first valid decision and delivery linkage; same identity/content returns the result, changed content conflicts. Existing withdrawal/late-outcome rules apply. |
 | Timer | Existing deadline/next-due and recurring families; conditional consumption in the owning transaction, preserving due instants across restart. |
@@ -149,7 +149,9 @@ Execution phases: `open`, `closing`, `closed`; step states: `intent`, `completed
 
 One release-authored execution-definition version and closed step kinds govern interpretation; unsupported required semantics fail closed, descriptive additions remain ignorable.
 
-Claims and outcomes condition on unchanged execution/current step; constraints enforce Thread/AgentSession single flight and effects recheck authority.
+Each step names its own selected execution target and control parent/deadline cap; an execution may have concurrently open steps and nested child steps. Invocation identity is stable and distinct from the input fingerprint and trace identity; the definition version and exact versioned control/content references carry consumer-specific child keys, replay fingerprint inputs and actual result-delivery order, never diagnostic attributes.
+
+Claims and outcomes condition on the unchanged execution and selected current step; constraints enforce Thread/AgentSession single flight and effects recheck authority.
 
 Worker/network/user waits occur outside SQL.
 
@@ -188,7 +190,7 @@ The journal uses the OpenTelemetry span model, not an SDK buffer; fields contain
 | Attributes | Typed AnyValue preserves double versus int and exact int64; applicable semantic conventions/GenAI keys, `openkit.*`, pinned schema URL; no stringification or attribute-controlled execution. |
 | Events/links | Ordered timestamped typed events, trace/span links, permitted flags/state, optional fields and dropped counts; no silent loss of required facts. |
 | Envelope | Stable instrumentation scope, resource descriptors, schema URLs and flags; immutable descriptor sharing is permitted. |
-| Separate control | Work/attempt identity, step kind, input/output references, fingerprint, authority, retry permission, deadline and physical fences. |
+| Separate control | Work/attempt identity, step kind, selected target, control parent/cap separate from the trace parent, versioned input/output references, fingerprint, authority, retry permission, deadline and physical fences. |
 
 Projection must preserve stored types, values, counts and metadata exactly; the telemetry owner chooses the typed OTLP/JSON path, not a narrowing SDK-span conversion.
 
@@ -249,7 +251,7 @@ One deadline covers operation slot wait/delivery/execution/collection/retries; d
 
 Persist absolute expiry once; use monotonic remaining time locally, conservatively clamped after restart or clock uncertainty.
 
-Children cannot extend parents; heartbeats cannot renew authority; cleanup has separate bounded attempts without implied successful release.
+Children cannot extend parents; heartbeats cannot renew authority; cleanup has separate bounded attempts without implied successful release. Parent success or replay neither settles unknown children nor renews their authority.
 
 Authenticate absolute expiry/remaining allowance, accounting for transit; never transport monotonic timestamps.
 
