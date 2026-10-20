@@ -116,11 +116,26 @@ const CandidateFields = {
   operation: z.literal('update'),
 };
 
+/** Server-computed warning retained inside the exact human-confirmed Policy candidate. */
+const PolicyConfigurationWarningSchema = z
+  .object({
+    code: z.literal('mcp_tool_unobserved'),
+    workspaceId: WorkspaceIdSchema,
+    serverId: z.string().min(1),
+    toolName: z.string().min(1),
+    message: z.string().min(1),
+  })
+  .strict();
+
+/** Typed output warning; Policy proposal inputs do not accept this metadata. */
+export type PolicyConfigurationWarning = z.infer<typeof PolicyConfigurationWarningSchema>;
+
 /** Immutable private candidate with server-derived retained failure evidence for Worker repairs. */
 export const ConfigurationCandidateArtifactSchema = z.discriminatedUnion('targetFamily', [
   PolicyConfigurationProposalSchema.extend({
     ...CandidateFields,
     policyProposal: PolicyWriteProposalV1Schema,
+    warnings: z.array(PolicyConfigurationWarningSchema).optional(),
   }).strict(),
   CatalogConfigurationProposalSchema.extend(CandidateFields).strict(),
   WorkerGitReadConfigurationProposalSchema.extend({

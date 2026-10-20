@@ -607,7 +607,6 @@ describe('administration catalog configuration', () => {
     'require_approval',
   ] as const)('prepares and applies unobserved %s with a digest-bound warning and later exact-name enforcement', async (effect) => {
     const f = mcpPolicyFixture(false);
-    const validate = vi.spyOn(f.files, 'validate');
     const proposal = f.service.propose(f.policyRequest('future-tool', effect), f.home);
     const artifact = f.store.getArtifact(f.workspaceId, proposal.candidate.artifactId);
     if (artifact.content.format !== 'json') throw new Error('Expected candidate JSON.');
@@ -627,9 +626,10 @@ describe('administration catalog configuration', () => {
       `sha256:${createHash('sha256').update(artifact.content.body).digest('hex')}`
     );
     expect(proposal.confirmation.contentDigest).toBe(artifact.contentDigest);
-    expect(validate.mock.results.at(-1)?.value.plan.warnings).toContainEqual({
-      code: 'mcp_tool_unobserved',
-      message,
+    expect(proposal).toMatchObject({
+      plan: {
+        warnings: expect.arrayContaining([{ code: 'mcp_tool_unobserved', message }]),
+      },
     });
     const confirmed = f.confirm(proposal);
     expect(await f.service.apply(confirmed)).toMatchObject({ persisted: true, reload: 'applied' });

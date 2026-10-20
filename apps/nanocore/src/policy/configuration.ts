@@ -1,3 +1,4 @@
+import type { PolicyConfigurationWarning } from '@openkit/app-api-schemas';
 import { OpenKitConfigSchema } from '@openkit/config-schema';
 import type { PolicyDecision } from '@openkit/policy-kernel';
 import {
@@ -105,7 +106,8 @@ export function preparePolicyConfiguration(input: {
       'Policy changes are required.',
       409
     );
-  // Tool name validity follows the current admitted observation; no schema version is pinned.
+  // Restrictions may precede discovery. Their exact-name uncertainty belongs to the confirmed candidate, not a grant.
+  const warnings: PolicyConfigurationWarning[] = [];
   const changedToolConditions = new Set([...prepared.diff.added, ...prepared.diff.changed]);
   for (const statement of prepared.document.statements) {
     if (
@@ -129,12 +131,29 @@ export function preparePolicyConfiguration(input: {
                 workspaceDb: input.repositoryWorkspaceDb(resource.workspaceId),
                 workspaceId: resource.workspaceId,
               })?.tools;
-      if (!tools?.some((tool) => tool.name === resource.toolName))
-        throw new RuntimeConfigFileServiceError(
-          'policy_mcp_tool_unobserved',
-          'MCP Tool has no admitted schema observation.',
-          409
-        );
+      if (!tools?.some((tool) => tool.name === resource.toolName)) {
+        if (statement.effect !== 'prohibit' && statement.effect !== 'require_approval')
+          throw new RuntimeConfigFileServiceError(
+            'policy_mcp_tool_unobserved',
+            'MCP Tool has no admitted schema observation.',
+            409
+          );
+        if (
+          !warnings.some(
+            (warning) =>
+              warning.workspaceId === resource.workspaceId &&
+              warning.serverId === resource.serverId &&
+              warning.toolName === resource.toolName
+          )
+        )
+          warnings.push({
+            code: 'mcp_tool_unobserved',
+            workspaceId: resource.workspaceId,
+            serverId: resource.serverId,
+            toolName: resource.toolName,
+            message: `MCP Tool ${resource.serverId}/${resource.toolName} has not been observed in Workspace ${resource.workspaceId}; the statement applies when a Tool with this exact name is exposed.`,
+          });
+      }
     }
   }
 
@@ -247,7 +266,11 @@ export function preparePolicyConfiguration(input: {
       'Policy configuration validation failed.',
       409
     );
+  // Reuse the native validation plan's warning channel without making it part of Policy authority.
+  validation.plan.warnings.push(...warnings.map(({ code, message }) => ({ code, message })));
   return {
+    warnings,
+    plan: validation.plan,
     current: { read, value: currentDocument },
     changes: { proposed: prepared.document, rationale: input.request.changes.rationale },
     before: currentDocument,
