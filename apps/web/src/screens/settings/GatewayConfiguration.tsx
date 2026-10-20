@@ -171,7 +171,7 @@ export function KeyProviderCard({
         <p className="text-xs text-fg-muted">
           Affected logical models: {affected.join(', ') || 'None'}
         </p>
-        {['direct', 'gateway', 'custom'].includes(profile.kind) ? (
+        {['direct', 'llm-gateway', 'custom'].includes(profile.kind) ? (
           <>
             <TextField
               label="Provider API key"
