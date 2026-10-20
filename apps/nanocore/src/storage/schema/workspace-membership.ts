@@ -13,7 +13,7 @@ import { users } from './better-auth/index.js';
 /**
  * Minimal workspace lifecycle states.
  */
-export type WorkspaceRegistryStatus = 'active' | 'deleting' | 'deleted';
+export type WorkspaceRegistryStatus = 'active' | 'deleting' | 'deleted' | 'retired';
 
 /**
  * Minimal workspace membership lifecycle states.
@@ -36,7 +36,7 @@ export const workspaceRegistry = sqliteTable(
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
     /** Workspace registry status. */
-    status: text('status', { enum: ['active', 'deleting', 'deleted'] })
+    status: text('status', { enum: ['active', 'deleting', 'deleted', 'retired'] })
       .$type<WorkspaceRegistryStatus>()
       .notNull(),
     /** Positive monotonic compare-and-set revision. */
@@ -50,7 +50,7 @@ export const workspaceRegistry = sqliteTable(
     index('workspace_registry_owner_user_id_idx').on(table.ownerUserId),
     check(
       'workspace_registry_status_check',
-      sql`${table.status} IN ('active', 'deleting', 'deleted')`
+      sql`${table.status} IN ('active', 'deleting', 'deleted', 'retired')`
     ),
     check(
       'workspace_registry_revision_check',

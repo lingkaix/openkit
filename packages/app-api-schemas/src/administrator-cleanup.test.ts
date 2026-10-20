@@ -27,12 +27,14 @@ import {
   AdministratorCleanupWorkerStorageItemSchema,
   type AdministratorCleanupWorkspaceDeletionItem,
   AdministratorCleanupWorkspaceDeletionItemSchema,
+  AdministratorCleanupWorkspaceRegistryItemSchema,
 } from './administrator-cleanup.js';
 
 const OBSERVED_AT = '2026-10-16T00:00:00.000Z';
 const SOURCE_TIME = '2026-10-15T12:00:00.000Z';
 const SOURCES = [
   'workspace-deletion',
+  'workspace-registry',
   'execution-attempt',
   'backend-session',
   'agent-session-binding',
@@ -41,6 +43,7 @@ const SOURCES = [
 ] as const;
 const OWNERS = {
   'workspace-deletion': 'docs/specs/20260715-multi_user_workspace_system.md',
+  'workspace-registry': 'docs/specs/20260715-multi_user_workspace_system.md',
   'execution-attempt': 'docs/specs/20260703-durable_scheduler_design.md',
   'backend-session': 'docs/specs/20260802-nanohost_runtime_and_transport.md',
   'agent-session-binding': 'docs/specs/20260802-nanohost_runtime_and_transport.md',
@@ -49,6 +52,18 @@ const OWNERS = {
 } as const;
 
 const branches = {
+  'workspace-registry': {
+    target: {
+      kind: 'workspace-registry',
+      workspaceId: 'ws_00000000-0000-740d-a2ee-b63efda55617',
+    },
+    state: {
+      registryStatus: 'retired',
+      registryRevision: 2,
+      quarantineCheck: null,
+      retirement: { dataRetained: true, storageReclaimed: false },
+    },
+  },
   'workspace-deletion': {
     target: {
       kind: 'workspace-deletion',
@@ -142,7 +157,7 @@ function item(source: AdministratorCleanupSource) {
   };
 }
 
-/** Reserves the complete six-source envelope even when no records were observed. */
+/** Reserves the complete seven-source envelope even when no records were observed. */
 function response(items = SOURCES.map(item)) {
   return {
     observedAt: OBSERVED_AT,
@@ -193,7 +208,7 @@ describe('administrator cleanup shared schemas', () => {
     expect(AdministratorCleanupItemSchema.safeParse(known).success).toBe(false);
   });
 
-  it('exports the exact bounded six-source contract and source owners', () => {
+  it('exports the exact bounded seven-source contract and source owners', () => {
     expect(ADMINISTRATOR_CLEANUP_MAX_ENTRIES).toBe(100);
     expect(ADMINISTRATOR_CLEANUP_MAX_BYTES).toBe(262144);
     expect(ADMINISTRATOR_CLEANUP_SOURCES).toEqual(SOURCES);
@@ -205,6 +220,7 @@ describe('administrator cleanup shared schemas', () => {
 
   it.each([
     ['workspace-deletion', AdministratorCleanupWorkspaceDeletionItemSchema],
+    ['workspace-registry', AdministratorCleanupWorkspaceRegistryItemSchema],
     ['execution-attempt', AdministratorCleanupExecutionAttemptItemSchema],
     ['backend-session', AdministratorCleanupBackendSessionItemSchema],
     ['agent-session-binding', AdministratorCleanupAgentSessionBindingItemSchema],
@@ -218,10 +234,13 @@ describe('administrator cleanup shared schemas', () => {
     expect(schema.parse(observation).sourceUpdatedAt).toBeNull();
     const { sourceUpdatedAt: _omitted, ...missingTimestamp } = observation;
     expect(schema.safeParse(missingTimestamp).success).toBe(false);
-    expect(schema.safeParse(item(SOURCES[(SOURCES.indexOf(source) + 1) % 6]!)).success).toBe(false);
+    expect(schema.safeParse(item(SOURCES[(SOURCES.indexOf(source) + 1) % 7]!)).success).toBe(false);
   });
 
   it('exports source-specific types and the five-source runtime union', () => {
+    expectTypeOf<typeof AdministratorCleanupWorkspaceRegistryItemSchema._output>().toEqualTypeOf<
+      Extract<AdministratorCleanupItem, { source: 'workspace-registry' }>
+    >();
     expectTypeOf<AdministratorCleanupWorkspaceDeletionItem>().toEqualTypeOf<
       Extract<AdministratorCleanupItem, { source: 'workspace-deletion' }>
     >();
@@ -241,7 +260,7 @@ describe('administrator cleanup shared schemas', () => {
       Extract<AdministratorCleanupItem, { source: 'worker-storage' }>
     >();
     expectTypeOf<AdministratorCleanupRuntimeItem>().toEqualTypeOf<
-      Exclude<AdministratorCleanupItem, { source: 'workspace-deletion' }>
+      Exclude<AdministratorCleanupItem, { source: 'workspace-deletion' | 'workspace-registry' }>
     >();
     expectTypeOf<
       AdministratorCleanupReadResponse['items'][number]
@@ -478,7 +497,7 @@ describe('administrator cleanup shared schemas', () => {
     ).toBe(false);
   });
 
-  it('normalizes one complete observation with all six empty or populated source facts', () => {
+  it('normalizes one complete observation with all seven empty or populated source facts', () => {
     expect(AdministratorCleanupReadResponseSchema.parse(response())).toEqual(response());
     expect(AdministratorCleanupReadResponseSchema.parse(response([]))).toEqual(response([]));
     const annotated = {
@@ -489,7 +508,7 @@ describe('administrator cleanup shared schemas', () => {
     expect(AdministratorCleanupReadResponseSchema.parse(annotated)).toEqual(response([]));
   });
 
-  it('requires exactly the stable six-source order and the common observation time', () => {
+  it('requires exactly the stable seven-source order and the common observation time', () => {
     const known = response();
     for (const sources of [
       known.sources.slice(1),
@@ -520,7 +539,7 @@ describe('administrator cleanup shared schemas', () => {
       };
       expect(AdministratorCleanupSourceObservationSchema.parse(source)).toEqual(source);
       const known = response([item('execution-attempt')]);
-      known.sources[1] = source;
+      known.sources[2] = source;
       known.incomplete = source.incomplete;
       expect(AdministratorCleanupReadResponseSchema.parse(known)).toEqual(known);
       expect(
@@ -551,7 +570,7 @@ describe('administrator cleanup shared schemas', () => {
 
   it('applies the inclusive entry limit of 100 across sources rather than per source', () => {
     const items = Array.from({ length: 101 }, (_, index) => {
-      const observation = item(SOURCES[index % 6]!);
+      const observation = item(SOURCES[index % 7]!);
       const target = {
         ...observation.target,
         ...('workspaceId' in observation.target

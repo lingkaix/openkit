@@ -8,7 +8,10 @@ import {
   WorkspaceIdSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
-import { WorkspaceDeletionPhaseSchema } from './workspace-sharing.js';
+import {
+  WorkspaceDeletionPhaseSchema,
+  WorkspaceRegistryStatusSchema,
+} from './workspace-sharing.js';
 
 /** Maximum aggregate item count for the administrator cleanup observation. */
 export const ADMINISTRATOR_CLEANUP_MAX_ENTRIES = 100;
@@ -18,6 +21,7 @@ export const ADMINISTRATOR_CLEANUP_MAX_BYTES = 262144;
 /** Stable source order, including sources with no available observations. */
 export const ADMINISTRATOR_CLEANUP_SOURCES = [
   'workspace-deletion',
+  'workspace-registry',
   'execution-attempt',
   'backend-session',
   'agent-session-binding',
@@ -33,6 +37,7 @@ export type AdministratorCleanupSource = z.infer<typeof AdministratorCleanupSour
 /** Governing record owner for each source; these paths confer no mutation authority. */
 export const ADMINISTRATOR_CLEANUP_SOURCE_OWNERS = {
   'workspace-deletion': 'docs/specs/20260715-multi_user_workspace_system.md',
+  'workspace-registry': 'docs/specs/20260715-multi_user_workspace_system.md',
   'execution-attempt': 'docs/specs/20260703-durable_scheduler_design.md',
   'backend-session': 'docs/specs/20260802-nanohost_runtime_and_transport.md',
   'agent-session-binding': 'docs/specs/20260802-nanohost_runtime_and_transport.md',
@@ -109,6 +114,20 @@ function cleanupItemSchema<
       }
     });
 }
+
+/** Registry-owned quarantine/retirement metadata, never a content inventory or physical-cleanup proof. */
+export const AdministratorCleanupWorkspaceRegistryItemSchema = cleanupItemSchema(
+  'workspace-registry',
+  { kind: z.literal('workspace-registry'), workspaceId: WorkspaceIdSchema },
+  {
+    registryStatus: WorkspaceRegistryStatusSchema,
+    registryRevision: z.number().int().positive(),
+    quarantineCheck: z.enum(['layout', 'database', 'records', 'recovery']).nullable(),
+    retirement: z
+      .object({ dataRetained: z.literal(true), storageReclaimed: z.literal(false) })
+      .nullable(),
+  }
+);
 
 /** Current deletion-request facts, without staging paths, export bytes or cleanup inference. */
 export const AdministratorCleanupWorkspaceDeletionItemSchema = cleanupItemSchema(
@@ -221,6 +240,7 @@ export const AdministratorCleanupWorkerStorageItemSchema = cleanupItemSchema(
 /** The six declared source branches; descriptive additions are removed at each object boundary. */
 export const AdministratorCleanupItemSchema = z.discriminatedUnion('source', [
   AdministratorCleanupWorkspaceDeletionItemSchema,
+  AdministratorCleanupWorkspaceRegistryItemSchema,
   AdministratorCleanupExecutionAttemptItemSchema,
   AdministratorCleanupBackendSessionItemSchema,
   AdministratorCleanupAgentSessionBindingItemSchema,
@@ -345,7 +365,7 @@ export type AdministratorCleanupItem = z.infer<typeof AdministratorCleanupItemSc
 /** The five Core runtime branches supplied by the runtime cleanup reader. */
 export type AdministratorCleanupRuntimeItem = Exclude<
   AdministratorCleanupItem,
-  { source: 'workspace-deletion' }
+  { source: 'workspace-deletion' | 'workspace-registry' }
 >;
 /** Explicit source enumeration coverage, including unavailable sources. */
 export type AdministratorCleanupSourceObservation = z.infer<

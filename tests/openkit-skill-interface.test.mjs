@@ -1010,6 +1010,7 @@ test('one catalog covers the checked App API and public Core projection', async 
       'worker-environment.recover',
       'workspace.access-recover',
       'workspace.access-recovery-read',
+      'workspace.retire-quarantined',
     ]
   );
   assert.deepEqual(idsWithAccess('server-admin bearer token in server mode'), []);
