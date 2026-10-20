@@ -2,8 +2,8 @@
 //!
 //! The transport specification's Host-Observed Sandbox Resource Summary owns the fields.
 //! Missing or invalid observations remain unknown and cannot affect Sandbox deletion.
-//! Collection belongs to the existing delete future and is discarded when deletion ends.
-//! Its local lifetime bound does not establish authenticated parent-deadline carriage.
+//! Collection finishes or is abandoned before SDK deletion, within the lesser of
+//! one second and the existing operation's remaining allowance. This is not C1 carriage.
 
 /// Projects raw Docker inspect JSON and optional cgroup-v2 files into the closed summary.
 ///
@@ -88,8 +88,9 @@ fn keyed_counter(raw: Option<&str>, key: &str) -> Option<u64> {
 
 /// Observes only the current Sandbox on the Epoch-private Docker connection.
 ///
-/// The caller must drop this future when deletion completes. Its own one-second cap
-/// never extends deletion. The pinned SDK already enables Tokio process facilities.
+/// The lifecycle owner finishes or drops this future before starting SDK deletion,
+/// within the existing operation deadline. Its own one-second cap also bounds direct
+/// collection. The pinned SDK already enables Tokio process facilities.
 pub(crate) async fn observe_before_delete(
     socket: &std::path::Path,
     sandbox_id: &str,
@@ -462,14 +463,31 @@ pub(crate) mod collector_tests {
         let group = format!("system.slice/docker-{}.scope", fixture.id);
         std::fs::create_dir_all(fixture.proc_root.join("42")).unwrap();
         std::fs::create_dir_all(fixture.cgroup_root.join(&group)).unwrap();
-        std::fs::write(fixture.proc_root.join("42/cgroup"), format!("0::/{group}\n")).unwrap();
-        std::fs::write(fixture.cgroup_root.join(&group).join("memory.events"),
-            format!("oom_kill 2\n{}", "x".repeat(4096))).unwrap();
+        std::fs::write(
+            fixture.proc_root.join("42/cgroup"),
+            format!("0::/{group}\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            fixture.cgroup_root.join(&group).join("memory.events"),
+            format!("oom_kill 2\n{}", "x".repeat(4096)),
+        )
+        .unwrap();
         std::fs::write(fixture.cgroup_root.join(&group).join("memory.peak"), "12").unwrap();
-        assert_eq!(fixture.observe().await, Some(json!({"memoryPeakBytes":12,
-            "backendOomKilled":false,"exitState":"running"})));
-        std::fs::write(fixture.proc_root.join("42/cgroup"), "0::/system.slice/unrelated\n").unwrap();
-        assert_eq!(fixture.observe().await, Some(json!({"backendOomKilled":false,"exitState":"running"})));
+        assert_eq!(
+            fixture.observe().await,
+            Some(json!({"memoryPeakBytes":12,
+            "backendOomKilled":false,"exitState":"running"}))
+        );
+        std::fs::write(
+            fixture.proc_root.join("42/cgroup"),
+            "0::/system.slice/unrelated\n",
+        )
+        .unwrap();
+        assert_eq!(
+            fixture.observe().await,
+            Some(json!({"backendOomKilled":false,"exitState":"running"}))
+        );
     }
 
     #[tokio::test]

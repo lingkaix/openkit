@@ -1820,24 +1820,31 @@ pub struct LifecycleEffectOutput {
     pub resource_summary: Option<serde_json::Value>,
 }
 
-/// Starts deletion first and never waits for diagnostics after deletion completes.
+/// Finishes or abandons collection before the SDK can remove its observation source.
 ///
-/// Both futures remain in this scope: completion or cancellation drops the collector
-/// and its kill-on-drop child. This local ownership does not provide C1 parent expiry.
+/// Collection consumes at most one second of the existing operation deadline. Its
+/// future and kill-on-drop child are dropped before deletion starts, including on
+/// timeout. This uses the current coordinator allowance, not C1 parent carriage.
 async fn sandbox_delete_with_observation(
     deletion: impl std::future::Future<Output = Result<LifecycleEffectResult, EpochFault>>,
     observation: impl std::future::Future<Output = Option<serde_json::Value>>,
-    _operation_deadline: tokio::time::Instant,
+    operation_deadline: tokio::time::Instant,
 ) -> (
     Result<LifecycleEffectResult, EpochFault>,
     Option<serde_json::Value>,
 ) {
-    tokio::pin!(deletion, observation);
-    tokio::select! {
-        biased;
-        result = &mut deletion => (result, None),
-        summary = &mut observation => (deletion.await, summary),
-    }
+    let now = tokio::time::Instant::now();
+    let summary = if now < operation_deadline {
+        let collection_deadline = operation_deadline.min(now + Duration::from_secs(1));
+        tokio::time::timeout_at(collection_deadline, observation)
+            .await
+            .ok()
+            .flatten()
+    } else {
+        drop(observation);
+        None
+    };
+    (deletion.await, summary)
 }
 
 impl EpochCoordinator {
@@ -2471,14 +2478,24 @@ impl EpochCoordinator {
         let lifecycle_timeout = Duration::from_secs(120);
         let (result, resource_summary) = tokio::task::block_in_place(|| {
             self.runtime.block_on(async {
-                let deletion = self.client.execute_lifecycle_effect(
-                    request,
-                    create,
-                    bridge,
-                    worker_bootstrap,
-                    route_projection,
-                    lifecycle_timeout,
-                );
+                let operation_deadline = tokio::time::Instant::now() + lifecycle_timeout;
+                let deletion = async {
+                    let remaining = if request.kind() == LifecycleEffectKind::DeleteSandbox {
+                        operation_deadline.saturating_duration_since(tokio::time::Instant::now())
+                    } else {
+                        lifecycle_timeout
+                    };
+                    self.client
+                        .execute_lifecycle_effect(
+                            request,
+                            create,
+                            bridge,
+                            worker_bootstrap,
+                            route_projection,
+                            remaining,
+                        )
+                        .await
+                };
                 if request.kind() == LifecycleEffectKind::DeleteSandbox {
                     let sandbox = self
                         .current_sandbox
@@ -2493,7 +2510,7 @@ impl EpochCoordinator {
                                     &sandbox.id,
                                     &sandbox.name,
                                 ),
-                                tokio::time::Instant::now() + lifecycle_timeout,
+                                operation_deadline,
                             )
                             .await
                         }
