@@ -9,6 +9,7 @@ import {
   AdministratorCleanupReadResponseSchema,
   type AdministratorCleanupSourceObservation,
   AdministratorCleanupWorkspaceDeletionItemSchema,
+  AdministratorCleanupWorkspaceRegistryItemSchema,
 } from '@openkit/app-api-schemas';
 import Database from 'better-sqlite3';
 import type { Actor } from './auth/identity.js';
@@ -16,6 +17,7 @@ import {
   DeploymentAdminRequiredError,
   requireCurrentDeploymentAdmin,
 } from './auth/operation-authorizer.js';
+import { scopeAdmissionFailures } from './bootstrap/readiness.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
 import { type FamilyImplementations, publicOperationActor } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
@@ -46,6 +48,12 @@ export function createAdministratorCleanupOperationImplementations(
         incomplete: false,
         reasons: [],
       };
+      const registryCoverage: AdministratorCleanupSourceObservation = {
+        source: 'workspace-registry',
+        availability: 'available',
+        incomplete: false,
+        reasons: [],
+      };
       // Coverage can grow after an item is read. Reserve its complete maximum encoding first,
       // including both array separators when deletion and runtime each contribute items.
       const reservedSources = ADMINISTRATOR_CLEANUP_SOURCES.map(maximumCoverage);
@@ -66,7 +74,10 @@ export function createAdministratorCleanupOperationImplementations(
           (record) => {
             requireAdministrator(coreDb, actor);
             const registry = getWorkspaceRegistryLifecycleFact(coreDb, record.workspaceId);
-            if (!registry || !['active', 'deleting', 'deleted'].includes(registry.status)) {
+            if (
+              !registry ||
+              !['active', 'deleting', 'deleted', 'retired'].includes(registry.status)
+            ) {
               throw new Error('Deletion source authority is unavailable.');
             }
             const item = projectDeletion(record, observedAt);
@@ -92,6 +103,84 @@ export function createAdministratorCleanupOperationImplementations(
         addReason(deletion, 'source_unavailable');
       }
       requireAdministrator(coreDb, actor);
+      if (exhausted) {
+        registryCoverage.availability = 'unavailable';
+        addReason(registryCoverage, 'source_unavailable');
+        addReason(registryCoverage, exhausted);
+      } else {
+        try {
+          const failures = scopeAdmissionFailures(coreDb.dataRoot).filter(
+            (failure) =>
+              failure.scope === 'workspace' &&
+              failure.check !== 'index' &&
+              failure.check !== 'retired'
+          );
+          const checks = new Map(failures.map((failure) => [failure.id, failure.check]));
+          const refusedIds = JSON.stringify([...checks.keys()]);
+          // A missing authority cannot turn a current quarantine diagnosis into an empty all-clear.
+          if (
+            coreDb.sqlite
+              .prepare(
+                `SELECT 1 FROM json_each(?) AS refused LEFT JOIN workspace_registry AS registry ON registry.workspace_id = refused.value WHERE registry.workspace_id IS NULL OR registry.status NOT IN ('active', 'deleting', 'deleted', 'retired') LIMIT 1`
+              )
+              .get(refusedIds)
+          ) {
+            throw new Error('Quarantined registry authority is unavailable.');
+          }
+          const rows = coreDb.sqlite
+            .prepare(`SELECT workspace_id AS workspaceId, status, revision, updated_at AS updatedAt FROM workspace_registry
+            WHERE status = 'retired' OR workspace_id IN (SELECT value FROM json_each(?))
+            ORDER BY workspace_id LIMIT ?`)
+            .all(refusedIds, ADMINISTRATOR_CLEANUP_MAX_ENTRIES - items.length + 1) as Array<{
+            workspaceId: string;
+            status: string;
+            revision: number;
+            updatedAt: string;
+          }>;
+          for (const row of rows) {
+            requireAdministrator(coreDb, actor);
+            if (items.length === ADMINISTRATOR_CLEANUP_MAX_ENTRIES) {
+              exhausted = 'count_limit';
+              addReason(registryCoverage, exhausted);
+              break;
+            }
+            const target = { kind: 'workspace-registry' as const, workspaceId: row.workspaceId };
+            const item = AdministratorCleanupWorkspaceRegistryItemSchema.parse({
+              source: 'workspace-registry',
+              sourceOwner: ADMINISTRATOR_CLEANUP_SOURCE_OWNERS['workspace-registry'],
+              target,
+              state: {
+                registryStatus: row.status,
+                registryRevision: row.revision,
+                quarantineCheck: checks.get(row.workspaceId) ?? null,
+                retirement:
+                  row.status === 'retired' ? { dataRetained: true, storageReclaimed: false } : null,
+              },
+              sourceUpdatedAt: row.updatedAt,
+              observedAt,
+              evidence: { kind: 'unknown', reason: 'unavailable' },
+              nextInspection: {
+                kind: 'source-record',
+                sourceOwner: ADMINISTRATOR_CLEANUP_SOURCE_OWNERS['workspace-registry'],
+                target,
+              },
+            });
+            const addedBytes = jsonBytes(item) + (items.length > 0 ? 1 : 0);
+            if (reservedMetadata + itemBytes + addedBytes > ADMINISTRATOR_CLEANUP_MAX_BYTES) {
+              exhausted = 'byte_limit';
+              addReason(registryCoverage, exhausted);
+              break;
+            }
+            items.push(item);
+            itemBytes += addedBytes;
+          }
+        } catch (error) {
+          if (error instanceof OperationError) throw error;
+          registryCoverage.availability = 'unavailable';
+          addReason(registryCoverage, 'source_unavailable');
+        }
+      }
+      requireAdministrator(coreDb, actor);
       let runtime: ReturnType<typeof readRuntimeCleanupView>;
       try {
         runtime = readRuntimeCleanupView({
@@ -103,7 +192,8 @@ export function createAdministratorCleanupOperationImplementations(
             ADMINISTRATOR_CLEANUP_MAX_BYTES -
             itemBytes -
             jsonBytes(deletion) -
-            1 -
+            jsonBytes(registryCoverage) -
+            2 -
             (items.length > 0 ? 1 : 0),
         });
       } finally {
@@ -123,8 +213,8 @@ export function createAdministratorCleanupOperationImplementations(
       const result: AdministratorCleanupReadResponse = {
         observedAt,
         items: [...items, ...runtime.items],
-        sources: [deletion, ...runtime.sources],
-        incomplete: deletion.incomplete || runtime.incomplete,
+        sources: [deletion, registryCoverage, ...runtime.sources],
+        incomplete: deletion.incomplete || registryCoverage.incomplete || runtime.incomplete,
       };
       // Admit the full known-field response again after joining actual coverage flags. No
       // strings or identities are shortened, and no further source work follows truncation.

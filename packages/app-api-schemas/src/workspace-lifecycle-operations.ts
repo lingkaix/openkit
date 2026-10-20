@@ -15,6 +15,7 @@ import {
   RecoverDeletedWorkspaceResponseSchema,
   RecoverWorkspaceAccessRequestSchema,
   RemoveWorkspaceMemberRequestSchema,
+  RetireQuarantinedWorkspaceRequestSchema,
   RevokeWorkspaceInvitationRequestSchema,
   TransferWorkspaceOwnershipRequestSchema,
   WorkspaceAccessRecoveryResponseSchema,
@@ -22,6 +23,7 @@ import {
   WorkspaceInvitationMutationResponseSchema,
   WorkspaceMemberMutationResponseSchema,
   WorkspaceOwnershipMutationResponseSchema,
+  WorkspaceRetirementResponseSchema,
 } from './workspace-sharing.js';
 
 /** Canonical Workspace lifecycle contracts; Core receipts, authority and deletion phases retain their existing owners. */
@@ -212,6 +214,20 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     scope: { kind: 'server' },
     target: { kind: 'user', field: 'targetUserId' },
     policyOperation: 'api.call',
+    mutating: true,
+  },
+  'workspace.retire-quarantined': {
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    description:
+      'Retire a quarantined Workspace while retaining all data and reclaiming no storage.',
+    inputSchema: RetireQuarantinedWorkspaceRequestSchema,
+    outputSchema: WorkspaceRetirementResponseSchema,
+    credentials: ['local-user', 'user-session', 'deployment-administrator'],
+    scope: { kind: 'server' },
+    target: { kind: 'workspace' },
+    policyOperation: 'deployment.recover',
     mutating: true,
   },
   'workspace.delete': {

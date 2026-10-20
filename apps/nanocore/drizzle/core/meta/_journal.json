@@ -85,6 +85,13 @@
       "when": 1792367629333,
       "tag": "0011_audit_authentication",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1792486932994,
+      "tag": "0012_quarantined_workspace_retirement",
+      "breakpoints": true
     }
   ]
 }

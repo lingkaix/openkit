@@ -541,7 +541,7 @@ Retirement must not open the Workspace database, load content through Store, cre
 
 On restart, restore the closed gate and non-admission from the trusted retired registry before scoped migrations, Store restoration, index rebuild or recovery effects. Do not revalidate retained corruption into an admitted Workspace or reconstruct missing content. Retired data retains existing storage ownership and shared-containment checks. Untrustworthy server authority still refuses boot; retirement never hides a shared-boundary violation.
 
-The ID cannot be reactivated, reused or passed to deleted-Workspace recovery. A later proof-bearing recovery or erasure path needs its own accepted authority; this operation promises neither. Retention and legal holds continue without an automatic expiry. Read-only inspection is not permission to change retained data or release capacity.
+The ID cannot be reactivated, reused or passed to deleted-Workspace recovery. Provisioning must not recreate a retired built-in personal Workspace or prevent the original user's authentication. Operations that require that personal Workspace remain unavailable. A later proof-bearing recovery or erasure path needs its own accepted authority; this operation promises neither. Retention and legal holds continue without an automatic expiry. Read-only inspection is not permission to change retained data or release capacity.
 
 Acceptance must compose the native operation, real Core registry, authorization, receipt and mutation gate. Cover corrupt and missing Workspace databases, healthy sibling progress, administrator versus outsider, healthy-scope refusal, revision/input conflicts, duplicate delivery, transaction rollback, lost reply and restart. Assert complete retained bytes and hold/runtime-fence preservation, no Workspace open or Host effect, closed ordinary admission after restart, and truthful bounded administrator observation.
 
@@ -814,7 +814,7 @@ The exact V1 operation surface is closed as follows:
 | `workspace.access-recovery-read` | `POST /api/app/operations/workspace.access-recovery-read` | deployment administrator; `deployment.recover` | `{ recovery }` |
 | `workspace.access-recover` | `POST /api/app/operations/workspace.access-recover` | deployment administrator; `deployment.recover` | `{ recovery }` |
 | `user.disable` | `POST /api/app/operations/user.disable` | deployment administrator; `api.call` | `{ user }` |
-| `workspace.retire-quarantined` | `POST /api/app/operations/workspace.retire-quarantined` | current deployment administrator; trusted registry and current quarantine; server-scoped non-content command | `200 { retirement }` |
+| `workspace.retire-quarantined` | `POST /api/app/operations/workspace.retire-quarantined` | current deployment administrator; trusted registry and current quarantine; server-scoped `deployment.recover` non-content command | `200 { retirement }` |
 | `workspace.delete` | `POST /api/app/operations/workspace.delete` | current active member or current administrator for creation; exact initiating-user or administrator non-content retry after `deleting`; `workspace.lifecycle` | `200/202 { deletion }` |
 | `workspace.deleted-recover` | `POST /api/app/operations/workspace.deleted-recover` | original active owner from the deleted tombstone or current administrator; ordinary Workspace bearer denied | `{ recovery }` |
 

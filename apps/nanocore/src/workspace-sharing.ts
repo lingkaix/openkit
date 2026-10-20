@@ -751,6 +751,27 @@ function fenceRegistry(coreDb: CoreDb, workspaceId: string, expectedRevision: nu
   );
 }
 
+/**
+ * Retires one exact active registry without changing owner, memberships, data or runtime fences.
+ * @param input Verified registry identity/revision under the native command's outer Core transaction.
+ * @returns The retained terminal registry fact.
+ * @throws When the exact active registry changed; no content store or Workspace database is consulted.
+ */
+export function retireQuarantinedWorkspaceRegistry(input: {
+  readonly coreDb: CoreDb;
+  readonly workspaceId: string;
+  readonly expectedRegistryRevision: number;
+}): WorkspaceRegistryLifecycleFact {
+  requireOuterTransaction(input.coreDb);
+  const changed = input.coreDb.sqlite
+    .prepare(
+      `UPDATE workspace_registry SET status = 'retired', revision = revision + 1, updated_at = ? WHERE workspace_id = ? AND status = 'active' AND revision = ?`
+    )
+    .run(new Date().toISOString(), input.workspaceId, input.expectedRegistryRevision);
+  if (changed.changes !== 1) throw new Error('Workspace retirement registry transition changed.');
+  return requireWorkspaceRegistryLifecycleFact(input.coreDb, input.workspaceId);
+}
+
 /** Moves one exact active owner registry into the deleting state. */
 export function beginWorkspaceDeletion(
   input: BeginWorkspaceDeletionInput

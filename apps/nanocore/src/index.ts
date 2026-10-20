@@ -37,6 +37,7 @@ import {
   createBootId,
   createShutdownReadinessSnapshot,
   refuseScope,
+  restoreWorkspaceRetirementAdmission,
   withScopeAdmissionReadiness,
 } from './bootstrap/readiness.js';
 import { closeWithDeadline } from './bootstrap/shutdown.js';
@@ -257,6 +258,7 @@ const bootResult = await runBootPhases({
           freshInitialization: freshCoreInitialization,
         });
         applyMigrations(coreDb);
+        restoreWorkspaceRetirementAdmission({ coreDb, workspaceMutationAdmission });
         recoverRunningCapabilityCalls({ workspaceDb: coreDb });
         // Only active server registry facts establish an expected Workspace; deletion may remove roots.
         for (const { workspaceId } of coreDb.sqlite
