@@ -32,6 +32,10 @@ The [2026-10-19 decision](../decisions/20261019-durable_execution_and_control_st
 
 For the replacement, database publication of an already synchronized immutable Notebook revision supersedes mutable Git-ref authority wherever the layout below says Notebook Git is the publication authority. Git retains content/history authority; its mutable refs become projections. Existing package import/export remains a domain operation and follows that publication boundary rather than creating its own head. Snapshot consistency of remaining app databases and opaque process data belongs to their declared writer boundaries, not Storage guessing a file format.
 
+Required user work data returns through existing storage handoff and domain publication under [Core Storage](../core/storage.md#source-of-truth). Required bytes MUST be verified and admitted by their existing owners before work counts as complete or their only copy is removed; a locator alone is insufficient.
+
+Reference-only external sources and omitted-volume backup rules MUST NOT excuse leaving required produced user data only with an executor or provider. Core MUST refuse admission for a placement that cannot return a required volume or data size within existing storage limits; it MUST NOT substitute a reference-only result.
+
 ## Layers And Shared References
 
 Ablation: content identity, location and interpretation must remain distinct when bytes move or disappear.
