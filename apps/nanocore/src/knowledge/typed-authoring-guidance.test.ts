@@ -200,6 +200,7 @@ function fixture(scope: Scope) {
       const internalExecution = {
         roleId: 'knowledge-manager' as const,
         logicalModelId: 'fixture-model',
+        limits: { maxModelTurns: 16, maxToolCalls: 48, deadlineMs: 300_000 },
         contextStrategy: 'compaction' as const,
         threshold: 64_000,
         knowledge: input.inputs!,
