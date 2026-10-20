@@ -199,6 +199,41 @@ function listColumnNames(
 }
 
 describe('database setup', () => {
+  it('T1 applies the real Workspace journal exactly once and preserves native bytes on repeat', ({
+    skip,
+  }) => {
+    const root = createDataRoot();
+    const db = openWorkspaceDb(root, testEntityId('ws', 'journal-migration-workspace'));
+    try {
+      applyScopedMigrations(db);
+      const tables = listTableNames(db).filter((name) =>
+        ['control_execution_steps', 'control_executions'].includes(name)
+      );
+      if (
+        tables.length === 0 &&
+        !existsSync(new URL('../../drizzle/workspace/0012_execution_journal.sql', import.meta.url))
+      )
+        skip('schema-pending: Workspace0012 execution journal');
+      expect(tables).toEqual(['control_execution_steps', 'control_executions']);
+      expect(listMigrationIds(db, 'workspace').slice(-2)).toEqual([
+        'workspace_0011_workspace_capture_protection',
+        'workspace_0012_execution_journal',
+      ]);
+      const ledger = db.sqlite.prepare('SELECT * FROM __drizzle_migrations ORDER BY id').all();
+      const before = db.sqlite.serialize();
+      applyScopedMigrations(db);
+      expect(db.sqlite.prepare('SELECT * FROM __drizzle_migrations ORDER BY id').all()).toEqual(
+        ledger
+      );
+      expect(db.sqlite.serialize().equals(before)).toBe(true);
+      expect(db.sqlite.pragma('foreign_key_check')).toEqual([]);
+      expect(db.sqlite.pragma('integrity_check', { simple: true })).toBe('ok');
+    } finally {
+      db.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     'core',
     'workspace',

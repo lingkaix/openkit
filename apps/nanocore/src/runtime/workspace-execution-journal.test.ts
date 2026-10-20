@@ -261,6 +261,30 @@ function history(f: ReturnType<typeof fixture>) {
 }
 
 describe('Workspace execution journal native constraints and persisted views', () => {
+  it('T1 rejects invocation reuse and an absent control parent in the real Workspace schema', (context) => {
+    const f = fixture();
+    f.requireSchema(context);
+    history(f);
+    const before = f.db.sqlite.serialize();
+    // Exercise native constraints on existing valid rows; never create a substitute schema or ledger.
+    expect(() =>
+      f.db.sqlite
+        .prepare(`INSERT INTO control_execution_steps
+      (execution_id,step_id,schema_version,ordinal,parent_step_id,state,invocation_id,control_json,invocation_json,span_json,inspected_execution_id,inspected_step_id)
+      SELECT execution_id,'duplicate-invocation',schema_version,4,NULL,state,invocation_id,control_json,invocation_json,span_json,NULL,NULL
+      FROM control_execution_steps WHERE step_id = 'step-1'`)
+        .run()
+    ).toThrow();
+    expect(() =>
+      f.db.sqlite
+        .prepare(
+          "UPDATE control_execution_steps SET parent_step_id = 'absent-parent' WHERE step_id = 'step-1'"
+        )
+        .run()
+    ).toThrow();
+    expect(f.db.sqlite.serialize().equals(before)).toBe(true);
+  });
+
   it('T1 isolates native scope/version constraints and missing or corrupt authority', async (context) => {
     const f = fixture();
     f.requireSchema(context);

@@ -573,9 +573,14 @@ const ready = { nativeHandleDigest: DIGEST, nativeHandleState: 'ready' };
 
 describe('Workspace execution journal producer boundaries', () => {
   it.each([
-    'delivery',
-    'result',
-  ] as const)('T2/T3 refuses %s while the owning Workspace is unavailable', async (boundary) => {
+    { boundary: 'delivery', operation: 'session.open' },
+    { boundary: 'result', operation: 'session.open' },
+    { boundary: 'delivery', operation: 'turn.start' },
+    { boundary: 'result', operation: 'turn.start' },
+  ] as const)('T2/T3 refuses $operation $boundary while the owning Workspace is unavailable', async ({
+    boundary,
+    operation,
+  }) => {
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'performance'] });
     vi.setSystemTime(new Date(NOW));
     const f = await faultFixture();
@@ -584,10 +589,18 @@ describe('Workspace execution journal producer boundaries', () => {
     const heldRoot = join(f.coreDb.dataRoot, 'unavailable-workspace');
     let moved = false;
     try {
-      await f.waitQueued('session.open');
+      if (operation === 'turn.start') {
+        const opened = await f.dispatch('session.open');
+        await f.result(opened, {
+          ...ready,
+          state: 'open',
+          maxActiveTurns: opened.body.maxActiveTurns,
+        });
+      }
+      await f.waitQueued(operation);
       const available = openBootVerifiedWorkspaceDb(f.coreDb.dataRoot, workspaceId);
       available.sqlite.close();
-      const command = boundary === 'result' ? await f.dispatch('session.open') : null;
+      const command = boundary === 'result' ? await f.dispatch(operation) : null;
       const originalTurn = f.store.getTurnById(testEntityId('tu', 'fault-turn'));
       expect(originalTurn.triggerActor).toEqual({
         kind: 'user',
@@ -604,7 +617,11 @@ describe('Workspace execution journal producer boundaries', () => {
             operationId: command.operationId,
             sequence: command.sequence,
             disposition: 'succeeded',
-            body: { ...ready, state: 'open', maxActiveTurns: command.body.maxActiveTurns },
+            body: {
+              ...ready,
+              state: operation === 'turn.start' ? 'started' : 'open',
+              maxActiveTurns: command.body.maxActiveTurns,
+            },
           })
         : await f.poll();
       // A Core receipt alone cannot acknowledge an unconsumed Workspace outcome. Do not print credential-bearing wire bodies.
@@ -632,7 +649,10 @@ describe('Workspace execution journal producer boundaries', () => {
     }
   });
 
-  it('T2 commits the actual Worker Turn intent before native session.open delivery', async ({
+  it.for([
+    'session.open',
+    'turn.start',
+  ] as const)('T2 commits the actual Worker Turn intent before native %s delivery', async (operation, {
     skip,
   }) => {
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'performance'] });
@@ -641,7 +661,15 @@ describe('Workspace execution journal producer boundaries', () => {
     const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
     const workspace = openWorkspaceDb(f.coreDb.dataRoot, workspaceId);
     try {
-      await f.waitQueued('session.open');
+      if (operation === 'turn.start') {
+        const opened = await f.dispatch('session.open');
+        await f.result(opened, {
+          ...ready,
+          state: 'open',
+          maxActiveTurns: opened.body.maxActiveTurns,
+        });
+      }
+      await f.waitQueued(operation);
       const tables = workspace.sqlite
         .prepare(
           "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('control_executions', 'control_execution_steps') ORDER BY name"
@@ -660,11 +688,15 @@ describe('Workspace execution journal producer boundaries', () => {
         SELECT s.control_json AS control, s.invocation_json AS invocation,
                r.owner_json AS owner, r.work_id AS workId, r.definition_version AS definitionVersion
         FROM control_execution_steps s JOIN control_executions r ON r.id = s.execution_id
-        WHERE s.state = 'intent' AND json_extract(s.control_json, '$.kind') = 'open-session'
-          AND json_extract(s.invocation_json, '$.carriage.operation') = 'session.open'
+        WHERE s.state = 'intent' AND json_extract(s.control_json, '$.kind') = ?
+          AND json_extract(s.invocation_json, '$.carriage.operation') = ?
           AND r.work_id = ?
       `)
-        .all(testEntityId('tu', 'fault-turn')) as {
+        .all(
+          operation === 'session.open' ? 'open-session' : 'deliver-start',
+          operation,
+          testEntityId('tu', 'fault-turn')
+        ) as {
         control: string;
         invocation: string;
         owner: string;
@@ -690,7 +722,7 @@ describe('Workspace execution journal producer boundaries', () => {
             attemptId: testEntityId('attempt', 'fault-lease'),
           },
         ]);
-      const command = await f.dispatch('session.open');
+      const command = await f.dispatch(operation);
       expect(
         queued.map((row) => {
           const carriage = JSON.parse(row.invocation).carriage;
@@ -700,9 +732,7 @@ describe('Workspace execution journal producer boundaries', () => {
             sequence: carriage.sequence,
           };
         })
-      ).toEqual([
-        { operation: 'session.open', requestId: command.operationId, sequence: command.sequence },
-      ]);
+      ).toEqual([{ operation, requestId: command.operationId, sequence: command.sequence }]);
     } finally {
       workspace.sqlite.close();
       await vi.advanceTimersByTimeAsync(600_000);

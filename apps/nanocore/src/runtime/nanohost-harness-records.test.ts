@@ -1,8 +1,10 @@
 import { Buffer } from 'node:buffer';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { openCoreDb } from '../storage/db.js';
@@ -36,6 +38,275 @@ const now = '2098-08-21T00:00:00.000Z';
 const physicalEpoch = 'e'.repeat(64);
 
 describe('Workspace invocation deadline and exclusion controls', () => {
+  it('T2 refuses changed queued input and preserves the original Thread exclusion', () => {
+    const db = openOpeningBindingDb('openkit-harness-input-exclusion-');
+    try {
+      seedSubmittedAttempt(db);
+      const input = {
+        body: concurrentTurnStartBody(1),
+        harnessInstanceId: 'harness-1',
+        operation: 'turn.start' as const,
+        timestamp: now,
+      };
+      expect(queueNanoHostHarnessOperation(db, input)).toBe(0);
+      const before = db.sqlite.serialize();
+      expect(() =>
+        queueNanoHostHarnessOperation(db, {
+          ...input,
+          body: { ...input.body, deadline: '2100-01-01T00:00:00.000Z' },
+        })
+      ).toThrow('NanoHost Harness already has an unsettled operation.');
+      expect(() =>
+        openNanoHostAgentSessionBinding(db, {
+          agentSessionCompatibilityKey: 'b'.repeat(64),
+          agentSessionId: testEntityId('as', 'journal-conflicting-session'),
+          agentSessionRuntimeBindingId: 'journal-conflicting-binding',
+          effectiveSetupGeneration: 1,
+          harnessInstanceId: 'harness-1',
+          threadId: testEntityId('th', 'thread-1'),
+          timestamp: now,
+          workspaceId: testEntityId('ws', 'workspace-1'),
+        })
+      ).toThrow();
+      expect(db.sqlite.serialize().equals(before)).toBe(true);
+      expect(harnessOperation(db)).toEqual({ operation: 'turn.start', state: 'queued' });
+    } finally {
+      db.sqlite.close();
+    }
+  });
+
+  it('T3 retains the native receiver receipt across cold competing dispatch before Workspace consumption', () => {
+    let db = openOpeningBindingDb('openkit-harness-unconsumed-receipt-');
+    const root = db.dataRoot;
+    try {
+      queueNanoHostHarnessOperation(db, {
+        body: sessionOpenBody(),
+        harnessInstanceId: 'harness-1',
+        operation: 'session.open',
+        timestamp: now,
+      });
+      const command = dispatchNanoHostHarnessOperation(db, {
+        sandboxIntegrationBindingRef: 'integration-binding-1',
+        now: () => now,
+      })!;
+      expect(command.operation).toBe('session.open');
+      const result = {
+        schemaVersion: 2 as const,
+        harnessInstanceId: command.harnessInstanceId,
+        operationId: command.operationId,
+        sequence: command.sequence,
+        disposition: 'succeeded' as const,
+        body: {
+          state: 'open',
+          nativeHandleState: 'pending',
+          nativeHandleDigest: null,
+          maxActiveTurns: 1,
+        },
+      };
+      // Commit only the real receiver boundary, then lose its reply before any Workspace consumer is called.
+      expect(
+        settleNanoHostHarnessOperation(db, {
+          sandboxIntegrationBindingRef: 'integration-binding-1',
+          result,
+          timestamp: now,
+        })
+      ).toBe('settled');
+      const receipt = db.sqlite
+        .prepare(
+          "SELECT result_json AS bytes, result_fingerprint AS fingerprint FROM harness_instance_records WHERE harness_instance_id = 'harness-1'"
+        )
+        .get() as { bytes: string; fingerprint: string };
+      expect(JSON.parse(receipt.bytes)).toEqual(result);
+      expect(receipt.fingerprint).toBe(createHash('sha256').update(receipt.bytes).digest('hex'));
+      db.sqlite.close();
+      db = openCoreDb(root);
+      try {
+        queueNanoHostHarnessOperation(db, {
+          body: {},
+          harnessInstanceId: 'harness-1',
+          operation: 'harness.drain',
+          timestamp: now,
+        });
+      } catch (error) {
+        // Refusal may happen at enqueue rather than dispatch, but must concern the unconsumed operation.
+        expect(error).toBeInstanceOf(Error);
+        expect((error as Error).message).toMatch(/unsettled|consum|receipt|acknowledg/i);
+      }
+      const successor = dispatchNanoHostHarnessOperation(db, {
+        sandboxIntegrationBindingRef: 'integration-binding-1',
+        now: () => now,
+      });
+      expect.soft(successor !== null).toBe(false);
+      expect
+        .soft(
+          db.sqlite
+            .prepare(
+              "SELECT result_json AS bytes, result_fingerprint AS fingerprint FROM harness_instance_records WHERE harness_instance_id = 'harness-1'"
+            )
+            .get()
+        )
+        .toEqual(receipt);
+    } finally {
+      if (db.sqlite.open) db.sqlite.close();
+    }
+  });
+
+  it('T4 lets an independent Workspace Harness progress without changing an unknown sibling', () => {
+    const db = openActiveTurnDb('openkit-harness-unknown-sibling-');
+    onTestFinished(() => rmSync(db.dataRoot, { recursive: true, force: true }));
+    try {
+      queueNanoHostHarnessOperation(db, {
+        body: { ...interruptBody(), purpose: 'interrupt' },
+        harnessInstanceId: 'harness-1',
+        operation: 'turn.interrupt',
+        timestamp: now,
+      });
+      const command = dispatchNanoHostHarnessOperation(db, {
+        sandboxIntegrationBindingRef: 'integration-binding-1',
+        now: () => now,
+      })!;
+      markNanoHostHarnessOperationUnknown(db, {
+        harnessBindingRef: 'harness-binding-1',
+        operationId: command.operationId,
+        timestamp: now,
+      });
+      const before = db.sqlite
+        .prepare(
+          "SELECT * FROM agent_session_runtime_bindings WHERE harness_instance_id = 'harness-1'"
+        )
+        .all();
+      expect(before).toHaveLength(1);
+      createNanoHostHarnessRuntime(db, {
+        adapterId: 'codex',
+        adapterVersion: '0.153.4',
+        maxActiveTurns: 1,
+        harnessBindingRef: 'journal-sibling-harness-binding',
+        harnessCompatibilityKey: 'd'.repeat(64),
+        harnessInstanceId: 'journal-sibling-harness',
+        imageDigest: `sha256:${'f'.repeat(64)}`,
+        originPhysicalEpoch: physicalEpoch,
+        sandboxBindingRef: 'journal-sibling-sandbox-binding',
+        sandboxCompatibilityKey: 'a'.repeat(64),
+        sandboxIntegrationBindingRef: 'journal-sibling-integration',
+        sandboxRuntimeId: 'journal-sibling-sandbox',
+        runtimeTargetId: 'nanohost-a1',
+        timestamp: now,
+      });
+      const sibling = {
+        agentSessionCompatibilityKey: 'b'.repeat(64),
+        agentSessionId: testEntityId('as', 'journal-sibling-session'),
+        agentSessionRuntimeBindingId: 'journal-sibling-session-binding',
+        effectiveSetupGeneration: 1,
+        harnessInstanceId: 'journal-sibling-harness',
+        threadId: testEntityId('th', 'journal-sibling-thread'),
+        timestamp: now,
+        workspaceId: testEntityId('ws', 'journal-sibling-workspace'),
+      };
+      openNanoHostAgentSessionBinding(db, sibling);
+      queueNanoHostHarnessOperation(db, {
+        body: {
+          ...sessionOpenBody(),
+          agentSessionId: sibling.agentSessionId,
+          agentSessionRuntimeBindingId: sibling.agentSessionRuntimeBindingId,
+          threadId: sibling.threadId,
+          workspaceId: sibling.workspaceId,
+        },
+        harnessInstanceId: sibling.harnessInstanceId,
+        operation: 'session.open',
+        timestamp: now,
+      });
+      const delivered = dispatchNanoHostHarnessOperation(db, {
+        sandboxIntegrationBindingRef: 'journal-sibling-integration',
+        now: () => now,
+      })!;
+      expect(delivered.operation).toBe('session.open');
+      expect(
+        settleNanoHostHarnessOperation(db, {
+          sandboxIntegrationBindingRef: 'journal-sibling-integration',
+          result: {
+            schemaVersion: 2,
+            harnessInstanceId: delivered.harnessInstanceId,
+            operationId: delivered.operationId,
+            sequence: delivered.sequence,
+            disposition: 'succeeded',
+            body: {
+              state: 'open',
+              nativeHandleState: 'pending',
+              nativeHandleDigest: null,
+              maxActiveTurns: 1,
+            },
+          },
+          timestamp: now,
+        })
+      ).toBe('settled');
+      expect(harnessOperation(db)).toEqual({ operation: 'turn.interrupt', state: 'unknown' });
+      expect(
+        db.sqlite
+          .prepare(
+            "SELECT * FROM agent_session_runtime_bindings WHERE harness_instance_id = 'harness-1'"
+          )
+          .all()
+      ).toEqual(before);
+      expect(
+        db.sqlite
+          .prepare(
+            "SELECT active_turn_count AS count FROM harness_instance_records WHERE harness_instance_id = 'harness-1'"
+          )
+          .get()
+      ).toEqual({ count: 1 });
+      expect(
+        db.sqlite
+          .prepare(
+            "SELECT lifecycle_state AS state FROM agent_session_runtime_bindings WHERE harness_instance_id = 'journal-sibling-harness'"
+          )
+          .get()
+      ).toEqual({ state: 'open' });
+    } finally {
+      db.sqlite.close();
+    }
+  });
+
+  it('T5 refuses a queued invocation when a fresh process cannot prove its original allowance', () => {
+    const db = openOpeningBindingDb('openkit-harness-restart-allowance-');
+    try {
+      seedSubmittedAttempt(db);
+      queueNanoHostHarnessOperation(db, {
+        body: concurrentTurnStartBody(1),
+        harnessInstanceId: 'harness-1',
+        operation: 'turn.start',
+        timestamp: now,
+      });
+      db.sqlite.close();
+      const child = spawnSync(
+        process.execPath,
+        [
+          '--import',
+          'tsx',
+          '--input-type=module',
+          '-e',
+          `
+        import { openCoreDb } from './src/storage/db.ts';
+        import { dispatchNanoHostHarnessOperation } from './src/runtime/nanohost-harness-records.ts';
+        const db = openCoreDb(${JSON.stringify(db.dataRoot)});
+        try {
+          const command = dispatchNanoHostHarnessOperation(db, { sandboxIntegrationBindingRef: 'integration-binding-1', now: () => ${JSON.stringify(now)} });
+          console.log(JSON.stringify({ delivered: command !== null }));
+        } finally { db.sqlite.close(); }
+      `,
+        ],
+        {
+          cwd: fileURLToPath(new URL('../../', import.meta.url)),
+          encoding: 'utf8',
+          timeout: 30_000,
+        }
+      );
+      // Process/import failures are fixture blockers, never an expiry verdict; stdout excludes route credentials.
+      expect(child.status, child.stderr).toBe(0);
+      expect(JSON.parse(child.stdout)).toEqual({ delivered: false });
+    } finally {
+      if (db.sqlite.open) db.sqlite.close();
+    }
+  });
   it.each([
     { name: 'live parent', observedAt: '2098-08-21T00:00:00.500Z', delivered: true },
     { name: 'expired parent', observedAt: '2098-08-21T00:00:01.000Z', delivered: false },
