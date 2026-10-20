@@ -1,5 +1,8 @@
 import { z } from 'zod';
 
+/** Shared Assistant budget accommodates five observed slow model rounds and their local Tool work. */
+export const ASSISTANT_RUN_DEADLINE_MS = 600_000;
+
 /** Default KM budget leaves room for one slow Provider call without adding a retry. */
 export const KNOWLEDGE_MANAGER_RUN_DEADLINE_MS = 300_000;
 
@@ -34,10 +37,21 @@ export const InternalRoleExecutionProfileSchema = z.union([
   z
     .object({
       ...InternalRoleProfileFields,
+      roleId: z.literal('assistant'),
+      limits: InternalRoleLimitsSchema.default({
+        maxModelTurns: 16,
+        maxToolCalls: 48,
+        deadlineMs: ASSISTANT_RUN_DEADLINE_MS,
+      }),
+    })
+    .strip(),
+  z
+    .object({
+      ...InternalRoleProfileFields,
       roleId: z
         .string()
         .min(1)
-        .regex(/^(?!knowledge-manager$)/),
+        .regex(/^(?!(?:knowledge-manager|assistant)$)/),
       limits: InternalRoleLimitsSchema.default({
         maxModelTurns: 16,
         maxToolCalls: 48,

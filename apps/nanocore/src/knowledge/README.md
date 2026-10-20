@@ -46,7 +46,11 @@ This directory owns the portable OKF v0.2 Markdown parser, OpenKit knowledge-pro
 
 Workspace maintenance identifies the exact supplied tell Source in the run instructions, separately from previous human notebook edits and the current overview. An unchanged generated empty root index is not a human edit; authored initial content and later edits remain inputs. The edit Tool changes the virtual snapshot and the submit Tool publishes those prior changes or prepares required Review. Captured original bytes alone do not prove page integration, and duplicate information may legitimately produce no-change. Run `pnpm --filter @openkit/nanocore exec vitest run src/knowledge/tell-intake-framing.test.ts` for native Source, candidate/Review, replay, duplicate and human-edit controls; the runner double does not establish live model comprehension.
 
+Reviewed Agent pages retain their exact candidate bytes and `delegated` review state. Retrieval checks the introducing commit in published ancestry, including a proposal commit published after native human Review. Retained unpublished candidates remain unavailable, even with an exact pin or delegated label.
+
 ## Verification
+
+`typed-rule-continuity.test.ts` composes native Source capture, maintenance editing, human Review, reopened history and fresh KM retrieval. Its scripted transport checks exact Rule meaning, descriptive origin notes, evidence, applicability, supersession and citations; it does not prove model comprehension or numerical application. `../retrieval-knowledge-governance.test.ts` separately checks that unpublished proposal ancestry cannot supply retrieval eligibility.
 
 `notebook-authoring-guidance.ts` projects the admitted active schema and required OKF/domain fields into existing Workspace, User and Server maintenance context. The complete read-only guidance is bounded to 16 KiB of UTF-8 text. Oversized guidance is omitted with an explicit notice instead of a partial contract or default substitution; the full native schema validator remains mandatory. The schema is not an editable notebook file and guidance grants no publication authority. Run `typed-authoring-guidance.test.ts` for native scope delivery, size refusal, typed candidate/human Review and required-field controls. Its runner double proves context wiring and native effects, not model comprehension.
 
