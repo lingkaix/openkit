@@ -36,6 +36,8 @@ import { parseOkfDocument, updateOkfFrontmatter } from './okf.js';
 import { parseSourcePointer } from './source-pointers.js';
 
 let seed: Awaited<ReturnType<typeof fixture>>;
+let linkedSeed: Awaited<ReturnType<typeof fixture>>;
+let linkedSourceId: string;
 const retainedCleanup: Array<() => void> = [];
 
 // Capture once through native owners, then close SQLite before copying this immutable baseline.
@@ -44,6 +46,11 @@ beforeAll(async () => {
   seed = await fixture(true);
   seed.workspaceDb.sqlite.close();
   seed.coreDb.sqlite.close();
+  linkedSeed = await fixture(false, seed, true);
+  linkedSourceId = await captureRelatedSource(linkedSeed);
+  linkedSeed.baseRevision = linkedSeed.notebook.publishedRevision();
+  linkedSeed.workspaceDb.sqlite.close();
+  linkedSeed.coreDb.sqlite.close();
 });
 afterAll(() => {
   for (const cleanup of retainedCleanup) cleanup();
@@ -480,8 +487,13 @@ describe('ordinary SourceSummary editing through native owners', () => {
     'private',
     'revoked',
   ])('uses the real Workspace KM editor and publisher under %s admission', async (mode) => {
-    const f = await fixture();
-    await assertMaintenance(f, mode, await runMaintenance(f, mode));
+    const linked = mode.endsWith('with linked Source');
+    const f = await fixture(false, linked ? linkedSeed : seed);
+    await assertMaintenance(
+      f,
+      mode,
+      await runMaintenance(f, mode, linked ? linkedSourceId : undefined)
+    );
   });
 
   describe.each([
@@ -491,8 +503,9 @@ describe('ordinary SourceSummary editing through native owners', () => {
     let baseline: Awaited<ReturnType<typeof fixture>>;
     let observed: Awaited<ReturnType<typeof runMaintenance>>;
     beforeAll(async () => {
-      baseline = await fixture(false, seed, true);
-      observed = await runMaintenance(baseline, mode);
+      const linked = mode.endsWith('with linked Source');
+      baseline = await fixture(false, linked ? linkedSeed : seed, true);
+      observed = await runMaintenance(baseline, mode, linked ? linkedSourceId : undefined);
       baseline.workspaceDb.sqlite.close();
       baseline.coreDb.sqlite.close();
     });
@@ -508,24 +521,34 @@ describe('ordinary SourceSummary editing through native owners', () => {
   });
 });
 
+/** Captures the related original before the immutable linked-Source baseline is closed. */
+async function captureRelatedSource(f: Awaited<ReturnType<typeof fixture>>): Promise<string> {
+  const captured = await f.call('knowledge.source.register', {
+    requestId: randomUUID(),
+    kind: 'document',
+    title: 'Related release evidence',
+    content: 'Independent related evidence.',
+    originatingThreadId: f.origin.id,
+  });
+  expect(captured.status, JSON.stringify(captured.body)).toBe(200);
+  return captured.body.source.id;
+}
+
 /** Runs the actual editor and native publisher with a deterministic, transport-free model driver. */
-async function runMaintenance(f: Awaited<ReturnType<typeof fixture>>, mode: string) {
+async function runMaintenance(
+  f: Awaited<ReturnType<typeof fixture>>,
+  mode: string,
+  relatedSourceId?: string
+) {
   const requiresReview = mode.startsWith('required Review');
   const linkedSource = mode.endsWith('with linked Source');
   const selectedSources = [f.source.id];
   let summaryBody = 'The captured material describes the release facts.\n';
   if (linkedSource) {
-    const captured = await f.call('knowledge.source.register', {
-      requestId: randomUUID(),
-      kind: 'document',
-      title: 'Related release evidence',
-      content: 'Independent related evidence.',
-      originatingThreadId: f.origin.id,
-    });
-    expect(captured.status, JSON.stringify(captured.body)).toBe(200);
-    selectedSources.push(captured.body.source.id);
+    const relatedId = relatedSourceId ?? (await captureRelatedSource(f));
+    selectedSources.push(relatedId);
     f.baseRevision = f.notebook.publishedRevision();
-    summaryBody += `[Related evidence](${captured.body.source.id}.md)\n`;
+    summaryBody += `[Related evidence](${relatedId}.md)\n`;
     f.corrected = updateOkfFrontmatter({
       path: f.sourcePath,
       content: f.corrected,
