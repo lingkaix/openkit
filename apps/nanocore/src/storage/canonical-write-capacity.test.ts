@@ -1,9 +1,18 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { Worker } from 'node:worker_threads';
 import { allocateEntityId } from '@openkit/protocol';
 import Database from 'better-sqlite3';
@@ -37,8 +46,17 @@ function root() {
   roots.push(path);
   return path;
 }
-/** Frozen offered load; numeric acceptance limits require separate measured approval. */
+/** Retained fault/isolation profile; request latency is diagnostic, not the event-loop SLO. */
 const writerProfile = { threadsPerWorkspace: 8, rounds: 2, concurrency: 8, readerHoldMs: 1000 };
+
+/** DX Write And Space Budget, amended in f6ef3fbc8; neither WAL age nor 3,040/s is a gate. */
+const referenceBudget = {
+  offeredPerSecond: 640,
+  primaryTurns: 8,
+  siblingWorkspaces: 3,
+  eventLoopP99Ms: 25,
+  walBytes: 32 * 1024 * 1024,
+} as const;
 
 /** A real reader needs an independent event loop so a synchronous writer cannot block its release. */
 const heldReaderSource = `
@@ -63,16 +81,23 @@ const sample = () => workerData.paths.forEach((path, i) => {
   } else row.firstSeen = null;
 });
 const checkpoint = (mode) => {
-  if (journalMode !== 'wal') return null;
+  // The reference load observes the real owner; it must not checkpoint on the owner's behalf.
+  if (journalMode !== 'wal' || workerData.observeOnly) return null;
   const db = new Database(workerData.paths[0], { fileMustExist: true, timeout: 0 });
   try { return db.pragma('wal_checkpoint(' + mode + ')')[0]; }
   catch (error) { if (error.code === 'SQLITE_BUSY') return { busy: 1 }; throw error; }
   finally { db.close(); }
 };
-let timer, releasedAt = null, startedAt, pinnedCount, checkpointHeld, finishRequested = false;
+let timer, offerTimer, releasedAt = null, startedAt, pinnedCount, checkpointHeld, finishRequested = false;
+const release = () => {
+  if (releasedAt !== null) return;
+  pinnedCount = count(); checkpointHeld = checkpoint('PASSIVE');
+  reader.exec('ROLLBACK'); reader.close(); releasedAt = clock();
+  if (finishRequested) finish();
+};
 const finish = () => {
   if (releasedAt === null) { finishRequested = true; return; }
-  sample(); clearInterval(timer);
+  sample(); clearInterval(timer); clearInterval(offerTimer);
   const checkpointReleased = checkpoint('TRUNCATE');
   parentPort.postMessage({ journalMode, initialCount, pinnedCount, startedAt, releasedAt,
     checkpointHeld, checkpointReleased, wal: samples.map(({ firstSeen, ...row }) => row) });
@@ -81,15 +106,404 @@ const finish = () => {
 parentPort.on('message', (message) => {
   if (message === 'start') {
     startedAt = clock(); sample(); timer = setInterval(sample, 10);
-    setTimeout(() => {
-      pinnedCount = count(); checkpointHeld = checkpoint('PASSIVE');
-      reader.exec('ROLLBACK'); reader.close(); releasedAt = clock();
-      if (finishRequested) finish();
-    }, workerData.holdMs);
-  } else if (message === 'finish') finish();
+    if (workerData.holdMs !== null) setTimeout(release, workerData.holdMs);
+    if (workerData.offered) {
+      // Ten batches of 64 in one second. Pacing does not wait for the Core event loop or replies.
+      let next = 0, firstOfferAt;
+      const offer = () => {
+        const offeredAt = clock(); firstOfferAt ??= offeredAt;
+        const indexes = Array.from({ length: Math.min(64, workerData.offered - next) }, () => next++);
+        parentPort.postMessage({ offer: indexes, offeredAt });
+        if (next === workerData.offered) {
+          clearInterval(offerTimer);
+          const lastOfferAt = clock();
+          setTimeout(() => parentPort.postMessage({ offered: next, firstOfferAt, lastOfferAt,
+            windowEndedAt: clock() }), Math.max(0, 1000 - (clock() - startedAt)));
+        }
+      };
+      offerTimer = setInterval(offer, 100); offer();
+    }
+  } else if (message === 'release') release();
+  else if (message === 'finish') finish();
 });
 parentPort.postMessage({ held: true, journalMode, initialCount });
 `;
+
+/** Seeds the reference topology without starting Native effects; the external traffic source is controlled. */
+function referenceFixture() {
+  const dataRoot = root();
+  const coreDb = openCoreDb(dataRoot);
+  try {
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const store = new FsStore({ dataRoot });
+    const workspaces = Array.from({ length: 1 + referenceBudget.siblingWorkspaces }, (_, i) =>
+      store.createWorkspace(`Reference scope ${i}`)
+    );
+    const sources = workspaces.flatMap((workspace, index) => {
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        workspaceId: workspace.id,
+      });
+      const db = openWorkspaceDb(dataRoot, workspace.id);
+      try {
+        applyScopedMigrations(db);
+      } finally {
+        db.sqlite.close();
+      }
+      return Array.from({ length: index === 0 ? referenceBudget.primaryTurns : 1 }, (_, i) => {
+        const thread = store.createThread(workspace.id, `Producer ${index}-${i}`);
+        const turn = store.createTurn(workspace.id, thread.id, 'Controlled commit load', {
+          kind: 'user',
+          id: 'usr_00000000-0000-7000-8000-000000000001',
+        });
+        expect(turn.status).toBe('running');
+        return { workspaceId: workspace.id, turnId: turn.id };
+      });
+    });
+    const paths = workspaces.map((workspace) => workspaceDbPath(dataRoot, workspace.id));
+    const app = createApp({ coreDb, dataRoot, store });
+    return { dataRoot, coreDb, store, workspaces, sources, paths, app };
+  } catch (error) {
+    coreDb.sqlite.close();
+    throw error;
+  }
+}
+
+/** Sends one ordinary command and retains error bytes without treating non-JSON refusal as a parser failure. */
+async function offerCreation(
+  f: ReturnType<typeof referenceFixture>,
+  job: { workspaceId: string; requestId: string; name: string }
+) {
+  const response = await f.app.request(
+    ...operationRequest(
+      'thread.create',
+      { workspaceId: job.workspaceId },
+      // Private creation reuses an assistant timeline; explicit Workspace visibility makes each job a new record.
+      { body: JSON.stringify({ ...job, visibility: 'workspace' }) }
+    )
+  );
+  const text = await response.text();
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    body = text;
+  }
+  const id =
+    body && typeof body === 'object' && 'id' in body && typeof body.id === 'string'
+      ? body.id
+      : null;
+  if (response.status === 200) {
+    expect(id).toEqual(expect.any(String));
+    const name = body && typeof body === 'object' && 'name' in body ? body.name : undefined;
+    expect(typeof name).toBe('string');
+    expect(createHash('sha256').update(String(name)).digest('hex')).toBe(
+      createHash('sha256').update(job.name).digest('hex')
+    );
+  }
+  return { ...job, status: response.status, id, body };
+}
+
+type CreationOutcome = Awaited<ReturnType<typeof offerCreation>>;
+
+/** Reopens the real owners and compares every acknowledged mutation and exact receipt set, including refused absence. */
+function assertReopenedCreations(
+  f: ReturnType<typeof referenceFixture>,
+  before: readonly { workspaceId: string; id: string; name: string | null }[],
+  outcomes: readonly CreationOutcome[]
+) {
+  if (f.coreDb.sqlite.open) f.coreDb.sqlite.close();
+  const cold = new FsStore({ dataRoot: f.dataRoot });
+  const acknowledged = outcomes.filter((row) => row.status === 200);
+  const order = (a: { id: string }, b: { id: string }) => a.id.localeCompare(b.id);
+  // Hash exact authored bytes so a failed large-payload assertion does not dump megabytes of fixture text.
+  const summarize = ({
+    name,
+    ...identity
+  }: {
+    workspaceId: string;
+    id: string;
+    name: string | null;
+  }) => ({
+    ...identity,
+    nameDigest: name === null ? null : createHash('sha256').update(name).digest('hex'),
+  });
+  expect
+    .soft(
+      f.workspaces
+        .flatMap((workspace) =>
+          cold
+            .listThreads(workspace.id)
+            .map(({ id, name }) => summarize({ workspaceId: workspace.id, id, name }))
+        )
+        .sort(order)
+    )
+    .toEqual(
+      [
+        ...before,
+        ...acknowledged.map(({ workspaceId, id, name }) => ({ workspaceId, id: id!, name })),
+      ]
+        .map(summarize)
+        .sort(order)
+    );
+  const offeredIds = new Set(outcomes.map((row) => row.requestId));
+  const receipts = f.paths.flatMap((path, index) => {
+    const db = new Database(path, { readonly: true, fileMustExist: true });
+    try {
+      return (
+        db
+          .prepare('SELECT request_id, response_id, command_name FROM idempotency_requests')
+          .all() as {
+          request_id: string;
+          response_id: string;
+          command_name: string;
+        }[]
+      )
+        .filter((row) => offeredIds.has(row.request_id))
+        .map((row) => ({
+          ...row,
+          workspaceId: f.workspaces[index]!.id,
+        }));
+    } finally {
+      db.close();
+    }
+  });
+  const byRequest = (a: { request_id: string }, b: { request_id: string }) =>
+    a.request_id.localeCompare(b.request_id);
+  expect.soft(receipts.sort(byRequest)).toEqual(
+    acknowledged
+      .map((row) => ({
+        workspaceId: row.workspaceId,
+        request_id: row.requestId,
+        response_id: row.id,
+        command_name: 'thread.create',
+      }))
+      .sort(byRequest)
+  );
+}
+
+/** Reads actual journal modes without setting policy or opening another writable owner. */
+function ownedJournalModes(paths: readonly string[]) {
+  return paths.map((path) => {
+    const db = new Database(path, { readonly: true, fileMustExist: true });
+    try {
+      return db.pragma('journal_mode', { simple: true });
+    } finally {
+      db.close();
+    }
+  });
+}
+
+it('keeps the 640/s reference envelope within event-loop and WAL budgets with exact reopened acknowledgements', async () => {
+  const f = referenceFixture();
+  let worker: Worker | undefined;
+  const pending: Promise<void>[] = [],
+    errors: unknown[] = [];
+  const outcomes: CreationOutcome[] = [];
+  const lag = monitorEventLoopDelay({ resolution: 1 });
+  try {
+    // Warm route construction before measuring the steady offered window; retain this real mutation in the cold oracle.
+    const warm = await offerCreation(f, {
+      workspaceId: f.workspaces[0]!.id,
+      requestId: randomUUID(),
+      name: 'Warm reference route',
+    });
+    expect(warm.status, JSON.stringify(warm.body)).toBe(200);
+    const before = f.workspaces.flatMap((workspace) =>
+      f.store
+        .listThreads(workspace.id)
+        .map(({ id, name }) => ({ workspaceId: workspace.id, id, name }))
+    );
+    const jobs = Array.from({ length: referenceBudget.offeredPerSecond }, (_, i) => ({
+      workspaceId: f.sources[i % f.sources.length]!.workspaceId,
+      requestId: randomUUID(),
+      name: `reference-${i}`,
+    }));
+    const paths = [...f.paths, f.coreDb.sqlite.name];
+    worker = new Worker(heldReaderSource, {
+      eval: true,
+      workerData: {
+        databaseModule: createRequire(import.meta.url).resolve('better-sqlite3'),
+        paths,
+        holdMs: 0,
+        observeOnly: true,
+        offered: jobs.length,
+      },
+    });
+    await once(worker, 'message', { signal: AbortSignal.timeout(60_000) });
+    const offered = new Promise<{ offered: number; firstOfferAt: number; lastOfferAt: number }>(
+      (resolve, reject) => {
+        worker!.on('error', reject);
+        worker!.on('message', (message) => {
+          if (message.offer)
+            for (const index of message.offer as number[]) {
+              pending.push(
+                offerCreation(f, jobs[index]!).then(
+                  (row) => {
+                    outcomes.push(row);
+                  },
+                  (error) => {
+                    errors.push(error);
+                  }
+                )
+              );
+            }
+          if (message.offered) resolve(message);
+        });
+      }
+    );
+    lag.enable();
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    lag.reset();
+    worker.postMessage('start');
+    const pacing = await offered;
+    await Promise.all(pending);
+    // Give the monitor a timer turn to record the final blocked interval, before any cold-read instrumentation.
+    await new Promise<void>((resolve) => setTimeout(resolve, 2));
+    lag.disable();
+    const finished = once(worker, 'message', { signal: AbortSignal.timeout(60_000) });
+    worker.postMessage('finish');
+    const [sample] = await finished;
+    const modes = ownedJournalModes(paths);
+    const eventLoopP99Ms = lag.percentile(99) / 1e6;
+    console.info(
+      'writer-reference',
+      JSON.stringify({
+        profile: 'thread-create-reference-v1',
+        ...referenceBudget,
+        sourceTurnsPerWorkspace: [8, 1, 1, 1],
+        pacing,
+        eventLoopP99Ms,
+        eventLoopSamples: lag.count,
+        acknowledged: outcomes.filter((row) => row.status === 200).length,
+        refusals: outcomes
+          .filter((row) => row.status !== 200)
+          .map(({ requestId, status }) => ({ requestId, status })),
+        modes,
+        wal: sample.wal,
+      })
+    );
+    expect(errors, 'all offered requests must drain without instrument errors').toEqual([]);
+    expect(pacing.offered).toBe(referenceBudget.offeredPerSecond);
+    // Source qualification, not a product latency bound: all 640 offers must actually occur in one second.
+    expect(
+      pacing.lastOfferAt - pacing.firstOfferAt,
+      'independent source missed its offered window; this is not behavioral RED'
+    ).toBeLessThanOrEqual(1000);
+    expect(lag.count, 'event-loop instrument must sample the offered window').toBeGreaterThan(0);
+    expect(outcomes).toHaveLength(jobs.length);
+    expect
+      .soft(
+        outcomes.filter((row) => row.status !== 200).map(({ status, body }) => ({ status, body }))
+      )
+      .toEqual([]);
+    expect.soft(eventLoopP99Ms).toBeLessThanOrEqual(referenceBudget.eventLoopP99Ms);
+    expect.soft(modes).toEqual(paths.map(() => 'wal'));
+    for (const row of sample.wal)
+      expect.soft(row.peakBytes).toBeLessThanOrEqual(referenceBudget.walBytes);
+    // maxNonemptyObservedMs remains diagnostic only; it is not WAL frame age or an SLO.
+    assertReopenedCreations(f, before, outcomes);
+  } finally {
+    lag.disable();
+    await worker?.terminate();
+    await Promise.allSettled(pending);
+    if (f.coreDb.sqlite.open) f.coreDb.sqlite.close();
+  }
+}, 180_000);
+
+it('refuses oversized WAL demand explicitly while a real reader prevents reclamation, without losing acknowledgements', async () => {
+  const f = referenceFixture();
+  let worker: Worker | undefined;
+  try {
+    const workspaceId = f.workspaces[0]!.id;
+    const warm = await offerCreation(f, {
+      workspaceId,
+      requestId: randomUUID(),
+      name: 'Warm pressure route',
+    });
+    expect(warm.status, JSON.stringify(warm.body)).toBe(200);
+    const paths = [...f.paths, f.coreDb.sqlite.name];
+    const modes = ownedJournalModes(paths);
+    // Fail closed rather than call zero-byte DELETE observations WAL-pressure qualification.
+    // A failure here is a missing prerequisite, NOT evidence that the pressure fault was reached.
+    expect(modes, 'WAL pressure not exercised: actual owned databases must use WAL').toEqual(
+      paths.map(() => 'wal')
+    );
+    const before = f.workspaces.flatMap((workspace) =>
+      f.store
+        .listThreads(workspace.id)
+        .map(({ id, name }) => ({ workspaceId: workspace.id, id, name }))
+    );
+    worker = new Worker(heldReaderSource, {
+      eval: true,
+      workerData: {
+        databaseModule: createRequire(import.meta.url).resolve('better-sqlite3'),
+        paths,
+        holdMs: null,
+        observeOnly: true,
+      },
+    });
+    const [held] = await once(worker, 'message', { signal: AbortSignal.timeout(60_000) });
+    worker.postMessage('start');
+    const outcomes: CreationOutcome[] = [];
+    let peakAfterAck = 0;
+    // Bounded byte-pressure probe, not a 3,040/s stress gate or an invented queue-size limit.
+    // Each unique ordinary metadata creation retains its own bytes; 128 * 512 KiB exceeds the WAL budget.
+    for (let i = 0; i < 128; i++) {
+      const row = await offerCreation(f, {
+        workspaceId,
+        requestId: randomUUID(),
+        name: `pressure-${i}-${'x'.repeat(512 * 1024)}`,
+      });
+      outcomes.push(row);
+      if (i === 0)
+        expect(
+          row.status,
+          'large command must reach a healthy writer before pressure; otherwise this is not pressure RED'
+        ).toBe(200);
+      peakAfterAck = Math.max(peakAfterAck, statSync(`${f.paths[0]}-wal`).size);
+      if (row.status !== 200) break;
+    }
+    expect(peakAfterAck, 'pressure probe must observe the actual WAL').toBeGreaterThan(0);
+    const refused = outcomes.filter((row) => row.status !== 200);
+    expect
+      .soft(
+        refused,
+        'bounded overload must have an explicit refusal, not silent loss or unlimited WAL growth'
+      )
+      .toHaveLength(1);
+    for (const row of refused) {
+      expect.soft(row.status).toBeGreaterThanOrEqual(400);
+      expect
+        .soft(row.body, 'refusal must be structured, not an unclassified server exception')
+        .toBeTypeOf('object');
+      expect.soft(row.body, 'refusal detail must not be null').not.toBeNull();
+    }
+    const finished = once(worker, 'message', { signal: AbortSignal.timeout(60_000) });
+    worker.postMessage('release');
+    worker.postMessage('finish');
+    const [sample] = await finished;
+    console.info(
+      'writer-wal-pressure',
+      JSON.stringify({
+        offered: outcomes.length,
+        refused: refused.map(({ status, body }) => ({ status, body })),
+        peakAfterAck,
+        wal: sample.wal,
+      })
+    );
+    expect.soft(sample.pinnedCount).toBe(held.initialCount);
+    expect.soft(peakAfterAck).toBeLessThanOrEqual(referenceBudget.walBytes);
+    for (const row of sample.wal)
+      expect.soft(row.peakBytes).toBeLessThanOrEqual(referenceBudget.walBytes);
+    assertReopenedCreations(f, before, outcomes);
+  } finally {
+    await worker?.terminate();
+    if (f.coreDb.sqlite.open) f.coreDb.sqlite.close();
+  }
+}, 180_000);
 
 it('qualifies the held-reader WAL instrument without claiming a Core checkpoint policy', async () => {
   const path = join(root(), 'reader-control.sqlite');
@@ -326,7 +740,7 @@ it.each([
         ...writerProfile,
         offered: latencies.length,
         maximumOffered,
-        p99Ms: ordered[Math.ceil(ordered.length * 0.99) - 1],
+        requestP99Ms: ordered[Math.ceil(ordered.length * 0.99) - 1],
         receiptCommits,
         synchronousModes: [...synchronousModes],
         faultHits,
