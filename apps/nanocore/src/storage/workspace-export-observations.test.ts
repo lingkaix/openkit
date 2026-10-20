@@ -103,7 +103,7 @@ describe('work observation portable closure', () => {
           observation: {
             id: `runtime_${index}`,
             type: 'runtime.observed',
-            obs: 'sidecar',
+            obs: 'worker-shim',
             ts: turn.startedAt!,
             ...(corr === undefined ? {} : { corr }),
             payload: {
@@ -288,7 +288,7 @@ describe('work observation portable closure', () => {
           id: `env:${turn.id}`,
           type: 'env.bound',
           ts: turn.startedAt!,
-          obs: 'core',
+          obs: 'nanocore',
           ret: 'turn-evidence',
           payload: { ...environment, workspaceId: demo.workspace.id },
         },
@@ -301,7 +301,7 @@ describe('work observation portable closure', () => {
           id: `reap:${turn.id}`,
           type: 'turn.reap',
           ts: turn.startedAt!,
-          obs: 'core',
+          obs: 'nanocore',
           corr: 'recovery-group',
           parent: `env:${turn.id}`,
           ret: 'turn-evidence',
@@ -538,7 +538,7 @@ describe('work observation portable closure', () => {
           id: 'model_response',
           type: 'model.observed',
           ts: '2026-09-22T00:00:00.000Z',
-          obs: 'gateway',
+          obs: 'llm-gateway',
           corr: 'call_1',
           payload: {
             attempt: 0,

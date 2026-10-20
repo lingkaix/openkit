@@ -121,10 +121,10 @@ Multi-dimensional eval requires, as format slots even when empty: provider plus 
 
 | Point | Unique facts | MUST NOT be trusted for |
 | --- | --- | --- |
-| Gateway | Complete model-interaction body when collected, resolved model, token/cost | Sandbox-internal execution |
-| NanoHost (outside the sandbox, under our control) | What was actually injected: image digest, AEP, mounted skill/MCP versions, resource configuration, container lifecycle | In-sandbox tool detail |
-| Sandbox sidecar (inside the sandbox) | Actual tool execution and return, process events, harness-internal state | Authorization and identity; it sits inside an untrusted boundary |
-| Core | Actor, authorization decisions, approvals, product acceptance | Agent-internal behavior |
+| Gateway (`llm-gateway`) | Complete model-interaction body when collected, resolved model, token/cost | Sandbox-internal execution |
+| NanoHost (`nanohost`; outside the sandbox, under our control) | What was actually injected: image digest, AEP, mounted skill/MCP versions, resource configuration, container lifecycle | In-sandbox tool detail |
+| Sandbox sidecar (`worker-shim`; inside the sandbox) | Actual tool execution and return, process events, harness-internal state | Authorization and identity; it sits inside an untrusted boundary |
+| Core (`nanocore`) | Actor, authorization decisions, approvals, product acceptance | Agent-internal behavior |
 
 The NanoCore observer directly observes its own loop and mediated calls. The restriction on Agent-internal behavior applies to behavior outside that observer's boundary.
 
@@ -347,7 +347,7 @@ Multiple observations under one Item or one `turnId` are ordered by observation-
 | `id` | yes | Stable addressable line id |
 | `ts` | yes | Observer-local clock declaration, RFC3339 UTC milliseconds; not a sort key |
 | `seq` | yes | Per-file contiguous from 1; truncation detection only; not a narrative key |
-| `obs` | yes | Observer: `gateway` \| `nanohost` \| `sidecar` \| `core` |
+| `obs` | yes | Observer: `llm-gateway` \| `nanohost` \| `worker-shim` \| `nanocore` |
 | `ret` | conditional | Core retention class when the row has a long-term or restricted class to assign; omitted means the type's default class from its owning write rule, not "no retention". See `ret` |
 | `parent` | conditional | Scalar parent id: observation id or Item id |
 | `corr` | conditional | Pairing key for one logical call's request and response; no external referent |
@@ -359,6 +359,8 @@ Multiple observations under one Item or one `turnId` are ordered by observation-
 | `payload` | yes | Main facts allowed by B′, shape per `type` |
 
 `obs` identifies the observer, not the source or verifier of a reported fact. Before a remote producer writes records, its type-owned payload MUST distinguish source claims from independent verification and identify their source and evidence basis. `cert` continues to distinguish direct observation from inference; directly observing a report does not verify its claim.
+
+**Retained observer names.** Writers emit only the observer values listed above. Retained version-1 records and exports may contain `core`, `gateway`, or `sidecar`. Readers map them to `nanocore`, `llm-gateway`, and `worker-shim`, respectively; the collection meaning stays unchanged. This read projection leaves existing ledger bytes and their version unchanged. Import verifies original source bytes and digests; the mapped view is not replacement evidence. Same-identity replay compares the mapped observation meaning, not the historical spelling. Unknown observer values and observer/type mismatches fail closed.
 
 `ownerScope`, lineage defaults, `requiredFeatures`, and redaction defaults live on the directory-level manifest (`thread.json` / `turn.json` as the storage owner already assigns), not repeated per line.
 

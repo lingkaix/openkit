@@ -56,7 +56,7 @@ export function appendRecoveredTurnObservation(
       id,
       type: 'turn.reap',
       ts: binding.turn.completedAt,
-      obs: 'core',
+      obs: 'nanocore',
       ret: 'turn-evidence',
       payload: {
         reason,

@@ -142,6 +142,28 @@ export function decodeSourcePointer(input: {
   }
 }
 
+/** Allows descriptive edits while preserving captured facts, governance and unknown extensions. */
+export function assertSourcePointerEdit(before: string, after: string): void {
+  const original = parseOkfDocument({ path: 'sources/source.md', content: before });
+  const candidate = parseOkfDocument({ path: 'sources/source.md', content: after });
+  if (!original.ok || !candidate.ok) throw new NotebookError('invalid_request');
+  const protectedFields = (fields: Record<string, unknown>) =>
+    Object.fromEntries(
+      Object.entries(fields).filter(
+        ([key]) => !['title', 'description', 'tags', 'updated_at', 'review_state'].includes(key)
+      )
+    );
+  if (
+    original.document.frontmatter.type !== 'SourceSummary' ||
+    !SourcePointerFieldsSchema.safeParse(candidate.document.frontmatter).success ||
+    !isDeepStrictEqual(
+      protectedFields(original.document.frontmatter),
+      protectedFields(candidate.document.frontmatter)
+    )
+  )
+    throw new NotebookError('invalid_request');
+}
+
 /** Serializes native captured facts; descriptions and summary never choose owner, digest or channel. */
 export function serializeSourcePointer(input: {
   readonly owner: SourcePointerOwner;

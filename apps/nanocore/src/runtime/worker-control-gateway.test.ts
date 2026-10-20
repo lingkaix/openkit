@@ -1148,16 +1148,19 @@ describe('WorkerControlGateway', () => {
         turnIds: [fixture.lineage.turnId],
       })[0]!;
       expect(
-        activity.entries.some(
-          (entry) =>
-            entry.label === 'Child 2: response completed' && entry.text === 'Nested outward result'
-        )
-      ).toBe(true);
+        activity.entries.find((entry) => entry.label === 'Child 2: response completed')
+      ).toMatchObject({ kind: 'result', textTruncated: false });
+      expect(activity.entries.some((entry) => entry.text?.includes('Nested outward result'))).toBe(
+        false
+      );
       expect(
-        activity.entries.some(
-          (entry) => entry.text === bytes.toString('utf8').slice(0, 1000) && entry.textTruncated
+        activity.entries.find((entry) => entry.label === 'Child 1: response completed')
+      ).toMatchObject({ kind: 'result', textTruncated: false });
+      expect(
+        activity.entries.some((entry) =>
+          entry.text?.includes(bytes.toString('utf8').slice(0, 1000))
         )
-      ).toBe(true);
+      ).toBe(false);
       expect(activity.entries.filter((entry) => entry.kind === 'child-started')).toHaveLength(2);
       const receipts = JSON.stringify(
         coreDb.sqlite.prepare('SELECT record_json FROM worker_control_records').all()

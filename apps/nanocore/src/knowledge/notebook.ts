@@ -4,6 +4,7 @@ import { lstatSync, mkdirSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { KnowledgeNotebookCommitMetadataSchema, KnowledgeSourceIdSchema } from '@openkit/protocol';
 import type { z } from 'zod';
+import { assertSourcePointerEdit } from './source-pointers.js';
 
 const PUBLISHED_REF = 'refs/heads/published';
 const FILE_BYTES = 2 * 1024 * 1024;
@@ -20,6 +21,7 @@ export type NotebookCommitMetadata = z.infer<typeof NotebookCommitMetadataSchema
 export interface NotebookRevision {
   readonly revision: string;
   readonly parentRevision: string | null;
+  /** Canonical curated Pages only; Source pointer blobs have a separate native reader. */
   readonly files: Readonly<Record<string, string>>;
   readonly metadata: NotebookCommitMetadata;
 }
@@ -28,7 +30,9 @@ export interface NotebookRevision {
 export class NotebookError extends Error {
   constructor(
     readonly code: 'invalid_request' | 'conflict' | 'recovery_required' | 'review_required',
-    readonly currentRevision?: string
+    readonly currentRevision?: string,
+    /** Native validation codes only; transient feedback, never authored text or publication authority. */
+    readonly diagnostics?: readonly string[]
   ) {
     super(`Notebook ${code.replaceAll('_', ' ')}.`);
   }
@@ -53,7 +57,7 @@ function validPath(path: string): boolean {
   );
 }
 
-/** Validates transport-independent limits; OKF/schema/source admission belongs to the common publisher caller. */
+/** Validates Page files or transient edit maps; schema and authority remain with the publisher caller. */
 export function validateNotebookFiles(
   files: Readonly<Record<string, string>>,
   editing = false
@@ -62,7 +66,13 @@ export function validateNotebookFiles(
   const folded = new Set<string>();
   for (const [path, text] of Object.entries(files)) {
     if (
-      !validPath(path) ||
+      !(
+        validPath(path) ||
+        (editing &&
+          path.startsWith('@sources/') &&
+          path.endsWith('.md') &&
+          KnowledgeSourceIdSchema.safeParse(path.slice('@sources/'.length, -3)).success)
+      ) ||
       typeof text !== 'string' ||
       Buffer.from(text).toString('utf8') !== text ||
       (editing && Buffer.byteLength(text) > FILE_BYTES)
@@ -278,6 +288,20 @@ export class KnowledgeNotebook {
     );
   }
 
+  /** Reads exact path-qualified content for edit and Proposal deltas; Page projections stay separate. */
+  readContent(revision: string, paths?: readonly string[]): Readonly<Record<string, string>> {
+    const entries = { ...this.inspectRevision(revision).entries };
+    for (const [id, object] of Object.entries(this.sourceObjects(revision)))
+      entries[`@sources/${id}.md`] = object;
+    return Object.fromEntries(
+      (paths ?? Object.keys(entries)).map((path) => {
+        const object = entries[path];
+        if (!object) throw new NotebookError('invalid_request');
+        return [path, this.readBlob(object)];
+      })
+    );
+  }
+
   /** Creates a Source-only candidate; native Source admission owns captured facts and publication. */
   prepareSourcePointers(input: {
     readonly baseRevision: string;
@@ -343,14 +367,23 @@ export class KnowledgeNotebook {
       ),
       true
     );
+    const sources = { ...this.sourceObjects(input.baseRevision) };
     for (const [path, value] of Object.entries(input.changes)) {
-      if (!validPath(path) || (value !== null && typeof value !== 'string'))
+      if (
+        (!validPath(path) && !path.startsWith('@sources/')) ||
+        (value !== null && typeof value !== 'string')
+      )
         throw new NotebookError('invalid_request');
-      if (value === null) delete entries[path];
+      if (path.startsWith('@sources/')) {
+        const id = path.slice('@sources/'.length, -3);
+        if (!KnowledgeSourceIdSchema.safeParse(id).success || !sources[id] || value === null)
+          throw new NotebookError('invalid_request');
+        assertSourcePointerEdit(this.readBlob(sources[id]!), value);
+        sources[id] = this.git(['hash-object', '-w', '--stdin'], value).trim();
+      } else if (value === null) delete entries[path];
       else entries[path] = this.git(['hash-object', '-w', '--stdin'], value).trim();
     }
     if (!Object.hasOwn(entries, 'index.md')) throw new NotebookError('invalid_request');
-    const sources = { ...this.sourceObjects(input.baseRevision) };
     for (const [id, content] of Object.entries(input.sourcePointers ?? {})) {
       KnowledgeSourceIdSchema.parse(id);
       if (Object.hasOwn(sources, id) || Buffer.byteLength(content) > FILE_BYTES)

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { posix } from 'node:path';
-import type { KnowledgeOwnerScope } from '@openkit/protocol';
+import { type KnowledgeOwnerScope, parseReferenceScope } from '@openkit/protocol';
 import MarkdownIt from 'markdown-it';
 import type { NotebookRevision } from './notebook.js';
 import {
@@ -8,6 +8,8 @@ import {
   parseOkfDocument,
   validateKnowledgePageCandidate,
 } from './okf.js';
+
+import { assertSourcePointerEdit, decodeSourcePointer } from './source-pointers.js';
 
 const markdown = new MarkdownIt({ html: false, linkify: false });
 const MAX_DIAGNOSTICS = 100;
@@ -44,9 +46,18 @@ function pageLinks(path: string, body: string): ReadonlySet<string> {
         continue;
       }
       if (!target.endsWith('.md')) continue;
+      const source = path.startsWith('@sources/');
+      // Resolve authored links in canonical Git namespaces, then project into the transient view.
       target = target.startsWith('/')
         ? posix.normalize(target.slice(1))
-        : posix.normalize(posix.join(posix.dirname(path), target));
+        : posix.normalize(posix.join(posix.dirname(source ? path.slice(1) : path), target));
+      if (source)
+        target = target.startsWith('sources/')
+          ? `@${target}`
+          : target.startsWith('pages/')
+            ? target.slice('pages/'.length)
+            : '';
+      else if (target.startsWith('@sources/')) target = '';
       links.add(target);
     }
   }
@@ -58,6 +69,7 @@ export function validateNotebookCandidate(input: {
   readonly ownerScope: KnowledgeOwnerScope;
   /** Exact page scope supplied by current owner admission, including its retained Knowledge Base. */
   readonly pageScopeId?: string;
+  /** Transient path-qualified edit maps can include Sources; NotebookRevision.files stays Page-only. */
   readonly base: Pick<NotebookRevision, 'files'>;
   readonly candidate: Pick<NotebookRevision, 'files'>;
   readonly scopeSchemaText: string;
@@ -80,7 +92,10 @@ export function validateNotebookCandidate(input: {
   );
   const knowledgeIds = new Set(
     Object.keys(input.candidate.files)
-      .filter((path) => !['index.md', 'log.md'].includes(posix.basename(path)))
+      .filter(
+        (path) =>
+          !path.startsWith('@sources/') && !['index.md', 'log.md'].includes(posix.basename(path))
+      )
       .map((path) => path.slice(0, -3))
   );
   const errors: Array<{ pageId: string; code: string }> = [];
@@ -90,9 +105,35 @@ export function validateNotebookCandidate(input: {
     if (errors.length < MAX_DIAGNOSTICS) errors.push({ pageId, code });
     else diagnosticsTruncated = true;
   };
+  for (const path of removedPaths)
+    if (path.startsWith('@sources/')) fail(path.slice(0, -3), 'notebook.invalid_source_edit');
   for (const path of Object.keys(input.candidate.files).sort()) {
     const pageId = path.slice(0, -3);
     const content = input.candidate.files[path]!;
+    if (path.startsWith('@sources/') && changed.has(path)) {
+      try {
+        const scope = parseReferenceScope(input.pageScopeId ?? '');
+        if (input.ownerScope.kind !== 'workspace' || scope?.family !== 'page')
+          throw new Error('Invalid Source owner.');
+        const id = path.slice('@sources/'.length, -3);
+        const pointer = decodeSourcePointer({
+          ownerScope: input.ownerScope,
+          knowledgeBaseId: scope.knowledgeBaseId,
+          scopeSchemaText: input.scopeSchemaText,
+          id,
+          content,
+        });
+        if (input.registeredSources.get(id) !== pointer.source.contentDigest)
+          throw new Error('Source is unavailable.');
+        const original = input.base.files[path];
+        if (original !== undefined) assertSourcePointerEdit(original, content);
+        sources.add(`source:${id}@${pointer.source.contentDigest}`);
+      } catch {
+        fail(pageId, 'notebook.invalid_source_edit');
+        continue;
+      }
+    }
+
     const parsed = parseOkfDocument({ path, content });
     if (!parsed.ok) {
       // An unchanged malformed member indicates corrupt content, rather than permission to omit it.
@@ -116,10 +157,13 @@ export function validateNotebookCandidate(input: {
           ? { resolvedReferences: input.resolvedReferences.get(pageId)! }
           : {}),
       });
-      if (report.conformance !== 'scope-schema-valid' || report.errors.length > 0)
+      if (report.conformance !== 'scope-schema-valid' || report.errors.length > 0) {
         fail(pageId, 'notebook.invalid_page');
+        // Keep native reason codes for bounded author feedback; omit messages and authored values.
+        for (const error of report.errors) fail(pageId, error.code);
+      }
       const declaredId = parsed.document.frontmatter.openkit_entry_id;
-      if (declaredId !== undefined && declaredId !== pageId)
+      if (!path.startsWith('@sources/') && declaredId !== undefined && declaredId !== pageId)
         fail(pageId, 'notebook.page_identity_mismatch');
       const references = parsed.document.frontmatter.source_refs;
       if (Array.isArray(references))

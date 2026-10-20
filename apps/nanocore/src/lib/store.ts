@@ -1985,7 +1985,7 @@ export class FsStore {
       )
         throw new KnowledgePageValidationError();
       const notebook = this.proposalNotebook(proposal.workspaceId);
-      const base = notebook.readRevision(proposal.baseRevision);
+      const base = { files: notebook.readContent(proposal.baseRevision) };
       const files = { ...base.files };
       for (const { path, content } of proposal.changes) {
         if (content === null) delete files[path];
@@ -2259,11 +2259,12 @@ export class FsStore {
       const candidate = notebook.retainedCandidate(proposal.id);
       const candidateFiles = notebook.readRevision(proposal.candidateRevision).files;
       const content = proposal.canonicalPageBytes;
-      const baseFiles = notebook.readRevision(proposal.baseRevision).files;
-      const changes = [...new Set([...Object.keys(baseFiles), ...Object.keys(candidateFiles)])]
+      const baseFiles = notebook.readContent(proposal.baseRevision);
+      const candidateContent = notebook.readContent(proposal.candidateRevision);
+      const changes = [...new Set([...Object.keys(baseFiles), ...Object.keys(candidateContent)])]
         .sort()
-        .filter((path) => baseFiles[path] !== candidateFiles[path])
-        .map((path) => ({ path, content: candidateFiles[path] ?? null }));
+        .filter((path) => baseFiles[path] !== candidateContent[path])
+        .map((path) => ({ path, content: candidateContent[path] ?? null }));
       if (
         candidate.revision !== proposal.candidateRevision ||
         candidate.parentRevision !== proposal.baseRevision ||

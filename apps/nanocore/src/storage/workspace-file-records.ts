@@ -1786,14 +1786,15 @@ function loadKnowledgeProposals(
       )
         throw new Error('Knowledge Proposal retained candidate is unavailable.');
       const candidateFiles = notebook.readRevision(candidateRevision).files;
-      const baseFiles = notebook.readRevision(baseRevision).files;
+      const baseFiles = notebook.readContent(baseRevision);
+      const candidateContent = notebook.readContent(candidateRevision);
       const changes =
         changedMetadata === undefined
           ? undefined
-          : [...new Set([...Object.keys(baseFiles), ...Object.keys(candidateFiles)])]
+          : [...new Set([...Object.keys(baseFiles), ...Object.keys(candidateContent)])]
               .sort()
-              .filter((path) => baseFiles[path] !== candidateFiles[path])
-              .map((path) => ({ path, content: candidateFiles[path] ?? null }));
+              .filter((path) => baseFiles[path] !== candidateContent[path])
+              .map((path) => ({ path, content: candidateContent[path] ?? null }));
       if (
         changes &&
         !isDeepStrictEqual(

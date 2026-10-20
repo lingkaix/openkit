@@ -31,10 +31,12 @@ import { createNotebookAgentEditing, NOTEBOOK_EDITING_LIMITS } from './notebook-
 import { notebookAuthoringGuidance } from './notebook-authoring-guidance.js';
 import { boundedNotebookDiff } from './notebook-history.js';
 import {
+  attributedNotebookPageBytes,
   type NotebookPublicationAdmission,
   type NotebookUpdate,
   publishWorkspaceNotebook,
 } from './notebook-publication.js';
+import { validateNotebookCandidate } from './notebook-validation.js';
 import { readWorkspaceNotebookAdmission } from './notebook-workspace-admission.js';
 import {
   parseOkfDocument,
@@ -489,6 +491,7 @@ export function prepareKnowledgeMaintenance(
             .listKnowledgeSources(input.workspaceId)
             .map((source) => [source.id, source.contentDigest])
         );
+        const editableSources = new Set(suppliedSource ? [suppliedSource.id] : []);
         for (const supplied of input.sources) {
           const resolution = resolveRegisteredKnowledgeSourceReference(
             supplied.startsWith('source:') ? supplied : `source:${supplied}`,
@@ -496,6 +499,7 @@ export function prepareKnowledgeMaintenance(
           );
           if (!resolution.resolved || !resolution.targetId)
             throw new NotebookError('invalid_request');
+          editableSources.add(resolution.targetId);
           sources.set(
             resolution.targetId,
             store.getKnowledgeSource(input.workspaceId, resolution.targetId)
@@ -506,6 +510,16 @@ export function prepareKnowledgeMaintenance(
           admitBytes(text);
           sourceFiles[source.id] = text;
           admittedReferences.add(`source:${source.id}@${source.contentDigest}`);
+        }
+        for (const id of editableSources) {
+          const path = `@sources/${id}.md`;
+          const content = notebook.readContent(baseRevision, [path])[path]!;
+          admitBytes(content);
+          files[path] = content;
+          const parsed = parseOkfDocument({ path, content });
+          if (!parsed.ok) throw new NotebookError('recovery_required');
+          for (const ref of stringListFrontmatterField(parsed.document, 'source_refs') ?? [])
+            admittedReferences.add(ref);
         }
         const historyReads: Array<{ notebookRevision: string; path: string; content: string }> = [];
         const assertCurrent = () => {
@@ -519,7 +533,7 @@ export function prepareKnowledgeMaintenance(
                 source.contentDigest
             )
               throw new NotebookError('recovery_required');
-          for (const path of Object.keys(files))
+          for (const path of Object.keys(files).filter((path) => !path.startsWith('@sources/')))
             readAuthorizedWorkspaceNotebookPages({ ...target, pageIds: [path.slice(0, -3)] });
           for (const selection of historyReads) {
             const page = readAuthorizedWorkspaceNotebookPages({
@@ -554,18 +568,27 @@ export function prepareKnowledgeMaintenance(
           },
           revalidate: assertCurrent,
           submit: async (edit) => {
-            if (edit.changes.length > 4) throw new NotebookError('invalid_request');
+            if (edit.changes.length > NOTEBOOK_EDITING_LIMITS.changedFiles)
+              throw new NotebookError('invalid_request', undefined, [
+                'notebook.maintenance_change_limit',
+              ]);
             const request = { ...edit, workspaceId: input.workspaceId };
             const refs = [
               ...new Set(
-                edit.changes.flatMap(({ path, content }) =>
-                  content === null
-                    ? []
-                    : (stringListFrontmatterField(
-                        parseOkfDocument({ path, content }).document!,
-                        'source_refs'
-                      ) ?? [])
-                )
+                edit.changes.flatMap(({ path, content }) => {
+                  if (content === null) return [];
+                  const parsed = parseOkfDocument({ path, content });
+                  if (!parsed.ok) throw new NotebookError('invalid_request');
+                  const refs = stringListFrontmatterField(parsed.document, 'source_refs') ?? [];
+                  if (path.startsWith('@sources/')) {
+                    const id = path.slice('@sources/'.length, -3);
+                    const source = sources.get(id);
+                    if (!editableSources.has(id) || !source)
+                      throw new NotebookError('invalid_request');
+                    refs.push(`source:${id}@${source.contentDigest}`);
+                  }
+                  return refs;
+                })
               ),
             ].sort();
             if (refs.some((ref) => !admittedReferences.has(ref)))
@@ -574,6 +597,32 @@ export function prepareKnowledgeMaintenance(
             if (!release) throw new NotebookError('invalid_request');
             try {
               const facts = admission(request);
+              // Explain structural refusals before either native publisher or Proposal creation.
+              // Both still perform their own current-authority and exact-candidate verification.
+              const baseFiles = notebook.readContent(baseRevision);
+              const candidateFiles = { ...baseFiles };
+              for (const { path, content } of edit.changes) {
+                if (content === null) delete candidateFiles[path];
+                else
+                  candidateFiles[path] = attributedNotebookPageBytes(
+                    path,
+                    content,
+                    { kind: 'workspace', workspaceId: input.workspaceId },
+                    'delegated'
+                  );
+              }
+              const validation = validateNotebookCandidate({
+                ownerScope: { kind: 'workspace', workspaceId: input.workspaceId },
+                base: { files: baseFiles },
+                candidate: { files: candidateFiles },
+                ...facts,
+              });
+              if (validation.errors.length)
+                throw new NotebookError(
+                  'invalid_request',
+                  undefined,
+                  validation.errors.map(({ code }) => code)
+                );
               const setting = settings();
               if (
                 setting.enabled &&
@@ -657,7 +706,7 @@ export function prepareKnowledgeMaintenance(
           execute: (value: Record<string, string>) => Promise<unknown>
         ): AgentTool => ({
           name,
-          description: `${description} Use only the admitted notebook snapshot and Sources. Notebook limits: 32 MiB total, 2 MiB per file, four maintenance changes, 64 KiB script/output. Publication needs current authority.`,
+          description: `${description} Use only the admitted notebook snapshot and Sources. Notebook limits: 32 MiB total, 2 MiB per file, ${NOTEBOOK_EDITING_LIMITS.changedFiles} changed files, 64 KiB script/output. Publication needs current authority.`,
           inputSchema: {
             type: 'object',
             properties: { [key]: { type: 'string' } },
@@ -665,20 +714,74 @@ export function prepareKnowledgeMaintenance(
             additionalProperties: false,
           },
           execute: async (value, context) => {
-            if (
-              typeof value !== 'object' ||
-              value === null ||
-              Array.isArray(value) ||
-              Object.keys(value).length !== 1 ||
-              typeof (value as Record<string, unknown>)[key] !== 'string'
-            )
-              throw new NotebookError('invalid_request');
             const abort = () => controller.abort();
             if (context.signal.aborted) abort();
             context.signal.addEventListener('abort', abort, { once: true });
             try {
+              if (
+                typeof value !== 'object' ||
+                value === null ||
+                Array.isArray(value) ||
+                Object.keys(value).length !== 1 ||
+                typeof (value as Record<string, unknown>)[key] !== 'string'
+              )
+                throw new NotebookError('invalid_request');
               const result = await execute(value as Record<string, string>);
               return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+            } catch (error) {
+              if (context.signal.aborted || input.signal.aborted) throw error;
+              const errorCode =
+                error instanceof NotebookError ? error.code : 'notebook_tool_failed';
+              const diagnostics =
+                error instanceof NotebookError
+                  ? [...new Set(error.diagnostics ?? [])].slice(0, 8)
+                  : [];
+              // Class labels are native constants; exception text and constructor names are untrusted.
+              const exceptionClass =
+                error instanceof NotebookError
+                  ? 'NotebookError'
+                  : error instanceof TypeError
+                    ? 'TypeError'
+                    : error instanceof RangeError
+                      ? 'RangeError'
+                      : error instanceof SyntaxError
+                        ? 'SyntaxError'
+                        : 'Error';
+              try {
+                console.warn(
+                  JSON.stringify({
+                    code: 'knowledge_notebook_tool_failed',
+                    message: 'Workspace Knowledge notebook Tool failed.',
+                    operation: name,
+                    exceptionClass,
+                    errorCode,
+                    workspaceId: input.workspaceId,
+                    threadId: thread.id,
+                    turnId: turn.id,
+                  })
+                );
+              } catch {
+                // Optional process diagnostics cannot replace the native failure feedback.
+              }
+              return {
+                isError: true,
+                content: [
+                  {
+                    type: 'text',
+                    text: JSON.stringify({
+                      code: errorCode,
+                      ...(diagnostics.length ? { diagnostics } : {}),
+                      message: diagnostics.includes('notebook.maintenance_change_limit')
+                        ? `Maintenance permits at most ${NOTEBOOK_EDITING_LIMITS.changedFiles} changed files, including index.md. Reduce the temporary edits before resubmitting; call knowledge.result only after a successful notebook submission.`
+                        : diagnostics.includes('scope_schema.invalid_confidence')
+                          ? 'Claim requires confidence: a finite number from zero through one. Correct the temporary Claim frontmatter before resubmitting; call knowledge.result only after a successful notebook submission.'
+                          : errorCode === 'notebook_tool_failed'
+                            ? 'Notebook Tool failed unexpectedly. Publication is not confirmed; inspect the notebook before starting a new request.'
+                            : 'Notebook Tool refused the request. Check the admitted notebook constraints and native diagnostic codes; publication is not confirmed.',
+                    }),
+                  },
+                ],
+              };
             } finally {
               context.signal.removeEventListener('abort', abort);
             }
@@ -702,13 +805,13 @@ export function prepareKnowledgeMaintenance(
           tool(
             'knowledge.notebook-workspace.update',
             'script',
-            'Run an edit script against the admitted virtual Knowledge snapshot. This edits pages but does not publish them; submit the prior edits with knowledge.notebook.update.',
+            'Run an edit script against the admitted virtual Knowledge snapshot. This edits pages and selected Source summaries; submit the prior edits with knowledge.notebook.update.',
             (value) => editor.workspaceUpdate({ script: value.script! })
           ),
           tool(
             'knowledge.notebook.update',
             'summary',
-            'Submit prior knowledge.notebook-workspace.update edits for Knowledge page publication or required Review. The summary describes the edits and is not page content. Literal Source capture is not Knowledge page integration. A native no_change outcome means the editor has no page changes.',
+            'Submit prior knowledge.notebook-workspace.update edits for Knowledge publication or required Review. The summary describes the edits and is not page content. Literal Source capture is not Knowledge page integration. A native no_change outcome means the editor has no page changes.',
             async (value) => {
               const result = await editor.notebookUpdate({ summary: value.summary! });
               if (result.outcome === 'no_change') outcome = response('no-change', value.summary!);

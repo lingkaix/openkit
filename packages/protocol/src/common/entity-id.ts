@@ -41,6 +41,7 @@ export const ENTITY_KINDS = [
   'fld',
   'pres',
   'wsexp',
+  'wsbak',
   'drb',
 ] as const;
 
