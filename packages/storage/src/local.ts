@@ -6,6 +6,7 @@ import {
   ContentReferenceSchema,
   KnowledgeBaseIdSchema,
   KnowledgeOwnerScopeSchema,
+  NativeContentReferenceSchema,
 } from '@openkit/protocol';
 import {
   type LocalStorageMount,
@@ -51,8 +52,11 @@ export class LocalStorage implements StorageService {
   constructor(options: { mounts: LocalStorageMount[]; stagingRoot: string }) {
     this.mounts = structuredClone(options.mounts).map((mount) => {
       if (
-        !KnowledgeBaseIdSchema.safeParse(mount.knowledgeBaseId).success ||
         !KnowledgeOwnerScopeSchema.safeParse(mount.ownerScope).success ||
+        (mount.knowledgeBaseId === null
+          ? mount.ownerScope.kind === 'user' ||
+            !NativeContentReferenceSchema.shape.locator.shape.mount.safeParse(mount.name).success
+          : !KnowledgeBaseIdSchema.safeParse(mount.knowledgeBaseId).success) ||
         !mount.name
       ) {
         throw new Error('Invalid local Storage mount.');
@@ -349,17 +353,18 @@ export class LocalStorage implements StorageService {
   ): LocalStorageMount {
     if (this.closed) refuse({ status: 'failed' });
     if (
-      !['lease', 'knowledge'].includes(access.basis) ||
+      !['lease', 'knowledge', 'work-capture'].includes(access.basis) ||
+      (access.basis === 'work-capture'
+        ? access.knowledgeBaseId !== null
+        : !KnowledgeBaseIdSchema.safeParse(access.knowledgeBaseId).success) ||
       (access.basis === 'lease' &&
         (!access.grantId ||
           access.revoked !== false ||
           !Number.isFinite(Date.parse(access.expiresAt)) ||
           Date.parse(access.expiresAt) <= Date.now())) ||
-      (access.basis === 'knowledge' &&
-        (access.pathPrefix !== 'sources' ||
-          'grantId' in access ||
-          'expiresAt' in access ||
-          'revoked' in access)) ||
+      (access.basis === 'knowledge' && access.pathPrefix !== 'sources') ||
+      (access.basis !== 'lease' &&
+        ('grantId' in access || 'expiresAt' in access || 'revoked' in access)) ||
       access.mode !== mode ||
       scopeKey(access.ownerScope) !== scopeKey(locator.ownerScope) ||
       access.mount !== locator.mount ||
@@ -367,6 +372,14 @@ export class LocalStorage implements StorageService {
     )
       refuse({ status: 'denied' });
     if (!safePath(locator.path, directory)) refuse({ status: 'invalid-request' });
+    if (
+      access.basis === 'work-capture' &&
+      !(directory
+        ? (locator.path === '' || locator.path === 'sha256') &&
+          NativeContentReferenceSchema.shape.locator.omit({ path: true }).safeParse(locator).success
+        : NativeContentReferenceSchema.shape.locator.safeParse(locator).success)
+    )
+      refuse({ status: 'invalid-request' });
     if (
       access.pathPrefix &&
       locator.path !== access.pathPrefix &&
@@ -605,7 +618,7 @@ function sniff(header: Buffer): string {
 
 /** Reuse the shared descriptor without creating a second retained authority. */
 function contentFor(
-  knowledgeBaseId: string,
+  knowledgeBaseId: StorageAccess['knowledgeBaseId'],
   locator: StorageLocator,
   observed: { contentDigest: string; byteLength: number; mediaType: string }
 ): StorageContent {
@@ -616,7 +629,13 @@ function contentFor(
     range: null,
     availability: 'available',
   });
-  if (!parsed.success) refuse({ status: 'invalid-request' });
+  // Authorized native locators are digest keys; different observed bytes are unavailable.
+  if (!parsed.success)
+    refuse(
+      knowledgeBaseId === null
+        ? { status: 'unavailable', reason: 'changed' }
+        : { status: 'invalid-request' }
+    );
   return { reference: parsed.data, byteLength: observed.byteLength, mediaType: observed.mediaType };
 }
 

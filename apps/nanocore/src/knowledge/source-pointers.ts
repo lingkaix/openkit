@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { KnowledgeSourceSchema } from '@openkit/app-api-schemas';
 import {
-  ContentReferenceSchema,
+  KnowledgeContentReferenceSchema,
   type KnowledgeOwnerScope,
   KnowledgeOwnerScopeSchema,
   KnowledgeSourceIdSchema,
@@ -33,7 +33,7 @@ export const SourceMetadataSchema = KnowledgeSourceSchema.omit({ workspaceId: tr
 
 /** Captured Source fields have one serialized meaning across User, Workspace and Server. */
 export const SourcePointerFieldsSchema = z.object({
-  contentRef: ContentReferenceSchema.refine((reference) => reference.range === null),
+  contentRef: KnowledgeContentReferenceSchema.refine((reference) => reference.range === null),
   byteLength: z.number().int().nonnegative(),
   mediaType: z.string().min(1),
   sourceKind: SourceMetadataSchema.shape.kind,

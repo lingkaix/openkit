@@ -3,6 +3,7 @@ import { existsSync, lstatSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import {
   type ActorRef,
+  KnowledgeContentReferenceSchema,
   type KnowledgeNotebookAdmission,
   responsibleUserIdForActor,
 } from '@openkit/protocol';
@@ -278,7 +279,7 @@ export async function publishCapturedSource(
       owner: input.owner,
       source,
       fields: {
-        contentRef: staged.content.reference,
+        contentRef: KnowledgeContentReferenceSchema.parse(staged.content.reference),
         byteLength: staged.content.byteLength,
         mediaType: staged.content.mediaType,
         sourceKind: source.kind,

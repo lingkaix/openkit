@@ -68187,92 +68187,231 @@
                   }
                 },
                 "contentRef": {
-                  "type": "object",
-                  "properties": {
-                    "knowledgeBaseId": {
-                      "type": "string",
-                      "pattern": "^kb_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                    },
-                    "contentDigest": {
-                      "type": "string",
-                      "pattern": "^sha256:[a-f0-9]{64}$"
-                    },
-                    "locator": {
+                  "anyOf": [
+                    {
                       "type": "object",
                       "properties": {
-                        "ownerScope": {
+                        "knowledgeBaseId": {
+                          "type": "string",
+                          "pattern": "^kb_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "contentDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        "locator": {
+                          "type": "object",
+                          "properties": {
+                            "ownerScope": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "user"
+                                    },
+                                    "userId": {
+                                      "type": "string",
+                                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "userId"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "workspace"
+                                    },
+                                    "workspaceId": {
+                                      "type": "string",
+                                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "workspaceId"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "server"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
+                            },
+                            "mount": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "path": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "ownerScope",
+                            "mount",
+                            "path"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "range": {
                           "anyOf": [
                             {
-                              "type": "object",
-                              "properties": {
-                                "kind": {
-                                  "type": "string",
-                                  "const": "user"
+                              "oneOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "bytes"
+                                    },
+                                    "start": {
+                                      "type": "integer",
+                                      "minimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "end": {
+                                      "type": "integer",
+                                      "minimum": 0,
+                                      "maximum": 9007199254740991
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "start",
+                                    "end"
+                                  ],
+                                  "additionalProperties": false
                                 },
-                                "userId": {
-                                  "type": "string",
-                                  "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "page"
+                                    },
+                                    "page": {
+                                      "type": "integer",
+                                      "exclusiveMinimum": 0,
+                                      "maximum": 9007199254740991
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "page"
+                                  ],
+                                  "additionalProperties": false
                                 }
-                              },
-                              "required": [
-                                "kind",
-                                "userId"
-                              ],
-                              "additionalProperties": false
+                              ]
                             },
                             {
-                              "type": "object",
-                              "properties": {
-                                "kind": {
-                                  "type": "string",
-                                  "const": "workspace"
-                                },
-                                "workspaceId": {
-                                  "type": "string",
-                                  "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                                }
-                              },
-                              "required": [
-                                "kind",
-                                "workspaceId"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "kind": {
-                                  "type": "string",
-                                  "const": "server"
-                                }
-                              },
-                              "required": [
-                                "kind"
-                              ],
-                              "additionalProperties": false
+                              "type": "null"
                             }
                           ]
                         },
-                        "mount": {
+                        "availability": {
                           "type": "string",
-                          "minLength": 1
-                        },
-                        "path": {
-                          "type": "string",
-                          "minLength": 1
+                          "enum": [
+                            "available",
+                            "unavailable"
+                          ]
                         }
                       },
                       "required": [
-                        "ownerScope",
-                        "mount",
-                        "path"
+                        "knowledgeBaseId",
+                        "contentDigest",
+                        "locator",
+                        "range",
+                        "availability"
                       ],
                       "additionalProperties": false
                     },
-                    "range": {
-                      "anyOf": [
-                        {
-                          "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "knowledgeBaseId": {
+                          "type": "null"
+                        },
+                        "contentDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        "locator": {
+                          "type": "object",
+                          "properties": {
+                            "ownerScope": {
+                              "oneOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "workspace"
+                                    },
+                                    "workspaceId": {
+                                      "type": "string",
+                                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "workspaceId"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "server"
+                                    },
+                                    "workspaceId": {
+                                      "not": {}
+                                    }
+                                  },
+                                  "required": [
+                                    "kind"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
+                            },
+                            "mount": {
+                              "type": "string",
+                              "const": "backend-evidence"
+                            },
+                            "path": {
+                              "type": "string",
+                              "pattern": "^sha256\\/[a-f0-9]{64}$"
+                            }
+                          },
+                          "required": [
+                            "ownerScope",
+                            "mount",
+                            "path"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "range": {
+                          "anyOf": [
                             {
                               "type": "object",
                               "properties": {
@@ -68299,47 +68438,28 @@
                               "additionalProperties": false
                             },
                             {
-                              "type": "object",
-                              "properties": {
-                                "kind": {
-                                  "type": "string",
-                                  "const": "page"
-                                },
-                                "page": {
-                                  "type": "integer",
-                                  "exclusiveMinimum": 0,
-                                  "maximum": 9007199254740991
-                                }
-                              },
-                              "required": [
-                                "kind",
-                                "page"
-                              ],
-                              "additionalProperties": false
+                              "type": "null"
                             }
                           ]
                         },
-                        {
-                          "type": "null"
+                        "availability": {
+                          "type": "string",
+                          "enum": [
+                            "available",
+                            "unavailable"
+                          ]
                         }
-                      ]
-                    },
-                    "availability": {
-                      "type": "string",
-                      "enum": [
-                        "available",
-                        "unavailable"
-                      ]
+                      },
+                      "required": [
+                        "knowledgeBaseId",
+                        "contentDigest",
+                        "locator",
+                        "range",
+                        "availability"
+                      ],
+                      "additionalProperties": false
                     }
-                  },
-                  "required": [
-                    "knowledgeBaseId",
-                    "contentDigest",
-                    "locator",
-                    "range",
-                    "availability"
-                  ],
-                  "additionalProperties": false
+                  ]
                 }
               },
               "required": [
@@ -68574,92 +68694,231 @@
                   }
                 },
                 "contentRef": {
-                  "type": "object",
-                  "properties": {
-                    "knowledgeBaseId": {
-                      "type": "string",
-                      "pattern": "^kb_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                    },
-                    "contentDigest": {
-                      "type": "string",
-                      "pattern": "^sha256:[a-f0-9]{64}$"
-                    },
-                    "locator": {
+                  "anyOf": [
+                    {
                       "type": "object",
                       "properties": {
-                        "ownerScope": {
+                        "knowledgeBaseId": {
+                          "type": "string",
+                          "pattern": "^kb_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "contentDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        "locator": {
+                          "type": "object",
+                          "properties": {
+                            "ownerScope": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "user"
+                                    },
+                                    "userId": {
+                                      "type": "string",
+                                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "userId"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "workspace"
+                                    },
+                                    "workspaceId": {
+                                      "type": "string",
+                                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "workspaceId"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "server"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
+                            },
+                            "mount": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "path": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "ownerScope",
+                            "mount",
+                            "path"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "range": {
                           "anyOf": [
                             {
-                              "type": "object",
-                              "properties": {
-                                "kind": {
-                                  "type": "string",
-                                  "const": "user"
+                              "oneOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "bytes"
+                                    },
+                                    "start": {
+                                      "type": "integer",
+                                      "minimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "end": {
+                                      "type": "integer",
+                                      "minimum": 0,
+                                      "maximum": 9007199254740991
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "start",
+                                    "end"
+                                  ],
+                                  "additionalProperties": false
                                 },
-                                "userId": {
-                                  "type": "string",
-                                  "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "page"
+                                    },
+                                    "page": {
+                                      "type": "integer",
+                                      "exclusiveMinimum": 0,
+                                      "maximum": 9007199254740991
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "page"
+                                  ],
+                                  "additionalProperties": false
                                 }
-                              },
-                              "required": [
-                                "kind",
-                                "userId"
-                              ],
-                              "additionalProperties": false
+                              ]
                             },
                             {
-                              "type": "object",
-                              "properties": {
-                                "kind": {
-                                  "type": "string",
-                                  "const": "workspace"
-                                },
-                                "workspaceId": {
-                                  "type": "string",
-                                  "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                                }
-                              },
-                              "required": [
-                                "kind",
-                                "workspaceId"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "kind": {
-                                  "type": "string",
-                                  "const": "server"
-                                }
-                              },
-                              "required": [
-                                "kind"
-                              ],
-                              "additionalProperties": false
+                              "type": "null"
                             }
                           ]
                         },
-                        "mount": {
+                        "availability": {
                           "type": "string",
-                          "minLength": 1
-                        },
-                        "path": {
-                          "type": "string",
-                          "minLength": 1
+                          "enum": [
+                            "available",
+                            "unavailable"
+                          ]
                         }
                       },
                       "required": [
-                        "ownerScope",
-                        "mount",
-                        "path"
+                        "knowledgeBaseId",
+                        "contentDigest",
+                        "locator",
+                        "range",
+                        "availability"
                       ],
                       "additionalProperties": false
                     },
-                    "range": {
-                      "anyOf": [
-                        {
-                          "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "knowledgeBaseId": {
+                          "type": "null"
+                        },
+                        "contentDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        "locator": {
+                          "type": "object",
+                          "properties": {
+                            "ownerScope": {
+                              "oneOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "workspace"
+                                    },
+                                    "workspaceId": {
+                                      "type": "string",
+                                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "workspaceId"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "server"
+                                    },
+                                    "workspaceId": {
+                                      "not": {}
+                                    }
+                                  },
+                                  "required": [
+                                    "kind"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
+                            },
+                            "mount": {
+                              "type": "string",
+                              "const": "backend-evidence"
+                            },
+                            "path": {
+                              "type": "string",
+                              "pattern": "^sha256\\/[a-f0-9]{64}$"
+                            }
+                          },
+                          "required": [
+                            "ownerScope",
+                            "mount",
+                            "path"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "range": {
+                          "anyOf": [
                             {
                               "type": "object",
                               "properties": {
@@ -68686,47 +68945,28 @@
                               "additionalProperties": false
                             },
                             {
-                              "type": "object",
-                              "properties": {
-                                "kind": {
-                                  "type": "string",
-                                  "const": "page"
-                                },
-                                "page": {
-                                  "type": "integer",
-                                  "exclusiveMinimum": 0,
-                                  "maximum": 9007199254740991
-                                }
-                              },
-                              "required": [
-                                "kind",
-                                "page"
-                              ],
-                              "additionalProperties": false
+                              "type": "null"
                             }
                           ]
                         },
-                        {
-                          "type": "null"
+                        "availability": {
+                          "type": "string",
+                          "enum": [
+                            "available",
+                            "unavailable"
+                          ]
                         }
-                      ]
-                    },
-                    "availability": {
-                      "type": "string",
-                      "enum": [
-                        "available",
-                        "unavailable"
-                      ]
+                      },
+                      "required": [
+                        "knowledgeBaseId",
+                        "contentDigest",
+                        "locator",
+                        "range",
+                        "availability"
+                      ],
+                      "additionalProperties": false
                     }
-                  },
-                  "required": [
-                    "knowledgeBaseId",
-                    "contentDigest",
-                    "locator",
-                    "range",
-                    "availability"
-                  ],
-                  "additionalProperties": false
+                  ]
                 }
               },
               "required": [
@@ -71972,92 +72212,231 @@
                   }
                 },
                 "contentRef": {
-                  "type": "object",
-                  "properties": {
-                    "knowledgeBaseId": {
-                      "type": "string",
-                      "pattern": "^kb_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                    },
-                    "contentDigest": {
-                      "type": "string",
-                      "pattern": "^sha256:[a-f0-9]{64}$"
-                    },
-                    "locator": {
+                  "anyOf": [
+                    {
                       "type": "object",
                       "properties": {
-                        "ownerScope": {
+                        "knowledgeBaseId": {
+                          "type": "string",
+                          "pattern": "^kb_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "contentDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        "locator": {
+                          "type": "object",
+                          "properties": {
+                            "ownerScope": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "user"
+                                    },
+                                    "userId": {
+                                      "type": "string",
+                                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "userId"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "workspace"
+                                    },
+                                    "workspaceId": {
+                                      "type": "string",
+                                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "workspaceId"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "server"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
+                            },
+                            "mount": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "path": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "ownerScope",
+                            "mount",
+                            "path"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "range": {
                           "anyOf": [
                             {
-                              "type": "object",
-                              "properties": {
-                                "kind": {
-                                  "type": "string",
-                                  "const": "user"
+                              "oneOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "bytes"
+                                    },
+                                    "start": {
+                                      "type": "integer",
+                                      "minimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "end": {
+                                      "type": "integer",
+                                      "minimum": 0,
+                                      "maximum": 9007199254740991
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "start",
+                                    "end"
+                                  ],
+                                  "additionalProperties": false
                                 },
-                                "userId": {
-                                  "type": "string",
-                                  "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "page"
+                                    },
+                                    "page": {
+                                      "type": "integer",
+                                      "exclusiveMinimum": 0,
+                                      "maximum": 9007199254740991
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "page"
+                                  ],
+                                  "additionalProperties": false
                                 }
-                              },
-                              "required": [
-                                "kind",
-                                "userId"
-                              ],
-                              "additionalProperties": false
+                              ]
                             },
                             {
-                              "type": "object",
-                              "properties": {
-                                "kind": {
-                                  "type": "string",
-                                  "const": "workspace"
-                                },
-                                "workspaceId": {
-                                  "type": "string",
-                                  "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                                }
-                              },
-                              "required": [
-                                "kind",
-                                "workspaceId"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "kind": {
-                                  "type": "string",
-                                  "const": "server"
-                                }
-                              },
-                              "required": [
-                                "kind"
-                              ],
-                              "additionalProperties": false
+                              "type": "null"
                             }
                           ]
                         },
-                        "mount": {
+                        "availability": {
                           "type": "string",
-                          "minLength": 1
-                        },
-                        "path": {
-                          "type": "string",
-                          "minLength": 1
+                          "enum": [
+                            "available",
+                            "unavailable"
+                          ]
                         }
                       },
                       "required": [
-                        "ownerScope",
-                        "mount",
-                        "path"
+                        "knowledgeBaseId",
+                        "contentDigest",
+                        "locator",
+                        "range",
+                        "availability"
                       ],
                       "additionalProperties": false
                     },
-                    "range": {
-                      "anyOf": [
-                        {
-                          "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "knowledgeBaseId": {
+                          "type": "null"
+                        },
+                        "contentDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        },
+                        "locator": {
+                          "type": "object",
+                          "properties": {
+                            "ownerScope": {
+                              "oneOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "workspace"
+                                    },
+                                    "workspaceId": {
+                                      "type": "string",
+                                      "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "workspaceId"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "server"
+                                    },
+                                    "workspaceId": {
+                                      "not": {}
+                                    }
+                                  },
+                                  "required": [
+                                    "kind"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
+                            },
+                            "mount": {
+                              "type": "string",
+                              "const": "backend-evidence"
+                            },
+                            "path": {
+                              "type": "string",
+                              "pattern": "^sha256\\/[a-f0-9]{64}$"
+                            }
+                          },
+                          "required": [
+                            "ownerScope",
+                            "mount",
+                            "path"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "range": {
+                          "anyOf": [
                             {
                               "type": "object",
                               "properties": {
@@ -72084,47 +72463,28 @@
                               "additionalProperties": false
                             },
                             {
-                              "type": "object",
-                              "properties": {
-                                "kind": {
-                                  "type": "string",
-                                  "const": "page"
-                                },
-                                "page": {
-                                  "type": "integer",
-                                  "exclusiveMinimum": 0,
-                                  "maximum": 9007199254740991
-                                }
-                              },
-                              "required": [
-                                "kind",
-                                "page"
-                              ],
-                              "additionalProperties": false
+                              "type": "null"
                             }
                           ]
                         },
-                        {
-                          "type": "null"
+                        "availability": {
+                          "type": "string",
+                          "enum": [
+                            "available",
+                            "unavailable"
+                          ]
                         }
-                      ]
-                    },
-                    "availability": {
-                      "type": "string",
-                      "enum": [
-                        "available",
-                        "unavailable"
-                      ]
+                      },
+                      "required": [
+                        "knowledgeBaseId",
+                        "contentDigest",
+                        "locator",
+                        "range",
+                        "availability"
+                      ],
+                      "additionalProperties": false
                     }
-                  },
-                  "required": [
-                    "knowledgeBaseId",
-                    "contentDigest",
-                    "locator",
-                    "range",
-                    "availability"
-                  ],
-                  "additionalProperties": false
+                  ]
                 }
               },
               "required": [
@@ -150719,5 +151079,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:c0dc842a4b1c6d5bb78acaac509042466c7f3df6f59a6284e5bc48b716913726"
+  "x-openkit-source-digest": "sha256:ab89f71aaf81e860adbdb30a66c0cc921dba75ce46229edbe5cdd5c89545056a"
 }
