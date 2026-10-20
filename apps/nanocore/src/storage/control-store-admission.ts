@@ -1,0 +1,223 @@
+import { isDeepStrictEqual } from 'node:util';
+import { AuditEventSchema, RequestIdSchema } from '@openkit/protocol';
+import type Database from 'better-sqlite3';
+import { z } from 'zod';
+import { type CommandRequestResponse, commandRequestKey } from '../lib/store.js';
+import {
+  mapCommandRequestRow,
+  normalizeCommandRequestResponse,
+} from './command-request-records.js';
+import {
+  applyControlProducts,
+  assertControlProductWriter,
+  CONTROL_PRODUCT_LIMITS,
+  ControlProductEntrySchema,
+  ControlProductMutationSchema,
+  type ControlProductOwner,
+  ControlProductPreconditionError,
+  type PreparedControlEntry,
+} from './control-store-products.js';
+
+/** Exact prepared operation families; B2 must exclude these from legacy receipt insert/prune paths before activation. */
+export const CONTROL_ADMISSION_COMMANDS = [
+  'thread.create',
+  'thread.update',
+  'thread.archive',
+  'turn.start',
+  'turn.input.submit',
+  'conversation.submit',
+] as const;
+
+/** Original receipt facts; expiry policy remains with the existing command producer, not another ledger. */
+const ReceiptSchema = z
+  .object({
+    key: z.string().min(1),
+    command: z.enum(CONTROL_ADMISSION_COMMANDS),
+    requestId: RequestIdSchema,
+    scope: z.record(z.string(), z.string()),
+    inputHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    response: z
+      .object({
+        kind: z.string().min(1),
+        id: z.string().min(1),
+        conversationMetadata: z.unknown().optional(),
+      })
+      .strict(),
+    createdAt: z.string().datetime(),
+    expiresAt: z.string().datetime(),
+  })
+  .strict();
+/** Closed native tuple; large Item/event bodies have synchronized immutable references instead of inline SQL payloads. */
+export const ControlAdmissionSchema = z
+  .object({
+    receipt: ReceiptSchema,
+    products: z.array(ControlProductMutationSchema).min(1).max(CONTROL_PRODUCT_LIMITS.entries),
+    entries: z.array(ControlProductEntrySchema).max(CONTROL_PRODUCT_LIMITS.entries),
+    audit: AuditEventSchema.extend({
+      createdAt: z.string().datetime(),
+      occurredAt: z.string().datetime(),
+    }),
+  })
+  .strict();
+export type ControlAdmission = z.infer<typeof ControlAdmissionSchema>;
+/** Original response only; callbacks and caches cannot publish before the worker's outer COMMIT. */
+export interface ControlAdmissionResult {
+  readonly replayed: boolean;
+  readonly response: CommandRequestResponse;
+}
+
+/** Verifies the actual physical receipt owner, without treating extra resource selectors as new authority. */
+function assertReceiptOwner(owner: ControlProductOwner, scope: Record<string, string>): void {
+  if (
+    scope.userId !== undefined ||
+    scope.appId !== undefined ||
+    (owner.kind === 'server'
+      ? scope.coreId !== 'server' || scope.workspaceId !== undefined
+      : scope.workspaceId !== owner.workspaceId || scope.coreId !== undefined)
+  )
+    throw new ControlProductPreconditionError();
+}
+
+/** Prunes only this activated operation/scope partition; never touches another owner's receipts or Audit rows. */
+export function pruneControlAdmissionReceipts(
+  sqlite: Database.Database,
+  owner: ControlProductOwner,
+  referenceTime: string
+): void {
+  assertControlProductWriter(sqlite);
+  z.string().datetime().parse(referenceTime);
+  const scope =
+    owner.kind === 'server'
+      ? "json_extract(scope_json,'$.coreId')='server' AND json_extract(scope_json,'$.workspaceId') IS NULL"
+      : "json_extract(scope_json,'$.workspaceId')=? AND json_extract(scope_json,'$.coreId') IS NULL";
+  sqlite
+    .prepare(
+      `DELETE FROM idempotency_requests WHERE schema_version=1 AND expires_at<=? AND command_name IN (${CONTROL_ADMISSION_COMMANDS.map(() => '?').join(',')}) AND ${scope} AND json_extract(scope_json,'$.userId') IS NULL AND json_extract(scope_json,'$.appId') IS NULL`
+    )
+    .run(
+      referenceTime,
+      ...CONTROL_ADMISSION_COMMANDS,
+      ...(owner.kind === 'workspace' ? [owner.workspaceId] : [])
+    );
+}
+
+/** Applies the original receipt, required local Audit and complete product tuple in the caller's savepoint, never a nested commit. */
+export function applyControlAdmission(
+  sqlite: Database.Database,
+  owner: ControlProductOwner,
+  value: ControlAdmission,
+  entries: readonly PreparedControlEntry[]
+): ControlAdmissionResult {
+  assertControlProductWriter(sqlite);
+  const input = ControlAdmissionSchema.parse(value);
+  const receipt = input.receipt;
+  assertReceiptOwner(owner, receipt.scope);
+  if (
+    receipt.key !== commandRequestKey(receipt.command, receipt.requestId, receipt.scope) ||
+    receipt.expiresAt <= receipt.createdAt
+  )
+    throw new ControlProductPreconditionError();
+  const response = normalizeCommandRequestResponse(
+    receipt.command,
+    receipt.response as CommandRequestResponse
+  );
+  const prior = sqlite
+    .prepare(
+      'SELECT schema_version AS schemaVersion,request_key AS key,command_name AS command,request_id AS requestId,scope_json AS scopeJson,input_hash AS inputHash,response_kind AS responseKind,response_id AS responseId,response_json AS responseJson,created_at AS createdAt,expires_at AS expiresAt FROM idempotency_requests WHERE request_key=?'
+    )
+    .get(receipt.key) as Parameters<typeof mapCommandRequestRow>[0] | undefined;
+  if (prior && prior.expiresAt > receipt.createdAt) {
+    // Retained descriptive additions use the frozen reader, never the stricter current writer parser.
+    const retained = mapCommandRequestRow(prior);
+    if (
+      retained.command !== receipt.command ||
+      retained.requestId !== receipt.requestId ||
+      !isDeepStrictEqual(retained.scope, receipt.scope) ||
+      retained.inputHash !== receipt.inputHash
+    )
+      throw new ControlProductPreconditionError();
+    return { replayed: true, response: retained.response };
+  }
+  const event = input.audit;
+  if (
+    event.action !== receipt.command ||
+    event.requestId !== receipt.requestId ||
+    event.workspaceId !== (owner.kind === 'workspace' ? owner.workspaceId : null) ||
+    event.outcome !== 'succeeded'
+  )
+    throw new ControlProductPreconditionError();
+  pruneControlAdmissionReceipts(sqlite, owner, receipt.createdAt);
+  applyControlProducts(sqlite, owner, input.products, entries);
+  const targetKind =
+    response.kind === 'thread' ? 'thread' : response.kind === 'turn' ? 'turn' : null;
+  if (
+    !targetKind ||
+    !sqlite
+      .prepare(
+        `SELECT 1 FROM ${targetKind === 'thread' ? 'control_threads' : 'control_turns'} WHERE id=?`
+      )
+      .get(response.id)
+  )
+    throw new ControlProductPreconditionError();
+  sqlite
+    .prepare(
+      'INSERT INTO idempotency_requests (schema_version,request_key,command_name,request_id,scope_json,input_hash,response_kind,response_id,response_json,created_at,expires_at) VALUES (1,?,?,?,?,?,?,?,?,?,?)'
+    )
+    .run(
+      receipt.key,
+      receipt.command,
+      receipt.requestId,
+      JSON.stringify(receipt.scope),
+      receipt.inputHash,
+      response.kind,
+      response.id,
+      response.conversationMetadata === undefined
+        ? null
+        : JSON.stringify(response.conversationMetadata),
+      receipt.createdAt,
+      receipt.expiresAt
+    );
+  // Same retained Audit shape, but a separate logical row-family owner; no call through a main-thread writer or fake Store.
+  const audit = {
+    schema_version: 1,
+    audit_event_id: event.id,
+    workspace_id: event.workspaceId,
+    protocol_version: event.protocolVersion ?? null,
+    thread_id: event.threadId,
+    turn_id: event.turnId,
+    item_id: event.itemId,
+    capability_call_id: event.capabilityCallId,
+    permission_decision_id: event.permissionDecisionId,
+    vault_grant_id: event.vaultGrantId,
+    request_id: event.requestId,
+    actor_json: event.actor === null ? null : JSON.stringify(event.actor),
+    authentication_json:
+      event.authentication === undefined ? null : JSON.stringify(event.authentication),
+    subject_json: event.subject === null ? null : JSON.stringify(event.subject),
+    agent_id: event.agentId,
+    agent_session_id: event.agentSessionId,
+    category: event.category,
+    action: event.action,
+    resource: event.resource,
+    resource_revision: event.resourceRevision,
+    notebook_admission_json:
+      event.notebookAdmission === undefined ? null : JSON.stringify(event.notebookAdmission),
+    policy_invocation_json:
+      event.policyInvocation === undefined ? null : JSON.stringify(event.policyInvocation),
+    policy_write_outcome_json:
+      event.policyWriteOutcome === undefined ? null : JSON.stringify(event.policyWriteOutcome),
+    outcome: event.outcome,
+    severity: event.severity,
+    summary: event.summary,
+    error_code: event.errorCode,
+    created_at: event.createdAt,
+    occurred_at: event.occurredAt,
+  };
+  const columns = Object.keys(audit);
+  sqlite
+    .prepare(
+      `INSERT INTO audit_events (${columns.join(',')}) VALUES (${columns.map(() => '?').join(',')})`
+    )
+    .run(...Object.values(audit));
+  return { replayed: false, response };
+}

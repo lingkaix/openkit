@@ -3,6 +3,13 @@ import { basename, dirname, join } from 'node:path';
 import { isMainThread, parentPort } from 'node:worker_threads';
 import Database from 'better-sqlite3';
 import { ControlStoreBusyError, controlStoreFor } from './control-store.js';
+import { applyControlAdmission } from './control-store-admission.js';
+import {
+  type ControlProductOwner,
+  ControlProductPreconditionError,
+  type PreparedControlEntry,
+  prepareControlEntries,
+} from './control-store-products.js';
 import {
   CONTROL_WORKER_LIMITS,
   CONTROL_WORKER_VERSION,
@@ -25,7 +32,9 @@ if (isMainThread || parentPort === null) {
 const port = parentPort;
 
 /** A queued transition, not a durable request or a second command receipt. */
-type WriteRequest = Extract<ControlWorkerRequest, { operation: 'write' }>;
+type WriteRequest = Extract<ControlWorkerRequest, { operation: 'write' | 'transition' }> & {
+  readonly preparedEntries?: readonly PreparedControlEntry[] | undefined;
+};
 
 /** One worker-owned writable connection and its finite, disposable pending work. */
 interface OwnedDatabase {
@@ -33,6 +42,8 @@ interface OwnedDatabase {
   readonly writer: ReturnType<typeof controlStoreFor>;
   readonly path: string;
   readonly identity: string;
+  readonly productOwner: ControlProductOwner | undefined;
+  readonly contentRoot: string | undefined;
   readonly pending: WriteRequest[];
   timer: ReturnType<typeof setTimeout> | null;
   immediate: ReturnType<typeof setImmediate> | null;
@@ -64,7 +75,8 @@ function failure(
 
 /** Classifies a native failure without publishing its message, SQL or parameters. */
 function failureCode(error: unknown): ControlWorkerFailureCode {
-  if (error instanceof PreconditionError) return 'precondition';
+  if (error instanceof PreconditionError || error instanceof ControlProductPreconditionError)
+    return 'precondition';
   if (error instanceof ControlStoreBusyError) return 'busy';
   const code = error !== null && typeof error === 'object' && 'code' in error ? error.code : null;
   if (code === 'migration_missing' || code === 'migration_failed') return code;
@@ -135,14 +147,32 @@ function flush(owner: OwnedDatabase): void {
       for (const request of batch) {
         sqlite.exec('SAVEPOINT control_transition');
         try {
-          const results = apply(sqlite, request.statements);
-          const outcome: ControlWorkerReply = {
-            version: CONTROL_WORKER_VERSION,
-            id: request.id,
-            status: 'ok',
-            operation: 'write',
-            results,
-          };
+          let outcome: ControlWorkerReply;
+          if (request.operation === 'transition') {
+            if (!owner.productOwner) throw new ControlProductPreconditionError();
+            const result = applyControlAdmission(
+              sqlite,
+              owner.productOwner,
+              request.transition,
+              request.preparedEntries ?? []
+            );
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'transition',
+              result,
+            };
+          } else {
+            const results = apply(sqlite, request.statements);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'write',
+              results,
+            };
+          }
           // Refuse unsupported results and serialization before the durable boundary.
           if (!isControlWorkerReply(outcome)) throw new Error('Invalid database writer result.');
           structuredClone(outcome);
@@ -213,6 +243,15 @@ function openDatabase(request: Extract<ControlWorkerRequest, { operation: 'open'
     reply(failure(request.id, 'invalid-request'));
     return;
   }
+  if (
+    request.productOwner &&
+    request.initialize !== (request.productOwner.kind === 'server' ? 'core' : 'workspace')
+  )
+    throw new ControlProductPreconditionError();
+  const contentRoot =
+    request.contentRoot === undefined ? undefined : realpathSync(request.contentRoot);
+  if (contentRoot !== undefined && !statSync(contentRoot).isDirectory())
+    throw new ControlProductPreconditionError();
   const path =
     request.create && !existsSync(request.path)
       ? join(realpathSync(dirname(request.path)), basename(request.path))
@@ -238,6 +277,8 @@ function openDatabase(request: Extract<ControlWorkerRequest, { operation: 'open'
       writer,
       path,
       identity,
+      productOwner: request.productOwner,
+      contentRoot,
       pending: [],
       timer: null,
       immediate: null,
@@ -303,11 +344,21 @@ function receive(value: unknown): void {
       reply(failure(value.id, 'unavailable'));
       return;
     }
-    if (value.operation === 'write') {
+    if (value.operation === 'write' || value.operation === 'transition') {
       if (owner.pending.length >= CONTROL_WORKER_LIMITS.pendingTransitions) {
         reply(failure(value.id, 'busy'));
       } else {
-        owner.pending.push(value);
+        if (value.operation === 'transition' && !owner.productOwner)
+          throw new ControlProductPreconditionError();
+        const preparedEntries =
+          value.operation === 'transition'
+            ? prepareControlEntries(
+                owner.productOwner!,
+                owner.contentRoot,
+                value.transition.entries
+              )
+            : undefined;
+        owner.pending.push({ ...value, preparedEntries });
         schedule(owner);
       }
       return;
