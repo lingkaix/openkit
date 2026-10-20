@@ -991,14 +991,36 @@ function finishShutdown(
 ): void {
   vaultUnlockState?.lock();
   recordShutdownAudit(signal, [...stepsCompleted, 'vault.lock'], deadlineForcedExit);
+  // The audit covers completed steps; terminal database close cannot audit itself.
+  const finalExitCode = closeProcessCoreDatabase() ? exitCode : 1;
   releaseDataRootLock();
-  process.exit(exitCode);
+  process.exit(finalExitCode);
 }
 
-/** Locks secret state and releases the data-root lock during process exit. */
+/** Locks secret state and closes owned storage before releasing the data-root lock. */
 function releaseProcessResources(): void {
   vaultUnlockState?.lock();
+  if (!closeProcessCoreDatabase()) process.exitCode = 1;
   releaseDataRootLock();
+}
+
+/** Closes the process-owned Core connection once, allowing SQLite to checkpoint its WAL. */
+function closeProcessCoreDatabase(): boolean {
+  const sqlite = coreDb?.sqlite;
+  // Detach ownership before close so the exit handler cannot repeat a failed close.
+  coreDb = undefined;
+  if (!sqlite?.open) return true;
+  try {
+    sqlite.close();
+    return true;
+  } catch (error) {
+    console.error(
+      `Failed to close Core database during shutdown: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+    return false;
+  }
 }
 
 /**
