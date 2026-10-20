@@ -1,6 +1,6 @@
 # Knowledge Format
 
-Knowledge Manager notebook editors for Workspace, Server and User Memory use the shared 300-second default run budget. The role preserves explicit profile limits, reports its owned deadline as `knowledge_manager_timeout` in the retained Turn and ordinary failure summary, and keeps caller cancellation distinct. No timeout retries a Provider call or notebook effect.
+Knowledge Manager runs have a 300-second default budget. Workspace, Server and User Memory editors read the actual pinned Turn deadline when a Tool runs, including explicit longer or shorter limits; they do not start another fixed default budget. Caller cancellation still fences every editor. The role reports its owned deadline as `knowledge_manager_timeout` in the retained Turn and ordinary failure summary, and keeps caller cancellation distinct. A User Memory failure returns an already sealed role result without appending a late Status Item. No timeout retries a Provider call or notebook effect.
 
 This directory owns the portable OKF v0.2 Markdown parser, OpenKit knowledge-profile validation and the immutable notebook content boundary.
 

@@ -90,6 +90,7 @@ it('reports native no-change through the recorded result and replay despite a mi
         internalExecution: {
           roleId: 'knowledge-manager',
           logicalModelId: 'fixture-model',
+          limits: { maxModelTurns: 16, maxToolCalls: 48, deadlineMs: 300_000 },
           contextStrategy: 'compaction',
           threshold: 1000,
           knowledge: input.inputs!,

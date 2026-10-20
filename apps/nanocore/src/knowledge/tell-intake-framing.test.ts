@@ -157,6 +157,7 @@ function fixture(initial: 'empty' | 'authored-index' | 'authored-page' = 'empty'
         internalExecution: {
           roleId: 'knowledge-manager',
           logicalModelId: 'fixture-role-model',
+          limits: { maxModelTurns: 16, maxToolCalls: 48, deadlineMs: 300_000 },
           contextStrategy: 'compaction',
           threshold: 64_000,
           knowledge: input.inputs!,

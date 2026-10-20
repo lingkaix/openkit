@@ -127,6 +127,7 @@ function fixture(enabled: boolean) {
         internalExecution: {
           roleId: 'knowledge-manager',
           logicalModelId: 'server-model',
+          limits: { maxModelTurns: 16, maxToolCalls: 48, deadlineMs: 300_000 },
           contextStrategy: 'compaction',
           threshold: 1000,
           knowledge: input.inputs!,

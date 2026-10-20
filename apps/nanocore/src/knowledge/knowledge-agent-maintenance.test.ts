@@ -168,6 +168,7 @@ function fixture(enabled = true, protectedPages: string[] = []) {
         internalExecution: {
           roleId: 'knowledge-manager',
           logicalModelId: 'test-role-model',
+          limits: { maxModelTurns: 16, maxToolCalls: 48, deadlineMs: 300_000 },
           contextStrategy: 'compaction',
           threshold: 1000,
           knowledge: input.inputs!,
