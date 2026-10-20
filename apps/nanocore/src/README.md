@@ -1,5 +1,7 @@
 # NanoCore Source
 
+Preparation for the control-store switch reuses synchronous deciding bodies on supplied owning handles. SQLite-only Goal and Task helpers take `Pick<WorkspaceDb, 'sqlite'>`; they do not open another connection or bypass existing transactions or savepoints. `prepareAuditEvent` builds the existing validated value without writing or authorizing it; current recorders still insert on Main. Asynchronous Thread/context callers await existing Store results, but Store signatures, file authority and Main SQL ownership stay unchanged until the separately qualified switch.
+
 This directory contains NanoCore's composition root and feature owners. `app.ts` mounts middleware and concrete feature registrars; complete product behavior belongs in the nearest cohesive route, runtime, storage, provider, policy, or workspace owner.
 
 ## Boundaries

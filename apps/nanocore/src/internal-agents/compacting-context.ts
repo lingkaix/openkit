@@ -39,7 +39,9 @@ export interface CompactingInternalAgentProviderInput {
    *
    * This is not a one-to-one mapping: assistant text and calls may create several Items, while a completed Tool-call Item binds both call and result messages. Only complete accepted Items from this Turn may be returned. The caller owns this binding and current source/audience authority. Compaction replaces whole message prefixes, so no per-message durable mapping is needed.
    */
-  readonly commitMessages: (messages: readonly AgentMessage[]) => readonly Item[];
+  readonly commitMessages: (
+    messages: readonly AgentMessage[]
+  ) => readonly Item[] | Promise<readonly Item[]>;
   readonly callProvider: InternalAgentProviderCall;
 }
 
@@ -82,7 +84,7 @@ export function createCompactingInternalAgentProvider(
     });
     environmentDigest ??= environment;
     if (environment !== environmentDigest) throw capacity();
-    const sources = structuredClone(input.commitMessages(request.messages));
+    const sources = structuredClone(await input.commitMessages(request.messages));
     const sourceDigest = (items: readonly Item[]) =>
       internalContextSourceDigest(input.store, items, 'compaction');
     const digest = sourceDigest(sources);
@@ -241,8 +243,8 @@ export function createCompactingInternalAgentProvider(
       assertSources();
       const stored =
         next.owner.kind === 'server'
-          ? input.store.createServerItem(ItemSchema.parse(next))
-          : input.store.createItem(ItemSchema.parse(next));
+          ? await input.store.createServerItem(ItemSchema.parse(next))
+          : await input.store.createItem(ItemSchema.parse(next));
       if (stored.type !== 'context-summary') throw invalidSummary();
       summary = stored;
       coveredMessageCount = request.messages.length;
