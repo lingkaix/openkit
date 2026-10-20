@@ -1,4 +1,5 @@
 import { currentSchedulerAdmissionWorkspaceAuthority } from '../auth/operation-authorizer.js';
+import { isScopeAdmitted } from '../bootstrap/readiness.js';
 import type { FsStore } from '../lib/store.js';
 import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
@@ -42,6 +43,7 @@ export async function runSchedulerRestartRecovery(
 ): Promise<{ readonly preparationFailedAttemptIds: string[] }> {
   const preparationFailedAttemptIds: string[] = [];
   for (const attempt of listOpenSchedulerExecutionAttempts(coreDb)) {
+    if (!isScopeAdmitted(coreDb.dataRoot, 'workspace', attempt.workspaceId)) continue;
     if (attempt.backendId !== input.executionBackend.id)
       throw new Error('Retained attempt names an unavailable backend.');
     if (attempt.operationId !== null) continue;
@@ -64,6 +66,7 @@ export async function runSchedulerRecoveryMaintenance(
   const errors: unknown[] = [];
   const timestamp = input.now?.() ?? new Date().toISOString();
   for (const attempt of listOpenSchedulerExecutionAttempts(coreDb)) {
+    if (!isScopeAdmitted(coreDb.dataRoot, 'workspace', attempt.workspaceId)) continue;
     try {
       if (attempt.backendId !== input.executionBackend.id)
         throw new Error('Attempt backend identity changed.');

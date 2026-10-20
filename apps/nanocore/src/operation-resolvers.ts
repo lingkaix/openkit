@@ -20,6 +20,7 @@ import {
 } from './auth/operation-authorizer.js';
 import { isThreadIdVisible } from './auth/thread-visibility.js';
 import { readAutomationOperationLineage } from './automation-operations.js';
+import { assertScopeAdmitted } from './bootstrap/readiness.js';
 import { normalizeCapabilityRequestId } from './capability/usage-ledger.js';
 import type { AutomationStore } from './lib/automation-store.js';
 import { type FsStore, quickChatWorkspaceIdForUser } from './lib/store.js';
@@ -368,6 +369,8 @@ export function admitOperation(
         )
           throw denied();
       } else if (!authorized || admission.isClosed(workspaceId)) throw denied();
+      // Scope diagnosis follows credential eligibility, before unreadable Thread history can mask it.
+      assertScopeAdmitted(coreDb.dataRoot, 'workspace', workspaceId);
       if (definition.scope.kind === 'opaque-child-workspace') {
         switch (definition.scope.childOwner) {
           case 'automation':

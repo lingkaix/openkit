@@ -15,6 +15,7 @@ import {
 } from '@openkit/protocol';
 import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
+import { refuseScope } from '../bootstrap/readiness.js';
 import { uuidv5 } from '../generative-kernel/uuid.js';
 import type { CommandRequestRecord } from '../lib/store.js';
 import { commandInputHash } from './idempotent-command.js';
@@ -25,7 +26,7 @@ type Turn = import('zod').infer<typeof TurnSchema>;
 
 import type Database from 'better-sqlite3';
 
-import { listExistingWorkspaceDatabaseScopes, openWorkspaceDb } from '../storage/db.js';
+import { listExistingWorkspaceDatabaseScopes, openBootVerifiedWorkspaceDb } from '../storage/db.js';
 
 /** Fixed retained handoff meaning; current publisher and Approval admission remain separate. */
 const StoredPendingAssistantHandoffV1Schema = z.discriminatedUnion('kind', [
@@ -1384,7 +1385,8 @@ export function projectApprovalRequest(record: PendingRequestRecord): ApprovalRe
 }
 
 /**
- * Loads approval projections from workspace databases. One unreadable record does not reject the workspace.
+ * Loads approval projections from Workspace databases; malformed individual rows remain inspect-only.
+ * Unreadable required SQL authority quarantines its Workspace without returning empty admitted authority.
  *
  * @param dataRoot Data root.
  * @returns Approval projections.
@@ -1396,9 +1398,11 @@ export function loadApprovalProjections(
 ): ApprovalRequest[] {
   const approvals: ApprovalRequest[] = [];
   for (const scope of listExistingWorkspaceDatabaseScopes(dataRoot)) {
-    const db = openWorkspaceDb(dataRoot, scope.workspaceId);
+    let db: ReturnType<typeof openBootVerifiedWorkspaceDb> | undefined;
     try {
-      if (!pendingRequestTableExists(db.sqlite)) continue;
+      db = openBootVerifiedWorkspaceDb(dataRoot, scope.workspaceId);
+      if (!pendingRequestTableExists(db.sqlite))
+        throw new Error('Required Pending Request authority is missing.');
       const rows = db.sqlite
         .prepare(`SELECT ${SELECT_COLUMNS} FROM pending_requests WHERE kind = 'approval'`)
         .all() as PendingRequestRow[];
@@ -1415,8 +1419,10 @@ export function loadApprovalProjections(
           // One bad record stays inspect-only. The rest of the workspace remains usable.
         }
       }
+    } catch {
+      refuseScope(dataRoot, { scope: 'workspace', id: scope.workspaceId, check: 'database' });
     } finally {
-      db.sqlite.close();
+      db?.sqlite.close();
     }
   }
   return approvals;

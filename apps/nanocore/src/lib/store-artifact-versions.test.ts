@@ -1,5 +1,13 @@
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ReadArtifactVersionResponseSchema } from '@openkit/app-api-schemas';
@@ -61,6 +69,30 @@ function fixture() {
   return { dataRoot, store, workspace, thread, turn, artifact };
 }
 
+/** Keeps every retained version byte and missing entry while proving independent sibling progress. */
+function expectArtifactWorkspaceQuarantined(
+  state: ReturnType<typeof fixture>,
+  healthyId: string
+): void {
+  const workspaceRoot = join(state.dataRoot, 'workspaces', state.workspace.id);
+  const entries = readdirSync(workspaceRoot, { recursive: true }).sort();
+  const files = readdirSync(workspaceRoot, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => join(entry.parentPath, entry.name));
+  const bytes = files.map((path) => readFileSync(path));
+  const reopened = new FsStore({ dataRoot: state.dataRoot });
+  const refusal = expect.objectContaining({ code: 'recovery_required' });
+  expect(() => reopened.getWorkspace(state.workspace.id)).toThrow(refusal);
+  expect(() => reopened.getArtifact(state.workspace.id, state.artifact.id)).toThrow(refusal);
+  expect(() => reopened.createThread(state.workspace.id, 'Must not publish')).toThrow(refusal);
+  expect(reopened.listWorkspaces().map(({ id }) => id)).not.toContain(state.workspace.id);
+  expect(reopened.getWorkspace(healthyId)).toEqual(state.store.getWorkspace(healthyId));
+  const thread = reopened.createThread(healthyId, 'Healthy sibling write');
+  expect(new FsStore({ dataRoot: state.dataRoot }).getThread(healthyId, thread.id)).toEqual(thread);
+  expect(readdirSync(workspaceRoot, { recursive: true }).sort()).toEqual(entries);
+  expect(files.map((path) => readFileSync(path))).toEqual(bytes);
+}
+
 describe('Artifact immutable version authority', () => {
   it('reloads exact selected immutable content when the disposable current body is absent', () => {
     const state = fixture();
@@ -86,10 +118,11 @@ describe('Artifact immutable version authority', () => {
       state.artifact.id
     );
     const path = join(artifactRoot, 'artifact.json');
+    const healthy = state.store.createWorkspace('Healthy descriptor sibling');
     const metadata = JSON.parse(readFileSync(path, 'utf8'));
     metadata.title = 'Contradictory projection';
     writeFileSync(path, JSON.stringify(metadata));
-    expect(() => new FsStore({ dataRoot: state.dataRoot })).toThrow(/contradictory/i);
+    expectArtifactWorkspaceQuarantined(state, healthy.id);
   });
 
   it('validates actual staged import history before publication and fills the immediate cache', () => {
@@ -255,10 +288,10 @@ describe('Artifact immutable version authority', () => {
       state.artifact.id,
       1
     );
+    const healthy = state.store.createWorkspace('Healthy missing-history sibling');
     rmSync(path);
-    expect(() => new FsStore({ dataRoot: state.dataRoot })).toThrow(
-      expect.objectContaining({ code: 'recovery_required' })
-    );
+    expectArtifactWorkspaceQuarantined(state, healthy.id);
+    expect(existsSync(path)).toBe(false);
     expect(() => state.store.getArtifactVersion(state.workspace.id, state.artifact.id, 1)).toThrow(
       expect.objectContaining({ code: 'recovery_required' })
     );
@@ -381,10 +414,9 @@ describe('Artifact immutable version authority', () => {
         recordedAt: input.recordedAt,
       },
     ]);
+    const healthy = state.store.createWorkspace('Healthy version-lineage sibling');
     corrupted.version.turnId = state.turn.id;
     writeFileSync(path, JSON.stringify(corrupted));
-    expect(() => new FsStore({ dataRoot: state.dataRoot })).toThrow(
-      expect.objectContaining({ code: 'recovery_required' })
-    );
+    expectArtifactWorkspaceQuarantined(state, healthy.id);
   });
 });

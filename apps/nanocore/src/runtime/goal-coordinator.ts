@@ -649,6 +649,9 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
           const provider = createInternalAgentGatewayProvider({
             capture,
             logicalModel: selection.logicalModel,
+            ...(selection.profile?.reasoningEffort === undefined
+              ? {}
+              : { reasoningEffort: selection.profile.reasoningEffort }),
             resolveLogicalModel: (id) => {
               const current = options.runtimeConfig();
               return resolveLogicalModel(

@@ -153,17 +153,15 @@ export class SandboxIntegrationClient {
     });
   }
 
-  /** Credential-free Harness fetch; the header callback separates header and body deadlines. */
+  /** Credential-free Harness fetch; one caller-owned signal bounds headers and body collection. */
   public async harnessControlFetch(
     path: string,
-    init: Parameters<WorkerControlFetch>[1],
-    onResponseHeaders?: () => void
+    init: Parameters<WorkerControlFetch>[1]
   ): Promise<Awaited<ReturnType<WorkerControlFetch>>> {
     if (!HARNESS_CONTROL_PATHS.has(path)) {
       throw new TypeError('Sandbox Integration rejected a non-private Harness route.');
     }
     const response = await this.request(path, init);
-    onResponseHeaders?.();
     init.signal?.throwIfAborted();
     const collected = await collectBoundedResponse(
       response,

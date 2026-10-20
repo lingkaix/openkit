@@ -5,12 +5,17 @@ import { KnowledgeSourceSchema } from '@openkit/app-api-schemas';
 import {
   ContentReferenceSchema,
   type KnowledgeOwnerScope,
+  KnowledgeOwnerScopeSchema,
   KnowledgeSourceIdSchema,
 } from '@openkit/protocol';
 import { stringify } from 'yaml';
 import { z } from 'zod';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
-import { serverKnowledgeRoot, userMemoryRoot } from '../storage/fs-layout.js';
+import {
+  serverKnowledgeRoot,
+  userMemoryRoot,
+  WorkOwnershipViolationError,
+} from '../storage/fs-layout.js';
 import { readCanonicalTextFile } from '../storage/workspace-file-records.js';
 import { KnowledgeNotebook, NotebookError } from './notebook.js';
 import {
@@ -99,15 +104,15 @@ export function decodeSourcePointer(input: {
       throw new NotebookError('recovery_required');
     const schema = parseScopeKnowledgeSchema(scopeSchemaText);
     if (!schema.ok) throw new NotebookError('recovery_required');
-    const profile = validateScopeKnowledgeSchema(parsed.document, schema.schema, ownerScope);
+    const declaredScope = KnowledgeOwnerScopeSchema.safeParse(parsed.document.frontmatter.scope);
+    const profile = validateScopeKnowledgeSchema(
+      parsed.document,
+      schema.schema,
+      declaredScope.success ? declaredScope.data : ownerScope
+    );
     if (profile.conformance !== 'scope-schema-valid' || profile.errors.length)
       throw new NotebookError('recovery_required');
     const fields = SourcePointerFieldsSchema.parse(parsed.document.frontmatter);
-    if (
-      !isDeepStrictEqual(fields.contentRef.locator.ownerScope, ownerScope) ||
-      fields.contentRef.knowledgeBaseId !== knowledgeBaseId
-    )
-      throw new NotebookError('recovery_required');
     const source = SourceMetadataSchema.parse({
       id,
       kind: fields.sourceKind,
@@ -121,8 +126,18 @@ export function decodeSourcePointer(input: {
       createdAt: parsed.document.frontmatter.created_at,
       updatedAt: parsed.document.frontmatter.updated_at,
     });
+    // SourceSummary.scope owns this record; a locator inside its content cannot select that owner.
+    if (declaredScope.success && !isDeepStrictEqual(declaredScope.data, ownerScope)) {
+      throw new WorkOwnershipViolationError(`SourceSummary ${id}`);
+    }
+    if (
+      !isDeepStrictEqual(fields.contentRef.locator.ownerScope, ownerScope) ||
+      fields.contentRef.knowledgeBaseId !== knowledgeBaseId
+    )
+      throw new NotebookError('recovery_required');
     return { source, fields, content };
-  } catch {
+  } catch (error) {
+    if (error instanceof WorkOwnershipViolationError) throw error;
     throw new NotebookError('recovery_required');
   }
 }

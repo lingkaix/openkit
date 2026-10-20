@@ -4,7 +4,6 @@ import { availableParallelism } from 'node:os';
 /** Shared lifecycle defaults; adapter-specific limits stay in their owners until adoption. */
 export const LIFECYCLE_DEFAULTS = {
   harnessPollMinimumMs: 250,
-  harnessRequestMs: 1_000,
   /** Experience default: loaded-host startup missed the former 8s listen ceiling, and the controlled slow-listen regression takes 8.25s. The former listen/session/MCP windows total 24s plus 4s cleanup; 60s leaves loading and preparation margin. */
   nativeOpenMs: 60_000,
   /** Experience default: at most two cold starts, reduced by Sandbox CPU quota and affinity (#245). */

@@ -369,7 +369,7 @@ describe('ensureLayout', () => {
     expect(() => ensureLayout(root)).not.toThrow();
   });
 
-  it('fails closed when a canonical record envelope names an unknown family', async () => {
+  it('contains an unknown Workspace canonical record envelope without blocking a healthy sibling', async () => {
     const root = await mkdtemp(join(tmpdir(), 'openkit-layout-'));
 
     mkdirSync(join(root, 'workspaces', 'ws_00000000-0000-73c3-900f-8d310e4ba201', 'evidence'), {
@@ -398,7 +398,23 @@ describe('ensureLayout', () => {
       })}\n`
     );
 
-    expect(() => ensureLayout(root)).toThrow(/unsupported canonical record family/);
+    const workspaceId = 'ws_00000000-0000-73c3-900f-8d310e4ba201';
+    const recordPath = join(root, 'workspaces', workspaceId, 'evidence', 'future.json');
+    const originalBytes = readFileSync(recordPath);
+    const siblingId = 'ws_00000000-0000-7490-845b-dcfa3ee49925';
+    const sibling = openWorkspaceDb(root, siblingId);
+    sibling.sqlite.close();
+
+    expect(() => ensureLayout(root)).not.toThrow();
+    expect(() => openWorkspaceDb(root, workspaceId).sqlite.close()).toThrow();
+    const healthy = openWorkspaceDb(root, siblingId);
+    try {
+      expect(healthy.sqlite.prepare('SELECT 1 AS ready').get()).toEqual({ ready: 1 });
+    } finally {
+      healthy.sqlite.close();
+    }
+    expect(readFileSync(recordPath)).toEqual(originalBytes);
+    expect(readdirSync(join(root, 'workspaces', workspaceId))).toEqual(['evidence']);
   });
 
   it('fails closed when a canonical record envelope requires unsupported features', async () => {
@@ -422,7 +438,14 @@ describe('ensureLayout', () => {
       })}\n`
     );
 
-    expect(() => ensureLayout(root)).toThrow(/unsupported requiredFeatures/);
+    const recordPath = join(root, 'server', 'exports', 'workspace-export.json');
+    const originalBytes = readFileSync(recordPath);
+    // This server-owned path remains a whole-server refusal, not Workspace quarantine.
+    expect(() => ensureLayout(root)).toThrow(
+      /server\/exports\/workspace-export\.json[\s\S]*workspace\.mount\.future/
+    );
+    expect(readFileSync(recordPath)).toEqual(originalBytes);
+    expect(readdirSync(join(root, 'server', 'exports'))).toEqual(['workspace-export.json']);
   });
 
   it.each([

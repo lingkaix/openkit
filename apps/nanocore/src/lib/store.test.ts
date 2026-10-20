@@ -1,9 +1,11 @@
 import { createHash } from 'node:crypto';
 import {
+  cpSync,
   existsSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
@@ -671,6 +673,8 @@ describe('FsStore persistence', () => {
 
     expect(() => new FsStore({ dataRoot })).not.toThrow();
 
+    const healthy = store.createWorkspace('Healthy introduction sibling');
+    const healthyThread = store.createThread(healthy.id, 'Retained sibling history');
     const duplicate = {
       ...firstReference,
       id: 'it_00000000-0000-7154-8cae-61e44aa74095',
@@ -691,7 +695,33 @@ describe('FsStore persistence', () => {
       `${JSON.stringify(writeRetainedV1(firstReference))}\n${JSON.stringify(writeRetainedV1(duplicate))}\n`
     );
 
-    expect(() => new FsStore({ dataRoot })).toThrow(/duplicate artifact-reference Items for Turn/);
+    // A separate restart root keeps refusal from masking the repaired-history control below.
+    const restartRoot = mkdtempSync(join(tmpdir(), 'openkit-introduction-restart-'));
+    onTestFinished(() => rmSync(restartRoot, { recursive: true, force: true }));
+    cpSync(dataRoot, restartRoot, { recursive: true });
+    const copiedWorkspaceRoot = join(restartRoot, 'workspaces', workspace.id);
+    const copiedLog = join(
+      copiedWorkspaceRoot,
+      'threads',
+      thread.id,
+      'turns',
+      firstInput.turnId,
+      'items.jsonl'
+    );
+    const bytes = readFileSync(copiedLog);
+    const database = readFileSync(join(copiedWorkspaceRoot, 'db', 'workspace.sqlite'));
+    const entries = readdirSync(copiedWorkspaceRoot, { recursive: true }).sort();
+    const refused = new FsStore({ dataRoot: restartRoot });
+    const refusal = expect.objectContaining({ code: 'recovery_required' });
+    expect(() => refused.getWorkspace(workspace.id)).toThrow(refusal);
+    expect(() => refused.listThreadItems(workspace.id, thread.id)).toThrow(refusal);
+    expect(() => refused.createThread(workspace.id, 'Must not publish')).toThrow(refusal);
+    expect(refused.getThread(healthy.id, healthyThread.id)).toEqual(healthyThread);
+    const added = refused.createThread(healthy.id, 'New sibling history');
+    expect(new FsStore({ dataRoot: restartRoot }).getThread(healthy.id, added.id)).toEqual(added);
+    expect(readFileSync(copiedLog)).toEqual(bytes);
+    expect(readFileSync(join(copiedWorkspaceRoot, 'db', 'workspace.sqlite'))).toEqual(database);
+    expect(readdirSync(copiedWorkspaceRoot, { recursive: true }).sort()).toEqual(entries);
 
     writeFileSync(
       join(turnRoot, 'items.jsonl'),
