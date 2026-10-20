@@ -97,7 +97,10 @@ describe('authoritative NanoHost session dispatch', () => {
     try {
       startTelemetry({
         bootId: 'trace-core-fixture',
-        env: mode === 'disabled' ? {} : { OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:4318' },
+        env:
+          mode === 'disabled'
+            ? { OTEL_SDK_DISABLED: 'true' }
+            : { OTEL_EXPORTER_OTLP_ENDPOINT: 'http://127.0.0.1:4318' },
         exporter:
           mode === 'refused'
             ? { export: (_spans, done) => done({ code: 1 }), shutdown: async () => {} }

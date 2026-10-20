@@ -4085,10 +4085,15 @@ export class FsStore {
    *
    * @param input Complete Artifact authority.
    * @param filePayload Exact privately staged original for file-backed content.
+   * @param admission Declared post-terminal category for the producing Turn artifact-reference Item.
    * @returns Created Artifact.
    * @throws ArtifactAuthorityError when content proof or create-only ownership is invalid.
    */
-  public createArtifact(input: Artifact, filePayload?: StagedArtifactPayload): Artifact {
+  public createArtifact(
+    input: Artifact,
+    filePayload?: StagedArtifactPayload,
+    admission?: TerminalTurnWriteAdmission
+  ): Artifact {
     const parsed = ArtifactSchema.safeParse(input);
     if (!parsed.success) {
       throw new ArtifactAuthorityError('invalid_request', 'Artifact input is invalid.');
@@ -4193,7 +4198,7 @@ export class FsStore {
       throw error;
     }
     if (reference) {
-      this.createItem(reference);
+      this.createItem(reference, admission);
     }
     return artifact;
   }

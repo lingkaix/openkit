@@ -45,7 +45,10 @@ import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { createAdministrationConfiguration } from './administration-configuration.js';
 import { readDefaultKnowledgeBaseId } from './knowledge-base.js';
 import { createRuntimeConfigManager } from './runtime-config.js';
-import { RuntimeConfigFileService } from './runtime-config-files.js';
+import {
+  RuntimeConfigFileService,
+  type RuntimeConfigFileServiceError,
+} from './runtime-config-files.js';
 
 const cleanup: (() => void)[] = [];
 afterEach(() => {
@@ -599,11 +602,19 @@ describe('administration catalog configuration', () => {
     const original = readFileSync(serverPath, 'utf8');
     expect(() =>
       f.service.propose(f.policyRequest('missing'), { ...f.home, requestId: randomUUID() })
-    ).toThrow(/tool|schema/i);
+    ).toThrow(
+      expect.objectContaining({
+        code: 'policy_mcp_tool_unobserved',
+      } satisfies Partial<RuntimeConfigFileServiceError>)
+    );
     f.observe([]);
     expect(() =>
       f.service.propose(f.policyRequest(), { ...f.home, requestId: randomUUID() })
-    ).toThrow(/tool|schema/i);
+    ).toThrow(
+      expect.objectContaining({
+        code: 'policy_mcp_tool_unobserved',
+      } satisfies Partial<RuntimeConfigFileServiceError>)
+    );
     expect(readFileSync(serverPath, 'utf8')).toBe(original);
   });
 
@@ -613,7 +624,9 @@ describe('administration catalog configuration', () => {
     const serverPath = join(f.dataRoot, 'config/server.jsonc');
     const original = readFileSync(serverPath, 'utf8');
     f.observe([{ name: 'renamed', inputSchema: { type: 'object' } }]);
-    await expect(f.service.apply(f.confirm(proposal))).rejects.toThrow(/tool|schema/i);
+    await expect(f.service.apply(f.confirm(proposal))).rejects.toMatchObject({
+      code: 'policy_mcp_tool_unobserved',
+    });
     expect(readFileSync(serverPath, 'utf8')).toBe(original);
     expect(f.reload).not.toHaveBeenCalled();
   });
@@ -721,6 +734,82 @@ describe('administration catalog configuration', () => {
     });
     expect(await f.service.apply(confirmed)).toEqual(result);
     expect(f.reload).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies Policy after the candidate Turn is terminal and replays the same outcome', async () => {
+    const f = fixture();
+    const principal = { kind: 'human' as const, id: f.actor.userId };
+    const proposed = PolicyDocumentV1Schema.parse({
+      schemaVersion: 1,
+      statements: [
+        {
+          id: 'tool-rule',
+          kind: 'permission',
+          effect: 'require_approval',
+          grant: { kind: 'ordinary' },
+          author: principal,
+          authority: { kind: 'human', userId: f.actor.userId },
+          authoredAt: '2026-10-18T00:00:00Z',
+          state: 'inactive',
+          scope: {
+            subjects: [principal],
+            actions: ['tool.use'],
+            resources: [
+              {
+                kind: 'mcp-tool',
+                workspaceId: f.workspaceId,
+                serverId: 'issues',
+                toolName: 'read',
+              },
+            ],
+          },
+          lifetime: {
+            anchor: {
+              owner: { kind: 'workspace', workspaceId: f.workspaceId },
+              kind: 'workspace',
+              id: f.workspaceId,
+            },
+            uses: 1,
+          },
+        },
+      ],
+    });
+    const proposal = f.service.propose(
+      {
+        targetFamily: 'policy',
+        targetId: 'server',
+        expectedRevision: f.files.readFile('server.jsonc').file.revision!,
+        changes: {
+          proposed,
+          rationale: 'Human apply after the administration Turn completes.',
+        },
+      },
+      f.home
+    );
+    f.store.updateTurn(f.turn.id, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+    });
+    const confirmed = f.confirm(proposal);
+    const result = await f.service.apply(confirmed);
+    expect(result).toMatchObject({ persisted: true, reload: 'applied' });
+    const outcomeId = deriveEntityId('ar', [
+      'configuration_result',
+      { userId: f.actor.userId, request: confirmed },
+    ]);
+    const outcome = f.store.getArtifact(f.workspaceId, outcomeId);
+    expect(outcome.content.format).toBe('json');
+    expect(
+      f.store
+        .listThreadItems(f.workspaceId, f.home.threadId)
+        .filter(
+          (item) =>
+            item.type === 'artifact-reference' &&
+            item.turnId === f.turn.id &&
+            item.artifactId === outcomeId
+        )
+    ).toHaveLength(1);
+    expect(await f.service.apply(confirmed)).toEqual(result);
   });
 
   it('publishes only editable schema fields while preserving their constraints', () => {

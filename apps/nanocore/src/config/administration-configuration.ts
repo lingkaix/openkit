@@ -214,27 +214,32 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
     threadId: string,
     turnId: string,
     requestId: string,
-    id = allocateEntityId('ar')
+    id = allocateEntityId('ar'),
+    admission?: typeof CONFIGURATION_APPLY_PENDING_DELAYED_USER_INPUT_ADMISSION
   ) {
     const timestamp = new Date().toISOString();
     const text = JSON.stringify(body);
-    const artifact = store.createArtifact({
-      id,
-      workspaceId,
-      threadId,
-      turnId,
-      kind: 'report',
-      status: 'ready',
-      version: 1,
-      title: 'Configuration candidate and outcome',
-      summary: null,
-      content: { body: text, format: 'json' },
-      contentDigest: digest(text),
-      origin: { kind: 'turn-output', threadId, turnId, requestId },
-      lastMutationRequestId: requestId,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    });
+    const artifact = store.createArtifact(
+      {
+        id,
+        workspaceId,
+        threadId,
+        turnId,
+        kind: 'report',
+        status: 'ready',
+        version: 1,
+        title: 'Configuration candidate and outcome',
+        summary: null,
+        content: { body: text, format: 'json' },
+        contentDigest: digest(text),
+        origin: { kind: 'turn-output', threadId, turnId, requestId },
+        lastMutationRequestId: requestId,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+      undefined,
+      admission
+    );
     return {
       artifactId: artifact.id,
       artifactVersion: 1 as const,
@@ -511,7 +516,14 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
               : 'failed',
           summary: `Candidate ${request.candidate.contentDigest}; base ${body.expectedRevision}; persisted ${persisted}; reload ${reload}; restart required ${restartRequired}.`,
         });
-        publish(result, threadId, turnId, request.requestId, outcomeId);
+        publish(
+          result,
+          threadId,
+          turnId,
+          request.requestId,
+          outcomeId,
+          CONFIGURATION_APPLY_PENDING_DELAYED_USER_INPUT_ADMISSION
+        );
         return result;
       },
     });

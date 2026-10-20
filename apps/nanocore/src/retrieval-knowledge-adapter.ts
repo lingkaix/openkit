@@ -236,7 +236,7 @@ export function readAuthorizedServerNotebookPages(input: Target) {
   };
 }
 
-/** Verifies the commit that actually introduced these exact delegated page bytes, not a model-authored label. */
+/** Verifies exact Agent page bytes against their introducing published commit, not a model-authored label. */
 export function knowledgePageDelegated(
   input: Target,
   pageId: string,
@@ -272,12 +272,15 @@ export function knowledgePageDelegated(
     if (parent.entries[path] !== blob) break;
     record = parent;
   }
+  // Native Review publishes the exact proposal commit; published ancestry proves that boundary without relabeling its bytes.
   return (
     record.metadata.producer.kind === 'agent' &&
     record.metadata.producer.responsibleUserId !== null &&
     (sourceScope !== 'user' ||
       record.metadata.producer.responsibleUserId === input.access.requestActor!.userId) &&
-    (record.metadata.authority.kind === 'delegated' || record.metadata.authority.kind === 'direct')
+    (record.metadata.authority.kind === 'delegated' ||
+      record.metadata.authority.kind === 'direct' ||
+      record.metadata.authority.kind === 'proposal')
   );
 }
 
