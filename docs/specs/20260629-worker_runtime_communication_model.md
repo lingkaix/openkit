@@ -28,6 +28,8 @@ The execution backend port is an internal NanoCore module boundary with exactly 
 
 [Durable Scheduler Design](20260703-durable_scheduler_design.md) owns the unique durable admission and attempt grant. This port creates no separate product state, capacity grant, outcome journal, registry, or recovery lifecycle. Configuration selects the existing backend id; every operation and observation uses that same id with the attempt, immutable input, exact binding when present, and outstanding-operation identity. A reference is opaque correlation evidence, never a parsed physical-capacity key or reusable authorization.
 
+The submission preconditions below are specific to Worker execution today. A future Core-command consumer MUST define its own consumer contract under this port and the existing scheduler and [durable-execution](20261019-durable_execution_and_control_store.md) owners. It MUST NOT fabricate a Worker or coerce a Core invocation into a Worker launch package.
+
 | Operation | Preconditions and postconditions |
 | --- | --- |
 | `submit` | Core has persisted the attempt and immutable launch package, accepted the Workspace baseline, bound one AgentSession, rechecked current authority, and fixed the absolute deadline. The adapter validates its readiness, exact compatibility, and physical bounds before native submission. It returns `not_accepted`, `accepted`, or `unknown`, tied to that exact operation. |

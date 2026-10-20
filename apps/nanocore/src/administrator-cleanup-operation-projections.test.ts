@@ -44,7 +44,7 @@ import {
 } from './runtime/worker-backend-sessions.js';
 import { createWorkerStorageBinding } from './runtime/worker-storage-bindings.js';
 import { createSchedulerAdmissionEntry } from './scheduler-records.js';
-import { type CoreDb, openCoreDb } from './storage/db.js';
+import { type CoreDb, openCoreDb, verifyAndMigrateExistingScopedDatabases } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
@@ -67,6 +67,7 @@ const PRIVATE = 'private-cleanup-operation-canary';
 const REQUEST = '00000000-0000-4000-8000-000000000226';
 const SOURCES = [
   'workspace-deletion',
+  'workspace-registry',
   'execution-attempt',
   'backend-session',
   'agent-session-binding',
@@ -197,9 +198,20 @@ function sandbox(coreDb: CoreDb, id: string) {
   });
 }
 
-/** Populates all six source families through their retained record producers. */
+/** Populates all seven source families through their retained record producers and real scope admission. */
 function populate(f: ReturnType<typeof fixture>) {
   const request = deletion(f);
+  const quarantinedId = f.store.createWorkspace('Quarantined cleanup metadata').id;
+  recordWorkspaceOwnerMembership({
+    coreDb: f.coreDb,
+    workspaceId: quarantinedId,
+    ownerUserId: f.actor.userId,
+  });
+  writeFileSync(
+    join(f.dataRoot, 'workspaces', quarantinedId, 'db', 'workspace.sqlite'),
+    'Unreadable cleanup fixture authority'
+  );
+  verifyAndMigrateExistingScopedDatabases(f.dataRoot);
   const execution = attempt(f.coreDb);
   const target = allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
     deploymentId: testEntityId('dep', 'deployment_cleanup'),
@@ -274,7 +286,7 @@ function populate(f: ReturnType<typeof fixture>) {
       targets: [{ target: '/workspace' }],
     },
   });
-  return { request, execution, storage };
+  return { request, execution, storage, quarantinedId };
 }
 
 /** Captures every Core table so a read cannot silently mutate a different lifecycle owner. */
@@ -324,7 +336,7 @@ afterEach(() => {
 });
 
 describe('administrator cleanup public operation composition', () => {
-  it('returns complete empty six-source coverage through native and JSON invocation', async () => {
+  it('returns complete empty seven-source coverage through native and JSON invocation', async () => {
     const f = fixture();
     const native = bounded(await f.native());
     expect(native.items).toEqual([]);
@@ -379,7 +391,7 @@ describe('administrator cleanup public operation composition', () => {
 
   it('joins every real source, preserves waiting and unknown facts, and exposes no private payload', async () => {
     const f = fixture();
-    const { execution, storage } = populate(f);
+    const { execution, storage, quarantinedId } = populate(f);
     const result = bounded(await f.native());
     expect(result.items.map((item) => item.source)).toEqual(SOURCES);
     expect(result.incomplete).toBe(false);
@@ -391,16 +403,26 @@ describe('administrator cleanup public operation composition', () => {
       evidence: { kind: 'unknown' },
     });
     expect(result.items[1]).toMatchObject({
+      source: 'workspace-registry',
+      target: { kind: 'workspace-registry', workspaceId: quarantinedId },
+      state: {
+        registryStatus: 'active',
+        registryRevision: 1,
+        quarantineCheck: 'database',
+        retirement: null,
+      },
+    });
+    expect(result.items[2]).toMatchObject({
       target: { attemptId: execution.attemptId },
       state: { phase: 'open', disposition: 'not_accepted' },
       evidence: { kind: 'unknown' },
     });
-    expect(result.items[2]).toMatchObject({
+    expect(result.items[3]).toMatchObject({
       target: { attemptId: execution.attemptId },
       state: { state: 'materializing', workspaceHandoffState: 'pending', physicalCleanedAt: null },
       evidence: { kind: 'unknown' },
     });
-    expect(result.items[5]).toMatchObject({
+    expect(result.items[6]).toMatchObject({
       target: { storageRef: storage.storageRef },
       state: { state: 'idle', revision: 1, purgedAt: null },
       evidence: { kind: 'unknown' },
@@ -583,7 +605,7 @@ describe('administrator cleanup public operation composition', () => {
     const beforeFiles = files(f.dataRoot);
     f.coreDb.sqlite.pragma('query_only = ON');
     const result = bounded(await f.native());
-    expect(result.items).toHaveLength(6);
+    expect(result.items).toHaveLength(7);
     expect(result.items[0]).toMatchObject({
       state: { phase: 'deleting' },
       evidence: { kind: 'unknown' },
@@ -635,7 +657,7 @@ describe('administrator cleanup public operation composition', () => {
       reasons: ['source_unavailable'],
     });
     expect(result.items.some((entry) => entry.source === source)).toBe(false);
-    expect(result.items.filter((entry) => entry.source !== source)).toHaveLength(5);
+    expect(result.items.filter((entry) => entry.source !== source)).toHaveLength(6);
     expect(result.incomplete).toBe(true);
     expect(JSON.stringify(result)).not.toContain(PRIVATE);
     expect(JSON.stringify(result)).not.toContain('unavailable_backend_sessions');
@@ -686,7 +708,7 @@ describe('administrator cleanup public operation composition', () => {
         .slice(0, 99)
         .map((attemptId) => expect.objectContaining({ attemptId }))
     );
-    expect(first.sources[1]).toMatchObject({
+    expect(first.sources[2]).toMatchObject({
       incomplete: true,
       reasons: expect.arrayContaining(['count_limit']),
     });
@@ -782,7 +804,7 @@ describe('administrator cleanup public operation composition', () => {
     );
   });
 
-  it('counts UTF-8 bytes on the complete six-source response and preserves bounded native identities intact', async () => {
+  it('counts UTF-8 bytes on the complete seven-source response and preserves bounded native identities intact', async () => {
     const f = fixture();
     deletion(f);
     const ids = Array.from(
@@ -805,7 +827,7 @@ describe('administrator cleanup public operation composition', () => {
         expect(ids).toContain(item.target.sandboxRuntimeId);
       }
     }
-    expect(result.sources[4]).toMatchObject({
+    expect(result.sources[5]).toMatchObject({
       incomplete: true,
       reasons: expect.arrayContaining(['byte_limit']),
     });

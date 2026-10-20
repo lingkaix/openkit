@@ -12,6 +12,7 @@ import { Button, Card, ErrorBanner, Skeleton } from '../../primitives';
 
 const SOURCE_LABELS: Record<AdministratorCleanupSource, string> = {
   'workspace-deletion': 'Workspace deletion',
+  'workspace-registry': 'Workspace registry',
   'execution-attempt': 'Execution attempts',
   'backend-session': 'Backend sessions',
   'agent-session-binding': 'AgentSession bindings',
@@ -52,7 +53,36 @@ const FIELD_LABELS: Record<string, string> = {
   drainState: 'Drain state',
   revision: 'Revision',
   purgedAt: 'Purged at',
+  registryStatus: 'Registry status',
+  registryRevision: 'Registry revision',
+  quarantineCheck: 'Quarantine check',
+  dataRetained: 'Data retained',
+  storageReclaimed: 'Storage reclaimed',
 };
+
+/** Scalar read-view fields keyed by projection field name. */
+type ScalarFields = Record<string, string | number | boolean | null>;
+
+/** Flatten registry retirement facts into scalar read-view fields. */
+function workspaceRegistryStateFields(
+  state: Extract<AdministratorCleanupItem, { source: 'workspace-registry' }>['state']
+): ScalarFields {
+  return {
+    registryStatus: state.registryStatus,
+    registryRevision: state.registryRevision,
+    quarantineCheck: state.quarantineCheck,
+    dataRetained: state.retirement?.dataRetained ?? null,
+    storageReclaimed: state.retirement?.storageReclaimed ?? null,
+  };
+}
+
+/** Select the scalar state fields shown for one cleanup source record. */
+function scalarStateFields(item: AdministratorCleanupItem): ScalarFields {
+  if (item.source === 'workspace-registry') {
+    return workspaceRegistryStateFields(item.state);
+  }
+  return item.state;
+}
 
 /** Display only scalar fields from the validated, source-specific schema projection. */
 function ObservationFields({
@@ -91,7 +121,7 @@ function CleanupObservation({ item }: { item: AdministratorCleanupItem }) {
         <h4 className="text-sm font-bold text-fg-strong">Exact target</h4>
         <ObservationFields fields={item.target} />
         <h4 className="text-sm font-bold text-fg-strong">Source state</h4>
-        <ObservationFields fields={item.state} />
+        <ObservationFields fields={scalarStateFields(item)} />
         <dl className="grid min-w-0 grid-cols-1 gap-x-4 gap-y-1 text-sm sm:grid-cols-2">
           <dt className="text-fg-muted">Source updated at</dt>
           <dd className="break-words text-fg">{item.sourceUpdatedAt ?? 'Unknown'}</dd>
@@ -138,7 +168,7 @@ function CleanupObservation({ item }: { item: AdministratorCleanupItem }) {
   );
 }
 
-/** Read the six canonical cleanup sources with current server-admin admission on each request. */
+/** Read the seven canonical cleanup sources with current server-admin admission on each request. */
 export function AdministratorCleanupPanel() {
   const client = useCoreClient();
   const headingId = useId();

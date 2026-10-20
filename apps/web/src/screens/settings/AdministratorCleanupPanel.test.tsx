@@ -24,6 +24,18 @@ const BRANCHES = [
   },
   {
     target: {
+      kind: 'workspace-registry',
+      workspaceId: 'ws_7a1b2c3d-e4f5-7890-abcd-ef1234567890',
+    },
+    state: {
+      registryStatus: 'retired',
+      registryRevision: 2,
+      quarantineCheck: null,
+      retirement: { dataRetained: true, storageReclaimed: false },
+    },
+  },
+  {
+    target: {
       kind: 'execution-attempt',
       attemptId: 'attempt_f9c6cef9-2db3-75ed-a8c5-99206a9d11f5',
       workspaceId: 'ws_3c919bf6-f4bd-7d60-8755-c67c20dcf237',
@@ -84,7 +96,7 @@ const BRANCHES = [
   },
 ];
 
-/** Produce the six source records with distinct exact identities and no inferred cleanup. */
+/** Produce the seven source records with distinct exact identities and no inferred cleanup. */
 function response() {
   return {
     observedAt: OBSERVED,
@@ -137,12 +149,13 @@ function mount(
 }
 
 describe('Administrator cleanup inspection', () => {
-  it('reads all six sources and discloses exact target, state, evidence and inspection correlation', async () => {
+  it('reads all seven sources and discloses exact target, state, evidence and inspection correlation', async () => {
     const { read } = mount();
     await screen.findByRole('heading', { name: 'Workspace deletion' });
     expect(read).toHaveBeenCalledExactlyOnceWith({});
     for (const name of [
       'Workspace deletion',
+      'Workspace registry',
       'Execution attempts',
       'Backend sessions',
       'AgentSession bindings',
@@ -152,18 +165,20 @@ describe('Administrator cleanup inspection', () => {
       expect(screen.getByRole('heading', { name })).toBeInTheDocument();
     }
     const records = screen.getAllByRole('article');
-    expect(records).toHaveLength(6);
+    expect(records).toHaveLength(7);
     expect(within(records[0]).getByText('deleted')).toBeInTheDocument();
     expect(within(records[0]).getByText('Yes')).toBeInTheDocument();
     expect(within(records[0]).getByText('Recorded evidence')).toBeInTheDocument();
-    expect(within(records[1]).getByText('closed')).toBeInTheDocument();
-    expect(within(records[1]).getByText('Unknown evidence: stale')).toBeInTheDocument();
-    expect(within(records[2]).getByText('cleanup-failed')).toBeInTheDocument();
-    expect(within(records[2]).getByText('pending')).toBeInTheDocument();
-    expect(within(records[2]).getByText('different')).toBeInTheDocument();
-    expect(within(records[4]).getByText('draining')).toBeInTheDocument();
-    expect(within(records[5]).getByText('purge-pending')).toBeInTheDocument();
-    expect(within(records[5]).getByText('4')).toBeInTheDocument();
+    expect(within(records[1]).getByText('retired')).toBeInTheDocument();
+    expect(within(records[1]).getByText('2')).toBeInTheDocument();
+    expect(within(records[2]).getByText('closed')).toBeInTheDocument();
+    expect(within(records[2]).getByText('Unknown evidence: stale')).toBeInTheDocument();
+    expect(within(records[3]).getByText('cleanup-failed')).toBeInTheDocument();
+    expect(within(records[3]).getByText('pending')).toBeInTheDocument();
+    expect(within(records[3]).getByText('different')).toBeInTheDocument();
+    expect(within(records[5]).getByText('draining')).toBeInTheDocument();
+    expect(within(records[6]).getByText('purge-pending')).toBeInTheDocument();
+    expect(within(records[6]).getByText('4')).toBeInTheDocument();
     for (const [index, record] of records.entries()) {
       for (const value of Object.values(BRANCHES[index].target)) {
         if (value !== null)
@@ -216,14 +231,14 @@ describe('Administrator cleanup inspection', () => {
     ]) {
       expect(screen.getByText(reason)).toBeInTheDocument();
     }
-    expect(screen.getAllByText('No records returned.').length).toBe(6);
+    expect(screen.getAllByText('No records returned.').length).toBe(7);
     expect(screen.queryByText(/all clean|cleanup complete/i)).not.toBeInTheDocument();
   });
 
   it('drops unknown additions before cache and keeps missing evidence unknown', async () => {
     const data = response();
-    data.items[1].sourceUpdatedAt = null;
-    data.items[1].evidence = { kind: 'unknown', reason: 'missing' };
+    data.items[2].sourceUpdatedAt = null;
+    data.items[2].evidence = { kind: 'unknown', reason: 'missing' };
     const decorated = {
       ...data,
       extra: POISON,
@@ -279,7 +294,7 @@ describe('Administrator cleanup inspection', () => {
       )
     ).not.toContain(POISON);
     await userEvent.click(screen.getByRole('button', { name: 'Retry cleanup inspection' }));
-    expect(await screen.findAllByText('No records returned.')).toHaveLength(6);
+    expect(await screen.findAllByText('No records returned.')).toHaveLength(7);
     expect(read).toHaveBeenCalledTimes(3);
   });
 
@@ -313,7 +328,7 @@ describe('Administrator cleanup inspection', () => {
     await userEvent.click(refresh);
     expect(read).toHaveBeenCalledTimes(2);
     await act(() => settle({ ...response(), items: [] }));
-    expect(await screen.findAllByText('No records returned.')).toHaveLength(6);
+    expect(await screen.findAllByText('No records returned.')).toHaveLength(7);
     expect(screen.queryByText('request-one')).not.toBeInTheDocument();
   });
 
@@ -342,7 +357,7 @@ describe('Administrator cleanup inspection', () => {
     await act(() => oldResult(response()));
     expect(screen.queryByRole('article')).not.toBeInTheDocument();
     await act(() => currentResult({ ...response(), items: [] }));
-    expect(await screen.findAllByText('No records returned.')).toHaveLength(6);
+    expect(await screen.findAllByText('No records returned.')).toHaveLength(7);
     expect(screen.queryByText('request-one')).not.toBeInTheDocument();
   });
 

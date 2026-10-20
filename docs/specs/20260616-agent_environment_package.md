@@ -61,6 +61,8 @@ Those contracts remain with their narrow Core and specification owners. An AEP c
 
 ## Definition And Exclusions
 
+The current version 4 AEP represents the NanoHost realization of resolved worker execution. Its retained image, command, shim, and sandbox-local route meanings stay unchanged; external platforms need not consume this representation. Later external forms are additive under the [neutrality decision](../decisions/20261020-compute_and_harness_neutrality.md), without reinterpreting existing packages.
+
 An `AgentEnvironmentPackage` is one strict, resolved, immutable NanoCore record that binds an exact worker launch to its OpenKit lineage, runtime, workspace inputs, supplied resources, sandbox-local Integration bindings, governed access, allowed logical-model contract, resource intent, observability requirements, and backend requirements.
 
 The AEP is the canonical input to worker governance materialization. NanoCore remains authoritative for product identity, policy and permission decisions, provider and Vault references, canonical Turn and Item state, usage, audit, and review. A backend may materialize and enforce the package and return evidence, but it must not create or replace those authorities.
