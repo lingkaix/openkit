@@ -24,7 +24,9 @@ import {
   openCoreDbWithIntegrityCheck,
   openUserDb,
   openWorkspaceDb,
+  type UserDb,
   verifyAndMigrateExistingScopedDatabases,
+  type WorkspaceDb,
 } from './db.js';
 import { coreDbPath, ensureLayout, userDbPath, workspaceDbPath } from './fs-layout.js';
 import {
@@ -40,6 +42,23 @@ import {
  */
 function createDataRoot(): string {
   return mkdtempSync(join(tmpdir(), 'openkit-scoped-db-'));
+}
+
+/**
+ * Writes a valid SQLite database without applying any of the boot scan's migrations.
+ *
+ * VACUUM creates the database header and pages without adding a table or migration ledger.
+ * A zero-byte file would instead represent missing established Workspace authority.
+ *
+ * @param scopedDb Fresh User or Workspace database to initialize.
+ */
+function initializeUnmigratedScopedDb(scopedDb: UserDb | WorkspaceDb): void {
+  const { scope, sqlite } = scopedDb;
+  sqlite.exec('VACUUM');
+  expect(statSync(sqlite.name).size).toBeGreaterThan(0);
+  expect(sqlite.prepare('PRAGMA quick_check').pluck().get()).toBe('ok');
+  expect(listTables(sqlite)).toEqual([]);
+  expect(listMigrationIds(sqlite, scope)).toEqual([]);
 }
 
 describe('scoped storage databases', () => {
@@ -299,6 +318,7 @@ describe('scoped storage databases', () => {
       workspaceDb.sqlite.close();
       recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId });
       const sibling = openWorkspaceDb(dataRoot, siblingId);
+      initializeUnmigratedScopedDb(sibling);
       sibling.sqlite.close();
       recordWorkspaceOwnerMembership({ coreDb, workspaceId: siblingId, ownerUserId });
       const registrations = coreDb.sqlite
@@ -347,6 +367,7 @@ describe('scoped storage databases', () => {
   it('migrates real scoped databases without treating Workspace staging as a scope', () => {
     const dataRoot = createDataRoot();
     const created = openWorkspaceDb(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201');
+    initializeUnmigratedScopedDb(created);
     created.sqlite.close();
     const stagingRoot = join(dataRoot, 'workspaces', '.staging');
     const stagedChild = join(stagingRoot, 'ws_00000000-0000-7a13-853c-5d52c0c5884f');
@@ -355,6 +376,7 @@ describe('scoped storage databases', () => {
     writeFileSync(join(stagedChild, 'sentinel'), sentinel);
     // The reserved container name applies only to Workspace discovery.
     const userDb = openUserDb(dataRoot, '.staging');
+    initializeUnmigratedScopedDb(userDb);
     userDb.sqlite.close();
 
     verifyAndMigrateExistingScopedDatabases(dataRoot);
@@ -633,8 +655,10 @@ describe('scoped storage databases', () => {
       const siblingId = 'usr_00000000-0000-7000-8000-000000000002';
       const workspaceId = 'ws_00000000-0000-73c3-900f-8d310e4ba201';
       const sibling = openUserDb(dataRoot, siblingId);
+      initializeUnmigratedScopedDb(sibling);
       sibling.sqlite.close();
       const workspace = openWorkspaceDb(dataRoot, workspaceId);
+      initializeUnmigratedScopedDb(workspace);
       workspace.sqlite.close();
       expect(() => verify(dataRoot)).not.toThrow();
       expect(() =>
@@ -695,10 +719,11 @@ process.kill(process.pid, 'SIGKILL');`,
 
   it('migrates healthy existing scoped databases during boot scan', () => {
     const dataRoot = createDataRoot();
-    mkdirSync(join(dataRoot, 'users', 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b', 'db'), {
-      recursive: true,
-    });
+    const initialUserDb = openUserDb(dataRoot, 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b');
+    initializeUnmigratedScopedDb(initialUserDb);
+    initialUserDb.sqlite.close();
     const initialWorkspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201');
+    initializeUnmigratedScopedDb(initialWorkspaceDb);
     initialWorkspaceDb.sqlite.close();
 
     verifyAndMigrateExistingScopedDatabases(dataRoot);
