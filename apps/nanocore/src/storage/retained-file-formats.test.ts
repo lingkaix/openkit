@@ -1,3 +1,5 @@
+// openkit-test-platform: posix
+// The refusal helper preserves raw symbolic-link targets under the POSIX contract.
 import { createHash } from 'node:crypto';
 import {
   cpSync,
