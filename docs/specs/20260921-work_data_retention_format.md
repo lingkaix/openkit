@@ -126,6 +126,8 @@ Multi-dimensional eval requires, as format slots even when empty: provider plus 
 | Sandbox sidecar (inside the sandbox) | Actual tool execution and return, process events, harness-internal state | Authorization and identity; it sits inside an untrusted boundary |
 | Core | Actor, authorization decisions, approvals, product acceptance | Agent-internal behavior |
 
+The NanoCore observer directly observes its own loop and mediated calls. The restriction on Agent-internal behavior applies to behavior outside that observer's boundary.
+
 **Exclusions.** This is not a two-way choice between sidecar harvest at end-of-work and Gateway intercept. Configuration fingerprints are recorded by NanoHost, not self-reported by the sidecar. Sidecar reports stream incrementally; end-of-work bundling is forbidden because a crash is the diagnostic case. Managed backends that admit neither sidecar nor Gateway MUST declare the coverage gap so eval cannot mix them with self-hosted runs.
 
 **Authority.** Each point writes only in its observer value `obs`. NanoHost owns injection identity. Core owns authorization records.
@@ -227,6 +229,8 @@ Native transcripts and model bodies are collected incrementally when the immutab
 
 The existing capture owner declares expected content and applies the current bound policy; the Storage owner verifies and commits bytes before record publication. A complete publication proves retained bytes at that commit, not model delivery or external-effect success. A chunk staging acknowledgement alone proves neither.
 
+Nested-call inputs and results required by this specification follow their existing content owners' retention rules after the caller settles. Operational replay-cache cleanup MUST NOT remove their only required retained copy.
+
 Same identity and same content replay is idempotent through the existing owner. A changed digest, length, source range, or boundary under that identity is a conflict, not a silent replacement. Concurrent writers cannot choose different bodies for one observation. This adds no CaptureBatch, retry daemon, durable receipt family, or second transaction owner.
 
 After restart, read committed coverage and exact publication refs. Preserve the committed prefix, inspect the same source/transfer identity where its owner allows, and report unavailable buffered ranges. Do not reconstruct bytes from UI text, current prompts, later native sessions, or a new provider call. Recovery uses existing owners and current authorization.
@@ -277,6 +281,8 @@ A durable decision owner is not proof of complete retention joins. The collector
 ### Journal And Telemetry Boundary
 
 The [Durable Execution And Control Store](20261019-durable_execution_and_control_store.md) owns per-step timing, outcome, failed check, retry and recovery facts in its OpenTelemetry span-model journal. Reference that journal; do not duplicate its lifecycle into observation records. Journal control may reference retained work records by id/digest, but its spans/events never contain model, tool, transcript or log content. Phase markers remain unverified diagnostics, not a retention substitute.
+
+Durable execution references nested-call bodies retained by the capture and content owners; span diagnostics and bounded model-visible summaries MUST NOT substitute for them.
 
 Content never enters telemetry. A normalized cross-provider message view, for example a consumer's explicitly pinned OpenTelemetry GenAI message schema, is a derived use-time projection outside telemetry export. Training/evaluation dataset formats are also use-time exports, not storage formats or a new pipeline here.
 
@@ -351,6 +357,8 @@ Multiple observations under one Item or one `turnId` are ordered by observation-
 | `refs` | conditional | Self-describing external references; see References |
 | `ext` | conditional | Namespaced extensions; MUST NOT pollute canonical fields |
 | `payload` | yes | Main facts allowed by B′, shape per `type` |
+
+`obs` identifies the observer, not the source or verifier of a reported fact. Before a remote producer writes records, its type-owned payload MUST distinguish source claims from independent verification and identify their source and evidence basis. `cert` continues to distinguish direct observation from inference; directly observing a report does not verify its claim.
 
 `ownerScope`, lineage defaults, `requiredFeatures`, and redaction defaults live on the directory-level manifest (`thread.json` / `turn.json` as the storage owner already assigns), not repeated per line.
 
@@ -520,6 +528,8 @@ This retained grouping identifies the sandbox image admitted by NanoHost, not an
 **System-prompt digest.** Collect the digest of the prompt at the semantic boundary before adapter conversion. The prompt producer remains above shared Gateway dispatch. The pre-adapter digest remains a named grouping boundary, not proof of the exact upstream body. New full capture follows the native exchange boundary above; earlier captures remain interpretable under their recorded boundary. The grouping is not injective: an absent prompt and an explicit default literal produce different pre-adapter digests and identical outgoing instructions. The format MUST name the boundary; it MUST NOT promise a single existing hook. `workerRequestDigest` is the worker-request body, not the harness system prompt, and MUST NOT substitute.
 
 **Lifecycle.** Wake-up after idle writes "the environment I see now", not a two-month changelog. Mid-turn reconfiguration is a new Turn plus a new AEP snapshot under single-flight; this spec does not reserve empty fields for in-turn hot reload.
+
+Selecting an already-admitted command target is distinct from changing the pinned loop configuration or a Worker's AEP. Retain the target binding for each invocation through its existing evidence owner without rewriting earlier `env.bound` records.
 
 **Failure.** System-level "when did this binding become available" belongs to supply/catalog, O(changes), joined by binding ref. Putting it on every Thread is fan-out.
 
