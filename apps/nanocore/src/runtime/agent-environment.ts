@@ -8,6 +8,7 @@ import {
   type AgentEnvironmentCredentialDeclaration,
   type AgentEnvironmentPackage,
   AgentEnvironmentPackageSchema,
+  DEFAULT_NATIVE_LOG_MAX_BYTES,
   EMPTY_BUILD_CONTEXT_DIGEST,
   EMPTY_BUILD_CONTEXT_REF,
   planSessionWorkspaceMaterialization,
@@ -218,7 +219,13 @@ export function resolveAgentEnvironmentPackage(
       observability: {
         captureCoverage,
         audit: { required: true, formats: { preferred: 'ocsf-json' } },
-        evidence: { collectBackendLogs: true, collectSessionFiles: true },
+        evidence: {
+          collectBackendLogs: true,
+          collectSessionFiles: true,
+          nativeLogMaxBytes:
+            input.readRuntimeConfig?.().openKitConfig.policy?.workDataCapture?.nativeLogMaxBytes ??
+            DEFAULT_NATIVE_LOG_MAX_BYTES,
+        },
       },
     });
   }
