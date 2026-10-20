@@ -41,9 +41,14 @@ export const KnowledgeNotebookAuthoritySchema = z.union([
     .strict(),
 ]);
 
-/** Complete service-serialized commit message for the initial explicit human editing path. */
+/** Owner format marker for service-serialized Notebook commit messages. */
+export const KNOWLEDGE_NOTEBOOK_COMMIT_SCHEMA_VERSION =
+  'openkit-knowledge-notebook-commit-v1' as const;
+
+/** Validates retained commit headers and projects the unchanged historical admission facts. */
 export const KnowledgeNotebookCommitMetadataSchema = z
   .object({
+    schemaVersion: z.literal(KNOWLEDGE_NOTEBOOK_COMMIT_SCHEMA_VERSION).optional(),
     summary: z.string().refine((value) => new TextEncoder().encode(value).length <= 4096),
     changeRequest: z
       .object({ requestId: z.string().min(1), inputDigest: KnowledgeContentDigestSchema })
@@ -52,7 +57,8 @@ export const KnowledgeNotebookCommitMetadataSchema = z
     authority: KnowledgeNotebookAuthoritySchema,
     sourceReferences: z.array(z.string().min(1)),
   })
-  .strict();
+  .strict()
+  .transform(({ schemaVersion: _schemaVersion, ...metadata }) => metadata);
 
 /** Specific existing-Audit facts that must persist before the notebook ref can advance. */
 export const KnowledgeNotebookAdmissionSchema = z
