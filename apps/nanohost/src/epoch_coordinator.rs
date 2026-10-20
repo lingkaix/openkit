@@ -5936,11 +5936,11 @@ mod tests {
             Err(super::EpochFault::DeleteOutcomeUncertain)
         };
         let (result, summary) = tokio::time::timeout(
-            Duration::from_secs(3),
+            Duration::from_millis(750),
             super::sandbox_delete_with_observation(
                 deletion,
                 observation,
-                tokio::time::Instant::now() + Duration::from_secs(120),
+                tokio::time::Instant::now() + Duration::from_millis(125),
             ),
         )
         .await
