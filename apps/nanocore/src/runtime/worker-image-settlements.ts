@@ -1,11 +1,18 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { ArtifactIdSchema, readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 import {
   canonicalNativeEnvironment,
   NativeEnvironmentRecordSchema,
 } from '@openkit/worker-protocol';
 import { z } from 'zod';
+import { controlStoreFor } from '../storage/control-store.js';
 import type { CoreDb } from '../storage/db.js';
+import {
+  CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION,
+  settleExecutionJournalStep,
+  writeExecutionJournalIntent,
+} from './execution-journal.js';
+import { commandInputHash } from './idempotent-command.js';
 
 const digest = z.string().regex(/^sha256:[0-9a-f]{64}$/);
 /** Private immutable candidate lineage carried in process, never on the Host wire. */
@@ -75,38 +82,174 @@ export function readWorkerImageSettlement(
   return parsed.data;
 }
 
-/** Persists one validated result before acknowledgment; creation time is not duplicate identity. */
+/**
+ * Commits an exact image receipt, its journal outcome and next transition before acknowledgment.
+ * @param coreDb Existing Core authority; the owning writer supplies the one synchronous transaction.
+ * @param input Validated receiver result, never a command or replay grant.
+ * @throws For conflicting results or unavailable persistence; no partial tuple is acknowledged.
+ */
 export function writeWorkerImageSettlement(coreDb: CoreDb, input: WorkerImageSettlement): void {
   const value = WorkerImageSettlementSchema.parse(input);
-  const existing = readWorkerImageSettlement(coreDb, value.requestId);
-  if (existing) {
-    if (JSON.stringify(existing) !== JSON.stringify(value))
+  controlStoreFor(coreDb.sqlite).write((sqlite) => {
+    if (sqlite !== coreDb.sqlite)
+      throw new Error('Image settlement requires its owning connection.');
+    const existing = readWorkerImageSettlement(coreDb, value.requestId);
+    if (existing) {
+      if (JSON.stringify(existing) !== JSON.stringify(value))
+        throw new WorkerImageSettlementConflict();
+      return;
+    }
+    sqlite
+      .prepare(`INSERT INTO worker_image_settlements
+      (request_id, operation, authored_artifact_id, authored_artifact_version, authored_content_digest,
+       input_digest, outcome, image_digest, failure_code, created_at, schema_version)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(
+        value.requestId,
+        value.operation,
+        value.authoredArtifactId,
+        value.authoredArtifactVersion,
+        value.authoredContentDigest,
+        value.inputDigest,
+        value.outcome.kind,
+        value.outcome.kind === 'success' ? value.outcome.imageDigest : null,
+        value.outcome.kind === 'failure' ? value.outcome.failureCode : null,
+        new Date().toISOString(),
+        writeRetainedV1({}).schemaVersion
+      );
+    settleImageJournal(coreDb, value);
+    if (
+      JSON.stringify(readWorkerImageSettlement(coreDb, value.requestId)) !== JSON.stringify(value)
+    )
       throw new WorkerImageSettlementConflict();
+  });
+}
+
+/** Advances only the selected acquisition; existing build receipts and retained unjournaled results remain data. */
+function settleImageJournal(coreDb: CoreDb, value: WorkerImageSettlement): void {
+  if (value.operation !== 'image.acquire') return;
+  const rows = coreDb.sqlite
+    .prepare(`SELECT s.execution_id, s.step_id, s.state, s.span_json,
+    s.control_json, r.work_id, r.revision, r.input_fingerprint, r.span_json AS root_span_json,
+    r.exclusion_refs_json FROM control_execution_steps s JOIN control_executions r ON r.id = s.execution_id
+    WHERE r.definition_version = ? AND json_extract(s.control_json, '$.kind') = 'resolve-setup'
+    AND json_extract(s.invocation_json, '$.carriage.operation') = 'image.acquire'
+    AND json_extract(s.invocation_json, '$.carriage.requestId') = ?`)
+    .all(CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION, value.requestId) as {
+    execution_id: string;
+    step_id: string;
+    state: string;
+    span_json: string;
+    control_json: string;
+    work_id: string;
+    revision: number;
+    input_fingerprint: string;
+    root_span_json: string;
+    exclusion_refs_json: string;
+  }[];
+  if (rows.length === 0) return;
+  if (rows.length !== 1) throw new WorkerImageSettlementConflict();
+  const row = rows[0]!;
+  const execution = { owner: { kind: 'server' as const }, executionId: row.execution_id };
+  const originalRef = { execution, stepId: row.step_id };
+  const originalSpan = JSON.parse(row.span_json);
+  const now = BigInt(Date.now()) * 1_000_000n;
+  const receiptRef = `worker-image-settlement/v1:${value.requestId}`;
+  const state = value.outcome.kind === 'success' ? 'completed' : 'failed';
+  const status = { code: value.outcome.kind === 'success' ? ('OK' as const) : ('ERROR' as const) };
+  if (row.state === 'intent') {
+    settleExecutionJournalStep(coreDb, {
+      ref: originalRef,
+      expectedExecutionRevision: row.revision,
+      state,
+      outputRefs: [receiptRef],
+      span: {
+        ...originalSpan,
+        endTimeUnixNano:
+          now < BigInt(originalSpan.startTimeUnixNano)
+            ? BigInt(originalSpan.startTimeUnixNano)
+            : now,
+        status,
+      },
+      // A typed failure is not complete-domain absence or writer-release proof.
+      nextPhase: value.outcome.kind === 'success' ? 'closed' : 'closing',
+      terminalCause: value.outcome.kind === 'failure' ? 'Image acquisition failed.' : null,
+      exclusionRefs: value.outcome.kind === 'success' ? [] : JSON.parse(row.exclusion_refs_json),
+    });
     return;
   }
-  coreDb.sqlite
-    .prepare(`INSERT INTO worker_image_settlements
-    (request_id, operation, authored_artifact_id, authored_artifact_version, authored_content_digest,
-     input_digest, outcome, image_digest, failure_code, created_at, schema_version)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(request_id) DO NOTHING`)
-    .run(
-      value.requestId,
-      value.operation,
-      value.authoredArtifactId,
-      value.authoredArtifactVersion,
-      value.authoredContentDigest,
-      value.inputDigest,
-      value.outcome.kind,
-      value.outcome.kind === 'success' ? value.outcome.imageDigest : null,
-      value.outcome.kind === 'failure' ? value.outcome.failureCode : null,
-      new Date().toISOString(),
-      writeRetainedV1({}).schemaVersion
-    );
-  if (
-    JSON.stringify(readWorkerImageSettlement(coreDb, value.requestId)) !== JSON.stringify(value)
-  ) {
-    throw new WorkerImageSettlementConflict();
-  }
+  if (row.state !== 'unknown') throw new WorkerImageSettlementConflict();
+  // A late receiver result is a separately bounded local consumption, not a rewrite or new remote call.
+  const rootSpan = JSON.parse(row.root_span_json);
+  const control = JSON.parse(row.control_json);
+  const stepId = randomUUID();
+  const span = {
+    ...originalSpan,
+    spanId: randomBytes(8).toString('hex'),
+    parentSpanId: rootSpan.spanId,
+    name: 'image.acquire result reconciliation',
+    kind: 'INTERNAL',
+    startTimeUnixNano: now,
+    endTimeUnixNano: null,
+    status: { code: 'UNSET' },
+    attributes: [],
+    events: [],
+    links: [
+      {
+        traceId: originalSpan.traceId,
+        spanId: originalSpan.spanId,
+        flags: originalSpan.flags,
+        attributes: [],
+        droppedAttributesCount: 0,
+      },
+    ],
+  };
+  writeExecutionJournalIntent(coreDb, {
+    execution: {
+      ref: execution,
+      definitionVersion: CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION,
+      workId: row.work_id,
+      fingerprint: row.input_fingerprint,
+      exclusionRefs: JSON.parse(row.exclusion_refs_json),
+      span: rootSpan,
+    },
+    stepId,
+    parentStepId: null,
+    parent: null,
+    inspectedStep: originalRef,
+    carriage: {
+      operation: 'image.acquire',
+      requestId: value.requestId,
+      sequence: null,
+      bindingRef: null,
+    },
+    control: {
+      ...control,
+      kind: 'consume-receipt',
+      target: null,
+      invocationId: randomUUID(),
+      inputRefs: [receiptRef],
+      outputRefs: [],
+      fingerprint: commandInputHash(value),
+      retryPermitted: false,
+      deadlineUnixNano: now,
+      physicalFenceRefs: control.physicalFenceRefs,
+    },
+    span,
+  });
+  const revision = coreDb.sqlite
+    .prepare('SELECT revision FROM control_executions WHERE id = ?')
+    .get(row.execution_id) as { revision: number };
+  settleExecutionJournalStep(coreDb, {
+    ref: { execution, stepId },
+    expectedExecutionRevision: revision.revision,
+    state,
+    outputRefs: [receiptRef],
+    span: { ...span, endTimeUnixNano: now, status },
+    nextPhase: 'closing',
+    terminalCause: 'Original image acquisition outcome remains unknown.',
+    exclusionRefs: JSON.parse(row.exclusion_refs_json),
+  });
 }
 
 /** Validates admitted default bytes again on durable read; corruption never becomes empty defaults. */
