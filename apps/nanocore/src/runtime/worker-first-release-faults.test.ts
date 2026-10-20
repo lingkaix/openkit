@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { connect, constants, createServer } from 'node:http2';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { getRequestListener } from '@hono/node-server';
 import { buildWorkerCanonicalTerminalEventRecord } from '@openkit/worker-protocol';
 import { Hono } from 'hono';
@@ -22,7 +22,8 @@ import { FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
-import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import { openBootVerifiedWorkspaceDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import { workspaceDbPath } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import {
   createTestAgentSetup,
@@ -569,6 +570,147 @@ async function faultFixture() {
 }
 
 const ready = { nativeHandleDigest: DIGEST, nativeHandleState: 'ready' };
+
+describe('Workspace execution journal producer boundaries', () => {
+  it.each([
+    'delivery',
+    'result',
+  ] as const)('T2/T3 refuses %s while the owning Workspace is unavailable', async (boundary) => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'performance'] });
+    vi.setSystemTime(new Date(NOW));
+    const f = await faultFixture();
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const workspaceRoot = dirname(dirname(workspaceDbPath(f.coreDb.dataRoot, workspaceId)));
+    const heldRoot = join(f.coreDb.dataRoot, 'unavailable-workspace');
+    let moved = false;
+    try {
+      await f.waitQueued('session.open');
+      const available = openBootVerifiedWorkspaceDb(f.coreDb.dataRoot, workspaceId);
+      available.sqlite.close();
+      const command = boundary === 'result' ? await f.dispatch('session.open') : null;
+      const originalTurn = f.store.getTurnById(testEntityId('tu', 'fault-turn'));
+      expect(originalTurn.triggerActor).toEqual({
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      });
+      // Move the complete private Workspace, including every SQLite sidecar; never synthesize an empty replacement.
+      renameSync(workspaceRoot, heldRoot);
+      moved = true;
+      expect(() => openBootVerifiedWorkspaceDb(f.coreDb.dataRoot, workspaceId)).toThrow();
+      const response = command
+        ? await f.post('/worker-control/harness/result', {
+            schemaVersion: 2,
+            harnessInstanceId: command.harnessInstanceId,
+            operationId: command.operationId,
+            sequence: command.sequence,
+            disposition: 'succeeded',
+            body: { ...ready, state: 'open', maxActiveTurns: command.body.maxActiveTurns },
+          })
+        : await f.poll();
+      // A Core receipt alone cannot acknowledge an unconsumed Workspace outcome. Do not print credential-bearing wire bodies.
+      expect
+        .soft({
+          delivered: boundary === 'delivery' && response.status === 200,
+          acknowledged: boundary === 'result' && response.status === 204,
+        })
+        .toEqual({ delivered: false, acknowledged: false });
+      expect
+        .soft(
+          existsSync(workspaceDbPath(f.coreDb.dataRoot, workspaceId)),
+          'unavailable canonical database must not be recreated'
+        )
+        .toBe(false);
+    } finally {
+      if (moved) {
+        if (existsSync(workspaceRoot))
+          renameSync(workspaceRoot, join(f.coreDb.dataRoot, 'unexpected-workspace'));
+        renameSync(heldRoot, workspaceRoot);
+      }
+      await vi.advanceTimersByTimeAsync(600_000);
+      await f.running.catch(() => undefined);
+      await f.close();
+    }
+  });
+
+  it('T2 commits the actual Worker Turn intent before native session.open delivery', async ({
+    skip,
+  }) => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'performance'] });
+    vi.setSystemTime(new Date(NOW));
+    const f = await faultFixture();
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const workspace = openWorkspaceDb(f.coreDb.dataRoot, workspaceId);
+    try {
+      await f.waitQueued('session.open');
+      const tables = workspace.sqlite
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('control_executions', 'control_execution_steps') ORDER BY name"
+        )
+        .all();
+      if (
+        tables.length === 0 &&
+        !existsSync(new URL('../../drizzle/workspace/0012_execution_journal.sql', import.meta.url))
+      ) {
+        skip('schema-pending: Workspace0012 execution journal');
+      }
+      expect(tables).toEqual([{ name: 'control_execution_steps' }, { name: 'control_executions' }]);
+      // Read at the completed real enqueue, before the first poll can deliver the command.
+      const queued = workspace.sqlite
+        .prepare(`
+        SELECT s.control_json AS control, s.invocation_json AS invocation,
+               r.owner_json AS owner, r.work_id AS workId, r.definition_version AS definitionVersion
+        FROM control_execution_steps s JOIN control_executions r ON r.id = s.execution_id
+        WHERE s.state = 'intent' AND json_extract(s.control_json, '$.kind') = 'open-session'
+          AND json_extract(s.invocation_json, '$.carriage.operation') = 'session.open'
+          AND r.work_id = ?
+      `)
+        .all(testEntityId('tu', 'fault-turn')) as {
+        control: string;
+        invocation: string;
+        owner: string;
+        workId: string;
+        definitionVersion: string;
+      }[];
+      expect
+        .soft(
+          queued.map((row) => ({
+            owner: JSON.parse(row.owner),
+            workId: row.workId,
+            definitionVersion: row.definitionVersion,
+            actor: JSON.parse(row.control).actor,
+            attemptId: JSON.parse(row.control).attemptId,
+          }))
+        )
+        .toEqual([
+          {
+            owner: { kind: 'workspace', workspaceId },
+            workId: testEntityId('tu', 'fault-turn'),
+            definitionVersion: 'workspace-worker-turn/v1',
+            actor: f.store.getTurnById(testEntityId('tu', 'fault-turn')).triggerActor,
+            attemptId: testEntityId('attempt', 'fault-lease'),
+          },
+        ]);
+      const command = await f.dispatch('session.open');
+      expect(
+        queued.map((row) => {
+          const carriage = JSON.parse(row.invocation).carriage;
+          return {
+            operation: carriage.operation,
+            requestId: carriage.requestId,
+            sequence: carriage.sequence,
+          };
+        })
+      ).toEqual([
+        { operation: 'session.open', requestId: command.operationId, sequence: command.sequence },
+      ]);
+    } finally {
+      workspace.sqlite.close();
+      await vi.advanceTimersByTimeAsync(600_000);
+      await f.running.catch(() => undefined);
+      await f.close();
+    }
+  });
+});
 
 describe('first-release worker faults (real Core crossings)', () => {
   it.each([
