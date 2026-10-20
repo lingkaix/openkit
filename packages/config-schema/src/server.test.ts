@@ -199,7 +199,7 @@ describe('server config schema', () => {
     }
   });
 
-  it('defaults work-data capture to off on the server policy switch', () => {
+  it('RET Native Transcripts And Runtime Logs defaults the bound to 16 MiB and keeps capture off', () => {
     expect(
       OpenKitConfigSchema.parse({ schemaVersion: RETAINED_FORMAT_VERSION }).policy
     ).toBeUndefined();
@@ -208,13 +208,13 @@ describe('server config schema', () => {
         schemaVersion: RETAINED_FORMAT_VERSION,
         policy: { workDataCapture: {} },
       }).policy?.workDataCapture
-    ).toEqual({ value: 'off' });
+    ).toEqual({ value: 'off', nativeLogMaxBytes: 16_777_216 });
     expect(
       OpenKitConfigSchema.parse({
         schemaVersion: RETAINED_FORMAT_VERSION,
         policy: { workDataCapture: { value: 'on' } },
       }).policy?.workDataCapture
-    ).toEqual({ value: 'on' });
+    ).toEqual({ value: 'on', nativeLogMaxBytes: 16_777_216 });
     expect(
       OpenKitConfigSchema.safeParse({
         schemaVersion: RETAINED_FORMAT_VERSION,
@@ -587,4 +587,27 @@ it('retains the authored Policy collection without conflating its format with a 
       policy: { mediation: { ...mediation, revision: 'mutable-label' } },
     }).success
   ).toBe(false);
+});
+
+// RET §Native Transcripts And Runtime Logs: combined 16 MiB/Turn, operator-adjustable;
+// RET-2 keeps capture OFF. The limit is not part of captureCoverage.
+describe('RET-2 native log policy', () => {
+  it('accepts positive safe-integer overrides and refuses invalid limits', () => {
+    for (const nativeLogMaxBytes of [1, 97, Number.MAX_SAFE_INTEGER]) {
+      const result = OpenKitConfigSchema.safeParse({
+        schemaVersion: 1,
+        policy: { workDataCapture: { nativeLogMaxBytes } },
+      });
+      expect(result.success).toBe(true);
+      expect(result.data?.policy?.workDataCapture).toEqual({ value: 'off', nativeLogMaxBytes });
+    }
+    for (const nativeLogMaxBytes of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, '97', null]) {
+      expect(
+        OpenKitConfigSchema.safeParse({
+          schemaVersion: 1,
+          policy: { workDataCapture: { nativeLogMaxBytes } },
+        }).success
+      ).toBe(false);
+    }
+  });
 });

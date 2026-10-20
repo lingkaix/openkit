@@ -1,24 +1,34 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { WorkerCanonicalEventRecord, WorkerLineage } from '@openkit/worker-protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { readWorkObservationBody } from '../evidence-bundles.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
-import { openCoreDb } from '../storage/db.js';
-import { applyMigrations } from '../storage/migrate.js';
+import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { readThreadRuntimeActivity, readWorkObservations } from '../storage/work-observations.js';
+import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { markSchedulerExecutionAttemptClosing } from './execution-attempt-records.js';
+import { WorkerControlGateway } from './worker-control-gateway.js';
 import {
   canonicalStopReasonForAcceptedWorkerFinalStatus,
+  createWorkerControlAcceptedRecordRecorder,
   getWorkerControlAcceptedFinalStatus,
   listWorkerControlAcceptedEvents,
   recordWorkerControlAcceptedRecord,
   resolveWorkerControlFinalStatusTokenBinding,
   waitForWorkerControlFinalStatus,
 } from './worker-control-records.js';
+import { createWorkerControlSequenceRecorder } from './worker-control-sequences.js';
 
 const lineage: WorkerLineage = {
   agentSessionId: 'as_00000000-0000-7e3a-a966-bbf1c9a21fcc',
@@ -589,4 +599,540 @@ it.each([
   expect(() =>
     canonicalStopReasonForAcceptedWorkerFinalStatus({ ...accepted, status: 'completed' }, cause)
   ).toThrow('canonical');
+});
+
+/** Real Turn, named retained AEP, token-authenticated gateway, receipts and restricted body store. */
+function nativeReceiver(captureValue: 'on' | 'off' = 'on', bound: number | null = 8) {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-ret2-receiver-'));
+  let coreDb = openCoreDb(root);
+  applyMigrations(coreDb);
+  const store = createDemoStore({ dataRoot: root });
+  store.setLiveCaptureCoverage({ scope: 'server', value: captureValue });
+  const turn = store.createTurn(
+    'ws_00000000-0000-7000-8000-000000000001',
+    'th_00000000-0000-7000-8000-000000000001',
+    'Native receiver',
+    { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' }
+  );
+  const agentSessionId = testEntityId('as', 'ret2-native');
+  const pkg = resolveAgentEnvironmentPackage({
+    captureCoverage: store.getTurnCaptureCoverage(turn.id)!,
+    agentSetup: createTestAgentSetup(),
+    agentSessionId,
+    triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+    backend: { kind: 'openshell' },
+    turn,
+    workspaceRoots: [],
+    requestId: 'req_ret2',
+  });
+  // Explicit admitted package fixture; real policy selection has its own resolver test.
+  pkg.observability.evidence = { ...pkg.observability.evidence };
+  delete pkg.observability.evidence.nativeLogMaxBytes;
+  if (bound !== null) pkg.observability.evidence.nativeLogMaxBytes = bound;
+  store.createAgentSession({
+    id: agentSessionId,
+    agentId: pkg.agent.agentId,
+    workspaceId: pkg.scope.workspaceId,
+    threadId: turn.threadId,
+    status: 'busy',
+    message: null,
+    createdAt: turn.startedAt!,
+    updatedAt: turn.startedAt!,
+  });
+  store.updateTurn(turn.id, { agentSessionId });
+  const db = openWorkspaceDb(root, pkg.scope.workspaceId);
+  applyScopedMigrations(db);
+  recordAgentEnvironmentPackageSnapshot(db, { environmentPackage: pkg, createdAt: pkg.createdAt });
+  const owner = { threadId: turn.threadId, turnId: turn.id };
+  const auth = `Bearer ${'A'.repeat(43)}`;
+  const selectedLineage = {
+    ...owner,
+    workspaceId: pkg.scope.workspaceId,
+    agentSessionId,
+    requestId: 'req_ret2',
+    packageSnapshotId: pkg.snapshotId,
+  };
+  const register = (gateway: WorkerControlGateway, selected = pkg) =>
+    gateway.registerSession(selected, {
+      workerControlToken: 'A'.repeat(43),
+      workerInferenceToken: 'B'.repeat(43),
+      workerCapabilityToken: 'C'.repeat(43),
+    });
+  const makeGateway = () => {
+    const gateway = new WorkerControlGateway({
+      sequenceRecorder: createWorkerControlSequenceRecorder(coreDb),
+      acceptedRecordRecorder: createWorkerControlAcceptedRecordRecorder(coreDb),
+    });
+    register(gateway);
+    return gateway;
+  };
+  let gateway = makeGateway();
+  onTestFinished(() => {
+    db.sqlite.close();
+    coreDb.sqlite.close();
+    rmSync(root, { recursive: true, force: true });
+  });
+  const send = (
+    sequence: number,
+    type: string,
+    data: unknown,
+    options: { authorization?: string; lineage?: typeof selectedLineage } = {}
+  ) => {
+    const recordLineage = options.lineage ?? selectedLineage;
+    try {
+      return {
+        accepted: gateway.appendEvent({
+          authorization: options.authorization ?? auth,
+          lineage: selectedLineage,
+          record: {
+            schemaVersion: 1,
+            kind: 'event',
+            lineage: recordLineage,
+            sequence,
+            event: { type, data },
+          },
+        }).accepted,
+        error: null,
+      };
+    } catch (error) {
+      return { accepted: false, error };
+    }
+  };
+  // This accepted control proves registration, database, binding and transport setup on the RED base.
+  expect(send(0, 'worker.heartbeat', { status: 'running' }).accepted).toBe(true);
+  return {
+    db,
+    root,
+    pkg,
+    owner,
+    lineage: selectedLineage,
+    store,
+    send,
+    rows: () => readWorkObservations(db, owner),
+    receipts: () =>
+      coreDb.sqlite
+        .prepare('SELECT record_json FROM worker_control_records ORDER BY sequence')
+        .all(),
+    restart: () => {
+      coreDb.sqlite.close();
+      coreDb = openCoreDb(root);
+      gateway = makeGateway();
+    },
+    secondPackage: () => {
+      const second = { ...pkg, snapshotId: `${pkg.snapshotId}_second` };
+      recordAgentEnvironmentPackageSnapshot(db, {
+        environmentPackage: second,
+        createdAt: second.createdAt,
+      });
+      selectedLineage.packageSnapshotId = second.snapshotId;
+      register(gateway, second);
+    },
+  };
+}
+
+/** Expected native bytes use source coordinates, never transport byteOffset as native position. */
+function nativeMetadata(
+  f: ReturnType<typeof nativeReceiver>,
+  id: string,
+  bytes: Buffer,
+  options: {
+    kind?: 'runtime-log' | 'native-transcript';
+    sourceKind?: 'stderr' | 'stdout-log';
+    sourceRef?: string;
+    sourceSequence?: number;
+    start?: number;
+    chunkCount?: number;
+  } = {}
+) {
+  const kind = options.kind ?? 'runtime-log';
+  const start = options.start ?? 32;
+  return {
+    observationId: id,
+    sourceRef: options.sourceRef ?? `source-${id}`,
+    sourceSequence: options.sourceSequence ?? 0,
+    observedAt: f.pkg.createdAt,
+    fact: {
+      kind,
+      runtimeOriginRef: 'native-origin',
+      coverage: 'collecting',
+      native: {
+        harness: 'codex',
+        authoredVersion: 'test',
+        measuredVersion: null,
+        imageDigest: null,
+        format: kind === 'runtime-log' ? 'application/octet-stream' : 'codex-session-jsonl',
+        preLaunchWatermark: 32,
+        range: { start, end: start + bytes.length },
+        observedBytes: bytes.length,
+        retainedBytes: bytes.length,
+        omittedBytes: null,
+        sourceEnded: false,
+        ...(kind === 'runtime-log' ? { logSource: options.sourceKind ?? 'stderr' } : {}),
+      },
+    },
+    content: {
+      state: 'expected',
+      mediaType: 'application/octet-stream',
+      boundary: 'native-content-v1',
+      bytes: bytes.length,
+      sha256: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+      chunkCount: options.chunkCount ?? (bytes.length ? 1 : 0),
+    },
+  };
+}
+
+/** Builds the existing bounded binary transport record without a replacement producer. */
+function nativeChunk(observationId: string, bytes: Buffer, chunkIndex = 0, byteOffset = 0) {
+  return {
+    observationId,
+    chunkIndex,
+    byteOffset,
+    encoding: 'base64',
+    data: bytes.toString('base64'),
+  };
+}
+
+/** Reads only storage-owned publication refs through the existing restricted body reader. */
+function nativeBodies(f: ReturnType<typeof nativeReceiver>) {
+  return f
+    .rows()
+    .filter((row) => row.type === 'content.published')
+    .map((row) => {
+      const ref = row.refs!.find((ref) => ref.edge === 'publication')!;
+      const parent = f.rows().find((candidate) => candidate.id === row.parent)!;
+      const bytes = readWorkObservationBody(f.db, {
+        ...f.owner,
+        bundleId: ref.locator,
+        createdAt: parent.ts,
+        sha256: ref.digest!,
+      });
+      return { ref, bytes: bytes === null ? null : Buffer.from(bytes) };
+    });
+}
+
+// RET §§Native Transcripts And Runtime Logs, Capture Safety And Restricted Access; WCP incremental observations.
+it.each([
+  'semantic-control',
+  'native',
+] as const)('RET-2 %s publishes exact binary and split UTF-8 only after verified chunks, with safe receipts and no ordinary body', (mode) => {
+  const f = nativeReceiver();
+  const bytes = Buffer.concat([Buffer.from([255, 0]), Buffer.from('雪\r\n')]);
+  const native = nativeMetadata(f, 'binary', bytes, { chunkCount: 2 });
+  const metadata =
+    mode === 'native'
+      ? native
+      : {
+          ...native,
+          fact: {
+            kind: 'assistant',
+            runtimeOriginRef: null,
+            phase: 'updated',
+            messageRef: 'control',
+            representation: 'delta',
+          },
+          content: { ...native.content, mediaType: 'text/plain', boundary: 'assistant.text' },
+        };
+  expect(f.send(1, 'observation.recorded', metadata).accepted).toBe(true);
+  expect(
+    f.send(2, 'observation.content.chunk', nativeChunk('binary', bytes.subarray(0, 3))).accepted
+  ).toBe(true);
+  expect(nativeBodies(f)).toEqual([]);
+  f.restart();
+  // Fault at the existing body adoption boundary: staged bytes exist, but publication cannot write.
+  const bundle = f.db.sqlite
+    .prepare('SELECT evidence_bundle_id AS id FROM evidence_bundles')
+    .get() as { id: string };
+  const publicationPath = join(
+    f.root,
+    'workspaces',
+    f.lineage.workspaceId,
+    'evidence',
+    'backend',
+    bundle.id,
+    'raw',
+    'content'
+  );
+  mkdirSync(publicationPath);
+  const priorReceipts = f.receipts();
+  expect(
+    f.send(3, 'observation.content.chunk', nativeChunk('binary', bytes.subarray(3), 1, 3)).accepted
+  ).toBe(false);
+  expect(f.receipts()).toEqual(priorReceipts);
+  expect(nativeBodies(f)).toEqual([]);
+  rmSync(publicationPath, { recursive: true });
+  expect(
+    f.send(3, 'observation.content.chunk', nativeChunk('binary', bytes.subarray(3), 1, 3)).accepted
+  ).toBe(true);
+  const [body] = nativeBodies(f);
+  expect(body!.bytes).toEqual(bytes);
+  expect(body!.ref.digest).toBe(createHash('sha256').update(bytes).digest('hex'));
+  expect(body!.ref.scope).toEqual({ workspaceId: f.lineage.workspaceId, pathClass: 'backend' });
+  const retained = f.rows().find((row) => row.type === 'runtime.observed')!;
+  expect(retained.payload).toEqual(metadata);
+  expect(retained.refs).toContainEqual({
+    kind: 'aep-snapshot',
+    scope: { workspaceId: f.lineage.workspaceId },
+    locator: f.pkg.snapshotId,
+    edge: 'association',
+  });
+  expect(JSON.stringify(f.receipts())).not.toContain(bytes.subarray(3).toString('base64'));
+  expect(
+    f.db.sqlite.prepare('SELECT retention_class, sensitivity_class FROM evidence_bundles').all()
+  ).toEqual([{ retention_class: 'restricted-raw', sensitivity_class: 'restricted' }]);
+  const activity = readThreadRuntimeActivity(f.db, {
+    threadId: f.owner.threadId,
+    turnIds: [f.owner.turnId],
+  });
+  expect(activity[0]!.entries.every((entry) => !('text' in entry))).toBe(true);
+  expect(f.store.getTurnById(f.owner.turnId).items).toEqual([]);
+});
+
+// RET §Native Transcripts And Runtime Logs: combined per-Turn budget, immutable admission, transcripts independent.
+it('RET-2 shares the cap across concurrent stderr/stdout sources and packages; reopen and replay cannot recharge it', () => {
+  const f = nativeReceiver();
+  const stderr = nativeMetadata(f, 'stderr', Buffer.from('abcd'));
+  const stdout = nativeMetadata(f, 'stdout', Buffer.from('efgh'), { sourceKind: 'stdout-log' });
+  expect(f.send(1, 'observation.recorded', stderr).accepted).toBe(true);
+  // Reserve both units before either publishes: loss cannot free the potential bytes.
+  expect(f.send(2, 'observation.recorded', stdout).accepted).toBe(true);
+  expect(
+    f.send(3, 'observation.recorded', nativeMetadata(f, 'unpublished-overflow', Buffer.from('i')))
+      .accepted
+  ).toBe(false);
+  expect(
+    f.send(4, 'observation.content.chunk', nativeChunk('stderr', Buffer.from('abcd'))).accepted
+  ).toBe(true);
+  f.restart();
+  expect(f.send(1, 'observation.recorded', stderr).accepted).toBe(true);
+  expect(
+    f.send(4, 'observation.content.chunk', nativeChunk('stderr', Buffer.from('abcd'))).accepted
+  ).toBe(true);
+  expect(
+    f.send(5, 'observation.content.chunk', nativeChunk('stdout', Buffer.from('efgh'))).accepted
+  ).toBe(true);
+  expect(nativeBodies(f).map((body) => body.bytes)).toEqual([
+    Buffer.from('abcd'),
+    Buffer.from('efgh'),
+  ]);
+  f.secondPackage();
+  const excess = nativeMetadata(f, 'excess', Buffer.from('i'));
+  expect(f.send(1, 'observation.recorded', excess).accepted).toBe(false);
+  const truncation = {
+    ...excess,
+    fact: {
+      ...excess.fact,
+      coverage: 'unavailable',
+      reason: 'limit-exceeded',
+      native: {
+        ...excess.fact.native,
+        range: null,
+        retainedBytes: 0,
+        observedBytes: null,
+        omittedBytes: null,
+      },
+    },
+    content: { state: 'unavailable', reason: 'truncated' },
+  };
+  expect(f.send(2, 'observation.recorded', truncation).accepted).toBe(true);
+  expect(f.rows().find((row) => row.payload.observationId === 'excess')!.payload).toEqual(
+    truncation
+  );
+  const transcript = nativeMetadata(
+    f,
+    'transcript',
+    Buffer.from('native transcript exceeds the log cap'),
+    { kind: 'native-transcript' }
+  );
+  expect(f.send(3, 'observation.recorded', transcript).accepted).toBe(true);
+  expect(
+    f.send(
+      4,
+      'observation.content.chunk',
+      nativeChunk('transcript', Buffer.from('native transcript exceeds the log cap'))
+    ).accepted
+  ).toBe(true);
+  expect(nativeBodies(f)).toHaveLength(3);
+  expect(
+    f
+      .rows()
+      .filter((row) => row.type === 'runtime.observed')
+      .map((row) => row.payload.observationId)
+  ).toEqual(['stderr', 'stdout', 'excess', 'transcript']);
+});
+
+// WCP §Authentication and §Incremental Work Observations: outer lineage and storage-owned publication authority.
+it('RET-2 rejects foreign scope/package/source, forged publication and divergent content without acknowledging it', () => {
+  const f = nativeReceiver();
+  const bytes = Buffer.from('safe');
+  const metadata = nativeMetadata(f, 'authorized', bytes);
+  expect(f.send(1, 'observation.recorded', metadata).accepted).toBe(true);
+  const before = f.receipts();
+  // A rejected durable event can retain its fingerprint; later events use fresh sequence numbers.
+  let sequence = 2;
+  for (const change of [
+    { harness: 'other-harness' },
+    { authoredVersion: 'other-version' },
+    { imageDigest: `sha256:${'b'.repeat(64)}` },
+  ]) {
+    expect(
+      f.send(sequence++, 'observation.recorded', {
+        ...metadata,
+        observationId: 'foreign-native',
+        fact: { ...metadata.fact, native: { ...metadata.fact.native, ...change } },
+      }).accepted
+    ).toBe(false);
+  }
+  expect(
+    f.send(sequence++, 'observation.content.chunk', nativeChunk('authorized', bytes), {
+      authorization: `Bearer ${'D'.repeat(43)}`,
+    }).accepted
+  ).toBe(false);
+  for (const lineage of [
+    { ...f.lineage, workspaceId: testEntityId('ws', 'foreign') },
+    { ...f.lineage, packageSnapshotId: 'aep_foreign' },
+  ]) {
+    expect(
+      f.send(sequence++, 'observation.content.chunk', nativeChunk('authorized', bytes), { lineage })
+        .accepted
+    ).toBe(false);
+  }
+  expect(
+    f.send(sequence++, 'observation.recorded', { ...metadata, sourceRef: 'foreign-source' })
+      .accepted
+  ).toBe(false);
+  expect(
+    f.send(sequence++, 'observation.content.chunk', nativeChunk('unannounced', bytes)).accepted
+  ).toBe(false);
+  expect(
+    f.send(sequence++, 'observation.recorded', {
+      ...metadata,
+      observationId: 'forged',
+      content: { state: 'published', ref: 'forged' },
+      refs: [{ edge: 'publication', locator: 'forged' }],
+    }).accepted
+  ).toBe(false);
+  expect(f.receipts()).toEqual(before);
+  const publishedSequence = sequence++;
+  expect(
+    f.send(publishedSequence, 'observation.content.chunk', nativeChunk('authorized', bytes))
+      .accepted
+  ).toBe(true);
+  const committed = f.receipts();
+  expect(
+    f.send(
+      publishedSequence,
+      'observation.content.chunk',
+      nativeChunk('authorized', Buffer.from('evil'))
+    ).accepted
+  ).toBe(false);
+  expect(f.receipts()).toEqual(committed);
+  expect(nativeBodies(f)[0]!.bytes).toEqual(bytes);
+});
+
+// RET §Capture Publication, Restart And Disposal: committed prefix and unavailability survive interrupted publication.
+it('RET-2 retains an interrupted prefix and explicit failure; missing chunks and digest mismatch never publish', () => {
+  const f = nativeReceiver();
+  const first = nativeMetadata(f, 'prefix', Buffer.from('ok'));
+  expect(f.send(1, 'observation.recorded', first).accepted).toBe(true);
+  expect(
+    f.send(2, 'observation.content.chunk', nativeChunk('prefix', Buffer.from('ok'))).accepted
+  ).toBe(true);
+  const next = nativeMetadata(f, 'incomplete', Buffer.from('abcd'), {
+    chunkCount: 2,
+    sourceRef: first.sourceRef,
+    sourceSequence: 1,
+    start: 34,
+  });
+  expect(f.send(3, 'observation.recorded', next).accepted).toBe(true);
+  expect(
+    f.send(4, 'observation.content.chunk', nativeChunk('incomplete', Buffer.from('ab'))).accepted
+  ).toBe(true);
+  f.restart();
+  expect(nativeBodies(f).map((body) => body.bytes)).toEqual([Buffer.from('ok')]);
+  const receipts = f.receipts();
+  expect(
+    f.send(5, 'observation.content.chunk', nativeChunk('incomplete', Buffer.from('xx'), 1, 2))
+      .accepted
+  ).toBe(false);
+  expect(f.receipts()).toEqual(receipts);
+  const failure = {
+    ...next,
+    observationId: 'interrupted',
+    sourceSequence: 2,
+    fact: {
+      ...next.fact,
+      native: { ...next.fact.native, range: null, observedBytes: null, retainedBytes: 0 },
+      coverage: 'unavailable',
+      reason: 'collector-failed',
+    },
+    content: {
+      state: 'unavailable',
+      reason: 'capture-failed',
+      expectedObservationId: 'incomplete',
+    },
+  };
+  expect(f.send(6, 'observation.recorded', failure).accepted).toBe(true);
+  expect(f.rows().find((row) => row.payload.observationId === 'interrupted')!.payload).toEqual(
+    failure
+  );
+  expect(nativeBodies(f).map((body) => body.bytes)).toEqual([Buffer.from('ok')]);
+  expect(
+    readThreadRuntimeActivity(f.db, { threadId: f.owner.threadId, turnIds: [f.owner.turnId] })[0]!
+      .coverage
+  ).toBe('partial');
+});
+
+// RET §§Capture Coverage, Native Transcripts And Runtime Logs: OFF, missing source, failure and truncation are facts, not bodies.
+it('RET-2 retains OFF/missing/failure/truncation distinctions and refuses content without named native authority', () => {
+  const f = nativeReceiver('off');
+  const value = nativeMetadata(f, 'disabled', Buffer.alloc(0));
+  const off = {
+    ...value,
+    fact: {
+      ...value.fact,
+      coverage: 'off',
+      native: { ...value.fact.native, range: null, observedBytes: null },
+    },
+    content: { state: 'off' },
+  };
+  expect(f.send(1, 'observation.recorded', off).accepted).toBe(true);
+  expect(
+    f.send(2, 'observation.recorded', nativeMetadata(f, 'forbidden', Buffer.from('x'))).accepted
+  ).toBe(false);
+  const reasons = ['source-missing', 'collector-failed', 'limit-exceeded'] as const;
+  for (const [index, reason] of reasons.entries()) {
+    const unavailable = {
+      ...value,
+      observationId: `unavailable-${index}`,
+      sourceSequence: index + 1,
+      fact: {
+        ...value.fact,
+        coverage: 'unavailable',
+        reason,
+        native: { ...value.fact.native, range: null, observedBytes: null },
+      },
+      content: {
+        state: 'unavailable',
+        reason: ['unsupported', 'capture-failed', 'truncated'][index],
+      },
+    };
+    expect(f.send(index + 3, 'observation.recorded', unavailable).accepted).toBe(true);
+    expect(
+      f.rows().find((row) => row.payload.observationId === unavailable.observationId)!.payload
+    ).toEqual(unavailable);
+  }
+  expect(nativeBodies(f)).toEqual([]);
+  expect(
+    readThreadRuntimeActivity(f.db, { threadId: f.owner.threadId, turnIds: [f.owner.turnId] })[0]!
+      .contentCapture
+  ).toBe('off');
+  const historical = nativeReceiver('on', null);
+  expect(
+    historical.send(
+      1,
+      'observation.recorded',
+      nativeMetadata(historical, 'no-authority', Buffer.from('x'))
+    ).accepted
+  ).toBe(false);
+  expect(historical.rows()).toEqual([]);
 });

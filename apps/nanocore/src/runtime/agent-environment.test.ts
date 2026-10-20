@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import {
   type AgentEnvironmentCredentialDeclaration,
   AgentEnvironmentPackageSchema,
+  OpenKitConfigSchema,
   type SessionWorkspaceMaterializationPlan,
   type WorkerSandboxAccess,
   WorkerSandboxAccessSchema,
@@ -2985,4 +2986,43 @@ it.each([
       turn: { ...input.turn, reasoningEffort: 'high' },
     })
   );
+});
+
+// RET §Native Transcripts And Runtime Logs; RET-2 selects once into immutable AEP evidence.
+it('RET-2 binds the default and later policy selection into separate AEPs, keeping capture OFF', () => {
+  let config = createInMemoryRuntimeConfigSnapshot({
+    dataRoot: null,
+    openKitConfig: OpenKitConfigSchema.parse({ schemaVersion: 1 }),
+  });
+  const turn = createTurnFixture('Select native log bound');
+  const resolve = (suffix: string) =>
+    resolveAgentEnvironmentPackage({
+      captureCoverage: { scope: 'server', value: 'off' },
+      agentSetup: createTestSetup(),
+      agentSessionId: testEntityId('as', `ret2-${suffix}`),
+      backend: { kind: 'openshell' },
+      turn,
+      triggerActor: USER_TRIGGER_ACTOR,
+      workspaceRoots: [],
+      readRuntimeConfig: () => config,
+    });
+  const first = resolve('first');
+  expect(first.observability.evidence?.nativeLogMaxBytes).toBe(16_777_216);
+  const firstBytes = JSON.stringify(first);
+  config = createInMemoryRuntimeConfigSnapshot({
+    dataRoot: null,
+    openKitConfig: OpenKitConfigSchema.parse({
+      schemaVersion: 1,
+      policy: { workDataCapture: { nativeLogMaxBytes: 97 } },
+    }),
+  });
+  const later = resolve('later');
+  expect(later.observability.evidence?.nativeLogMaxBytes).toBe(97);
+  expect(later.observability.captureCoverage).toEqual({ scope: 'server', value: 'off' });
+  expect(first.observability.captureCoverage).toEqual({ scope: 'server', value: 'off' });
+  expect(JSON.stringify(first)).toBe(firstBytes);
+  expect(
+    AgentEnvironmentPackageSchema.parse(JSON.parse(firstBytes)).observability.evidence
+      ?.nativeLogMaxBytes
+  ).toBe(16_777_216);
 });
