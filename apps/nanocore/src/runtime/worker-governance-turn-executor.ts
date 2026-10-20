@@ -82,6 +82,7 @@ import {
   AgentSessionRetainedStorageSchema,
   isCurrentAgentSessionStatus,
 } from '../storage/workspace-file-records.js';
+import { withLifecycleStageTelemetry } from '../telemetry.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
 import {
   type CreateVaultInjectionReceiptInput,
@@ -1980,20 +1981,31 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             503
           );
         }
-        preparedWorkerContext = await prepareWorkerTurnContextPackage(
-          this.coreDb,
-          workspaceDb,
-          store,
-          checkpoint,
+        preparedWorkerContext = await withLifecycleStageTelemetry(
           {
+            stage: 'preparation',
+            workerKind: context.agentSetup.manifest.runtime.kind,
             agentSessionId: resolvedAgentSessionId,
-            requestId,
-            threadId: turn.threadId,
             turnId: turn.id,
-            workerRequest: contextRequest,
+            threadId: turn.threadId,
             workspaceId: workspaceIdForOwner(turn.owner),
           },
-          this.fileAdmission
+          () =>
+            prepareWorkerTurnContextPackage(
+              this.coreDb!,
+              workspaceDb!,
+              store,
+              checkpoint,
+              {
+                agentSessionId: resolvedAgentSessionId,
+                requestId,
+                threadId: turn.threadId,
+                turnId: turn.id,
+                workerRequest: contextRequest,
+                workspaceId: workspaceIdForOwner(turn.owner),
+              },
+              this.fileAdmission!
+            )
         );
       }
       if (preparedWorkerContext && !turn.startedAt) {
@@ -2059,7 +2071,16 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           }
         : resolvedEnvironmentPackage;
       // Validate the complete package before publishing a session or attempting runtime effects.
-      const packageDiagnostics = await this.backend.validatePackage(environmentPackage);
+      const packageDiagnostics = await withLifecycleStageTelemetry(
+        {
+          ...environmentPackage.scope,
+          packageSnapshotId: environmentPackage.snapshotId,
+          workerKind: environmentPackage.agent.runtimeKind,
+          stage: 'validation',
+        },
+        () => this.backend.validatePackage(environmentPackage!),
+        (diagnostics) => (diagnostics.length === 0 ? 'success' : 'rejected')
+      );
       if (packageDiagnostics.length > 0) {
         agentSessionId = null;
         throw new DeterministicAgentPreparationError(
@@ -2275,24 +2296,36 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         }
         backendCleanupRequired = true;
       };
-      const materialization = await this.backend.materialize(environmentPackage, {
-        beforeMaterialization: publishMaterialization,
-        ...(preparedWorkerContext?.packageFiles.sourceFileInputs
-          ? { contextPackageSources: preparedWorkerContext.packageFiles.sourceFileInputs }
-          : {}),
-        ...(this.coreDb?.dataRoot ? { dataRoot: this.coreDb.dataRoot } : {}),
-        providerCredentials,
-        runtimeEnvCredentials,
-        runtimeFileCredentials,
-        ...(context.sandboxBindingRef ? { sandboxBindingRef: context.sandboxBindingRef } : {}),
-        ...(context.workerStorageChoice
-          ? { workerStorageChoice: context.workerStorageChoice }
-          : {}),
-        nativeResume,
-        workspaceRoots: preparedWorkerContext
-          ? [...context.workspaceRoots, preparedWorkerContext.preparedContextPackage.workspaceRoot]
-          : context.workspaceRoots,
-      });
+      const materialization = await withLifecycleStageTelemetry(
+        {
+          ...environmentPackage.scope,
+          packageSnapshotId: environmentPackage.snapshotId,
+          workerKind: environmentPackage.agent.runtimeKind,
+          stage: 'materialization',
+        },
+        () =>
+          this.backend.materialize(environmentPackage!, {
+            beforeMaterialization: publishMaterialization,
+            ...(preparedWorkerContext?.packageFiles.sourceFileInputs
+              ? { contextPackageSources: preparedWorkerContext.packageFiles.sourceFileInputs }
+              : {}),
+            ...(this.coreDb?.dataRoot ? { dataRoot: this.coreDb.dataRoot } : {}),
+            providerCredentials,
+            runtimeEnvCredentials,
+            runtimeFileCredentials,
+            ...(context.sandboxBindingRef ? { sandboxBindingRef: context.sandboxBindingRef } : {}),
+            ...(context.workerStorageChoice
+              ? { workerStorageChoice: context.workerStorageChoice }
+              : {}),
+            nativeResume,
+            workspaceRoots: preparedWorkerContext
+              ? [
+                  ...context.workspaceRoots,
+                  preparedWorkerContext.preparedContextPackage.workspaceRoot,
+                ]
+              : context.workspaceRoots,
+          })
+      );
       if (!materializationPublished)
         throw new Error('Backend materialization omitted its pre-effect publication boundary.');
       if (materialization.retainedStorage) {
@@ -2431,7 +2464,27 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       }
 
       if (this.awaitWorkerCompletion && completionLeaseId) {
-        workerFinalStatus = await this.awaitWorkerCompletion(environmentPackage, completionLeaseId);
+        workerFinalStatus = await withLifecycleStageTelemetry(
+          {
+            ...environmentPackage.scope,
+            packageSnapshotId: environmentPackage.snapshotId,
+            workerKind: environmentPackage.agent.runtimeKind,
+            stage: 'native.run',
+            rejectionOutcome: 'unknown',
+          },
+          () => this.awaitWorkerCompletion!(environmentPackage!, completionLeaseId),
+          // Only the accepted native status is classified; collection and release remain separate.
+          (final) =>
+            final.status === 'completed'
+              ? 'success'
+              : final.status === 'cancelled' || final.status === 'interrupted'
+                ? 'cancelled'
+                : final.status === 'failed'
+                  ? 'failure'
+                  : final.status === 'degraded' || final.status === 'blocked'
+                    ? 'degraded'
+                    : 'unknown'
+        );
         closeoutAt = workerFinalStatus.acceptedAt;
       }
       closeoutAt ??= this.now();
@@ -2813,7 +2866,15 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       if (pass !== 0 || result.state !== 'unknown') break;
       // The cleaned Turn anchor does not prove wider resident cleanup.
       // Continue that existing owner without restoring the obsolete binding or replaying an uncertain effect.
-      await this.backend.cleanupSession(this.backend.planSession(environmentPackage));
+      await withLifecycleStageTelemetry(
+        {
+          ...environmentPackage.scope,
+          packageSnapshotId: environmentPackage.snapshotId,
+          workerKind: environmentPackage.agent.runtimeKind,
+          stage: 'cleanup.release',
+        },
+        () => this.backend.cleanupSession(this.backend.planSession(environmentPackage))
+      );
     }
     throw new Error('Attempt release remains incomplete.');
   }
@@ -2939,7 +3000,16 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     recordedAt: string
   ): Promise<void> {
     await this.backend.collectEvidence(environmentPackage.snapshotId);
-    const transcript = await this.backend.collectTranscript(environmentPackage.snapshotId, true);
+    const transcript = await withLifecycleStageTelemetry(
+      {
+        ...environmentPackage.scope,
+        packageSnapshotId: environmentPackage.snapshotId,
+        workerKind: environmentPackage.agent.runtimeKind,
+        stage: 'collection',
+      },
+      () => this.backend.collectTranscript(environmentPackage.snapshotId, true),
+      () => (environmentPackage.control.transcript ? 'success' : 'degraded')
+    );
     const workerLineage = {
       workspaceId: environmentPackage.scope.workspaceId,
       threadId: environmentPackage.scope.threadId,
@@ -3010,9 +3080,14 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             workspaceId: environmentPackage.scope.workspaceId,
           })
         : [];
-      const workspaceChanges = await this.backend.collectWorkspaceChanges(
-        environmentPackage.snapshotId,
-        true
+      const workspaceChanges = await withLifecycleStageTelemetry(
+        {
+          ...environmentPackage.scope,
+          packageSnapshotId: environmentPackage.snapshotId,
+          workerKind: environmentPackage.agent.runtimeKind,
+          stage: 'collection',
+        },
+        () => this.backend.collectWorkspaceChanges(environmentPackage.snapshotId, true)
       );
       const publishesWorkspaceContent = Boolean(transcript.itemsJsonl?.trim());
       const publishesArtifacts = Boolean(workspaceChanges.length);
@@ -3227,11 +3302,21 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       }
 
       try {
-        if (failedCloseout) {
-          await this.backend.cleanupSession(lifecycle.identity, { failedCloseout: true });
-        } else {
-          await this.backend.cleanupSession(lifecycle.identity);
-        }
+        await withLifecycleStageTelemetry(
+          {
+            ...environmentPackage.scope,
+            packageSnapshotId: environmentPackage.snapshotId,
+            workerKind: environmentPackage.agent.runtimeKind,
+            stage: 'cleanup.release',
+          },
+          async () => {
+            if (failedCloseout) {
+              await this.backend.cleanupSession(lifecycle.identity, { failedCloseout: true });
+            } else {
+              await this.backend.cleanupSession(lifecycle.identity);
+            }
+          }
+        );
       } catch (error) {
         if (lifecycle.session?.state === 'cleanup-pending') {
           lifecycle.session = transitionWorkerBackendSessionState(this.coreDb!, {

@@ -1,15 +1,27 @@
 import {
   type Context,
+  type Histogram,
   INVALID_SPAN_CONTEXT,
   ROOT_CONTEXT,
   type Span,
   SpanKind,
+  SpanStatusCode,
   trace,
 } from '@opentelemetry/api';
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
 import { W3CTraceContextPropagator } from '@opentelemetry/core';
+import {
+  AggregationTemporalityPreference,
+  OTLPMetricExporter,
+} from '@opentelemetry/exporter-metrics-otlp-http';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
 import { resourceFromAttributes } from '@opentelemetry/resources';
+import {
+  createAllowListAttributesProcessor,
+  MeterProvider,
+  PeriodicExportingMetricReader,
+  type PushMetricExporter,
+} from '@opentelemetry/sdk-metrics';
 import {
   BatchSpanProcessor,
   SimpleSpanProcessor,
@@ -30,18 +42,32 @@ export interface TelemetryConfiguration {
 const UNKNOWN_HTTP_ROUTE = 'unknown';
 const HTTP_RESPONSE_HANDOFF = 'handoff';
 const TRACES_PATH = 'v1/traces';
+const STAGE_DURATION_METRIC = 'openkit.turn.stage.duration';
+const STAGE_DIMENSIONS = [
+  'openkit.lifecycle.stage',
+  'openkit.outcome.class',
+  'openkit.worker.kind',
+];
+// Milliseconds through the current 25-minute preparation limit, expressed in seconds.
+const STAGE_BUCKETS = [
+  0, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 300, 1500,
+];
+const RELEASE_WORKER_KINDS = new Set(['codex', 'pi', 'opencode', 'claude-code', 'internal']);
 const SERVICE_NAME = 'nanocore';
 const MAX_QUEUE_SIZE = 512;
 const EXPORT_TIMEOUT_MS = 1_000;
 const HEADER_ENV_VARS = [
   'OTEL_EXPORTER_OTLP_HEADERS',
   'OTEL_EXPORTER_OTLP_TRACES_HEADERS',
+  'OTEL_EXPORTER_OTLP_METRICS_HEADERS',
 ] as const;
 const INVALID_ENDPOINT_DIAGNOSTIC =
   'Telemetry export is disabled because OTEL_EXPORTER_OTLP_ENDPOINT is not a valid HTTP(S) URL.';
 const START_FAILURE_DIAGNOSTIC = 'Telemetry export could not start; product boot continues.';
 
 let activeProvider: NodeTracerProvider | null = null;
+let activeMeterProvider: MeterProvider | null = null;
+let stageDuration: Histogram | null = null;
 let activeContextManager: AsyncLocalStorageContextManager | null = null;
 const traceContextPropagator = new W3CTraceContextPropagator();
 
@@ -105,13 +131,15 @@ export function startTelemetry(options: {
   if (!configuration.enabled) return configuration;
 
   const processors: (SimpleSpanProcessor | BatchSpanProcessor)[] = [];
+  const metricExporters: PushMetricExporter[] = [];
   if (options.logDirectory && options.readReserveBytes) {
     const local = createLocalTraceExporter({
       logDirectory: options.logDirectory,
       readReserveBytes: options.readReserveBytes,
       env,
     });
-    if (local)
+    if (local) {
+      metricExporters.push(local.metrics);
       processors.push(
         options.exporter
           ? new SimpleSpanProcessor(local)
@@ -120,6 +148,7 @@ export function startTelemetry(options: {
               exportTimeoutMillis: EXPORT_TIMEOUT_MS,
             })
       );
+    }
   }
   if (
     configuration.exportConfigured &&
@@ -140,21 +169,63 @@ export function startTelemetry(options: {
     } catch {
       console.warn(START_FAILURE_DIAGNOSTIC);
     }
+    // The injected trace exporter is an in-process test destination, not a network opt-in.
+    if (!options.exporter) {
+      try {
+        metricExporters.push(
+          new OTLPMetricExporter({
+            url: `${rawEndpoint.replace(/\/$/, '')}/v1/metrics`,
+            temporalityPreference: AggregationTemporalityPreference.DELTA,
+            timeoutMillis: EXPORT_TIMEOUT_MS,
+          })
+        );
+      } catch {
+        console.warn(START_FAILURE_DIAGNOSTIC);
+      }
+    }
   }
   try {
+    const resource = resourceFromAttributes({
+      'service.name': SERVICE_NAME,
+      'service.instance.id': options.bootId,
+      ...(options.serviceVersion ? { 'service.version': options.serviceVersion } : {}),
+      ...(options.deploymentEnvironment
+        ? { 'deployment.environment.name': options.deploymentEnvironment }
+        : {}),
+    });
     const provider = new NodeTracerProvider({
-      resource: resourceFromAttributes({
-        'service.name': SERVICE_NAME,
-        'service.instance.id': options.bootId,
-        ...(options.serviceVersion ? { 'service.version': options.serviceVersion } : {}),
-        ...(options.deploymentEnvironment
-          ? { 'deployment.environment.name': options.deploymentEnvironment }
-          : {}),
-      }),
+      resource,
       spanProcessors: processors,
     });
     activeContextManager = new AsyncLocalStorageContextManager().enable();
     activeProvider = provider;
+    try {
+      activeMeterProvider = new MeterProvider({
+        resource,
+        readers: metricExporters.map(
+          (exporter) =>
+            new PeriodicExportingMetricReader({
+              exporter,
+              exportTimeoutMillis: EXPORT_TIMEOUT_MS,
+            })
+        ),
+        views: [
+          {
+            instrumentName: STAGE_DURATION_METRIC,
+            attributesProcessors: [createAllowListAttributesProcessor(STAGE_DIMENSIONS)],
+          },
+        ],
+      });
+      stageDuration = activeMeterProvider
+        .getMeter(SERVICE_NAME)
+        .createHistogram(STAGE_DURATION_METRIC, {
+          unit: 's',
+          description: 'Duration of one observed Worker lifecycle operation.',
+          advice: { explicitBucketBoundaries: STAGE_BUCKETS },
+        });
+    } catch {
+      console.warn('Lifecycle metrics could not start; product execution continues.');
+    }
   } catch {
     console.warn(START_FAILURE_DIAGNOSTIC);
   }
@@ -167,15 +238,25 @@ export function startTelemetry(options: {
  */
 export async function shutdownTelemetry(): Promise<void> {
   const provider = activeProvider;
+  const meterProvider = activeMeterProvider;
   const contextManager = activeContextManager;
   activeProvider = null;
+  activeMeterProvider = null;
+  stageDuration = null;
   activeContextManager = null;
   contextManager?.disable();
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    if (provider) {
+    if (provider || meterProvider) {
       await Promise.race([
-        provider.shutdown(),
+        (async () => {
+          // Drain metric readers before the trace provider closes their shared local writer.
+          try {
+            await meterProvider?.shutdown();
+          } finally {
+            await provider?.shutdown();
+          }
+        })(),
         new Promise<void>((resolve) => {
           timer = setTimeout(() => {
             console.warn('Telemetry shutdown flush timed out; product shutdown continues.');
@@ -189,6 +270,171 @@ export async function shutdownTelemetry(): Promise<void> {
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** Existing awaited operation families; no admission, human-wait or durable-root lifetime is invented. */
+export type LifecycleStage =
+  | 'preparation'
+  | 'validation'
+  | 'materialization'
+  | 'session.open.inspect'
+  | 'turn.start.delivery'
+  | 'native.run'
+  | 'collection'
+  | 'cleanup.release';
+
+/** Closed diagnostic classifications, never product outcome authority. */
+export type LifecycleOutcome =
+  | 'success'
+  | 'failure'
+  | 'cancelled'
+  | 'timeout'
+  | 'rejected'
+  | 'unknown'
+  | 'degraded';
+
+/** Known Core ids and one operation classification; this is not an arbitrary attribute map. */
+export interface LifecycleStageContext {
+  readonly stage: LifecycleStage;
+  readonly workerKind: string;
+  readonly turnId?: string;
+  readonly threadId?: string;
+  readonly workspaceId?: string;
+  readonly agentSessionId?: string;
+  readonly packageSnapshotId?: string;
+  /** A rejected delivery wait does not prove native non-receipt or failure. */
+  readonly rejectionOutcome?: LifecycleOutcome;
+}
+
+/**
+ * Observes one awaited invocation without replacing its Promise, result, error or controls.
+ *
+ * The private active/captured context contains this span until the invocation settles. Trusted callers can attach admitted observations before settlement; ended spans are never reopened. SDK/setup/classifier/recording failures cannot suppress or retry the operation. No error content is recorded.
+ * @param stage Existing operation family and known correlation, not a generated execution identity.
+ * @param operation Original call, invoked exactly once.
+ * @param classify Classifies returned facts; fulfillment alone need not mean success.
+ * @returns The original operation Promise, including when SDK capture is disabled.
+ */
+export function withLifecycleStageTelemetry<T>(
+  stage: LifecycleStageContext,
+  operation: () => Promise<T>,
+  classify?: (result: T) => LifecycleOutcome
+): Promise<T> {
+  const provider = activeProvider;
+  const manager = activeContextManager;
+  if (!provider || !manager) return operation();
+  let span: Span;
+  let spanContext: Context;
+  let started: bigint;
+  const histogram = stageDuration;
+  const workerKind = RELEASE_WORKER_KINDS.has(stage.workerKind) ? stage.workerKind : 'unknown';
+  try {
+    const parent = manager.active();
+    started = process.hrtime.bigint();
+    span = provider.getTracer(SERVICE_NAME).startSpan(
+      `worker.${stage.stage}`,
+      {
+        attributes: {
+          'openkit.lifecycle.stage': stage.stage,
+          'openkit.reporting.owner': 'core',
+          'openkit.stage.reached': true,
+          'openkit.worker.kind': workerKind,
+          ...(stage.turnId ? { 'openkit.turn.id': stage.turnId } : {}),
+          ...(stage.threadId ? { 'openkit.thread.id': stage.threadId } : {}),
+          ...(stage.workspaceId ? { 'openkit.workspace.id': stage.workspaceId } : {}),
+          ...(stage.agentSessionId ? { 'openkit.agent.session.id': stage.agentSessionId } : {}),
+          ...(stage.packageSnapshotId
+            ? { 'openkit.package.snapshot.id': stage.packageSnapshotId }
+            : {}),
+        },
+      },
+      parent
+    );
+    spanContext = trace.setSpan(parent, span);
+  } catch {
+    return operation();
+  }
+  let ended = false;
+  const finish = (outcome: LifecycleOutcome): void => {
+    if (ended) return;
+    ended = true;
+    let duration: number | undefined;
+    try {
+      duration = Number(process.hrtime.bigint() - started) / 1e9;
+    } catch {
+      /* No guessed duration. */
+    }
+    try {
+      span.setAttribute('openkit.outcome.class', outcome);
+      span.setAttribute('openkit.lifecycle.status', 'ended');
+      span.setStatus({
+        code:
+          outcome === 'success'
+            ? SpanStatusCode.OK
+            : outcome === 'failure' || outcome === 'rejected' || outcome === 'timeout'
+              ? SpanStatusCode.ERROR
+              : SpanStatusCode.UNSET,
+      });
+    } catch {
+      /* Diagnostics cannot change product settlement. */
+    }
+    try {
+      span.end();
+    } catch {
+      /* Diagnostics cannot change product settlement. */
+    }
+    try {
+      if (duration !== undefined && Number.isFinite(duration) && duration >= 0)
+        histogram?.record(duration, {
+          'openkit.lifecycle.stage': stage.stage,
+          'openkit.outcome.class': outcome,
+          'openkit.worker.kind': workerKind,
+        });
+    } catch {
+      /* Diagnostics cannot change product settlement. */
+    }
+  };
+  let invoked = false;
+  let operationThrew = false;
+  let operationError: unknown;
+  let result: Promise<T> | undefined;
+  const invoke = (): void => {
+    if (invoked) return;
+    invoked = true;
+    try {
+      result = operation();
+    } catch (error) {
+      operationThrew = true;
+      operationError = error;
+    }
+  };
+  try {
+    manager.with(spanContext, invoke);
+  } catch {
+    /* Context failure before or after the callback cannot replace its result. */
+  }
+  if (!invoked) invoke();
+  if (operationThrew) {
+    finish(stage.rejectionOutcome ?? 'failure');
+    throw operationError;
+  }
+  try {
+    void result!.then(
+      (value) => {
+        let outcome: LifecycleOutcome = 'unknown';
+        try {
+          outcome = classify ? classify(value) : 'success';
+        } catch {
+          /* Unknown is truthful. */
+        }
+        finish(outcome);
+      },
+      () => finish(stage.rejectionOutcome ?? 'failure')
+    );
+  } catch {
+    /* A broken observation hook cannot replace the operation Promise. */
+  }
+  return result!;
 }
 
 /**
