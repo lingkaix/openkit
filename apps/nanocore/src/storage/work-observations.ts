@@ -109,7 +109,7 @@ export interface WorkObservationDraft {
   readonly id: string;
   readonly type: string;
   readonly ts: string;
-  readonly obs: 'core' | 'gateway' | 'sidecar' | 'nanohost';
+  readonly obs: 'nanocore' | 'llm-gateway' | 'worker-shim' | 'nanohost';
   readonly parent?: string | undefined;
   readonly corr?: string | undefined;
   readonly ret?:
@@ -171,7 +171,7 @@ const draftSchema = z
     id: z.string().min(1).max(512),
     type: z.string().regex(/^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$/),
     ts: z.string().datetime(),
-    obs: z.enum(['core', 'gateway', 'sidecar', 'nanohost']),
+    obs: z.enum(['nanocore', 'llm-gateway', 'worker-shim', 'nanohost']),
     parent: z.string().min(1).optional(),
     corr: z.string().min(1).optional(),
     ret: z
@@ -190,7 +190,19 @@ const draftSchema = z
     payload: z.record(z.string(), z.unknown()),
   })
   .strip();
+// Only retained version-1 data accepts historical observer names; live drafts stay canonical-only.
 const recordSchema = draftSchema.extend({
+  obs: z.preprocess(
+    (value) =>
+      value === 'core'
+        ? 'nanocore'
+        : value === 'gateway'
+          ? 'llm-gateway'
+          : value === 'sidecar'
+            ? 'worker-shim'
+            : value,
+    draftSchema.shape.obs
+  ),
   v: z.literal(1),
   seq: z.number().int().positive(),
   turnId: TurnIdSchema,
@@ -354,9 +366,9 @@ export function parseWorkObservationRecord(value: unknown): WorkObservationRecor
   }
   row.payload = schema.parse(row.payload);
   if (
-    (row.type.startsWith('model.') && row.obs !== 'gateway') ||
-    (row.type === 'runtime.observed' && row.obs !== 'sidecar') ||
-    ((row.type === 'env.bound' || row.type === 'turn.reap') && row.obs !== 'core')
+    (row.type.startsWith('model.') && row.obs !== 'llm-gateway') ||
+    (row.type === 'runtime.observed' && row.obs !== 'worker-shim') ||
+    ((row.type === 'env.bound' || row.type === 'turn.reap') && row.obs !== 'nanocore')
   )
     throw new Error('Observation type has the wrong observer');
   if (row.type !== 'content.published' && row.refs?.some((ref) => ref.edge === 'publication'))

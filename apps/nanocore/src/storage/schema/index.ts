@@ -81,6 +81,13 @@ export type {
   VaultUseResolvingPath,
 } from './vault-use-records.js';
 export { vaultUseRecords } from './vault-use-records.js';
+export {
+  controlAgentSessions,
+  controlProductEntries,
+  controlThreads,
+  controlTurns,
+  controlWorkspaces,
+} from './work-product.js';
 export type {
   WorkerBackendSessionPlacement,
   WorkerBackendSessionState,
@@ -97,6 +104,7 @@ export { workerTurnCheckpoints } from './worker-turn-checkpoints.js';
 export { workspaceApplyPlans } from './workspace-apply-plans.js';
 export type { WorkspaceApplyResultStatus } from './workspace-apply-results.js';
 export { workspaceApplyResults } from './workspace-apply-results.js';
+export { workspaceCaptureRecords } from './workspace-capture-protection.js';
 export { workspaceFilesystemStagingRoots } from './workspace-filesystem-staging.js';
 export type {
   ThreadMaterialBindingState,

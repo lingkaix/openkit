@@ -204,7 +204,11 @@ it('binds the actual Administration prompt and ordered tools before model access
         workspaceKind: 'personal',
       })
     );
-    expect(rowsAtModelAccess[0]).toMatchObject({ type: 'env.bound', obs: 'core', turnId: turn.id });
+    expect(rowsAtModelAccess[0]).toMatchObject({
+      type: 'env.bound',
+      obs: 'nanocore',
+      turnId: turn.id,
+    });
     expect(rowsAtModelAccess[0]!.payload).toEqual({
       version: 'unknown',
       workspaceId,

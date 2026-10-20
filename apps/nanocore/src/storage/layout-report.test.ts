@@ -56,6 +56,7 @@ describe('storage layout report', () => {
         'core_0010_retained_record_formats',
         'core_0011_audit_authentication',
         'core_0012_quarantined_workspace_retirement',
+        'core_0013_control_store',
       ]);
       expect(report.users).toEqual(
         expect.arrayContaining([
@@ -92,6 +93,8 @@ describe('storage layout report', () => {
               'workspace_0007_evaluation_candidates',
               'workspace_0008_evaluation_judgements',
               'workspace_0009_review_selection_judgements',
+              'workspace_0010_product_control',
+              'workspace_0011_workspace_capture_protection',
             ],
           }),
           indexesDir: expect.objectContaining({ exists: true, entryCount: 0 }),

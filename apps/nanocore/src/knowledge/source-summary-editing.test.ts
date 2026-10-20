@@ -629,6 +629,7 @@ async function runMaintenance(f: Awaited<ReturnType<typeof fixture>>, mode: stri
           toolOccurrence: 1,
           signal: input.signal,
         });
+      if (result.isError) throw new Error('Native Tool refused.');
       return JSON.parse(
         result.content.flatMap((part) => (part.type === 'text' ? [part.text] : [])).join('')
       );

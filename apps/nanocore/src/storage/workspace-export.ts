@@ -158,6 +158,36 @@ export const WORKSPACE_EXPORT_NON_PORTABLE_WORKSPACE_SQLITE_TABLES = [
     reason:
       'accepted snapshot and capture cursor require the source storage attachment and private scan store',
   },
+  {
+    table: 'workspace_capture_records',
+    reason:
+      'capture lifecycle belongs to Workspace backup coordination, not portable Workspace product history',
+  },
+  {
+    table: 'control_workspaces',
+    reason:
+      'unactivated Workspace product table; portable Workspace metadata still comes from canonical files',
+  },
+  {
+    table: 'control_threads',
+    reason:
+      'unactivated Thread product table; portable Thread history still comes from canonical files',
+  },
+  {
+    table: 'control_agent_sessions',
+    reason:
+      'unactivated AgentSession product table; portable session history still comes from canonical files',
+  },
+  {
+    table: 'control_turns',
+    reason:
+      'unactivated Turn product table; portable Turn history still comes from canonical files',
+  },
+  {
+    table: 'control_product_entries',
+    reason:
+      'unactivated Item and Turn-event locator table; portable append history still comes from canonical files',
+  },
 ] as const;
 
 /** Input for offline workspace export verification. */

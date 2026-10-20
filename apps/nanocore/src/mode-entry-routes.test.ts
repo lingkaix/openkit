@@ -4878,7 +4878,7 @@ describe('#144 real Assistant command wiring', () => {
       expect(rows[0]).toMatchObject({
         id: `env:${result.turn.id}`,
         ret: 'turn-evidence',
-        obs: 'core',
+        obs: 'nanocore',
       });
       expect(f.createResponses).toHaveBeenCalledOnce();
       expect(f.createChatCompletion).not.toHaveBeenCalled();

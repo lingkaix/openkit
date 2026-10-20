@@ -542,7 +542,8 @@ export function prepareUserMemoryMaintenance(
               },
               revalidate: assertCurrent,
               submit: async (edit) => {
-                if (edit.changes.length > 4) throw new NotebookError('invalid_request');
+                if (edit.changes.length > NOTEBOOK_EDITING_LIMITS.changedFiles)
+                  throw new NotebookError('invalid_request');
                 assertCurrent();
                 const refs = [
                   ...new Set(
@@ -667,7 +668,7 @@ export function prepareUserMemoryMaintenance(
             execute: (value: string) => Promise<unknown>
           ): AgentTool => ({
             name,
-            description: `${description} Four changes, 2 MiB per file, 32 MiB total, 64 KiB script/output. Publication requires current native authority.`,
+            description: `${description} ${NOTEBOOK_EDITING_LIMITS.changedFiles} changed files, 2 MiB per file, 32 MiB total, 64 KiB script/output. Publication requires current native authority.`,
             inputSchema: {
               type: 'object',
               properties: { [key]: { type: 'string' } },

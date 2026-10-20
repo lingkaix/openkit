@@ -211,6 +211,11 @@ describe('scoped storage databases', () => {
         'audit_events',
         'backend_workspace_handles',
         'capability_calls',
+        'control_agent_sessions',
+        'control_product_entries',
+        'control_threads',
+        'control_turns',
+        'control_workspaces',
         'evaluation_candidate_sets',
         'evidence_bundles',
         'generative_presentations',
@@ -234,6 +239,7 @@ describe('scoped storage databases', () => {
         'worker_turn_checkpoints',
         'workspace_apply_plans',
         'workspace_apply_results',
+        'workspace_capture_records',
         'workspace_change_sets',
         'workspace_filesystem_staging_roots',
         'workspace_input_snapshots',
@@ -257,6 +263,8 @@ describe('scoped storage databases', () => {
         'workspace_0007_evaluation_candidates',
         'workspace_0008_evaluation_judgements',
         'workspace_0009_review_selection_judgements',
+        'workspace_0010_product_control',
+        'workspace_0011_workspace_capture_protection',
       ]);
     } finally {
       workspaceDb.sqlite.close();
@@ -478,6 +486,8 @@ describe('scoped storage databases', () => {
         'workspace_0007_evaluation_candidates',
         'workspace_0008_evaluation_judgements',
         'workspace_0009_review_selection_judgements',
+        'workspace_0010_product_control',
+        'workspace_0011_workspace_capture_protection',
       ]);
       expect(listMigrationIds(migratedUserDb.sqlite, 'user')).toEqual([
         'user_0000_setup',
@@ -829,6 +839,8 @@ process.kill(process.pid, 'SIGKILL');`,
         'workspace_0007_evaluation_candidates',
         'workspace_0008_evaluation_judgements',
         'workspace_0009_review_selection_judgements',
+        'workspace_0010_product_control',
+        'workspace_0011_workspace_capture_protection',
       ]);
     } finally {
       userDb.sqlite.close();

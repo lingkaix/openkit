@@ -30,7 +30,9 @@ export interface NotebookRevision {
 export class NotebookError extends Error {
   constructor(
     readonly code: 'invalid_request' | 'conflict' | 'recovery_required' | 'review_required',
-    readonly currentRevision?: string
+    readonly currentRevision?: string,
+    /** Native validation codes only; transient feedback, never authored text or publication authority. */
+    readonly diagnostics?: readonly string[]
   ) {
     super(`Notebook ${code.replaceAll('_', ' ')}.`);
   }
