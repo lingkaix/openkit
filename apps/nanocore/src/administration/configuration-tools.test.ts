@@ -177,7 +177,7 @@ describe('administration configuration Tools', () => {
     expect(payload).toEqual({
       code: 'policy_mcp_tool_unobserved',
       message:
-        "A proposed MCP Tool has no admitted schema observation in its Workspace. A Turn in that Workspace must discover that MCP server's Tools before a Policy can name them. Do not retry this proposal unchanged.",
+        'An MCP Tool permission that requires an observed name has no admitted schema observation. Restrictive prohibit and require_approval statements may name future Tools with a warning; they grant no access.',
     });
   });
 });

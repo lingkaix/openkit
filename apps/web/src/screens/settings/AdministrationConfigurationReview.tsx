@@ -1,6 +1,7 @@
 import type {
   ApplyAdministrationConfigurationResponse,
   ConfigurationCandidateArtifact,
+  PolicyConfigurationWarning,
 } from '@openkit/app-api-schemas';
 import { useMutation, useMutationState, useQueryClient } from '@tanstack/react-query';
 import { useCoreClient } from '../../app/core-client';
@@ -142,9 +143,34 @@ function CandidateFacts({ candidate }: { candidate: ConfigurationCandidate }) {
       <p>{targetLabel(details)}</p>
       <p className="break-all">Base revision {details.expectedRevision}</p>
       <p>{details.restartRequired ? 'Restart required' : 'No restart required'}</p>
+      {details.targetFamily === 'policy' && details.warnings?.length ? (
+        <CandidateWarnings warnings={details.warnings} />
+      ) : null}
       <MetadataBlock label="Before" value={details.before} />
       <MetadataBlock label="After" value={details.after} />
     </div>
+  );
+}
+
+/** Server-computed warnings are part of the confirmed digest, so they appear before Apply. */
+function CandidateWarnings({ warnings }: { warnings: PolicyConfigurationWarning[] }) {
+  return (
+    <section
+      aria-label="Candidate warnings"
+      className="rounded-ok border border-notice-fg bg-notice-bg p-2 text-notice-fg"
+    >
+      <p className="font-bold">Warnings</p>
+      <ul className="list-disc pl-4">
+        {warnings.map((warning) => (
+          <li
+            className="break-all"
+            key={`${warning.workspaceId}/${warning.serverId}/${warning.toolName}`}
+          >
+            {warning.message}
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
