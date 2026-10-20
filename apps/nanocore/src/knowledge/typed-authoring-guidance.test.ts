@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { WorkspaceConfigSchema } from '@openkit/config-schema';
 import type { KnowledgeOwnerScope } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import {
@@ -25,6 +26,7 @@ import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { runKnowledgeMaintenanceCommand } from './knowledge-maintenance-command.js';
 import { KnowledgeNotebook } from './notebook.js';
+import { NOTEBOOK_EDITING_LIMITS } from './notebook-agent-editing.js';
 import {
   DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
   parseOkfDocument,
@@ -104,7 +106,7 @@ function page(
 }
 
 /** Use independent native scope admission, immutable Git, real receipts, editor and publisher. */
-function fixture(scope: Scope) {
+function fixture(scope: Scope, enabled = false) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'typed-authoring-guidance-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -167,7 +169,22 @@ function fixture(scope: Scope) {
   writeFileSync(join(dataRoot, 'private-fixture.txt'), 'UNDISCLOSED-PRIVATE-FIXTURE');
   const runtimeConfigManager = createRuntimeConfigManager({
     dataRoot,
-    initialSnapshot: createInMemoryRuntimeConfigSnapshot({ dataRoot }),
+    initialSnapshot: createInMemoryRuntimeConfigSnapshot({
+      dataRoot,
+      workspaceConfigs: [
+        {
+          workspaceId: workspace.id,
+          path: join(dataRoot, 'workspaces', workspace.id, 'config.yaml'),
+          config: WorkspaceConfigSchema.parse({
+            schemaVersion: 1,
+            workspace: {
+              name: 'Typed authoring',
+              knowledgeMaintenance: { enabled, reviewRequiredPageIds: [] },
+            },
+          }),
+        },
+      ],
+    }),
   });
   const workspaceMutationAdmission = new WorkspaceMutationAdmission();
   const finish = (run: Run) => {
@@ -257,6 +274,98 @@ function fixture(scope: Scope) {
 
 describe('bounded typed Knowledge authoring guidance', () => {
   it.each([
+    false,
+    true,
+  ])('validates native attributed bytes with delegated publication=%s', async (enabled) => {
+    const f = fixture('workspace', enabled);
+    const schema = f.activeSchema.replace(
+      /allowed_review_states: .*/,
+      'allowed_review_states: [user-authored, delegated, accepted]'
+    );
+    expect(parseScopeKnowledgeSchema(schema).ok).toBe(true);
+    writeFileSync(f.schemaPath, schema);
+    f.run.mockImplementationOnce(async (run) => {
+      const payload = JSON.parse((run.messages[0]!.content[0] as { text: string }).text);
+      const references = payload.sources.map((source: { reference: string }) => source.reference);
+      const content = updateOkfFrontmatter({
+        path: 'rule.md',
+        content: page(f.ownerScope, 'Rule', references),
+        updates: { review_state: 'unreviewed' },
+      });
+      expect(
+        await tool(run, 'knowledge.notebook-workspace.update', {
+          script: `cat > rule.md <<'PAGE'\n${content}PAGE\n`,
+        })
+      ).toMatchObject({ exitCode: 0, stderr: '' });
+      await tool(run, 'knowledge.notebook.update', {
+        summary: 'Submit a natively attributed Rule.',
+      });
+      return f.finish(run);
+    });
+    const result = await f.maintain();
+    expect(result.outcome).toBe(enabled ? 'published' : 'review-required');
+    const candidate = f.notebook.readRevision(result.candidateRevision ?? result.notebookRevision);
+    const parsed = parseOkfDocument({ path: 'rule.md', content: candidate.files['rule.md']! });
+    expect(parsed.ok).toBe(true);
+    expect(parsed.document!.frontmatter.review_state).toBe('delegated');
+    expect(candidate.parentRevision).toBe(f.run.mock.calls[0]![0].inputs!.baseRevision);
+    if (!enabled) expect(f.notebook.publishedRevision()).toBe(candidate.parentRevision);
+  });
+
+  it('returns the existing shared-limit refusal from the real Workspace editor without publication', async () => {
+    const f = fixture('workspace');
+    let before = '';
+    let feedback: { exitCode: number; stderr: string } | undefined;
+    f.run.mockImplementationOnce(async (run) => {
+      before = run.inputs!.baseRevision;
+      feedback = await tool(run, 'knowledge.notebook-workspace.update', {
+        script: 'for i in $(seq 0 256); do echo Draft > limit-$i.md || exit 1; done',
+      });
+      throw new Error('The bounded editor probe is complete.');
+    });
+    expect((await f.maintain()).outcome).toBe('failed');
+    expect(feedback?.exitCode).not.toBe(0);
+    expect(feedback?.stderr).toContain('256 changed files');
+    expect(f.notebook.publishedRevision()).toBe(before);
+    expect(f.store.listKnowledgeProposals(f.workspace.id)).toEqual([]);
+  });
+
+  it.each([
+    'workspace',
+    'user',
+    'server',
+  ] as const)('submits five valid %s pages atomically within the shared editor limit', async (scope) => {
+    const f = fixture(scope);
+    f.run.mockImplementationOnce(async (run) => {
+      const payload = JSON.parse((run.messages[0]!.content[0] as { text: string }).text);
+      const references = payload.sources.map((source: { reference: string }) => source.reference);
+      const script = Array.from(
+        { length: 5 },
+        (_, i) => `cat > rule-${i}.md <<'PAGE'\n${page(f.ownerScope, 'Rule', references)}PAGE`
+      ).join('\n');
+      expect(await tool(run, 'knowledge.notebook-workspace.update', { script })).toMatchObject({
+        exitCode: 0,
+        stderr: '',
+      });
+      await tool(run, 'knowledge.notebook.update', { summary: 'Submit five related Rule pages.' });
+      return f.finish(run);
+    });
+    const result = await f.maintain();
+    expect(['published', 'review-required']).toContain(result.outcome);
+    const baseRevision = f.run.mock.calls[0]![0].inputs!.baseRevision;
+    const candidate = f.notebook.readRevision(result.candidateRevision ?? result.notebookRevision);
+    expect(candidate.parentRevision).toBe(baseRevision);
+    const baseFiles = f.notebook.readRevision(baseRevision).files;
+    expect(
+      Object.keys(candidate.files).filter((path) => candidate.files[path] !== baseFiles[path])
+    ).toHaveLength(5);
+    for (let i = 0; i < 5; i++) expect(candidate.files[`rule-${i}.md`]).toBeDefined();
+    if (result.outcome === 'review-required')
+      expect(f.notebook.publishedRevision()).toBe(baseRevision);
+    expect(f.run).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
     'workspace',
     'user',
     'server',
@@ -282,6 +391,13 @@ describe('bounded typed Knowledge authoring guidance', () => {
     expect(refused).toBe(true);
     expect(readFileSync(f.schemaPath, 'utf8')).toBe(f.activeSchema);
     const delivered = deliveredText(f.run.mock.calls[0]![0]);
+    if (scope === 'user')
+      expect(
+        f.run.mock.calls[0]![0].tools.find((tool) => tool.name === 'knowledge.notebook.update')
+          ?.description
+      ).toContain(`${NOTEBOOK_EDITING_LIMITS.changedFiles} changed files`);
+    expect(delivered).toContain('Claim requires confidence');
+    expect(delivered).toContain('finite number from zero through one');
     expect(delivered).not.toContain('UNDISCLOSED-PRIVATE-FIXTURE');
     // Deciding RED: the native request currently contains no admitted active schema contract.
     expect(delivered).toContain(f.activeSchema);

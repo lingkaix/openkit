@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { operationToolName } from '@openkit/app-api-schemas';
-import { expect, it, onTestFinished } from 'vitest';
+import { expect, it, onTestFinished, vi } from 'vitest';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
@@ -11,10 +11,12 @@ import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { createKnowledgeAnswerApp } from '../test-support/knowledge-agent.js';
+import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook } from './notebook.js';
+import { updateOkfFrontmatter } from './okf.js';
 
 /** Real operation admission, notebooks and runtime; only Provider transport is replaced. */
 function fixture() {
@@ -334,3 +336,276 @@ it('organizes the initial root index around an existing human fact through the r
   ]);
   expect(f.createResponses).toHaveBeenCalledTimes(3);
 }, 120_000);
+
+// The real KM loop must retain safe owner feedback even when the optional process sink fails.
+it.each([
+  false,
+  true,
+])('exposes a safe notebook Tool failure when the log sink throws=%s', async (sinkThrows) => {
+  const f = fixture();
+  const notebook = new KnowledgeNotebook({
+    repositoryPath: join(f.dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'knowledge', 'notebook.git'),
+  });
+  const before = notebook.publishedRevision();
+  const contentMarker = 'UNPUBLISHED-CONTENT-MARKER';
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {
+    if (sinkThrows) throw new Error('Optional diagnostic sink unavailable.');
+  });
+  onTestFinished(() => warn.mockRestore());
+  let step = 0;
+  let feedback = '';
+  f.createResponses.mockImplementation(async () => {
+    if (++step === 1)
+      return call('knowledge.notebook.update', { summary: contentMarker + 'x'.repeat(4096) });
+    feedback = latestToolOutput(f);
+    // Feedback has reached the next actual model request; no final-answer round trip is needed.
+    throw new Error('The deterministic feedback probe is complete.');
+  });
+  const response = await f.app.request(
+    ...operationRequest(
+      'knowledge.maintain',
+      { workspaceId: DEMO_WORKSPACE_ID },
+      {
+        body: JSON.stringify({
+          requestId: randomUUID(),
+          instruction: 'Inspect the admitted notebook.',
+        }),
+      }
+    )
+  );
+  expect(response.status).toBe(200);
+  expect(feedback).toContain('invalid_request');
+  expect(feedback).not.toContain('The Tool failed without a safe result.');
+  expect(feedback).not.toContain(contentMarker);
+  expect(feedback).not.toContain(f.dataRoot);
+  const diagnostics = warn.mock.calls.flatMap((args) =>
+    args.filter((arg) => typeof arg === 'string').map((arg) => JSON.parse(arg))
+  );
+  expect(diagnostics).toContainEqual(
+    expect.objectContaining({
+      code: 'knowledge_notebook_tool_failed',
+      operation: 'knowledge.notebook.update',
+      exceptionClass: 'NotebookError',
+      errorCode: 'invalid_request',
+    })
+  );
+  expect(JSON.stringify(diagnostics)).not.toContain(contentMarker);
+  expect(JSON.stringify(diagnostics)).not.toContain(f.dataRoot);
+  expect(JSON.stringify(diagnostics)).not.toContain('stack');
+  expect(notebook.publishedRevision()).toBe(before);
+  expect(f.createResponses).toHaveBeenCalledTimes(2);
+});
+
+/** Native calls in one Provider response retain their ordinary sequential execution. */
+function calls(entries: Array<[string, unknown]>) {
+  const first = call(entries[0]![0], entries[0]![1]);
+  return { ...first, output: entries.flatMap(([name, value]) => call(name, value).output) };
+}
+
+it('keeps exception text and paths out of model and process failure diagnostics', async () => {
+  const f = fixture();
+  const marker = 'PRIVATE-EXCEPTION-CONTENT';
+  const prepare = vi.spyOn(KnowledgeNotebook.prototype, 'prepare').mockImplementation(() => {
+    throw new TypeError(`${marker} ${f.dataRoot}`);
+  });
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  onTestFinished(() => {
+    prepare.mockRestore();
+    warn.mockRestore();
+  });
+  let feedback = '';
+  f.createResponses.mockImplementation(async () => {
+    if (f.createResponses.mock.calls.length === 1)
+      return calls([
+        [
+          'knowledge.notebook-workspace.update',
+          { script: "printf '\\nSynthetic overview.\\n' >> index.md" },
+        ],
+        ['knowledge.notebook.update', { summary: 'Submit the synthetic overview.' }],
+      ]);
+    feedback = latestToolOutput(f);
+    throw new Error('The deterministic exception probe is complete.');
+  });
+  const response = await f.app.request(
+    ...operationRequest(
+      'knowledge.maintain',
+      {
+        workspaceId: DEMO_WORKSPACE_ID,
+      },
+      {
+        body: JSON.stringify({
+          requestId: randomUUID(),
+          instruction: 'Curate the synthetic overview.',
+        }),
+      }
+    )
+  );
+  expect(response.status).toBe(200);
+  expect(prepare).toHaveBeenCalled();
+  expect(feedback).toContain('notebook_tool_failed');
+  const diagnostics = warn.mock.calls.flatMap((args) =>
+    args.filter((arg) => typeof arg === 'string').map((arg) => JSON.parse(arg))
+  );
+  expect(diagnostics).toContainEqual(
+    expect.objectContaining({
+      code: 'knowledge_notebook_tool_failed',
+      operation: 'knowledge.notebook.update',
+      exceptionClass: 'TypeError',
+      errorCode: 'notebook_tool_failed',
+    })
+  );
+  for (const text of [feedback, JSON.stringify(diagnostics)]) {
+    expect(text).not.toContain(marker);
+    expect(text).not.toContain(f.dataRoot);
+    expect(text).not.toContain('stack');
+  }
+});
+
+it('makes the actual Claim confidence refusal actionable without publishing', async () => {
+  const f = fixture();
+  const notebook = new KnowledgeNotebook({
+    repositoryPath: join(f.dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'knowledge', 'notebook.git'),
+  });
+  const before = notebook.publishedRevision();
+  const content = updateOkfFrontmatter({
+    path: 'claim.md',
+    content: serializeKnowledgePageFixture(
+      {
+        title: 'Synthetic claim',
+        content: 'UNPUBLISHED-CLAIM-CONTENT',
+        createdAt: '2026-10-20T00:00:00.000Z',
+        updatedAt: '2026-10-20T00:00:00.000Z',
+      },
+      { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID }
+    ),
+    updates: { type: 'Claim' },
+  });
+  const script = `cat > claim.md <<'PAGE'\n${content}PAGE\n`;
+  let feedback = '';
+  f.createResponses.mockImplementation(async () => {
+    if (f.createResponses.mock.calls.length === 1)
+      return calls([
+        ['knowledge.notebook-workspace.update', { script }],
+        ['knowledge.notebook.update', { summary: 'Submit the synthetic candidate.' }],
+      ]);
+    feedback = latestToolOutput(f);
+    throw new Error('The deterministic refusal probe is complete.');
+  });
+  const response = await f.app.request(
+    ...operationRequest(
+      'knowledge.maintain',
+      {
+        workspaceId: DEMO_WORKSPACE_ID,
+      },
+      {
+        body: JSON.stringify({
+          requestId: randomUUID(),
+          instruction: 'Curate the synthetic candidate.',
+        }),
+      }
+    )
+  );
+  expect(response.status).toBe(200);
+  expect(feedback).toContain('scope_schema.invalid_confidence');
+  expect(feedback).toContain('finite number from zero through one');
+  expect(feedback).not.toContain('UNPUBLISHED-CLAIM-CONTENT');
+  expect(notebook.publishedRevision()).toBe(before);
+  expect(f.store.listKnowledgeProposals(DEMO_WORKSPACE_ID)).toEqual([]);
+  expect(f.createResponses).toHaveBeenCalledTimes(2);
+});
+
+it('corrects Claim confidence before result submission through the real KM Tools', async () => {
+  const f = fixture();
+  const notebook = new KnowledgeNotebook({
+    repositoryPath: join(f.dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'knowledge', 'notebook.git'),
+  });
+  const before = notebook.publishedRevision();
+  const content = updateOkfFrontmatter({
+    path: 'claim.md',
+    content: serializeKnowledgePageFixture(
+      {
+        title: 'Synthetic claim',
+        content: 'Synthetic evidence for confidence correction.',
+        createdAt: '2026-10-20T00:00:00.000Z',
+        updatedAt: '2026-10-20T00:00:00.000Z',
+      },
+      { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID }
+    ),
+    updates: { type: 'Claim' },
+  });
+  const corrected = updateOkfFrontmatter({
+    path: 'claim.md',
+    content,
+    updates: { confidence: 0.5 },
+  });
+  let feedback = '';
+  f.createResponses.mockImplementation(async () => {
+    if (f.createResponses.mock.calls.length === 1)
+      return calls([
+        [
+          'knowledge.notebook-workspace.update',
+          { script: `cat > claim.md <<'PAGE'\n${content}PAGE\n` },
+        ],
+        ['knowledge.notebook.update', { summary: 'Submit the synthetic candidate.' }],
+      ]);
+    if (!feedback) feedback = latestToolOutput(f);
+    return calls([
+      [
+        'knowledge.notebook-workspace.update',
+        { script: `cat > claim.md <<'PAGE'\n${corrected}PAGE\n` },
+      ],
+      ['knowledge.notebook.update', { summary: 'Submit the corrected Claim.' }],
+      ['knowledge.result', { summary: 'Submitted the corrected Claim.' }],
+    ]);
+  });
+  const response = await f.app.request(
+    ...operationRequest(
+      'knowledge.maintain',
+      {
+        workspaceId: DEMO_WORKSPACE_ID,
+      },
+      {
+        body: JSON.stringify({
+          requestId: randomUUID(),
+          instruction: 'Curate the synthetic Claim.',
+        }),
+      }
+    )
+  );
+  const body = (await response.json()) as {
+    outcome: string;
+    turnId: string;
+    notebookRevision: string;
+    candidateRevision?: string;
+  };
+  expect(response.status).toBe(200);
+  expect(feedback).toContain('scope_schema.invalid_confidence');
+  expect(
+    ['published', 'review-required'],
+    JSON.stringify(
+      f.store
+        .getTurnById(body.turnId)
+        .items.filter((item) => item.type === 'tool-call')
+        .map((item) => ({ tool: item.tool, status: item.status, result: item.result }))
+    )
+  ).toContain(body.outcome);
+  const revision = body.outcome === 'published' ? body.notebookRevision : body.candidateRevision!;
+  const after = notebook.readRevision(revision);
+  expect(after.parentRevision).toBe(before);
+  expect(after.files['claim.md']).toContain('confidence: 0.5');
+  const beforeFiles = notebook.readRevision(before).files;
+  expect(
+    Object.keys(after.files).filter((path) => after.files[path] !== beforeFiles[path])
+  ).toHaveLength(1);
+  const turn = f.store.getTurnById(body.turnId);
+  expect(turn.status).toBe('completed');
+  expect(
+    turn.items
+      .filter((item) => item.type === 'tool-call' && item.tool === 'knowledge.notebook.update')
+      .map((item) => item.status)
+  ).toEqual(['failed', 'completed']);
+  expect(
+    turn.items.filter((item) => item.type === 'tool-call' && item.tool === 'knowledge.result')
+  ).toHaveLength(1);
+  expect(f.createResponses).toHaveBeenCalledTimes(2);
+});
