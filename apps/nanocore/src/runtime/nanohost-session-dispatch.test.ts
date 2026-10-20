@@ -8,16 +8,19 @@ import { getRequestListener } from '@hono/node-server';
 import { InMemorySpanExporter } from '@opentelemetry/sdk-trace-base';
 import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
+import { ensureLocalUser, getLocalUserId } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import {
   createNanoHostTransportSessionAuthority,
   readNanoHostPhysicalConnectionContext,
 } from '../auth/nanohost-transport-session.js';
+import { FsStore } from '../lib/store.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createHttpTelemetryMiddleware, shutdownTelemetry, startTelemetry } from '../telemetry.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import type { ExecutionStepControl } from './execution-step-journal.js';
 import {
   createNanoHostHarnessRuntime,
   openNanoHostAgentSessionBinding,
@@ -1727,6 +1730,24 @@ describe('authoritative NanoHost session dispatch', () => {
   it('defers image settlement on storage failure and acknowledges only durable outcomes', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-image-settlement-')));
     applyMigrations(coreDb);
+    // Retain actual caller provenance before exercising the original storage fault.
+    const actor: ExecutionStepControl['actor'] = { kind: 'user', id: ensureLocalUser(coreDb) };
+    const store = new FsStore({ dataRoot: coreDb.dataRoot });
+    const thread = store.createServerThread(
+      'Administrative image settlement',
+      undefined,
+      'conversation'
+    );
+    const publicationTurn = store.createServerTurn(thread.id, 'Prepare the authored image.', actor);
+    expect(getLocalUserId(coreDb)).toBe(actor.id);
+    expect(
+      new FsStore({ dataRoot: coreDb.dataRoot }).getServerTurn(thread.id, publicationTurn.id)
+    ).toMatchObject({
+      id: publicationTurn.id,
+      owner: { kind: 'server' },
+      triggerActor: actor,
+    });
+    const imageExecution = { actor, workId: publicationTurn.id, authorize: () => true };
     const authority = createNanoHostTransportSessionAuthority();
     const dispatch = createNanoHostSessionDispatch({
       coreDb,
@@ -1793,6 +1814,7 @@ describe('authoritative NanoHost session dispatch', () => {
         requestId,
         input: { imageReference: 'openkit:test' },
         imageSettlement,
+        imageExecution,
       });
       void pending.catch(() => undefined);
       await expect(dispatch.poll(physical, 'image.acquire')).resolves.toEqual({
@@ -1824,6 +1846,7 @@ describe('authoritative NanoHost session dispatch', () => {
         requestId,
         input: { imageReference: 'openkit:test' },
         imageSettlement,
+        imageExecution,
       });
       await expect(restarted.poll(physical, 'image.acquire')).resolves.toBeNull();
       await expect(replay).resolves.toEqual({ digest: result.digest });

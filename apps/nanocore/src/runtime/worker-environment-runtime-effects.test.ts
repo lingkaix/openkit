@@ -1,6 +1,14 @@
 import { createHash } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { AgentEnvironmentPackage } from '@openkit/config-schema';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { ensureLocalUser, getLocalUserId } from '../auth/identity.js';
+import { FsStore } from '../lib/store.js';
+import { openCoreDb } from '../storage/db.js';
+import { applyMigrations } from '../storage/migrate.js';
+import type { ExecutionStepControl } from './execution-step-journal.js';
 import { commandInputHash } from './idempotent-command.js';
 import type {
   NanoHostResultOnlyExpectation,
@@ -64,6 +72,31 @@ function createDispatch(
 
 describe('Worker environment runtime effects', () => {
   it('binds prepare and restart settlement to the immutable authored candidate', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-image-effects-'));
+    const coreDb = openCoreDb(root);
+    onTestFinished(() => {
+      coreDb.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    });
+    applyMigrations(coreDb);
+    // Real Server history supplies provenance without inventing a Workspace or identity.
+    const actor: ExecutionStepControl['actor'] = { kind: 'user', id: ensureLocalUser(coreDb) };
+    const store = new FsStore({ dataRoot: root });
+    const thread = store.createServerThread(
+      'Administrative image preparation',
+      undefined,
+      'conversation'
+    );
+    const publicationTurn = store.createServerTurn(thread.id, 'Prepare the authored image.', actor);
+    expect(getLocalUserId(coreDb)).toBe(actor.id);
+    expect(
+      new FsStore({ dataRoot: root }).getServerTurn(thread.id, publicationTurn.id)
+    ).toMatchObject({
+      id: publicationTurn.id,
+      owner: { kind: 'server' },
+      triggerActor: actor,
+    });
+    const authorize = () => true;
     const requests: NanoHostSessionEffectRequest[] = [];
     const expectations: NanoHostResultOnlyExpectation[][] = [];
     const dispatch = createDispatch(
@@ -80,17 +113,30 @@ describe('Worker environment runtime effects', () => {
     const identity = workerEnvironmentPreparationIdentity(CANDIDATE, IMAGE);
 
     await expect(
-      effects.prepareImage({ authorize: () => false, candidate: CANDIDATE, image: IMAGE })
+      effects.prepareImage({
+        actor,
+        workId: publicationTurn.id,
+        authorize: () => false,
+        candidate: CANDIDATE,
+        image: IMAGE,
+      })
     ).rejects.toThrow('not authorized');
     expect(requests).toEqual([]);
 
     await expect(
-      effects.prepareImage({ authorize: () => true, candidate: CANDIDATE, image: IMAGE })
+      effects.prepareImage({
+        actor,
+        workId: publicationTurn.id,
+        authorize,
+        candidate: CANDIDATE,
+        image: IMAGE,
+      })
     ).resolves.toMatchObject({ imageDigest: IMAGE_DIGEST });
     expect(requests).toEqual([
       {
         input: { imageReference: IMAGE.ref },
         kind: 'image.acquire',
+        imageExecution: { actor, workId: publicationTurn.id, authorize },
         imageSettlement: {
           authoredArtifactId: CANDIDATE.artifactId,
           authoredArtifactVersion: 1,
@@ -134,6 +180,35 @@ describe('Worker environment runtime effects', () => {
   });
 
   it('acquires an exact local digest before inspection and stops when acquisition fails', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-image-local-effects-'));
+    const coreDb = openCoreDb(root);
+    onTestFinished(() => {
+      coreDb.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    });
+    applyMigrations(coreDb);
+    // Keep the same recorded caller when the controlled Host reports mismatch or failure.
+    const actor: ExecutionStepControl['actor'] = { kind: 'user', id: ensureLocalUser(coreDb) };
+    const store = new FsStore({ dataRoot: root });
+    const thread = store.createServerThread(
+      'Administrative local image preparation',
+      undefined,
+      'conversation'
+    );
+    const publicationTurn = store.createServerTurn(
+      thread.id,
+      'Prepare the exact local image.',
+      actor
+    );
+    expect(getLocalUserId(coreDb)).toBe(actor.id);
+    expect(
+      new FsStore({ dataRoot: root }).getServerTurn(thread.id, publicationTurn.id)
+    ).toMatchObject({
+      id: publicationTurn.id,
+      owner: { kind: 'server' },
+      triggerActor: actor,
+    });
+    const authorize = () => true;
     const localImage = {
       kind: 'reference',
       pullPolicy: 'never',
@@ -149,12 +224,19 @@ describe('Worker environment runtime effects', () => {
     const identity = workerEnvironmentPreparationIdentity(CANDIDATE, localImage);
 
     await expect(
-      effects.prepareImage({ authorize: () => true, candidate: CANDIDATE, image: localImage })
+      effects.prepareImage({
+        actor,
+        workId: publicationTurn.id,
+        authorize,
+        candidate: CANDIDATE,
+        image: localImage,
+      })
     ).resolves.toMatchObject({ imageDigest: IMAGE_DIGEST });
     expect(requests).toEqual([
       {
         input: { imageReference: IMAGE_DIGEST },
         kind: 'image.acquire',
+        imageExecution: { actor, workId: publicationTurn.id, authorize },
         imageSettlement: {
           authoredArtifactId: CANDIDATE.artifactId,
           authoredArtifactVersion: 1,
@@ -179,6 +261,8 @@ describe('Worker environment runtime effects', () => {
     );
     await expect(
       mismatchedEffects.prepareImage({
+        actor,
+        workId: publicationTurn.id,
         authorize: () => true,
         candidate: CANDIDATE,
         image: localImage,
@@ -195,6 +279,8 @@ describe('Worker environment runtime effects', () => {
     );
     await expect(
       failingEffects.prepareImage({
+        actor,
+        workId: publicationTurn.id,
         authorize: () => true,
         candidate: CANDIDATE,
         image: localImage,
