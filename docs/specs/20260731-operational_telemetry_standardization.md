@@ -259,6 +259,7 @@ P50/P95 use nearest-rank valid-duration quantiles overall in the same pair. An e
 - The initial JavaScript implementation may retain a structured stdout bridge while the pinned OpenTelemetry JavaScript Logs API remains non-stable. It must not invent another general log record schema.
 - Logs emitted inside an active span include standard trace id and span id correlation.
 - Every retained error log uses a stable error code and product-safe summary. Stack traces remain restricted diagnostics and are excluded by default from external export unless an accepted security boundary explicitly admits them.
+- Workspace KM notebook Tool failures expose a bounded native error code/category and emit best-effort `knowledge_notebook_tool_failed` process diagnostics with the owner operation and allowlisted exception class, excluding content and exception text.
 - Console output without a retained container, process-manager, or Collector sink is transient and must not be claimed as surviving evidence.
 - The presence or absence of a log line never decides a product or test outcome.
 

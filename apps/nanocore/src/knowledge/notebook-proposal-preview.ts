@@ -77,9 +77,9 @@ export function createKnowledgeProposalPreviewOperationImplementations(
             409
           );
         const paths = saved.changes?.map(({ path }) => path) ?? [`${saved.knowledgePageId}.md`];
-        const before = notebook.readRevision(saved.baseRevision).files;
+        const before = notebook.readContent(saved.baseRevision);
         const candidate = notebook.readRevision(saved.candidateRevision);
-        const after = candidate.files;
+        const after = notebook.readContent(saved.candidateRevision);
         // Admit both complete versions before disclosing even an inventory or a single selected path.
         for (const files of [before, after])
           readWorkspaceNotebookAdmission({

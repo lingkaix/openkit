@@ -650,7 +650,7 @@ export function readThreadDashboard(input: {
       } catch {
         taskInputs = [];
       }
-      // Audience and Workspace lineage were checked before opening any activity or body reader.
+      // Current audience and Workspace lineage admit structural activity and canonical Items, never raw capture bodies.
       runtimeActivity = readThreadRuntimeActivity(workspaceDb, {
         threadId,
         turnIds: turns.map((turn) => turn.id),

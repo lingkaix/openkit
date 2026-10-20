@@ -1426,8 +1426,8 @@ export function createKnowledgeOperationImplementations(
           repositoryPath: join(dataRoot, 'workspaces', workspaceId, 'knowledge', 'notebook.git'),
         });
         const path = `${input.knowledgePageId}.md`;
-        const original = notebook.readRevision(proposal.baseRevision).files[path] ?? null;
-        const baseBytes = notebook.readRevision(input.baseRevision).files[path];
+        const original = notebook.readContent(proposal.baseRevision)[path] ?? null;
+        const baseBytes = notebook.readContent(input.baseRevision)[path];
         const candidateBytes = proposal.changes
           ? proposal.changes.find((change) => change.path === path)!.content
           : proposal.canonicalPageBytes;
@@ -1451,7 +1451,7 @@ export function createKnowledgeOperationImplementations(
             },
             request
           );
-          const content = owner.notebook.readRevision(publication.notebookRevision).files[path];
+          const content = owner.notebook.readContent(publication.notebookRevision)[path];
           return ReverseKnowledgeProposalResponseSchema.parse({
             proposalId,
             reviewId: input.reviewId,

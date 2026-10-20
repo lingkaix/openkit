@@ -1868,7 +1868,7 @@ describe('workspace auxiliary lineage reminting', () => {
         id: 'observation_source',
         ts: timestamp,
         seq: 1,
-        obs: 'sidecar',
+        obs: 'worker-shim',
         turnId: source.turnId,
         parent: source.itemId,
         corr: 'call_source',
@@ -1887,7 +1887,7 @@ describe('workspace auxiliary lineage reminting', () => {
         id: 'observation_followup',
         ts: timestamp,
         seq: 2,
-        obs: 'sidecar',
+        obs: 'worker-shim',
         turnId: source.turnId,
         parent: 'observation_source',
         corr: 'call_source',
@@ -1981,7 +1981,7 @@ describe('workspace auxiliary lineage reminting', () => {
       type: 'runtime.observed',
       ts: timestamp,
       seq: 1,
-      obs: 'sidecar',
+      obs: 'worker-shim',
       turnId: source.turnId,
       payload: {
         observationId: 'child_observation',
@@ -2051,7 +2051,7 @@ describe('workspace auxiliary lineage reminting', () => {
       type: 'runtime.observed',
       ts: timestamp,
       seq: 1,
-      obs: 'sidecar',
+      obs: 'worker-shim',
       turnId: source.turnId,
       payload: {
         observationId: 'observation_initial',
@@ -2081,7 +2081,7 @@ describe('workspace auxiliary lineage reminting', () => {
       type: 'content.published',
       ts: timestamp,
       seq: 2,
-      obs: 'sidecar',
+      obs: 'worker-shim',
       turnId: source.turnId,
       parent: initial.id,
       refs: [
@@ -2157,7 +2157,7 @@ describe('workspace auxiliary lineage reminting', () => {
       type: defect === 'type' ? 'future.unknown' : 'runtime.observed',
       ts: timestamp,
       seq: defect === 'sequence' ? 2 : 1,
-      obs: 'sidecar',
+      obs: 'worker-shim',
       turnId: defect === 'turn' ? 'tu_00000000-0000-7577-9378-7e96d0d15fd2' : source.turnId,
       parent: defect === 'parent' ? 'missing-parent' : source.itemId,
       ...(defect === 'bundle'

@@ -389,7 +389,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
       expect(rows[0]).toMatchObject({
         id: `env:${f.turn.id}`,
         ts: f.turn.startedAt,
-        obs: 'core',
+        obs: 'nanocore',
         ret: 'turn-evidence',
         turnId: f.turn.id,
         payload: {

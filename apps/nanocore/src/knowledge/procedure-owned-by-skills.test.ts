@@ -82,6 +82,8 @@ describe('Skills own reusable procedures', () => {
     );
     expect(result.publication.errors).toEqual([
       { pageId: 'context', code: 'notebook.invalid_page' },
+      { pageId: 'context', code: 'scope_schema.procedure_owned_by_skill' },
+      { pageId: 'context', code: 'scope_schema.type_not_allowed' },
     ]);
   });
 
@@ -106,6 +108,7 @@ describe('Skills own reusable procedures', () => {
     );
     expect(result.publication.errors).toEqual([
       { pageId: 'context', code: 'notebook.invalid_page' },
+      { pageId: 'context', code: 'scope_schema.procedure_owned_by_skill' },
     ]);
   });
 

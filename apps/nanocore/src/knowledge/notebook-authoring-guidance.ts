@@ -19,9 +19,14 @@ export function notebookAuthoringGuidance(
     `Use schema_version: ${JSON.stringify(parsed.schema.schemaVersion)} and scope: ${JSON.stringify(ownerScope)}. Required features: ${JSON.stringify(REQUIRED_SCOPED_KNOWLEDGE_FEATURES)}.`,
     'The active schema below supplies allowed type, openkit_status, review_state, sensitivity and freshness values. Use only its admitted values. Never mark a generated change human-approved or infer delegation from these values; the native publisher owns attribution and Review.',
     'created_at and updated_at are ISO 8601 timestamps with an explicit offset. source_refs is an array of actual admitted references, including exact source:<id>@sha256:<digest> pins; invent no Source or approval.',
-    'Rule, Effect and Objective require applies_to as a nonempty array of exact tool or work-step identifiers. Effect also requires a nonempty descriptive basis and last_checked_at as an actual supplied check timestamp with an explicit offset; do not invent a check.',
+    'Claim requires confidence: a finite number from zero through one. Rule, Effect and Objective require applies_to as a nonempty array of exact tool or work-step identifiers. Effect also requires a nonempty descriptive basis and last_checked_at as an actual supplied check timestamp with an explicit offset; do not invent a check.',
     'Portable status may be omitted only for active pages (default stable). Otherwise write status matching openkit_status: draft -> draft; archived/superseded/invalid/deleted -> deprecated. Reusable procedures belong in Skills.',
     'Edit the admitted virtual notebook first, then submit through the existing notebook Tool. Full current-schema validation, fixed-base conflict checks and required human Review remain mandatory.',
+    ...(ownerScope.kind === 'workspace'
+      ? [
+          'For selected /notebook/@sources/<id>.md summaries, edit only title, description, tags and summary text. Preserve captured facts, identity and governance; original /sources bytes are read-only.',
+        ]
+      : []),
     'Complete active scope schema (read-only):',
     scopeSchemaText,
   ].join('\n');
