@@ -6,6 +6,7 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { assertScopeAdmitted, isScopeAdmitted, refuseScope } from '../bootstrap/readiness.js';
 import { recoverRunningCapabilityCalls } from '../capability/usage-ledger.js';
 import { resolveDataRoot } from '../config/data-root.js';
+import { configureOwnedSqlite } from './control-store.js';
 import {
   coreDbPath,
   ensureLayout,
@@ -69,6 +70,30 @@ export interface WorkspaceDb {
 let singleton: CoreDb | undefined;
 
 /**
+ * Opens owned writable authority and reapplies its connection-local durability policy.
+ *
+ * WAL persists in the file, but FULL synchronization does not. Configure every open before schema allocation and close failed opens locally.
+ *
+ * @param path Owned database path.
+ * @param options Whether the authoritative file must already exist.
+ * @returns Configured writable SQLite connection.
+ * @throws When the file cannot open or its connection policy cannot be applied.
+ */
+function openOwnedSqlite(
+  path: string,
+  options: { fileMustExist?: boolean } = {}
+): Database.Database {
+  const sqlite = new Database(path, options);
+  try {
+    configureOwnedSqlite(sqlite);
+    return sqlite;
+  } catch (error) {
+    sqlite.close();
+    throw error;
+  }
+}
+
+/**
  * Opens one server-scope Core database under the provided data root.
  *
  * @param dataRoot Data root that will contain server/db/core.sqlite.
@@ -84,7 +109,7 @@ export function openCoreDb(
     (options.freshInitialization ?? isFreshCoreInitializationScope(dataRoot));
   ensureLayoutDirectories(dataRoot);
 
-  const sqlite = new Database(coreDbPath(dataRoot));
+  const sqlite = openOwnedSqlite(coreDbPath(dataRoot));
 
   return {
     scope: 'core',
@@ -130,7 +155,7 @@ export function openExistingCoreDbWithIntegrityCheck(dataRoot: string): CoreDb {
   readDataRootLayoutMarker(dataRoot);
   const path = coreDbPath(dataRoot);
   assertSqliteIntegrity(path);
-  const sqlite = new Database(path, { fileMustExist: true });
+  const sqlite = openOwnedSqlite(path, { fileMustExist: true });
 
   return {
     scope: 'core',
@@ -208,7 +233,7 @@ export function listExistingWorkspaceDatabaseScopes(
 export function openUserDb(dataRoot: string, userId: string): UserDb {
   ensureUserLayout(dataRoot, userId);
 
-  const sqlite = new Database(userDbPath(dataRoot, userId));
+  const sqlite = openOwnedSqlite(userDbPath(dataRoot, userId));
 
   return { scope: 'user', sqlite, dataRoot, userId };
 }
@@ -223,7 +248,7 @@ export function openUserDb(dataRoot: string, userId: string): UserDb {
 export function openWorkspaceDb(dataRoot: string, workspaceId: string): WorkspaceDb {
   ensureWorkspaceLayout(dataRoot, workspaceId);
 
-  const sqlite = new Database(workspaceDbPath(dataRoot, workspaceId));
+  const sqlite = openOwnedSqlite(workspaceDbPath(dataRoot, workspaceId));
 
   return {
     scope: 'workspace',
@@ -237,7 +262,7 @@ export function openWorkspaceDb(dataRoot: string, workspaceId: string): Workspac
 /** Opens an existing Workspace database after the current boot already verified its layout. */
 export function openBootVerifiedWorkspaceDb(dataRoot: string, workspaceId: string): WorkspaceDb {
   assertScopeAdmitted(dataRoot, 'workspace', workspaceId);
-  const sqlite = new Database(workspaceDbPath(dataRoot, workspaceId), { fileMustExist: true });
+  const sqlite = openOwnedSqlite(workspaceDbPath(dataRoot, workspaceId), { fileMustExist: true });
 
   return {
     scope: 'workspace',
@@ -261,7 +286,7 @@ export function openWorkspaceDbAtRoot(input: {
 }): WorkspaceDb {
   ensureWorkspaceLayoutRoot(input.workspaceRoot);
 
-  const sqlite = new Database(join(input.workspaceRoot, 'db', 'workspace.sqlite'));
+  const sqlite = openOwnedSqlite(join(input.workspaceRoot, 'db', 'workspace.sqlite'));
 
   return {
     scope: 'workspace',
