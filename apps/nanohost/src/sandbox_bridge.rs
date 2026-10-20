@@ -20,6 +20,8 @@ use tokio::sync::{Semaphore, mpsc};
 use tokio::task::JoinHandle;
 use tokio_stream::Stream;
 
+use crate::epoch_coordinator::{MemberFailureSubject, WatchedTask, record_task_abort};
+
 /// Fixed image-private Sandbox Integration listener reached by stock `ForwardTcp`.
 pub const SANDBOX_INTEGRATION_TARGET: &str = "127.0.0.1:17891";
 
@@ -304,7 +306,7 @@ impl AsyncWrite for TcpForwardByteStream {
 
 /// Owns the live byte stream and short-lived authorization for one stock pair.
 pub struct OpenSandboxBridge {
-    route_server: JoinHandle<()>,
+    route_server: WatchedTask<Result<(), h2::Error>>,
     authorization_token: String,
     bootstrap: WorkerBootstrapBinding,
 }
@@ -319,13 +321,13 @@ struct WorkerBootstrapBinding {
 impl OpenSandboxBridge {
     /// Creates one retained bridge after the authenticated starting round trip.
     pub(crate) fn new(
-        route_server: JoinHandle<()>,
+        route_server: JoinHandle<Result<(), h2::Error>>,
         authorization_token: String,
         sandbox_integration_binding_ref: String,
         harness_ready: bool,
     ) -> Self {
         Self {
-            route_server,
+            route_server: WatchedTask::new(route_server),
             authorization_token,
             bootstrap: WorkerBootstrapBinding {
                 sandbox_integration_binding_ref,
@@ -333,6 +335,11 @@ impl OpenSandboxBridge {
                 exec_monitor_live: true,
             },
         }
+    }
+
+    /// Shares only the existing route join and abort proof for member diagnostics.
+    pub(crate) fn task_handle(&self) -> WatchedTask<Result<(), h2::Error>> {
+        self.route_server.clone()
     }
 
     /// Returns whether the fixed bootstrap remains live at the starting latch.
@@ -345,6 +352,7 @@ impl OpenSandboxBridge {
 
     /// Splits the bridge for explicit close and authorization revocation.
     pub(crate) fn into_close_parts(mut self) -> String {
+        record_task_abort(MemberFailureSubject::HarnessRoute);
         self.route_server.abort();
         self.bootstrap.sandbox_integration_binding_ref.clear();
         std::mem::take(&mut self.authorization_token)
@@ -354,6 +362,7 @@ impl OpenSandboxBridge {
 impl Drop for OpenSandboxBridge {
     /// Cancels only route carriage and clears retained binding material on drop.
     fn drop(&mut self) {
+        record_task_abort(MemberFailureSubject::HarnessRoute);
         self.route_server.abort();
         self.bootstrap.sandbox_integration_binding_ref.clear();
         self.authorization_token.clear();
