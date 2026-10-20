@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import { allocateEntityId, ContentReferenceSchema } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  type LocalStorageMount,
   STORAGE_LIMITS,
   type StorageAccess,
   type StorageContent,
@@ -693,5 +694,230 @@ describe('LocalStorage staged handoff', () => {
       )
     ).toEqual([]);
     expect(await readFile(join(f.root, f.locator.path))).toEqual(f.bytes);
+  });
+});
+
+/** Bind the existing backend-evidence root to a real native owner, with no Knowledge Base or lease. */
+async function nativeFixture(ownerScope: StorageLocator['ownerScope']) {
+  const directory = await mkdtemp(join(tmpdir(), 'storage-native-'));
+  const ownerPath =
+    ownerScope.kind === 'workspace' ? join('workspaces', ownerScope.workspaceId) : 'server';
+  const root = join(directory, ownerPath, 'evidence', 'backend');
+  const stagingRoot = join(directory, 'staging');
+  await mkdir(join(root, 'sha256'), { recursive: true });
+  const mount = { knowledgeBaseId: null, ownerScope, name: 'backend-evidence', root };
+  let storage: LocalStorage | undefined;
+  let refusal: unknown = null;
+  try {
+    // Exercise the accepted nullable wire shape against the pre-RET-1 type declaration.
+    storage = new LocalStorage({ mounts: [mount as unknown as LocalStorageMount], stagingRoot });
+    fixtures.push({ directory, storage });
+  } catch (error) {
+    refusal = error;
+    await rm(directory, { recursive: true, force: true });
+  }
+  expect(refusal, 'Storage must admit a configured native scope without a Knowledge Base').toBe(
+    null
+  );
+  if (!storage) throw new Error('Native Storage mount was not admitted.');
+  const access = {
+    basis: 'work-capture',
+    knowledgeBaseId: null,
+    ownerScope,
+    mount: 'backend-evidence',
+    pathPrefix: '',
+    mode: 'staged-write',
+  } as unknown as StorageAccess;
+  const bytes = Buffer.from([0, 255, 128, 1, 2, 13, 10, 0, 100]);
+  const locator: StorageLocator = {
+    ownerScope,
+    mount: 'backend-evidence',
+    path: `sha256/${digest(bytes).slice('sha256:'.length)}`,
+  };
+  const readAccess: StorageAccess = { ...access, mode: 'read-only' };
+  return { directory, root, storage, access, readAccess, bytes, locator };
+}
+
+describe('RET-1 native scoped Storage', () => {
+  // RET §Content Addressing And Scope Placement: use existing Storage immutable content in the real Server or Workspace scope.
+  it.each([
+    'server',
+    'workspace',
+  ] as const)('stages and reads exact %s bytes at their scoped digest placement', async (kind) => {
+    const ownerScope =
+      kind === 'workspace' ? { kind, workspaceId: allocateEntityId('ws') } : { kind };
+    const f = await nativeFixture(ownerScope);
+    const { handle } = value(
+      await invoke(f.storage.beginStage, {
+        access: f.access,
+        locator: f.locator,
+        maxByteLength: f.bytes.length,
+      })
+    );
+    for (const bytes of [f.bytes.subarray(0, 4), f.bytes.subarray(4)]) {
+      value(
+        await invoke(f.storage.writeStage, {
+          access: f.access,
+          handle,
+          data: bytes.toString('base64'),
+        })
+      );
+    }
+    const stage = value(await invoke(f.storage.finishStage, { access: f.access, handle }));
+    expect(stage.content).toEqual({
+      reference: {
+        knowledgeBaseId: null,
+        contentDigest: digest(f.bytes),
+        locator: f.locator,
+        range: null,
+        availability: 'available',
+      },
+      byteLength: 9,
+      mediaType: 'application/octet-stream',
+    });
+    expect(ContentReferenceSchema.parse(stage.content.reference)).toEqual(stage.content.reference);
+    const first = value(
+      await invoke(f.storage.readStage, { access: f.access, handle, offset: 0, length: 4 })
+    );
+    const last = value(
+      await invoke(f.storage.readStage, { access: f.access, handle, offset: 4, length: 20 })
+    );
+    expect(first).toEqual({
+      data: f.bytes.subarray(0, 4).toString('base64'),
+      offset: 0,
+      nextOffset: 4,
+    });
+    expect(last).toEqual({
+      data: f.bytes.subarray(4).toString('base64'),
+      offset: 4,
+      nextOffset: null,
+    });
+    const sealed = Buffer.concat([
+      Buffer.from(first.data, 'base64'),
+      Buffer.from(last.data, 'base64'),
+    ]);
+    expect(sealed).toEqual(f.bytes);
+    expect(await readdir(join(f.root, 'sha256'))).toEqual([]);
+    // Fixture owner consumes the handoff; Storage itself has no publication operation.
+    await writeFile(join(f.root, f.locator.path), sealed, { flag: 'wx' });
+    value(await invoke(f.storage.discardStage, { access: f.access, handle }));
+    const content = value(
+      await invoke(f.storage.stat, { access: f.readAccess, locator: f.locator })
+    );
+    expect(content).toEqual(stage.content);
+    expect(
+      value(
+        await invoke(f.storage.read, {
+          access: f.readAccess,
+          content,
+          offset: 0,
+          length: 20,
+        })
+      )
+    ).toEqual({ data: f.bytes.toString('base64'), offset: 0, nextOffset: null });
+    expect(await readFile(join(f.root, f.locator.path))).toEqual(f.bytes);
+  });
+
+  // RET §Content Addressing And Scope Placement: equal digests grant no read permission or cross-Workspace existence probe.
+  it('denies foreign Server and Workspace access to native bytes and stage handles', async () => {
+    const f = await nativeFixture({ kind: 'workspace', workspaceId: allocateEntityId('ws') });
+    await writeFile(join(f.root, f.locator.path), f.bytes, { flag: 'wx' });
+    const content = value(
+      await invoke(f.storage.stat, { access: f.readAccess, locator: f.locator })
+    );
+    const { handle } = value(
+      await invoke(f.storage.beginStage, {
+        access: f.access,
+        locator: f.locator,
+        maxByteLength: f.bytes.length,
+      })
+    );
+    value(
+      await invoke(f.storage.writeStage, {
+        access: f.access,
+        handle,
+        data: f.bytes.toString('base64'),
+      })
+    );
+    value(await invoke(f.storage.finishStage, { access: f.access, handle }));
+    for (const ownerScope of [
+      { kind: 'server' as const },
+      { kind: 'workspace' as const, workspaceId: allocateEntityId('ws') },
+    ]) {
+      const readAccess = { ...f.readAccess, ownerScope };
+      const stageAccess = { ...f.access, ownerScope };
+      expect(await invoke(f.storage.stat, { access: readAccess, locator: f.locator })).toEqual({
+        status: 'denied',
+      });
+      expect(
+        await invoke(f.storage.read, { access: readAccess, content, offset: 0, length: 1 })
+      ).toEqual({ status: 'denied' });
+      expect(
+        await invoke(f.storage.beginStage, {
+          access: stageAccess,
+          locator: f.locator,
+          maxByteLength: 1,
+        })
+      ).toEqual({ status: 'denied' });
+      expect(
+        await invoke(f.storage.readStage, { access: stageAccess, handle, offset: 0, length: 1 })
+      ).toEqual({ status: 'denied' });
+      const forged = {
+        ...content,
+        reference: {
+          ...content.reference,
+          locator: { ...content.reference.locator, ownerScope },
+        },
+      };
+      expect(
+        await invoke(f.storage.read, {
+          access: readAccess,
+          content: forged,
+          offset: 0,
+          length: 1,
+        })
+      ).toEqual({ status: 'denied' });
+    }
+    expect(
+      value(await invoke(f.storage.readStage, { access: f.access, handle, offset: 0, length: 20 }))
+        .data
+    ).toBe(f.bytes.toString('base64'));
+  });
+
+  // File Storage §Reference Lifecycle: verify the captured digest and size; changed bytes at the same locator are unavailable.
+  it('refuses a native digest mismatch even when placement and byte length still match', async () => {
+    const f = await nativeFixture({ kind: 'server' });
+    await writeFile(join(f.root, f.locator.path), f.bytes, { flag: 'wx' });
+    const content = value(
+      await invoke(f.storage.stat, { access: f.readAccess, locator: f.locator })
+    );
+    expect(content.reference.contentDigest).toBe(digest(f.bytes));
+    value(await invoke(f.storage.read, { access: f.readAccess, content, offset: 0, length: 1 }));
+    const changed = Buffer.from(f.bytes);
+    changed[0] = 42;
+    await writeFile(join(f.root, f.locator.path), changed);
+    expect(
+      await invoke(f.storage.read, { access: f.readAccess, content, offset: 0, length: 1 })
+    ).toEqual({
+      status: 'unavailable',
+      reason: 'changed',
+      reference: { ...content.reference, availability: 'unavailable' },
+    });
+  });
+
+  // File Storage §Storage Package And Policy Leases: managed originals remain bound to their exact Knowledge Base.
+  it('does not let a null or foreign Knowledge Base replace an existing Knowledge binding', async () => {
+    const f = await fixture();
+    const content = await capture(f);
+    expect(content.reference.knowledgeBaseId).toBe(f.access.knowledgeBaseId);
+    for (const knowledgeBaseId of [null, allocateEntityId('kb')]) {
+      const access = { ...f.access, knowledgeBaseId } as unknown as StorageAccess;
+      expect(await invoke(f.storage.stat, { access, locator: f.locator })).toEqual({
+        status: 'denied',
+      });
+    }
+    expect(
+      value(await invoke(f.storage.read, { access: f.access, content, offset: 0, length: 20 })).data
+    ).toBe(f.bytes.toString('base64'));
   });
 });

@@ -121,10 +121,10 @@ Multi-dimensional eval requires, as format slots even when empty: provider plus 
 
 | Point | Unique facts | MUST NOT be trusted for |
 | --- | --- | --- |
-| Gateway | Complete model-interaction body when collected, resolved model, token/cost | Sandbox-internal execution |
-| NanoHost (outside the sandbox, under our control) | What was actually injected: image digest, AEP, mounted skill/MCP versions, resource configuration, container lifecycle | In-sandbox tool detail |
-| Sandbox sidecar (inside the sandbox) | Actual tool execution and return, process events, harness-internal state | Authorization and identity; it sits inside an untrusted boundary |
-| Core | Actor, authorization decisions, approvals, product acceptance | Agent-internal behavior |
+| Gateway (`llm-gateway`) | Complete model-interaction body when collected, resolved model, token/cost | Sandbox-internal execution |
+| NanoHost (`nanohost`; outside the sandbox, under our control) | What was actually injected: image digest, AEP, mounted skill/MCP versions, resource configuration, container lifecycle | In-sandbox tool detail |
+| Sandbox sidecar (`worker-shim`; inside the sandbox) | Actual tool execution and return, process events, harness-internal state | Authorization and identity; it sits inside an untrusted boundary |
+| Core (`nanocore`) | Actor, authorization decisions, approvals, product acceptance | Agent-internal behavior |
 
 The NanoCore observer directly observes its own loop and mediated calls. The restriction on Agent-internal behavior applies to behavior outside that observer's boundary.
 
@@ -202,6 +202,8 @@ When an upstream request was prepared but its delivery is unknown, retain the ob
 ### Content Addressing And Scope Placement
 
 Use the existing [Storage Service immutable content](20261018-file_storage_and_knowledge_packages.md) and the scope's existing control records. Workspace-attributed calls store their blobs and references inside that Workspace; backup or move includes their reachable closure. Calls without Workspace attribution use existing server-scoped Storage roots and an explicit server-scope coverage observation. Never invent a Workspace/Thread/Turn identity or a global capture owner.
+
+The scoped-reference/staging prerequisite reuses the shared Storage reference's native case: explicit `knowledgeBaseId: null`, actual Server or Workspace owner, `backend-evidence` mount and `sha256/<digest>` path under that scope's existing `evidence/backend/` root. Knowledge references continue to require their exact real Knowledge Base ID. Current `work-capture` admission is a transient trusted-caller basis, not a retained grant, Knowledge authority or permission inferred from a digest. The existing owner authorizes each operation and consumes sealed staged bytes before publishing its references; Storage itself does not publish. This prerequisite changes no collector, capture default, Turn lifecycle or replay authority.
 
 A call without a Turn binds its effective coverage in that existing scope before dispatch and references the existing call/attempt. A Workspace-only call resolves server -> Workspace policy; an unattributed call resolves server policy. Historical absent bindings remain unknown. Missing required binding/storage follows existing admission/failure rules, not a claimed successful capture.
 
@@ -347,7 +349,7 @@ Multiple observations under one Item or one `turnId` are ordered by observation-
 | `id` | yes | Stable addressable line id |
 | `ts` | yes | Observer-local clock declaration, RFC3339 UTC milliseconds; not a sort key |
 | `seq` | yes | Per-file contiguous from 1; truncation detection only; not a narrative key |
-| `obs` | yes | Observer: `gateway` \| `nanohost` \| `sidecar` \| `core` |
+| `obs` | yes | Observer: `llm-gateway` \| `nanohost` \| `worker-shim` \| `nanocore` |
 | `ret` | conditional | Core retention class when the row has a long-term or restricted class to assign; omitted means the type's default class from its owning write rule, not "no retention". See `ret` |
 | `parent` | conditional | Scalar parent id: observation id or Item id |
 | `corr` | conditional | Pairing key for one logical call's request and response; no external referent |
@@ -359,6 +361,8 @@ Multiple observations under one Item or one `turnId` are ordered by observation-
 | `payload` | yes | Main facts allowed by B′, shape per `type` |
 
 `obs` identifies the observer, not the source or verifier of a reported fact. Before a remote producer writes records, its type-owned payload MUST distinguish source claims from independent verification and identify their source and evidence basis. `cert` continues to distinguish direct observation from inference; directly observing a report does not verify its claim.
+
+**Retained observer names.** Writers emit only the observer values listed above. Retained version-1 records and exports may contain `core`, `gateway`, or `sidecar`. Readers map them to `nanocore`, `llm-gateway`, and `worker-shim`, respectively; the collection meaning stays unchanged. This read projection leaves existing ledger bytes and their version unchanged. Import verifies original source bytes and digests; the mapped view is not replacement evidence. Same-identity replay compares the mapped observation meaning, not the historical spelling. Unknown observer values and observer/type mismatches fail closed.
 
 `ownerScope`, lineage defaults, `requiredFeatures`, and redaction defaults live on the directory-level manifest (`thread.json` / `turn.json` as the storage owner already assigns), not repeated per line.
 

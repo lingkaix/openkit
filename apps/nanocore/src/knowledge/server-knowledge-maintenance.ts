@@ -24,7 +24,7 @@ import {
 } from '../runtime/idempotent-command.js';
 import type { CoreDb } from '../storage/db.js';
 import { KnowledgeNotebook, NotebookError } from './notebook.js';
-import { createNotebookAgentEditing } from './notebook-agent-editing.js';
+import { createNotebookAgentEditing, NOTEBOOK_EDITING_LIMITS } from './notebook-agent-editing.js';
 import { notebookAuthoringGuidance } from './notebook-authoring-guidance.js';
 import { boundedNotebookDiff } from './notebook-history.js';
 import {
@@ -416,7 +416,8 @@ export function prepareServerKnowledgeMaintenance(
           revalidate: assertCurrent,
           submit: async (edit) => {
             assertCurrent();
-            if (edit.changes.length > 4) throw new NotebookError('invalid_request');
+            if (edit.changes.length > NOTEBOOK_EDITING_LIMITS.changedFiles)
+              throw new NotebookError('invalid_request');
             if (!edit.changes.length) {
               outcome = result('no-change', edit.summary);
               return { outcome: 'no-change', notebookRevision: baseRevision };

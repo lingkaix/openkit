@@ -1169,7 +1169,7 @@ describe('quick chat app API', () => {
       });
       expect(observations[0]).toMatchObject({
         type: 'env.bound',
-        obs: 'core',
+        obs: 'nanocore',
         payload: {
           version: expect.any(String),
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',

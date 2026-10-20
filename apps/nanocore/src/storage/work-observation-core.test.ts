@@ -9,7 +9,7 @@ const environment = {
   turnId: testEntityId('tu', 'turn-one'),
   ts: '2026-09-29T00:00:00.000Z',
   type: 'env.bound',
-  obs: 'core',
+  obs: 'nanocore',
   payload: {
     version: '0.0.0',
     workspaceId: testEntityId('ws', 'ws-one'),
@@ -24,7 +24,7 @@ describe('internal environment observation boundary', () => {
   });
 
   it('rejects non-Core claims and omits inline prompt or tool schema content', () => {
-    expect(() => parseWorkObservationRecord({ ...environment, obs: 'gateway' })).toThrow();
+    expect(() => parseWorkObservationRecord({ ...environment, obs: 'llm-gateway' })).toThrow();
     expect(
       parseWorkObservationRecord({
         ...environment,
@@ -63,7 +63,7 @@ describe('Core recovery observation boundary', () => {
   });
 
   it('rejects a non-Core decision and omits inline call arguments', () => {
-    expect(() => parseWorkObservationRecord({ ...reap, obs: 'sidecar' })).toThrow();
+    expect(() => parseWorkObservationRecord({ ...reap, obs: 'worker-shim' })).toThrow();
     expect(
       parseWorkObservationRecord({
         ...reap,

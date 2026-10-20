@@ -1665,7 +1665,11 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot) 
   observations.appendWorkObservation(workspace, {
     threadId,
     turnId: turn.id,
-    observation: {
+    // The selected revision's reader maps this historical fixture to its own strict writer name.
+    observation: observations.parseWorkObservationRecord({
+      v: 1,
+      seq: 1,
+      turnId: turn.id,
       id: 'upgrade-corpus-model',
       type: 'model.observed',
       ts: NOW,
@@ -1678,7 +1682,7 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot) 
         runtimeOriginRef: null,
         content: { state: 'expected' },
       },
-    },
+    }),
     bodies: [
       { id: 'response', bytes: body, mediaType: 'text/plain', boundary: 'synthetic-model-output' },
     ],
@@ -2114,7 +2118,20 @@ export async function readSqlCorpus({ appRoot, dataRoot, selectors }) {
       ),
       [SQL_CORPUS_FAMILIES[28]]: one(
         SQL_CORPUS_FAMILIES[28],
-        [required(linked.workObservations, 'Work observation log')],
+        // Compare observer meaning across revisions; the separate byte digest still covers the original ledger.
+        [
+          required(linked.workObservations, 'Work observation log').map((row) => ({
+            ...row,
+            obs:
+              row.obs === 'core'
+                ? 'nanocore'
+                : row.obs === 'gateway'
+                  ? 'llm-gateway'
+                  : row.obs === 'sidecar'
+                    ? 'worker-shim'
+                    : row.obs,
+          })),
+        ],
         [fileBytes(dataRoot, join(dataRoot, sql.observationsPath))]
       ),
       [SQL_CORPUS_FAMILIES[29]]: one(

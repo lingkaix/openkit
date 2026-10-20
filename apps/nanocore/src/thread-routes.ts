@@ -46,8 +46,8 @@ export async function updateThread(
     scope: { workspaceId: input.workspaceId, threadId: input.threadId },
     input,
     responseKind: 'thread',
-    execute: () =>
-      ThreadSchema.parse(store.updateThread(input.workspaceId, input.threadId, updates)),
+    execute: async () =>
+      ThreadSchema.parse(await store.updateThread(input.workspaceId, input.threadId, updates)),
     replay: (record) => ThreadSchema.parse(store.getThread(input.workspaceId, record.response.id)),
     responseId: (result) => result.id,
   });
@@ -111,13 +111,13 @@ export async function createThread(
     scope: { actorId, workspaceId: input.workspaceId },
     input,
     responseKind: 'thread',
-    execute: () =>
+    execute: async () =>
       ThreadSchema.parse(
-        input.visibility === 'workspace'
+        await (input.visibility === 'workspace'
           ? store.createThread(input.workspaceId, input.name, undefined, 'conversation', {
               visibility: 'workspace',
             })
-          : openAssistantTimeline(store, input.workspaceId, actorId, input.name)
+          : openAssistantTimeline(store, input.workspaceId, actorId, input.name))
       ),
     replay: (record) => ThreadSchema.parse(store.getThread(input.workspaceId, record.response.id)),
     responseId: (result) => result.id,

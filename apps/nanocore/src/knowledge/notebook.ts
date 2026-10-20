@@ -2,7 +2,11 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { lstatSync, mkdirSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
-import { KnowledgeNotebookCommitMetadataSchema, KnowledgeSourceIdSchema } from '@openkit/protocol';
+import {
+  KNOWLEDGE_NOTEBOOK_COMMIT_SCHEMA_VERSION,
+  KnowledgeNotebookCommitMetadataSchema,
+  KnowledgeSourceIdSchema,
+} from '@openkit/protocol';
 import type { z } from 'zod';
 import { assertSourcePointerEdit } from './source-pointers.js';
 
@@ -14,7 +18,7 @@ export const DEFAULT_NOTEBOOK_INDEX = '---\nokf_version: "0.2"\n---\n# Notebook\
 /** The shared typed commit facts also supply the existing Audit owner's pre-publication projection. */
 export const NotebookCommitMetadataSchema = KnowledgeNotebookCommitMetadataSchema;
 
-/** Exact metadata serialized as the complete service-owned Git commit message. */
+/** Historical admission facts; the service adds the retained commit format marker. */
 export type NotebookCommitMetadata = z.infer<typeof NotebookCommitMetadataSchema>;
 
 /** Immutable notebook bytes and historical admission facts read from one Git commit. */
@@ -30,7 +34,9 @@ export interface NotebookRevision {
 export class NotebookError extends Error {
   constructor(
     readonly code: 'invalid_request' | 'conflict' | 'recovery_required' | 'review_required',
-    readonly currentRevision?: string
+    readonly currentRevision?: string,
+    /** Native validation codes only; transient feedback, never authored text or publication authority. */
+    readonly diagnostics?: readonly string[]
   ) {
     super(`Notebook ${code.replaceAll('_', ' ')}.`);
   }
@@ -233,8 +239,13 @@ export class KnowledgeNotebook {
     try {
       const parsed: unknown = JSON.parse(message);
       metadata = NotebookCommitMetadataSchema.parse(parsed);
+      // Historical absence keeps its original canonical bytes; explicit markers remain closed.
+      const canonical =
+        typeof parsed === 'object' && parsed !== null && Object.hasOwn(parsed, 'schemaVersion')
+          ? { schemaVersion: KNOWLEDGE_NOTEBOOK_COMMIT_SCHEMA_VERSION, ...metadata }
+          : metadata;
       // Service serialization also rejects duplicate keys and trailing JSON fragments.
-      if (message !== `${JSON.stringify(metadata)}\n`) throw new Error('Invalid metadata.');
+      if (message !== `${JSON.stringify(canonical)}\n`) throw new Error('Invalid metadata.');
     } catch {
       throw new NotebookError('recovery_required');
     }
@@ -558,7 +569,7 @@ export class KnowledgeNotebook {
     const root = writeTree(tree);
     const revision = this.git(
       ['commit-tree', root, ...(parent ? ['-p', parent] : []), '-F', '-'],
-      `${JSON.stringify(metadata)}\n`,
+      `${JSON.stringify({ schemaVersion: KNOWLEDGE_NOTEBOOK_COMMIT_SCHEMA_VERSION, ...metadata })}\n`,
       metadata.producer.id
     ).trim();
     return revision;

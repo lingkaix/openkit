@@ -103,6 +103,7 @@ const WORKSPACE_TABLES = [
   'worker_turn_checkpoints',
   'workspace_apply_plans',
   'workspace_apply_results',
+  'workspace_capture_records',
   'workspace_change_sets',
   'workspace_filesystem_staging_roots',
   'workspace_input_snapshots',
@@ -309,6 +310,7 @@ describe('database setup', () => {
         '0011_audit_authentication.sql',
         '0012_quarantined_workspace_retirement.sql',
         '0013_control_store.sql',
+        '0014_execution_journal.sql',
       ]);
       expect(
         ['app', 'core', 'user', 'workspace'].every((scope) =>
@@ -331,6 +333,7 @@ describe('database setup', () => {
         'core_0011_audit_authentication',
         'core_0012_quarantined_workspace_retirement',
         'core_0013_control_store',
+        'core_0014_execution_journal',
       ]);
       expect(listTableNames(coreDb)).toEqual(beforeTables);
       for (const table of ['capability_calls', 'usage_records', 'evidence_bundles']) {
@@ -746,6 +749,7 @@ describe('database setup', () => {
         'workspace_0008_evaluation_judgements',
         'workspace_0009_review_selection_judgements',
         'workspace_0010_product_control',
+        'workspace_0011_workspace_capture_protection',
       ]);
       expect(listTableNames(workspaceDb)).toEqual(WORKSPACE_TABLES);
       const idempotencyRequestColumns = [
@@ -1136,6 +1140,7 @@ describe('native Drizzle migrate', () => {
         'workspace_0008_evaluation_judgements',
         'workspace_0009_review_selection_judgements',
         'workspace_0010_product_control',
+        'workspace_0011_workspace_capture_protection',
       ]);
     } finally {
       db.sqlite.close();

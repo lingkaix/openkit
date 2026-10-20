@@ -162,7 +162,7 @@ export async function withTurnModelCapture<T>(
             id: `env:${turn.id}`,
             ts: binding.turn.startedAt,
             type: 'env.bound',
-            obs: 'core',
+            obs: 'nanocore',
             ret: 'turn-evidence',
             payload: {
               version,
@@ -349,7 +349,7 @@ export class ModelCapture {
       id,
       ts,
       type: 'model.observed',
-      obs: 'gateway' as const,
+      obs: 'llm-gateway' as const,
       corr: this.context.corr,
       ret: 'turn-evidence' as const,
       ...(direction === 'response' ? { parent: this.requestId } : {}),
