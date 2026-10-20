@@ -1,13 +1,17 @@
 import {
+  copyFileSync,
   cpSync,
   existsSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
 } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, relative, resolve, sep } from 'node:path';
 
 import { WorkspaceConfigSchema } from '@openkit/config-schema';
@@ -288,16 +292,27 @@ export function migrateWorkspaceStorage(
     marker = readPredecessorLayoutMarker(input.dataRoot);
     const predecessorInventory = inventoryRegularFiles(input.dataRoot);
 
-    coreDb = openPredecessorCoreDb(input.dataRoot);
-    const preflight = preflightWorkspaceStorageMigration({ coreDb, dataRoot: input.dataRoot });
+    const preflight = inspectSqliteCopy(
+      input.dataRoot,
+      resolveDataRootPath(input.dataRoot, 'server', 'db', 'core.sqlite'),
+      (path) => {
+        const preflightDb = openPredecessorCoreDb(input.dataRoot, path);
+        try {
+          return preflightWorkspaceStorageMigration({
+            coreDb: preflightDb,
+            dataRoot: input.dataRoot,
+          });
+        } finally {
+          preflightDb.sqlite.close();
+        }
+      }
+    );
     if (preflight.diagnostics.length > 0) {
       const codes = [...new Set(preflight.diagnostics.map((diagnostic) => diagnostic.code))];
       throw new Error(`Workspace storage migration preflight failed: ${codes.join(', ')}.`);
     }
 
     sources = createMigrationSources(input.dataRoot);
-    coreDb.sqlite.close();
-    coreDb = undefined;
 
     stage = 'backup';
     const backupStartedAt = now();
@@ -350,7 +365,7 @@ export function migrateWorkspaceStorage(
         workspaceDb.sqlite.close();
       }
 
-      assertWorkspaceDatabaseHealthy(stagedWorkspaceRoot, source.workspaceId);
+      assertWorkspaceDatabaseHealthy(stagedWorkspaceRoot, source.workspaceId, input.dataRoot);
       inventoryRegularFiles(stagedWorkspaceRoot);
     }
 
@@ -522,7 +537,7 @@ export function preflightWorkspaceStorageMigration(
       if (registry && registry.owner_user_id !== root.ownerUserId) {
         diagnostics.push({ code: 'workspace_owner_mismatch', workspaceId });
       }
-      if (!workspaceDatabaseIsHealthy(join(root.path, 'db', 'workspace.sqlite'))) {
+      if (!workspaceDatabaseIsHealthy(join(root.path, 'db', 'workspace.sqlite'), input.dataRoot)) {
         diagnostics.push({ code: 'workspace_database_corrupt', workspaceId });
       }
     }
@@ -660,24 +675,63 @@ function workspaceIdIsSafe(dataRoot: string, workspaceId: string): boolean {
 }
 
 /**
- * Performs a read-only SQLite integrity check for one authoritative Workspace database.
+ * Checks native SQLite integrity through a private copy, leaving authoritative Workspace files unchanged.
  *
  * @param path Workspace database path.
+ * @param dataRoot Stopped predecessor root that inspection must not change.
  * @returns True only for an existing database whose quick check passes.
  */
-function workspaceDatabaseIsHealthy(path: string): boolean {
+function workspaceDatabaseIsHealthy(path: string, dataRoot: string): boolean {
   if (!existsSync(path) || lstatSync(path).isSymbolicLink()) {
     return false;
   }
 
-  let sqlite: Database.Database | undefined;
   try {
-    sqlite = new Database(path, { fileMustExist: true, readonly: true });
-    return sqlite.prepare('PRAGMA quick_check').pluck().get() === 'ok';
+    return inspectSqliteCopy(dataRoot, path, (copy) => {
+      const sqlite = new Database(copy, { fileMustExist: true });
+      try {
+        return sqlite.prepare('PRAGMA quick_check').pluck().get() === 'ok';
+      } finally {
+        sqlite.close();
+      }
+    });
   } catch {
     return false;
+  }
+}
+
+/**
+ * Inspects a private native copy without changing the stopped predecessor's exact inventory.
+ *
+ * Read-only WAL opens can still create source sidecars. Copy retained WAL and rollback journals, but rebuild shared-memory indexes only inside the disposable copy. Callers close native handles before cleanup; no source journal or database bytes are changed.
+ *
+ * @param dataRoot Stopped predecessor root that must not contain inspection files.
+ * @param path Authoritative SQLite path.
+ * @param inspect Read inspection that closes its private native handles before returning.
+ * @returns Inspection result.
+ * @throws When an input is unsafe, temporary storage is inside the predecessor, or copy or inspection fails.
+ */
+function inspectSqliteCopy<T>(dataRoot: string, path: string, inspect: (copy: string) => T): T {
+  const root = realpathSync(dataRoot);
+  const temporaryBase = realpathSync(tmpdir());
+  if (temporaryBase === root || temporaryBase.startsWith(`${root}${sep}`)) {
+    throw new Error('SQLite preflight temporary storage must be outside the predecessor root.');
+  }
+  const directory = mkdtempSync(join(temporaryBase, 'openkit-sqlite-preflight-'));
+  const copy = join(directory, 'database.sqlite');
+  try {
+    for (const suffix of ['', '-wal', '-journal']) {
+      const source = `${path}${suffix}`;
+      const metadata = lstatSync(source, { throwIfNoEntry: false });
+      if (!metadata && suffix) continue;
+      if (!metadata || metadata.isSymbolicLink() || !metadata.isFile()) {
+        throw new Error('SQLite preflight input must be a regular file.');
+      }
+      copyFileSync(source, `${copy}${suffix}`);
+    }
+    return inspect(copy);
   } finally {
-    sqlite?.close();
+    rmSync(directory, { recursive: true, force: true });
   }
 }
 
@@ -733,32 +787,39 @@ function readPredecessorLayoutMarker(dataRoot: string): PredecessorLayoutMarker 
 /**
  * Opens the v1 Core database without invoking the v2 layout initializer.
  *
+ * Initialization failures close the native handle before a caller can remove its private inspection copy.
+ *
  * @param dataRoot Predecessor data root.
+ * @param path Native file path; preflight supplies a disposable copy to preserve the source inventory.
  * @returns Open raw and Drizzle Core handles.
  * @throws Error when the Core database is missing, linked, or corrupt.
  */
-function openPredecessorCoreDb(dataRoot: string): CoreDb {
-  const path = resolveDataRootPath(dataRoot, 'server', 'db', 'core.sqlite');
+function openPredecessorCoreDb(
+  dataRoot: string,
+  path = resolveDataRootPath(dataRoot, 'server', 'db', 'core.sqlite')
+): CoreDb {
   const metadata = lstatSync(path);
   if (metadata.isSymbolicLink() || !metadata.isFile()) {
     throw new Error('Predecessor Core database must be a regular file.');
   }
 
   const sqlite = new Database(path, { fileMustExist: true });
-  sqlite.pragma('foreign_keys = ON');
-
-  if (sqlite.prepare('PRAGMA quick_check').pluck().get() !== 'ok') {
+  try {
+    sqlite.pragma('foreign_keys = ON');
+    if (sqlite.prepare('PRAGMA quick_check').pluck().get() !== 'ok') {
+      throw new Error('Predecessor Core database failed SQLite integrity validation.');
+    }
+    return {
+      scope: 'core',
+      canInitializeLocalUser: false,
+      sqlite,
+      db: drizzle(sqlite, { schema }),
+      dataRoot,
+    };
+  } catch (error) {
     sqlite.close();
-    throw new Error('Predecessor Core database failed SQLite integrity validation.');
+    throw error;
   }
-
-  return {
-    scope: 'core',
-    canInitializeLocalUser: false,
-    sqlite,
-    db: drizzle(sqlite, { schema }),
-    dataRoot,
-  };
 }
 
 /**
@@ -826,10 +887,15 @@ function assertInventoriesEqual(
  *
  * @param workspaceRoot Canonical Workspace root.
  * @param workspaceId Workspace identity used only to scope the error.
+ * @param dataRoot Source root that must not contain disposable inspection files.
  * @throws Error when the authoritative database is missing or corrupt.
  */
-function assertWorkspaceDatabaseHealthy(workspaceRoot: string, workspaceId: string): void {
-  if (!workspaceDatabaseIsHealthy(join(workspaceRoot, 'db', 'workspace.sqlite'))) {
+function assertWorkspaceDatabaseHealthy(
+  workspaceRoot: string,
+  workspaceId: string,
+  dataRoot: string
+): void {
+  if (!workspaceDatabaseIsHealthy(join(workspaceRoot, 'db', 'workspace.sqlite'), dataRoot)) {
     throw new Error(`Workspace database integrity validation failed for ${workspaceId}.`);
   }
 }
@@ -906,7 +972,11 @@ function verifyPublishedWorkspaceTrees(
     'Published Workspace identities do not match the predecessor registry.'
   );
   for (const source of sources) {
-    assertWorkspaceDatabaseHealthy(join(workspacesRoot, source.workspaceId), source.workspaceId);
+    assertWorkspaceDatabaseHealthy(
+      join(workspacesRoot, source.workspaceId),
+      source.workspaceId,
+      dataRoot
+    );
   }
 }
 
