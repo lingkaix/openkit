@@ -35,6 +35,102 @@ import { recordWorkerControlAcceptedRecord } from './worker-control-records.js';
 const now = '2098-08-21T00:00:00.000Z';
 const physicalEpoch = 'e'.repeat(64);
 
+describe('Workspace invocation deadline and exclusion controls', () => {
+  it.each([
+    { name: 'live parent', observedAt: '2098-08-21T00:00:00.500Z', delivered: true },
+    { name: 'expired parent', observedAt: '2098-08-21T00:00:01.000Z', delivered: false },
+    { name: 'clock rollback', observedAt: '2098-08-20T23:59:59.000Z', delivered: false },
+  ])('T5 refuses renewed allowance at the Harness queue boundary: $name', ({
+    observedAt,
+    delivered,
+  }) => {
+    const db = openOpeningBindingDb('openkit-harness-parent-budget-');
+    try {
+      // Allocate the existing shared fixture identities before changing time; their cached IDs must not leak a future epoch into other cases.
+      seedSubmittedAttempt(db);
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date(now));
+      queueNanoHostHarnessOperation(db, {
+        body: { ...concurrentTurnStartBody(1), deadline: '2098-08-21T00:00:01.000Z' },
+        harnessInstanceId: 'harness-1',
+        operation: 'turn.start',
+        timestamp: now,
+      });
+      vi.setSystemTime(new Date(observedAt));
+      const command = dispatchNanoHostHarnessOperation(db, {
+        sandboxIntegrationBindingRef: 'integration-binding-1',
+        now: () => new Date().toISOString(),
+      });
+      // The enclosing five-minute transport budget cannot extend the original one-second parent expiry.
+      // Reduce the result to a boolean so failure output never prints live route credentials.
+      expect(command !== null).toBe(delivered);
+      if (command) expect(command.body.deadline).toBe('2098-08-21T00:00:01.000Z');
+    } finally {
+      vi.useRealTimers();
+      db.sqlite.close();
+    }
+  });
+
+  it('T4 keeps unknown exclusion after an empty poll and a late interrupt acknowledgement', () => {
+    const db = openActiveTurnDb('openkit-harness-unknown-exclusion-');
+    onTestFinished(() => rmSync(db.dataRoot, { recursive: true, force: true }));
+    try {
+      queueNanoHostHarnessOperation(db, {
+        body: { ...interruptBody(), purpose: 'interrupt' },
+        harnessInstanceId: 'harness-1',
+        operation: 'turn.interrupt',
+        timestamp: now,
+      });
+      const command = dispatchNanoHostHarnessOperation(db, {
+        sandboxIntegrationBindingRef: 'integration-binding-1',
+        now: () => now,
+      })!;
+      expect(command.operation).toBe('turn.interrupt');
+      markNanoHostHarnessOperationUnknown(db, {
+        harnessBindingRef: 'harness-binding-1',
+        operationId: command.operationId,
+        timestamp: now,
+      });
+      const before = db.sqlite.prepare('SELECT * FROM agent_session_runtime_bindings').all();
+      expect(before).toHaveLength(1);
+      expect(
+        dispatchNanoHostHarnessOperation(db, {
+          sandboxIntegrationBindingRef: 'integration-binding-1',
+          now: () => now,
+        })
+      ).toBeNull();
+      try {
+        settleNanoHostHarnessOperation(db, {
+          sandboxIntegrationBindingRef: 'integration-binding-1',
+          timestamp: now,
+          result: {
+            schemaVersion: 2,
+            harnessInstanceId: command.harnessInstanceId,
+            operationId: command.operationId,
+            sequence: command.sequence,
+            disposition: 'succeeded',
+            body: { state: 'interrupted' },
+          },
+        });
+      } catch (error) {
+        // The old receiver refuses late results. A future bounded linked consumer may accept this acknowledgement, but cannot turn it into stop proof.
+        expect(error).toMatchObject({
+          message: 'NanoHost Harness result does not match the dispatched operation.',
+        });
+      }
+      expect(harnessOperation(db)).toEqual({ operation: 'turn.interrupt', state: 'unknown' });
+      expect(db.sqlite.prepare('SELECT * FROM agent_session_runtime_bindings').all()).toEqual(
+        before
+      );
+      expect(
+        db.sqlite.prepare('SELECT active_turn_count AS count FROM harness_instance_records').get()
+      ).toEqual({ count: 1 });
+    } finally {
+      db.sqlite.close();
+    }
+  });
+});
+
 describe('private NanoHost Harness records', () => {
   it('logs only fixed slow-stage fields at the 100 ms boundary', () => {
     const coreDb = openOpeningBindingDb('openkit-harness-slow-stage-');
