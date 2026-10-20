@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -8,7 +8,7 @@ import {
 } from '@openkit/app-api-schemas';
 import { WorkspaceConfigSchema } from '@openkit/config-schema';
 import { allocateEntityId } from '@openkit/protocol';
-import { describe, expect, it, onTestFinished } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, onTestFinished } from 'vitest';
 import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
@@ -35,22 +35,51 @@ import { readWorkspaceNotebookAdmission } from './notebook-workspace-admission.j
 import { parseOkfDocument, updateOkfFrontmatter } from './okf.js';
 import { parseSourcePointer } from './source-pointers.js';
 
+let seed: Awaited<ReturnType<typeof fixture>>;
+const retainedCleanup: Array<() => void> = [];
+
+// Capture once through native owners, then close SQLite before copying this immutable baseline.
+// Each case opens its own Store, databases and Git copy; audience and publication never leak.
+beforeAll(async () => {
+  seed = await fixture(true);
+  seed.workspaceDb.sqlite.close();
+  seed.coreDb.sqlite.close();
+});
+afterAll(() => {
+  for (const cleanup of retainedCleanup) cleanup();
+});
+
 /** Native capture, current admission, Git, Storage and Review; no Source is inserted as a curated Page. */
-async function fixture() {
+async function fixture(
+  initialize = false,
+  baseline: {
+    dataRoot: string;
+    workspace: { id: string };
+    origin: { id: string };
+    baseRevision: string;
+  } = seed,
+  retain = false
+) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'source-summary-editing-'));
+  if (!initialize) cpSync(baseline.dataRoot, dataRoot, { recursive: true });
   const coreDb = openCoreDb(dataRoot);
-  applyMigrations(coreDb);
-  const userId = ensureLocalUser(coreDb);
+  if (initialize) applyMigrations(coreDb);
+  const userId = initialize ? ensureLocalUser(coreDb) : seed.userId;
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Source description correction');
-  recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
+  const workspace = initialize
+    ? store.createWorkspace('Source description correction')
+    : store.getWorkspace(baseline.workspace.id);
+  if (initialize)
+    recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
-  applyScopedMigrations(workspaceDb);
-  onTestFinished(() => {
-    workspaceDb.sqlite.close();
-    coreDb.sqlite.close();
+  if (initialize) applyScopedMigrations(workspaceDb);
+  const cleanup = () => {
+    if (workspaceDb.sqlite.open) workspaceDb.sqlite.close();
+    if (coreDb.sqlite.open) coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
-  });
+  };
+  if (initialize || retain) retainedCleanup.push(cleanup);
+  else onTestFinished(cleanup);
   const app = createApp({ coreDb, dataRoot, store });
   const call = async (operation: string, input: Record<string, unknown>, targetApp = app) => {
     const { requestId, ...body } = input;
@@ -64,22 +93,29 @@ async function fixture() {
     });
     return { status: response.status, body: await response.json() };
   };
-  const origin = store.createThread(workspace.id, 'Shared evidence');
+  const origin = initialize
+    ? store.createThread(workspace.id, 'Shared evidence')
+    : store.getThread(workspace.id, baseline.origin.id);
   const original = 'Captured release facts.\r\nKeep exact \u03a9 \u96ea bytes.\n';
-  const captured = await call('knowledge.source.register', {
-    requestId: randomUUID(),
-    kind: 'document',
-    title: 'Unclear intake title',
-    content: original,
-    originatingThreadId: origin.id,
-  });
-  expect(captured.status, JSON.stringify(captured.body)).toBe(200);
-  const source = store.listKnowledgeSources(workspace.id)[0]!;
+  if (initialize) {
+    const captured = await call('knowledge.source.register', {
+      requestId: randomUUID(),
+      kind: 'document',
+      title: 'Unclear intake title',
+      content: original,
+      originatingThreadId: origin.id,
+    });
+    expect(captured.status, JSON.stringify(captured.body)).toBe(200);
+  }
+  const source = initialize ? store.listKnowledgeSources(workspace.id)[0]! : seed.source;
   const root = join(dataRoot, 'workspaces', workspace.id, 'knowledge');
   const repositoryPath = join(root, 'notebook.git');
   const notebook = new KnowledgeNotebook({ repositoryPath });
   const owner = { dataRoot, ownerScope: { kind: 'workspace', workspaceId: workspace.id } } as const;
-  const pointer = notebook.readSourcePointers(notebook.publishedRevision())[source.id]!;
+  // These captured inputs belong to the closed baseline; deciding reads below still use each copy.
+  const pointer = initialize
+    ? notebook.readSourcePointers(notebook.publishedRevision())[source.id]!
+    : seed.pointer;
   const parsed = parseSourcePointer(owner, source.id, pointer);
   const rawPath = join(root, 'raw', parsed.fields.contentRef.locator.path);
   expect(readFileSync(rawPath)).toEqual(Buffer.from(original));
@@ -92,14 +128,16 @@ async function fixture() {
     },
     owner.ownerScope
   );
-  const seeded = await call('knowledge.notebook.update', {
-    requestId: randomUUID(),
-    baseRevision: notebook.publishedRevision(),
-    summary: 'Retain unrelated human content',
-    changes: [{ path: 'unrelated.md', content: page }],
-  });
-  expect(seeded.status, JSON.stringify(seeded.body)).toBe(200);
-  const baseRevision = notebook.publishedRevision();
+  if (initialize) {
+    const seeded = await call('knowledge.notebook.update', {
+      requestId: randomUUID(),
+      baseRevision: notebook.publishedRevision(),
+      summary: 'Retain unrelated human content',
+      changes: [{ path: 'unrelated.md', content: page }],
+    });
+    expect(seeded.status, JSON.stringify(seeded.body)).toBe(200);
+  }
+  const baseRevision = initialize ? notebook.publishedRevision() : baseline.baseRevision;
   const sourcePath = `sources/${source.id}.md`;
   const path = `@sources/${source.id}.md`;
   const corrected = updateOkfFrontmatter({
@@ -437,300 +475,361 @@ describe('ordinary SourceSummary editing through native owners', () => {
 
   it.each([
     'ordinary',
-    'required Review',
     'ordinary with linked Source',
-    'required Review with linked Source',
     'unselected',
     'private',
     'revoked',
   ])('uses the real Workspace KM editor and publisher under %s admission', async (mode) => {
     const f = await fixture();
-    const requiresReview = mode.startsWith('required Review');
-    const linkedSource = mode.endsWith('with linked Source');
-    const selectedSources = [f.source.id];
-    let summaryBody = 'The captured material describes the release facts.\n';
-    if (linkedSource) {
-      const captured = await f.call('knowledge.source.register', {
-        requestId: randomUUID(),
-        kind: 'document',
-        title: 'Related release evidence',
-        content: 'Independent related evidence.',
-        originatingThreadId: f.origin.id,
-      });
-      expect(captured.status, JSON.stringify(captured.body)).toBe(200);
-      selectedSources.push(captured.body.source.id);
-      f.baseRevision = f.notebook.publishedRevision();
-      summaryBody += `[Related evidence](${captured.body.source.id}.md)\n`;
-      f.corrected = updateOkfFrontmatter({
-        path: f.sourcePath,
-        content: f.corrected,
-        updates: {},
-        body: summaryBody,
-      });
-    }
-    const providerRegistry = new ProviderRegistry([
-      {
-        id: 'fixture',
-        adapter: 'openai-compatible',
-        displayName: 'Unused transport',
-        kind: 'llm',
-        enabled: true,
-        baseUrl: 'https://provider.invalid/v1',
-        models: ['fixture-model'],
-        credential: { kind: 'none' },
-        capabilities: { llm: { responses: 'supported', chatCompletions: 'supported' } },
-        modelMetadata: {
-          'fixture-model': { tool_call: true, limit: { context: 64_000, output: 2_000 } },
-        },
+    await assertMaintenance(f, mode, await runMaintenance(f, mode));
+  });
+
+  describe.each([
+    'required Review',
+    'required Review with linked Source',
+  ])('%s admission', (mode) => {
+    let baseline: Awaited<ReturnType<typeof fixture>>;
+    let observed: Awaited<ReturnType<typeof runMaintenance>>;
+    beforeAll(async () => {
+      baseline = await fixture(false, seed, true);
+      observed = await runMaintenance(baseline, mode);
+      baseline.workspaceDb.sqlite.close();
+      baseline.coreDb.sqlite.close();
+    });
+    // One real KM proposal feeds independent copies. No case depends on a prior case's mutation.
+    it.each([
+      'candidate',
+      'refusals',
+      'acceptance',
+    ] as const)('preserves exact Source Review %s through native owners', async (stage) => {
+      const f = await fixture(false, baseline);
+      await assertMaintenance(f, mode, observed, stage);
+    });
+  });
+});
+
+/** Runs the actual editor and native publisher with a deterministic, transport-free model driver. */
+async function runMaintenance(f: Awaited<ReturnType<typeof fixture>>, mode: string) {
+  const requiresReview = mode.startsWith('required Review');
+  const linkedSource = mode.endsWith('with linked Source');
+  const selectedSources = [f.source.id];
+  let summaryBody = 'The captured material describes the release facts.\n';
+  if (linkedSource) {
+    const captured = await f.call('knowledge.source.register', {
+      requestId: randomUUID(),
+      kind: 'document',
+      title: 'Related release evidence',
+      content: 'Independent related evidence.',
+      originatingThreadId: f.origin.id,
+    });
+    expect(captured.status, JSON.stringify(captured.body)).toBe(200);
+    selectedSources.push(captured.body.source.id);
+    f.baseRevision = f.notebook.publishedRevision();
+    summaryBody += `[Related evidence](${captured.body.source.id}.md)\n`;
+    f.corrected = updateOkfFrontmatter({
+      path: f.sourcePath,
+      content: f.corrected,
+      updates: {},
+      body: summaryBody,
+    });
+  }
+  const providerRegistry = new ProviderRegistry([
+    {
+      id: 'fixture',
+      adapter: 'openai-compatible',
+      displayName: 'Unused transport',
+      kind: 'llm',
+      enabled: true,
+      baseUrl: 'https://provider.invalid/v1',
+      models: ['fixture-model'],
+      credential: { kind: 'none' },
+      capabilities: { llm: { responses: 'supported', chatCompletions: 'supported' } },
+      modelMetadata: {
+        'fixture-model': { tool_call: true, limit: { context: 64_000, output: 2_000 } },
       },
-    ]);
-    const snapshot = createInMemoryRuntimeConfigSnapshot({
-      dataRoot: f.dataRoot,
-      providerRegistry,
-      gatewayConfig: {
-        schemaVersion: 1,
-        enabled: true,
-        requiredFeatures: [],
-        defaultLogicalModelId: 'knowledge',
-        logicalModels: [
-          {
-            id: 'knowledge',
-            displayName: 'Knowledge',
-            contextManagement: [{ type: 'compaction', compactThreshold: 32_000 }],
-            routes: [{ id: 'route', providerProfileId: 'fixture', providerModel: 'fixture-model' }],
-          },
-        ],
-      },
-      workspaceConfigs: [
+    },
+  ]);
+  const snapshot = createInMemoryRuntimeConfigSnapshot({
+    dataRoot: f.dataRoot,
+    providerRegistry,
+    gatewayConfig: {
+      schemaVersion: 1,
+      enabled: true,
+      requiredFeatures: [],
+      defaultLogicalModelId: 'knowledge',
+      logicalModels: [
         {
-          workspaceId: f.workspace.id,
-          path: join(f.dataRoot, 'workspaces', f.workspace.id, 'workspace.jsonc'),
-          config: WorkspaceConfigSchema.parse({
-            schemaVersion: 1,
-            workspace: {
-              name: f.workspace.name,
-              knowledgeMaintenance: {
-                enabled: !requiresReview,
-                reviewRequiredPageIds: [],
-              },
-            },
-          }),
+          id: 'knowledge',
+          displayName: 'Knowledge',
+          contextManagement: [{ type: 'compaction', compactThreshold: 32_000 }],
+          routes: [{ id: 'route', providerProfileId: 'fixture', providerModel: 'fixture-model' }],
         },
       ],
-    });
-    const runtimeConfigManager = createRuntimeConfigManager({
-      dataRoot: f.dataRoot,
-      initialSnapshot: snapshot,
-    });
-    const workspaceMutationAdmission = new WorkspaceMutationAdmission();
-    const actor = { kind: 'user', id: f.userId } as const;
-    const currentAuthority = () => {
-      if (!currentWorkspaceAuthority(f.coreDb, f.workspace.id, actor, 'knowledge.write', true))
-        throw new OperationError(
-          'workspace_access_denied',
-          'Current native admission denied.',
-          403
-        );
-    };
-    const currentAdmission = (request: NotebookUpdate) =>
-      readWorkspaceNotebookAdmission({
-        store: f.store,
-        coreDb: f.coreDb,
-        workspaceDb: f.workspaceDb,
-        notebook: f.notebook,
-        workspaceMutationAdmission,
-        runtimeConfigManager,
-        currentAuthority,
-        actor,
-        request,
-      });
-    let runs = 0;
-    const inspections: Array<{ exitCode: number; stdout: string }> = [];
-    let writeRefused = false;
-    let revokedReadRefused = false;
-    let revokedSubmitRefused = false;
-    let reviewToolExposed = false;
-    let forgedReviewRefused = false;
-    let modelInput = '';
-    const run = async (input: KnowledgeManagerAgentRun) => {
-      runs += 1;
-      reviewToolExposed = input.tools.some((tool) => tool.name === 'knowledge.proposal.decide');
-      modelInput = input.messages
-        .flatMap((message) =>
-          message.content.flatMap((part) => (part.type === 'text' ? [part.text] : []))
-        )
-        .join('');
-      const execute = async (name: string, value: unknown) => {
-        const result = await input.tools
-          .find((tool) => tool.name === name)!
-          .execute(value, {
-            callId: randomUUID(),
-            toolOccurrence: 1,
-            signal: input.signal,
-          });
-        return JSON.parse(
-          result.content.flatMap((part) => (part.type === 'text' ? [part.text] : [])).join('')
-        );
-      };
-      if (mode === 'unselected') {
-        const inspected = await execute('knowledge.notebook-workspace.update', {
-          script: `cat /notebook/${f.path}`,
-        });
-        inspections.push(inspected);
-        try {
-          const attempted = await execute('knowledge.notebook-workspace.update', {
-            script: `mkdir -p @sources; cat > /notebook/${f.path} <<'SOURCE'\n${f.corrected}SOURCE\n`,
-          });
-          writeRefused = attempted.exitCode !== 0;
-          if (!writeRefused)
-            await execute('knowledge.notebook.update', { summary: 'Unselected overwrite' });
-        } catch {
-          writeRefused = true;
-        }
-      } else if (mode === 'revoked') {
-        // Current audience is a test-owned Thread fact, not a new visibility-transition API.
-        Object.assign(f.origin, { visibility: 'private', privateOwnerUserId: f.userId });
-        revokedReadRefused = await execute('knowledge.notebook-workspace.update', {
-          script: `cat /notebook/${f.path}`,
-        }).then(
-          () => false,
-          () => true
-        );
-        revokedSubmitRefused = await execute('knowledge.notebook.update', {
-          summary: 'Revoked Source edit',
-        }).then(
-          () => false,
-          () => true
-        );
-      } else {
-        const inspected = await execute('knowledge.notebook-workspace.update', {
-          script: `cat /notebook/${f.path}`,
-        });
-        inspections.push(inspected);
-        const edited = await execute('knowledge.notebook-workspace.update', {
-          script: `cat > /notebook/${f.path} <<'SOURCE'\n${f.corrected}SOURCE\n`,
-        });
-        inspections.push(edited);
-        if (requiresReview) {
-          forgedReviewRefused = await execute('knowledge.notebook.update', {
-            summary: 'Claim human acceptance',
-            decision: 'accepted',
-            actor: { kind: 'user', id: f.userId },
-          }).then(
-            () => false,
-            () => true
-          );
-        }
-        await execute('knowledge.notebook.update', {
-          summary: 'Correct the selected Source for onboarding',
-        });
-      }
-      f.store.updateTurn(input.turn.id, {
-        status: 'completed',
-        completedAt: new Date().toISOString(),
-      });
-      return { turnId: input.turn.id, text: 'Completed the bounded Source edit attempt.' };
-    };
-    if (mode === 'private')
-      Object.assign(f.origin, { visibility: 'private', privateOwnerUserId: f.userId });
-    const prepared = prepareKnowledgeMaintenance(
+    },
+    workspaceConfigs: [
       {
-        store: f.store,
-        coreDb: f.coreDb,
-        runtimeConfigManager,
-        workspaceMutationAdmission,
-        openWorkspace: (id) => openWorkspaceDb(f.dataRoot, id),
-        inflightCommands: new WeakMap(),
-        run,
-        pin: (input) =>
-          pinKnowledgeManagerExecution(
-            {
-              store: f.store,
-              runtimeConfig: () => snapshot,
-              dispatcher: {
-                createResponses: async () => {
-                  throw new Error('No Provider call is needed.');
-                },
-              },
-              resolveGatewayProvider: () => {
+        workspaceId: f.workspace.id,
+        path: join(f.dataRoot, 'workspaces', f.workspace.id, 'workspace.jsonc'),
+        config: WorkspaceConfigSchema.parse({
+          schemaVersion: 1,
+          workspace: {
+            name: f.workspace.name,
+            knowledgeMaintenance: {
+              enabled: !requiresReview,
+              reviewRequiredPageIds: [],
+            },
+          },
+        }),
+      },
+    ],
+  });
+  const runtimeConfigManager = createRuntimeConfigManager({
+    dataRoot: f.dataRoot,
+    initialSnapshot: snapshot,
+  });
+  const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+  const actor = { kind: 'user', id: f.userId } as const;
+  const currentAuthority = () => {
+    if (!currentWorkspaceAuthority(f.coreDb, f.workspace.id, actor, 'knowledge.write', true))
+      throw new OperationError('workspace_access_denied', 'Current native admission denied.', 403);
+  };
+  const currentAdmission = (request: NotebookUpdate) =>
+    readWorkspaceNotebookAdmission({
+      store: f.store,
+      coreDb: f.coreDb,
+      workspaceDb: f.workspaceDb,
+      notebook: f.notebook,
+      workspaceMutationAdmission,
+      runtimeConfigManager,
+      currentAuthority,
+      actor,
+      request,
+    });
+  let runs = 0;
+  const inspections: Array<{ exitCode: number; stdout: string }> = [];
+  let writeRefused = false;
+  let revokedReadRefused = false;
+  let revokedSubmitRefused = false;
+  let reviewToolExposed = false;
+  let forgedReviewRefused = false;
+  let modelInput = '';
+  const run = async (input: KnowledgeManagerAgentRun) => {
+    runs += 1;
+    reviewToolExposed = input.tools.some((tool) => tool.name === 'knowledge.proposal.decide');
+    modelInput = input.messages
+      .flatMap((message) =>
+        message.content.flatMap((part) => (part.type === 'text' ? [part.text] : []))
+      )
+      .join('');
+    const execute = async (name: string, value: unknown) => {
+      const result = await input.tools
+        .find((tool) => tool.name === name)!
+        .execute(value, {
+          callId: randomUUID(),
+          toolOccurrence: 1,
+          signal: input.signal,
+        });
+      return JSON.parse(
+        result.content.flatMap((part) => (part.type === 'text' ? [part.text] : [])).join('')
+      );
+    };
+    if (mode === 'unselected') {
+      const inspected = await execute('knowledge.notebook-workspace.update', {
+        script: `cat /notebook/${f.path}`,
+      });
+      inspections.push(inspected);
+      try {
+        const attempted = await execute('knowledge.notebook-workspace.update', {
+          script: `mkdir -p @sources; cat > /notebook/${f.path} <<'SOURCE'\n${f.corrected}SOURCE\n`,
+        });
+        writeRefused = attempted.exitCode !== 0;
+        if (!writeRefused)
+          await execute('knowledge.notebook.update', { summary: 'Unselected overwrite' });
+      } catch {
+        writeRefused = true;
+      }
+    } else if (mode === 'revoked') {
+      // Current audience is a test-owned Thread fact, not a new visibility-transition API.
+      Object.assign(f.origin, { visibility: 'private', privateOwnerUserId: f.userId });
+      revokedReadRefused = await execute('knowledge.notebook-workspace.update', {
+        script: `cat /notebook/${f.path}`,
+      }).then(
+        () => false,
+        () => true
+      );
+      revokedSubmitRefused = await execute('knowledge.notebook.update', {
+        summary: 'Revoked Source edit',
+      }).then(
+        () => false,
+        () => true
+      );
+    } else {
+      const inspected = await execute('knowledge.notebook-workspace.update', {
+        script: `cat /notebook/${f.path}`,
+      });
+      inspections.push(inspected);
+      const edited = await execute('knowledge.notebook-workspace.update', {
+        script: `cat > /notebook/${f.path} <<'SOURCE'\n${f.corrected}SOURCE\n`,
+      });
+      inspections.push(edited);
+      if (requiresReview) {
+        forgedReviewRefused = await execute('knowledge.notebook.update', {
+          summary: 'Claim human acceptance',
+          decision: 'accepted',
+          actor: { kind: 'user', id: f.userId },
+        }).then(
+          () => false,
+          () => true
+        );
+      }
+      await execute('knowledge.notebook.update', {
+        summary: 'Correct the selected Source for onboarding',
+      });
+    }
+    f.store.updateTurn(input.turn.id, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+    });
+    return { turnId: input.turn.id, text: 'Completed the bounded Source edit attempt.' };
+  };
+  if (mode === 'private')
+    Object.assign(f.origin, { visibility: 'private', privateOwnerUserId: f.userId });
+  const prepared = prepareKnowledgeMaintenance(
+    {
+      store: f.store,
+      coreDb: f.coreDb,
+      runtimeConfigManager,
+      workspaceMutationAdmission,
+      openWorkspace: (id) => openWorkspaceDb(f.dataRoot, id),
+      inflightCommands: new WeakMap(),
+      run,
+      pin: (input) =>
+        pinKnowledgeManagerExecution(
+          {
+            store: f.store,
+            runtimeConfig: () => snapshot,
+            dispatcher: {
+              createResponses: async () => {
                 throw new Error('No Provider call is needed.');
               },
             },
-            input
-          ),
-      },
-      {
-        workspaceId: f.workspace.id,
-        requestId: randomUUID(),
-        actor,
-        currentAdmission,
-        trigger: 'request',
-        instructions: 'Correct the selected Source title, description, tags and summary.',
-        sources: mode === 'unselected' ? [] : selectedSources,
-        signal: new AbortController().signal,
-      }
-    );
-    if (mode === 'private') {
-      expect((await prepared.execute()).outcome).toBe('failed');
-      expect(runs).toBe(0);
-    } else if (mode === 'unselected' || mode === 'revoked') {
-      // A rejected Tool never creates a native outcome; completion must fail rather than publish.
-      expect((await prepared.execute()).outcome).toBe('failed');
-      expect(runs).toBe(1);
-      if (mode === 'unselected') {
-        expect(inspections).toHaveLength(1);
-        expect(inspections[0]!.exitCode).not.toBe(0);
-        expect(JSON.stringify(inspections)).not.toContain('Unclear intake title');
-        expect(writeRefused).toBe(true);
-        expect(modelInput).not.toContain('Unclear intake title');
-        expect(modelInput).not.toContain(f.source.contentDigest);
-      } else {
-        expect(revokedReadRefused).toBe(true);
-        expect(revokedSubmitRefused).toBe(true);
-      }
+            resolveGatewayProvider: () => {
+              throw new Error('No Provider call is needed.');
+            },
+          },
+          input
+        ),
+    },
+    {
+      workspaceId: f.workspace.id,
+      requestId: randomUUID(),
+      actor,
+      currentAdmission,
+      trigger: 'request',
+      instructions: 'Correct the selected Source title, description, tags and summary.',
+      sources: mode === 'unselected' ? [] : selectedSources,
+      signal: new AbortController().signal,
+    }
+  );
+  const result = await prepared.execute();
+  return {
+    result,
+    runs,
+    inspections,
+    writeRefused,
+    revokedReadRefused,
+    revokedSubmitRefused,
+    reviewToolExposed,
+    forgedReviewRefused,
+    modelInput,
+    summaryBody,
+    requiresReview,
+  };
+}
+
+/** Keeps the original publication, disclosure, cold-load and exact Review oracles. */
+async function assertMaintenance(
+  f: Awaited<ReturnType<typeof fixture>>,
+  mode: string,
+  observed: Awaited<ReturnType<typeof runMaintenance>>,
+  stage?: 'candidate' | 'refusals' | 'acceptance'
+) {
+  const {
+    result,
+    runs,
+    inspections,
+    writeRefused,
+    revokedReadRefused,
+    revokedSubmitRefused,
+    reviewToolExposed,
+    forgedReviewRefused,
+    modelInput,
+    summaryBody,
+    requiresReview,
+  } = observed;
+  if (mode === 'private') {
+    expect(result.outcome).toBe('failed');
+    expect(runs).toBe(0);
+  } else if (mode === 'unselected' || mode === 'revoked') {
+    // A rejected Tool never creates a native outcome; completion must fail rather than publish.
+    expect(result.outcome).toBe('failed');
+    expect(runs).toBe(1);
+    if (mode === 'unselected') {
+      expect(inspections).toHaveLength(1);
+      expect(inspections[0]!.exitCode).not.toBe(0);
+      expect(JSON.stringify(inspections)).not.toContain('Unclear intake title');
+      expect(writeRefused).toBe(true);
+      expect(modelInput).not.toContain('Unclear intake title');
+      expect(modelInput).not.toContain(f.source.contentDigest);
     } else {
-      const result = await prepared.execute();
-      expect(runs).toBe(1);
-      expect(reviewToolExposed).toBe(false);
-      if (requiresReview) expect(forgedReviewRefused).toBe(true);
-      expect(inspections).toHaveLength(2);
-      expect(inspections[0]).toMatchObject({ exitCode: 0, stdout: f.pointer });
-      expect(inspections[1]!.exitCode).toBe(0);
-      const expectedCandidate = updateOkfFrontmatter({
-        path: f.sourcePath,
-        content: f.corrected,
-        updates: { review_state: 'delegated' },
+      expect(revokedReadRefused).toBe(true);
+      expect(revokedSubmitRefused).toBe(true);
+    }
+  } else {
+    expect(runs).toBe(1);
+    expect(reviewToolExposed).toBe(false);
+    if (requiresReview) expect(forgedReviewRefused).toBe(true);
+    expect(inspections).toHaveLength(2);
+    expect(inspections[0]).toMatchObject({ exitCode: 0, stdout: f.pointer });
+    expect(inspections[1]!.exitCode).toBe(0);
+    const expectedCandidate = updateOkfFrontmatter({
+      path: f.sourcePath,
+      content: f.corrected,
+      body: summaryBody,
+      updates: { review_state: 'delegated' },
+    });
+    if (!requiresReview) {
+      expect(result.outcome).toBe('published');
+      const after = f.notebook.readSourcePointers(f.notebook.publishedRevision())[f.source.id]!;
+      expect(after).toBe(expectedCandidate);
+      expect(parseSourcePointer(f.owner, f.source.id, after).fields).toEqual(f.parsed.fields);
+      expect(f.notebook.readRevision(f.notebook.publishedRevision()).files).toEqual(
+        f.notebook.readRevision(f.baseRevision).files
+      );
+      expect(
+        parseOkfDocument({ path: f.sourcePath, content: after }).document?.frontmatter
+      ).toMatchObject({
+        title: 'Release evidence',
+        description: 'Captured release facts for onboarding.',
+        tags: ['onboarding', 'release'],
+        review_state: 'delegated',
       });
-      if (!requiresReview) {
-        expect(result.outcome).toBe('published');
-        const after = f.notebook.readSourcePointers(f.notebook.publishedRevision())[f.source.id]!;
-        expect(after).toBe(expectedCandidate);
-        expect(parseSourcePointer(f.owner, f.source.id, after).fields).toEqual(f.parsed.fields);
-        expect(f.notebook.readRevision(f.notebook.publishedRevision()).files).toEqual(
-          f.notebook.readRevision(f.baseRevision).files
-        );
-        expect(
-          parseOkfDocument({ path: f.sourcePath, content: after }).document?.frontmatter
-        ).toMatchObject({
-          title: 'Release evidence',
-          description: 'Captured release facts for onboarding.',
-          tags: ['onboarding', 'release'],
-          review_state: 'delegated',
-        });
-        expect(parseOkfDocument({ path: f.sourcePath, content: after }).document?.body).toBe(
-          summaryBody
-        );
-        expect(f.store.listKnowledgeProposals(f.workspace.id)).toEqual([]);
-      } else {
-        expect(result.outcome, JSON.stringify(result)).toBe('review-required');
-        expect(f.notebook.publishedRevision()).toBe(f.baseRevision);
-        const proposal = f.store.listKnowledgeProposals(f.workspace.id)[0]!;
-        const tuple = {
-          proposalId: proposal.id,
-          proposalDigest: f.store.knowledgeProposalDigest(f.workspace.id, proposal.id),
-          baseRevision: f.baseRevision,
-          candidateRevision: proposal.candidateRevision,
-        };
+      expect(parseOkfDocument({ path: f.sourcePath, content: after }).document?.body).toBe(
+        summaryBody
+      );
+      expect(f.store.listKnowledgeProposals(f.workspace.id)).toEqual([]);
+    } else {
+      expect(result.outcome, JSON.stringify(result)).toBe('review-required');
+      expect(f.notebook.publishedRevision()).toBe(f.baseRevision);
+      const proposal = f.store.listKnowledgeProposals(f.workspace.id)[0]!;
+      const tuple = {
+        proposalId: proposal.id,
+        proposalDigest: f.store.knowledgeProposalDigest(f.workspace.id, proposal.id),
+        baseRevision: f.baseRevision,
+        candidateRevision: proposal.candidateRevision,
+      };
+      const candidate = f.notebook.readSourcePointers(proposal.candidateRevision)[f.source.id]!;
+      if (stage === 'candidate') {
         const inventory = await f.call('knowledge.proposal.read', { proposalId: proposal.id });
         expect(inventory.status, JSON.stringify(inventory.body)).toBe(200);
         expect(inventory.body).toEqual({ ...tuple, paths: [f.path] });
@@ -739,7 +838,6 @@ describe('ordinary SourceSummary editing through native owners', () => {
           path: f.path,
         });
         expect(preview.status, JSON.stringify(preview.body)).toBe(200);
-        const candidate = f.notebook.readSourcePointers(proposal.candidateRevision)[f.source.id]!;
         expect(preview.body).toMatchObject({
           ...tuple,
           path: f.path,
@@ -779,6 +877,8 @@ describe('ordinary SourceSummary editing through native owners', () => {
           description: 'Captured release facts for onboarding.',
           tags: ['onboarding', 'release'],
         });
+      }
+      if (stage === 'refusals') {
         const forged = await f.call('knowledge.proposal.decide', {
           ...tuple,
           requestId: randomUUID(),
@@ -817,6 +917,10 @@ describe('ordinary SourceSummary editing through native owners', () => {
           decision: 'accepted',
         });
         expect(mismatched.status).toBe(409);
+        expect(f.notebook.publishedRevision()).toBe(f.baseRevision);
+        expect(f.store.getKnowledgeProposalReviewDecision(proposal.id)).toBeNull();
+      }
+      if (stage === 'acceptance') {
         const decision = { ...tuple, requestId: randomUUID(), decision: 'accepted' };
         const accepted = await f.call('knowledge.proposal.decide', decision);
         expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
@@ -856,17 +960,17 @@ describe('ordinary SourceSummary editing through native owners', () => {
         });
       }
     }
-    if (mode === 'unselected' || mode === 'private' || mode === 'revoked') {
-      expect(f.notebook.publishedRevision()).toBe(f.baseRevision);
-      expect(f.store.listKnowledgeProposals(f.workspace.id)).toEqual([]);
-    }
-    expect(reviewToolExposed).toBe(false);
-    const reopened = new KnowledgeNotebook({ repositoryPath: f.repositoryPath });
-    expect(reopened.readSourcePointers(f.baseRevision)[f.source.id]).toBe(f.pointer);
-    expect(reopened.readRevision(reopened.publishedRevision()).files['unrelated.md']).toBe(f.page);
-    expect(reopened.inspectRevision(reopened.publishedRevision()).entries).not.toHaveProperty(
-      f.sourcePath
-    );
-    expect(readFileSync(f.rawPath)).toEqual(Buffer.from(f.original));
-  });
-});
+  }
+  if (mode === 'unselected' || mode === 'private' || mode === 'revoked') {
+    expect(f.notebook.publishedRevision()).toBe(f.baseRevision);
+    expect(f.store.listKnowledgeProposals(f.workspace.id)).toEqual([]);
+  }
+  expect(reviewToolExposed).toBe(false);
+  const reopened = new KnowledgeNotebook({ repositoryPath: f.repositoryPath });
+  expect(reopened.readSourcePointers(f.baseRevision)[f.source.id]).toBe(f.pointer);
+  expect(reopened.readRevision(reopened.publishedRevision()).files['unrelated.md']).toBe(f.page);
+  expect(reopened.inspectRevision(reopened.publishedRevision()).entries).not.toHaveProperty(
+    f.sourcePath
+  );
+  expect(readFileSync(f.rawPath)).toEqual(Buffer.from(f.original));
+}
