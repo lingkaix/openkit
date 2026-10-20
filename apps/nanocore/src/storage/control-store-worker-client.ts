@@ -2,6 +2,7 @@ import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { isMainThread, Worker } from 'node:worker_threads';
 import type { ControlCheckpoint } from './control-store.js';
+import type { ControlAdmission, ControlAdmissionResult } from './control-store-admission.js';
 import {
   CONTROL_WORKER_LIMITS,
   CONTROL_WORKER_VERSION,
@@ -42,7 +43,7 @@ let singleton: ControlStoreWorkerClient | undefined;
 /**
  * Returns the one process-local writer host, without opening a database.
  *
- * A failed host is never restarted by this getter. Explicit shutdown must finish before a later call can start a new host; no request is replayed. This component remains unused by ordinary product callers until the scope's factory/write closure is switched. Do not open it beside a main-thread writable handle for that database.
+ * A failed host is never restarted by this getter. Explicit shutdown must finish before a later call can start a new host; no request is replayed. This component remains unused by ordinary product callers until the scope's factory/write closure is switched. Do not activate a product writer until every producer and shared receipt path observes the accepted family boundary; a legacy main writable handle is not a table-level access-control boundary.
  *
  * @returns Shared host for admitted database scopes, never a synchronous SQL facade.
  */
@@ -113,6 +114,19 @@ class ControlStoreWorkerClient {
   ): Promise<readonly ControlSqlResult[]> {
     const reply = await this.request({ operation: 'write', database, statements });
     return (reply as Extract<Success, { operation: 'write' }>).results;
+  }
+
+  /**
+   * Submits the native admission/product tuple, original receipt and required local Audit to the owning worker.
+   *
+   * Immutable entries must already be published through Storage; the worker verifies and synchronizes their actual bytes before SQL. This preparation API has no public caller binding. Receipt replay returns the original response, not a newly proposed resource identity.
+   */
+  async transition(
+    database: string,
+    transition: ControlAdmission
+  ): Promise<ControlAdmissionResult> {
+    const reply = await this.request({ operation: 'transition', database, transition });
+    return (reply as Extract<Success, { operation: 'transition' }>).result;
   }
 
   /** Attempts native checkpoint progress after prior submitted work. */

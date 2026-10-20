@@ -1,7 +1,18 @@
 import { isAbsolute } from 'node:path';
+import {
+  type ControlAdmission,
+  type ControlAdmissionResult,
+  ControlAdmissionSchema,
+} from './control-store-admission.js';
+import {
+  type ControlProductContentMount,
+  ControlProductContentMountSchema,
+  type ControlProductOwner,
+} from './control-store-products.js';
+import { StoredWorkOwnerV1Schema } from './retained-work-metadata-v1.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 2;
+export const CONTROL_WORKER_VERSION = 3;
 
 /** Fixed, qualified batching and per-database pending admission bounds. */
 export const CONTROL_WORKER_LIMITS = {
@@ -61,8 +72,13 @@ export type ControlWorkerCommand =
           readonly create: boolean;
           /** Apply the existing scope journal before opening completes; never bypass app recovery. */
           readonly initialize?: ControlInitializationScope;
+          /** Explicit admitted product owner; absent on legacy primitive-only fixture scopes. */
+          readonly productOwner?: ControlProductOwner;
+          /** Admitted private Storage binding; never derived from an incoming content locator. */
+          readonly contentMount?: ControlProductContentMount;
         }
       | { readonly operation: 'write'; readonly statements: readonly ControlSqlStatement[] }
+      | { readonly operation: 'transition'; readonly transition: ControlAdmission }
       | { readonly operation: 'checkpoint' | 'reclaim' | 'close' }
     ));
 
@@ -104,6 +120,11 @@ export type ControlWorkerReply = {
       readonly status: 'ok';
       readonly operation: 'write';
       readonly results: readonly ControlSqlResult[];
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'transition';
+      readonly result: ControlAdmissionResult;
     }
   | {
       readonly status: 'ok';
@@ -188,6 +209,16 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return true;
   if (reply.operation === 'write')
     return Array.isArray(reply.results) && reply.results.every(isSqlResult);
+  if (reply.operation === 'transition') {
+    return (
+      isRecord(reply.result) &&
+      typeof reply.result.replayed === 'boolean' &&
+      isRecord(reply.result.response) &&
+      ['thread', 'turn'].includes(String(reply.result.response.kind)) &&
+      typeof reply.result.response.id === 'string' &&
+      reply.result.response.id.length > 0
+    );
+  }
   if (reply.operation === 'reclaim') return typeof reply.complete === 'boolean';
   if (reply.operation !== 'checkpoint' || !isRecord(reply.pressure)) return false;
   const pressure = reply.pressure as Record<string, unknown>;
@@ -279,15 +310,35 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
   const scoped = [...header, 'database'];
   if (value.operation === 'open') {
     return (
-      exactFields(value, [...scoped, 'path', 'create'], ['initialize']) &&
+      exactFields(
+        value,
+        [...scoped, 'path', 'create'],
+        ['initialize', 'productOwner', 'contentMount']
+      ) &&
       typeof value.path === 'string' &&
       isAbsolute(value.path) &&
       typeof value.create === 'boolean' &&
+      (value.productOwner === undefined ||
+        StoredWorkOwnerV1Schema.safeParse(value.productOwner).success) &&
+      (value.contentMount === undefined ||
+        (ControlProductContentMountSchema.safeParse(value.contentMount).success &&
+          isAbsolute((value.contentMount as ControlProductContentMount).root))) &&
       (value.initialize === undefined ||
         value.initialize === 'core' ||
         value.initialize === 'user' ||
         value.initialize === 'workspace')
     );
+  }
+  if (value.operation === 'transition') {
+    try {
+      return (
+        exactFields(value, [...scoped, 'transition']) &&
+        ControlAdmissionSchema.safeParse(value.transition).success &&
+        JSON.stringify(value.transition).length <= 2 * 1024 * 1024
+      );
+    } catch {
+      return false;
+    }
   }
   if (value.operation === 'write')
     return (
