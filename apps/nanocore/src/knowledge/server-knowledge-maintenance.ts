@@ -676,7 +676,7 @@ export async function runServerKnowledgeMaintenanceCommand(
           ...(captured ? [`source:${captured.id}@${captured.contentDigest}`] : []),
         ],
       });
-      dependencies.store.recordCommandRequest(
+      await dependencies.store.recordCommandRequest(
         {
           command,
           requestId: input.requestId,
