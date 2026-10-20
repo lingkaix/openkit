@@ -81,6 +81,13 @@ export type {
   VaultUseResolvingPath,
 } from './vault-use-records.js';
 export { vaultUseRecords } from './vault-use-records.js';
+export {
+  controlAgentSessions,
+  controlProductEntries,
+  controlThreads,
+  controlTurns,
+  controlWorkspaces,
+} from './work-product.js';
 export type {
   WorkerBackendSessionPlacement,
   WorkerBackendSessionState,
