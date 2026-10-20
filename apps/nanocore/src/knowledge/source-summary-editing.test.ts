@@ -2,6 +2,10 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import {
+  KnowledgeNotebookPathSchema,
+  UpdateKnowledgeNotebookRequestSchema,
+} from '@openkit/app-api-schemas';
 import { WorkspaceConfigSchema } from '@openkit/config-schema';
 import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
@@ -96,9 +100,10 @@ async function fixture() {
   });
   expect(seeded.status, JSON.stringify(seeded.body)).toBe(200);
   const baseRevision = notebook.publishedRevision();
-  const path = `sources/${source.id}.md`;
+  const sourcePath = `sources/${source.id}.md`;
+  const path = `@sources/${source.id}.md`;
   const corrected = updateOkfFrontmatter({
-    path,
+    path: sourcePath,
     content: pointer,
     updates: {
       title: 'Release evidence',
@@ -129,13 +134,30 @@ async function fixture() {
     page,
     baseRevision,
     path,
+    sourcePath,
     corrected,
   };
 }
 
 describe('ordinary SourceSummary editing through native owners', () => {
+  it('separates transient Source edit addresses from curated Page paths', () => {
+    const id = allocateEntityId('ks');
+    const sourceAddress = `@sources/${id}.md`;
+    expect(KnowledgeNotebookPathSchema.safeParse('sources/notes.md').success).toBe(true);
+    expect(KnowledgeNotebookPathSchema.safeParse(`sources/${id}.md`).success).toBe(true);
+    expect(KnowledgeNotebookPathSchema.safeParse(sourceAddress).success).toBe(false);
+    const update = UpdateKnowledgeNotebookRequestSchema.safeParse({
+      requestId: randomUUID(),
+      baseRevision: 'fixed-base',
+      summary: 'Edit the existing Source summary',
+      changes: [{ path: sourceAddress, content: 'Edited Source summary.\n' }],
+    });
+    expect(update.success, JSON.stringify(update)).toBe(true);
+  });
+
   it('retains both a curated Page and a native Source with the same relative spelling in complete content', async () => {
     const f = await fixture();
+    const pagePath = f.sourcePath;
     const page = serializeKnowledgePageFixture(
       {
         title: 'Separate curated interpretation',
@@ -150,7 +172,7 @@ describe('ordinary SourceSummary editing through native owners', () => {
     });
     const original = f.notebook.readRevision(f.baseRevision);
     const baseRevision = notebook.initialize({
-      files: { ...original.files, [f.path]: page },
+      files: { ...original.files, [pagePath]: page },
       sourcePointers: f.notebook.readSourcePointers(f.baseRevision),
       metadata: original.metadata,
     });
@@ -163,7 +185,7 @@ describe('ordinary SourceSummary editing through native owners', () => {
       },
     });
     for (const revision of [baseRevision, candidateRevision]) {
-      expect(notebook.readRevision(revision).files[f.path]).toBe(page);
+      expect(notebook.readRevision(revision).files[pagePath]).toBe(page);
       expect(notebook.readSourcePointers(revision)[f.source.id]).toBe(f.pointer);
       // The complete inventory must retain both canonical members, regardless of its key encoding.
       expect(Object.values(notebook.readContent(revision))).toEqual(
@@ -189,7 +211,7 @@ describe('ordinary SourceSummary editing through native owners', () => {
     expect(reopened.readRevision(revision).files).toEqual(
       f.notebook.readRevision(f.baseRevision).files
     );
-    expect(reopened.inspectRevision(revision).entries).not.toHaveProperty(f.path);
+    expect(reopened.inspectRevision(revision).entries).not.toHaveProperty(f.sourcePath);
     expect(reopened.readSourcePointers(f.baseRevision)[f.source.id]).toBe(f.pointer);
     const after = parseSourcePointer(
       f.owner,
@@ -208,12 +230,26 @@ describe('ordinary SourceSummary editing through native owners', () => {
       contentDigest: f.source.contentDigest,
     });
     expect(
-      parseOkfDocument({ path: f.path, content: after.content }).document?.frontmatter
+      parseOkfDocument({ path: f.sourcePath, content: after.content }).document?.frontmatter
     ).toMatchObject({
       title: 'Release evidence',
       description: 'Captured release facts for onboarding.',
       tags: ['onboarding', 'release'],
     });
+    const history = await f.call('knowledge.notebook.history', { limit: 1 });
+    expect(history.status, JSON.stringify(history.body)).toBe(200);
+    expect(history.body.revisions[0]).toMatchObject({
+      revision,
+      parentRevision: f.baseRevision,
+      availability: 'available',
+      changedPaths: [f.path],
+    });
+    const diff = await f.call('knowledge.notebook.diff', {
+      baseRevision: revision,
+      fromRevision: f.baseRevision,
+    });
+    expect(diff.status, JSON.stringify(diff.body)).toBe(200);
+    expect(diff.body.changes).toEqual([{ path: f.path, before: f.corrected, after: f.pointer }]);
     const later = await f.call('knowledge.notebook.update', {
       requestId: randomUUID(),
       baseRevision: revision,
@@ -262,8 +298,8 @@ describe('ordinary SourceSummary editing through native owners', () => {
     if (control === 'thread lineage') updates = { originatingThreadId: null };
     if (control === 'turn lineage') updates = { originatingTurnId: allocateEntityId('tu') };
     if (control === 'file lineage') updates = { originatingFileId: 'different-captured-file' };
-    const changed = updateOkfFrontmatter({ path: f.path, content: f.corrected, updates });
-    const other = `sources/${allocateEntityId('ks')}.md`;
+    const changed = updateOkfFrontmatter({ path: f.sourcePath, content: f.corrected, updates });
+    const other = `@sources/${allocateEntityId('ks')}.md`;
     const changes =
       control === 'create'
         ? [{ path: other, content: changed }]
@@ -326,7 +362,7 @@ describe('ordinary SourceSummary editing through native owners', () => {
       f.baseRevision = f.notebook.publishedRevision();
       summaryBody += `[Related evidence](${captured.body.source.id}.md)\n`;
       f.corrected = updateOkfFrontmatter({
-        path: f.path,
+        path: f.sourcePath,
         content: f.corrected,
         updates: {},
         body: summaryBody,
@@ -443,7 +479,7 @@ describe('ordinary SourceSummary editing through native owners', () => {
         inspections.push(inspected);
         try {
           const attempted = await execute('knowledge.notebook-workspace.update', {
-            script: `mkdir -p sources; cat > /notebook/${f.path} <<'SOURCE'\n${f.corrected}SOURCE\n`,
+            script: `mkdir -p @sources; cat > /notebook/${f.path} <<'SOURCE'\n${f.corrected}SOURCE\n`,
           });
           writeRefused = attempted.exitCode !== 0;
           if (!writeRefused)
@@ -561,7 +597,7 @@ describe('ordinary SourceSummary editing through native owners', () => {
       expect(inspections[0]).toMatchObject({ exitCode: 0, stdout: f.pointer });
       expect(inspections[1]!.exitCode).toBe(0);
       const expectedCandidate = updateOkfFrontmatter({
-        path: f.path,
+        path: f.sourcePath,
         content: f.corrected,
         updates: { review_state: 'delegated' },
       });
@@ -574,14 +610,16 @@ describe('ordinary SourceSummary editing through native owners', () => {
           f.notebook.readRevision(f.baseRevision).files
         );
         expect(
-          parseOkfDocument({ path: f.path, content: after }).document?.frontmatter
+          parseOkfDocument({ path: f.sourcePath, content: after }).document?.frontmatter
         ).toMatchObject({
           title: 'Release evidence',
           description: 'Captured release facts for onboarding.',
           tags: ['onboarding', 'release'],
           review_state: 'delegated',
         });
-        expect(parseOkfDocument({ path: f.path, content: after }).document?.body).toBe(summaryBody);
+        expect(parseOkfDocument({ path: f.sourcePath, content: after }).document?.body).toBe(
+          summaryBody
+        );
         expect(f.store.listKnowledgeProposals(f.workspace.id)).toEqual([]);
       } else {
         expect(result.outcome, JSON.stringify(result)).toBe('review-required');
@@ -635,7 +673,7 @@ describe('ordinary SourceSummary editing through native owners', () => {
           new KnowledgeNotebook({ repositoryPath: f.repositoryPath }).publishedRevision()
         ).toBe(f.baseRevision);
         expect(
-          parseOkfDocument({ path: f.path, content: candidate }).document?.frontmatter
+          parseOkfDocument({ path: f.sourcePath, content: candidate }).document?.frontmatter
         ).toMatchObject({
           title: 'Release evidence',
           description: 'Captured release facts for onboarding.',
@@ -727,7 +765,7 @@ describe('ordinary SourceSummary editing through native owners', () => {
     expect(reopened.readSourcePointers(f.baseRevision)[f.source.id]).toBe(f.pointer);
     expect(reopened.readRevision(reopened.publishedRevision()).files['unrelated.md']).toBe(f.page);
     expect(reopened.inspectRevision(reopened.publishedRevision()).entries).not.toHaveProperty(
-      f.path
+      f.sourcePath
     );
     expect(readFileSync(f.rawPath)).toEqual(Buffer.from(f.original));
   });
