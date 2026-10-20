@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -11,6 +12,8 @@ import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
 } from '../config/runtime-config.js';
+import type { AgentToolResult } from '../internal-agents/internal-agent-loop.js';
+import * as knowledgeManager from '../internal-agents/knowledge-manager-agent.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
@@ -467,6 +470,175 @@ function calls(entries: Array<[string, unknown]>) {
   return { ...first, output: entries.flatMap(([name, value]) => call(name, value).output) };
 }
 
+/** Observes raw isError before transcript projection, while running every native Tool and KM loop. */
+function observeNotebookTools() {
+  const results: Array<{ name: string; result: AgentToolResult }> = [];
+  const run = knowledgeManager.runKnowledgeManagerAgent;
+  const observer = vi
+    .spyOn(knowledgeManager, 'runKnowledgeManagerAgent')
+    .mockImplementation((dependencies, input) =>
+      run(dependencies, {
+        ...input,
+        tools: input.tools.map((tool) => ({
+          ...tool,
+          execute: async (value, context) => {
+            const result = await tool.execute(value, context);
+            if (tool.name.startsWith('knowledge.notebook'))
+              results.push({ name: tool.name, result });
+            return result;
+          },
+        })),
+      })
+    );
+  onTestFinished(() => observer.mockRestore());
+  return results;
+}
+
+// meta-silent-refusal RED 1: an unspecified submission refusal must still have one safe category.
+it.each([
+  'malformed summary',
+  'non-admitted Source',
+] as const)('diagnostic floor RED 1: categorizes %s without candidate or publication effects', async (failure) => {
+  const f = fixture(true);
+  const observed = observeNotebookTools();
+  const repositoryPath = join(
+    f.dataRoot,
+    'workspaces',
+    DEMO_WORKSPACE_ID,
+    'knowledge',
+    'notebook.git'
+  );
+  const notebook = new KnowledgeNotebook({ repositoryPath });
+  const before = notebook.publishedRevision();
+  // Include unreachable commits: unchanged refs alone cannot rule out a prepared candidate.
+  const commits = () =>
+    execFileSync(
+      'git',
+      ['--git-dir', repositoryPath, 'cat-file', '--batch-all-objects', '--batch-check'],
+      { encoding: 'utf8' }
+    )
+      .trim()
+      .split('\n')
+      .filter((line) => line.split(' ')[1] === 'commit')
+      .sort();
+  const beforeCommits = commits();
+  const marker = 'UNADMITTED-SUBMISSION-CONTENT';
+  const sourceReference = `source:ks_00000000-0000-7000-8000-000000000001@sha256:${'a'.repeat(64)}`;
+  const content = serializeKnowledgePageFixture(
+    {
+      title: 'Unadmitted Source fixture',
+      content: `${marker} ${f.dataRoot}`,
+      sourceReferences: [sourceReference],
+      createdAt: '2026-10-21T00:00:00.000Z',
+      updatedAt: '2026-10-21T00:00:00.000Z',
+    },
+    { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID }
+  );
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  onTestFinished(() => warn.mockRestore());
+  let feedback = '';
+  f.createResponses.mockImplementation(async () => {
+    if (f.createResponses.mock.calls.length === 1) {
+      // A string over the summary bound passes Tool schema admission and reaches the native refusal.
+      if (failure === 'malformed summary')
+        return call('knowledge.notebook.update', {
+          summary: `${marker} ${f.dataRoot}${'x'.repeat(4096)}`,
+        });
+      return calls([
+        [
+          'knowledge.notebook-workspace.update',
+          { script: `cat > unadmitted.md <<'PAGE'\n${content}PAGE\n` },
+        ],
+        ['knowledge.notebook.update', { summary: 'Submit the Source reference fixture.' }],
+      ]);
+    }
+    feedback = latestToolOutput(f);
+    throw new Error('The deterministic refusal feedback probe is complete.');
+  });
+  const response = await f.app.request(
+    ...operationRequest(
+      'knowledge.maintain',
+      { workspaceId: DEMO_WORKSPACE_ID },
+      {
+        body: JSON.stringify({
+          requestId: randomUUID(),
+          instruction: 'Curate only the admitted notebook and Sources.',
+          pageIds: ['index'],
+        }),
+      }
+    )
+  );
+  const body = (await response.json()) as { turnId: string };
+  expect(response.status, JSON.stringify(body)).toBe(200);
+  expect(f.createResponses).toHaveBeenCalledTimes(2);
+  const submission = observed.filter(({ name }) => name === 'knowledge.notebook.update');
+  expect(submission).toHaveLength(1);
+  expect(submission[0]!.result.isError).toBe(true);
+  if (failure === 'non-admitted Source')
+    expect(observed[0]).toMatchObject({
+      name: 'knowledge.notebook-workspace.update',
+      result: { content: [{ type: 'text', text: expect.stringContaining('"exitCode":0') }] },
+    });
+  const detail = JSON.parse(feedback);
+  expect(detail.code).toBe('invalid_request');
+  expect(detail).not.toHaveProperty('linkDiagnostics');
+  expect(notebook.publishedRevision()).toBe(before);
+  expect(commits()).toEqual(beforeCommits);
+  expect(f.store.listKnowledgeProposals(DEMO_WORKSPACE_ID)).toEqual([]);
+  expect(
+    f.store
+      .getTurnById(body.turnId)
+      .items.filter(
+        (item) => item.type === 'tool-call' && item.tool === 'knowledge.notebook.update'
+      )
+  ).toEqual([expect.objectContaining({ status: 'failed' })]);
+  for (const text of [feedback, JSON.stringify(body), JSON.stringify(warn.mock.calls)]) {
+    for (const forbidden of [marker, f.dataRoot, sourceReference, 'unadmitted.md', 'stack'])
+      expect(text).not.toContain(forbidden);
+    expect(text).not.toMatch(/(?:SyntaxError|TypeError|NotebookError):|\bat .+:\d+:\d+/);
+  }
+  // This exact assertion is the expected RED on the unchanged implementation.
+  expect(detail.diagnostics).toEqual(['notebook.submission_refused']);
+}, 120_000);
+
+// meta-silent-refusal RED 2: specific script categories must not acquire a submission fallback.
+it.each([
+  { category: 'notebook.script_syntax_error', script: 'if true; then' },
+  { category: 'notebook.script_limit_exceeded', script: `#${'x'.repeat(64 * 1024)}` },
+])('diagnostic floor RED 2: preserves $category exactly', async ({ category, script }) => {
+  const f = fixture();
+  const observed = observeNotebookTools();
+  let feedback = '';
+  f.createResponses.mockImplementation(async () => {
+    if (f.createResponses.mock.calls.length === 1)
+      return call('knowledge.notebook-workspace.update', { script });
+    feedback = latestToolOutput(f);
+    throw new Error('The deterministic script category probe is complete.');
+  });
+  const response = await f.app.request(
+    ...operationRequest(
+      'knowledge.maintain',
+      { workspaceId: DEMO_WORKSPACE_ID },
+      {
+        body: JSON.stringify({
+          requestId: randomUUID(),
+          instruction: 'Inspect the admitted notebook.',
+        }),
+      }
+    )
+  );
+  expect(response.status).toBe(200);
+  expect(f.createResponses).toHaveBeenCalledTimes(2);
+  expect(observed).toHaveLength(1);
+  expect(observed[0]!.result.isError).toBe(true);
+  expect(JSON.parse(feedback)).toMatchObject({
+    code: 'invalid_request',
+    diagnostics: [category],
+  });
+  expect(JSON.parse(feedback)).not.toHaveProperty('linkDiagnostics');
+  expect(feedback).not.toContain('notebook.submission_refused');
+}, 120_000);
+
 it('keeps exception text and paths out of model and process failure diagnostics', async () => {
   const f = fixture();
   const marker = 'PRIVATE-EXCEPTION-CONTENT';
@@ -573,6 +745,11 @@ it('makes the actual Claim confidence refusal actionable without publishing', as
   expect(response.status).toBe(200);
   expect(feedback).toContain('scope_schema.invalid_confidence');
   expect(feedback).toContain('finite number from zero through one');
+  // Diagnostic floor RED 2: preserve both native schema codes without adding the fallback.
+  expect(JSON.parse(feedback).diagnostics).toEqual([
+    'notebook.invalid_page',
+    'scope_schema.invalid_confidence',
+  ]);
   expect(JSON.parse(feedback)).not.toHaveProperty('linkDiagnostics');
   expect(feedback).not.toContain('UNPUBLISHED-CLAIM-CONTENT');
   expect(notebook.publishedRevision()).toBe(before);
@@ -646,6 +823,10 @@ it('corrects Claim confidence before result submission through the real KM Tools
   };
   expect(response.status).toBe(200);
   expect(feedback).toContain('scope_schema.invalid_confidence');
+  expect(JSON.parse(feedback).diagnostics).toEqual([
+    'notebook.invalid_page',
+    'scope_schema.invalid_confidence',
+  ]);
   expect(
     ['published', 'review-required'],
     JSON.stringify(
@@ -812,7 +993,8 @@ it('Final-Tree Validation: same-author bounded link feedback permits one repair 
     })
   ).toContain('notebook.unresolved_page_link');
   const detail = JSON.parse(feedback) as { diagnostics: string[]; linkDiagnostics?: unknown };
-  expect(detail.diagnostics).toContain('notebook.unresolved_page_link');
+  // Diagnostic floor RED 2: exact codes, bounded author-only links and successful repair stay intact.
+  expect(detail.diagnostics).toEqual(['notebook.unresolved_page_link']);
   const delivered = f.createResponses.mock.calls
     .map((call) => {
       const [, request] = call as unknown as Parameters<
