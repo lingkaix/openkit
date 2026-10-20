@@ -689,7 +689,7 @@ function pruneCommandRequestRecords(db: CommandRequestDb, referenceTime: string)
  * @param row Raw SQLite row.
  * @returns Command request record.
  */
-function mapCommandRequestRow(row: CommandRequestRow): CommandRequestRecord {
+export function mapCommandRequestRow(row: CommandRequestRow): CommandRequestRecord {
   return readRetainedV1(row, () => decodeCommandRequestPayloadV1(row));
 }
 
