@@ -146,6 +146,7 @@ import {
   KnowledgeProposalRecordSchema,
   KnowledgeProposalReviewFileSchema,
   loadWorkspaceFileRecords,
+  normalizeAdmittedWorkspaceLogTails,
   parseCanonicalWorkspaceHistory,
   parseOwnedKnowledgePage,
   publishCanonicalPath,
@@ -1411,6 +1412,18 @@ export class FsStore {
         [...this.commandRequests.values()]
       )) {
         this.approvals.set(approval.id, approval);
+      }
+      for (const records of workspaceRecords) {
+        if (!isScopeAdmitted(this.dataRoot, 'workspace', records.workspace.id)) continue;
+        try {
+          normalizeAdmittedWorkspaceLogTails(this.workspaceRootPath(records.workspace.id), records);
+        } catch {
+          refuseScope(this.dataRoot, {
+            scope: 'workspace',
+            id: records.workspace.id,
+            check: 'records',
+          });
+        }
       }
     }
   }

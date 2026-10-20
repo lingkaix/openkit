@@ -1020,6 +1020,24 @@ export function loadWorkspaceFileRecords(dataRoot: string): WorkspaceFileRecords
   return records.filter((record) => isScopeAdmitted(dataRoot, 'workspace', record.workspace.id));
 }
 
+/**
+ * Applies existing append-tail recovery only after the complete Workspace file and SQL admission.
+ * Validation reads remain non-mutating, including when a later record refuses the Workspace.
+ * @param workspaceRoot Admitted canonical Workspace root.
+ * @param records Fully validated history belonging to this Workspace.
+ * @throws When an admitted append boundary cannot be normalized.
+ */
+export function normalizeAdmittedWorkspaceLogTails(
+  workspaceRoot: string,
+  records: WorkspaceFileRecords
+): void {
+  for (const turn of records.turns) {
+    const root = join(workspaceRoot, 'threads', turn.threadId, 'turns', turn.id);
+    normalizeAppendBoundary(join(root, 'items.jsonl'));
+    normalizeAppendBoundary(join(root, 'runtime', 'events.jsonl'));
+  }
+}
+
 /** Discards abandoned private staging at Store startup, before any live admission. Read-only canonical inspection must never delete a concurrent capture. */
 export function discardAbandonedWorkspaceStaging(dataRoot: string): void {
   const root = ensureLayoutDirectories(dataRoot).workspaces;
@@ -1421,8 +1439,9 @@ function loadItemRevisions(
   const items = new Map<string, Item>();
   const revisions: Item[] = [];
 
-  for (const value of readCanonicalJsonLines(path, true)) {
+  for (const value of readDurableCanonicalJsonLines(path)) {
     const item = readRetainedV1(value, ItemReaderSchema.parse);
+    assertWorkspaceWorkOwner(item, workspaceId);
     const previous = items.get(item.id);
 
     if (
@@ -1465,9 +1484,10 @@ function loadTurnEvents(
   turnId: string,
   itemIds: ReadonlySet<string>
 ): SseEventEnvelope[] {
-  const events = readCanonicalJsonLines(path, true).map((value) =>
-    readRetainedV1(value, SseEventReaderSchema.parse)
-  );
+  const rows = lstatSync(path, { throwIfNoEntry: false })
+    ? readDurableCanonicalJsonLines(path)
+    : [];
+  const events = rows.map((value) => readRetainedV1(value, SseEventReaderSchema.parse));
 
   for (const [index, event] of events.entries()) {
     if (
