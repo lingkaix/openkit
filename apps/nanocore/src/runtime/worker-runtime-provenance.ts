@@ -318,80 +318,109 @@ export async function importWorkerRuntimeProvenance(
     rawBundleId,
     indexBundleId
   );
-  const result = input.workspaceDb.sqlite.transaction(() => {
-    const rawBundle = recordWorkspaceEvidenceBundle(input.workspaceDb, {
-      id: rawBundleId,
-      workspaceId: lineage.workspaceId,
-      threadId: lineage.threadId,
-      goalId: null,
-      turnId: lineage.turnId,
-      agentSessionId: lineage.agentSessionId,
-      backendType: input.backend.kind,
-      sourceKind: 'worker-runtime-provenance-raw',
-      summary,
-      rawEvidenceRefs: [...verified.rawFiles.keys()].map((ref) => ({
-        kind: rawEvidenceKind(ref),
-        ref,
-      })),
-      redactedEvidenceRefs: [],
-      contentDigests: verified.rawDigests,
-      retentionClass: 'restricted-raw',
-      sensitivityClass: 'restricted',
-      importStatus: complete ? 'promoted' : 'quarantined',
-      requiredFeatures: [PROVENANCE_FEATURE],
-      createdAt: recordedAt,
-    });
-    const indexBundle = normalizedDigest
-      ? recordWorkspaceEvidenceBundle(input.workspaceDb, {
-          id: indexBundleId,
-          workspaceId: lineage.workspaceId,
-          threadId: lineage.threadId,
-          goalId: null,
-          turnId: lineage.turnId,
-          agentSessionId: lineage.agentSessionId,
-          backendType: input.backend.kind,
-          sourceKind: 'worker-runtime-provenance-index',
-          summary,
-          rawEvidenceRefs: [],
-          redactedEvidenceRefs: [
-            { kind: 'worker-runtime-provenance-index', ref: 'runtime-origin-index.jsonl' },
-          ],
-          contentDigests: [normalizedDigest],
-          retentionClass: 'turn-evidence',
-          sensitivityClass: 'product-safe',
-          importStatus: 'promoted',
-          requiredFeatures: [PROVENANCE_FEATURE],
-          createdAt: recordedAt,
-        })
-      : null;
-    const runtimeEvidence = recordWorkerRuntimeProvenanceEvidence(input.workspaceDb, {
-      agentSessionId: lineage.agentSessionId,
-      backendType: input.backend.kind,
-      backendVersion: input.backend.version,
-      collectedAt: recordedAt,
-      contentDigests: [...verified.rawDigests, ...(normalizedDigest ? [normalizedDigest] : [])],
-      errorCode: complete ? null : 'worker_runtime_provenance_invalid',
-      errorMessage: complete ? null : 'Worker runtime provenance verification failed.',
-      evidenceBundleIds: [rawBundle.id, ...(indexBundle ? [indexBundle.id] : [])],
-      outcome: complete ? 'succeeded' : 'failed',
-      packageSnapshotId: lineage.packageSnapshotId,
-      policyDigest: `sha256:${snapshotDigest(input.environmentPackage.policy)}`,
-      placement: input.backend.placement,
-      summary,
-      threadId: lineage.threadId,
-      turnId: lineage.turnId,
-      workspaceId: lineage.workspaceId,
-    });
-
-    return {
+  const result = input.workspaceDb.sqlite.transaction(() =>
+    recordWorkerRuntimeProvenanceMetadata(input.workspaceDb, {
       complete,
-      indexBundleId: indexBundle?.id ?? null,
-      rawBundleId: rawBundle.id,
-      runtimeEvidenceId: runtimeEvidence.id,
-    };
-  })();
+      rawBundle: {
+        id: rawBundleId,
+        workspaceId: lineage.workspaceId,
+        threadId: lineage.threadId,
+        goalId: null,
+        turnId: lineage.turnId,
+        agentSessionId: lineage.agentSessionId,
+        backendType: input.backend.kind,
+        sourceKind: 'worker-runtime-provenance-raw',
+        summary,
+        rawEvidenceRefs: [...verified.rawFiles.keys()].map((ref) => ({
+          kind: rawEvidenceKind(ref),
+          ref,
+        })),
+        redactedEvidenceRefs: [],
+        contentDigests: verified.rawDigests,
+        retentionClass: 'restricted-raw',
+        sensitivityClass: 'restricted',
+        importStatus: complete ? 'promoted' : 'quarantined',
+        requiredFeatures: [PROVENANCE_FEATURE],
+        createdAt: recordedAt,
+      },
+      indexBundle: normalizedDigest
+        ? {
+            id: indexBundleId,
+            workspaceId: lineage.workspaceId,
+            threadId: lineage.threadId,
+            goalId: null,
+            turnId: lineage.turnId,
+            agentSessionId: lineage.agentSessionId,
+            backendType: input.backend.kind,
+            sourceKind: 'worker-runtime-provenance-index',
+            summary,
+            rawEvidenceRefs: [],
+            redactedEvidenceRefs: [
+              { kind: 'worker-runtime-provenance-index', ref: 'runtime-origin-index.jsonl' },
+            ],
+            contentDigests: [normalizedDigest],
+            retentionClass: 'turn-evidence',
+            sensitivityClass: 'product-safe',
+            importStatus: 'promoted',
+            requiredFeatures: [PROVENANCE_FEATURE],
+            createdAt: recordedAt,
+          }
+        : null,
+      runtimeEvidence: {
+        agentSessionId: lineage.agentSessionId,
+        backendType: input.backend.kind,
+        backendVersion: input.backend.version,
+        collectedAt: recordedAt,
+        contentDigests: [...verified.rawDigests, ...(normalizedDigest ? [normalizedDigest] : [])],
+        errorCode: complete ? null : 'worker_runtime_provenance_invalid',
+        errorMessage: complete ? null : 'Worker runtime provenance verification failed.',
+        outcome: complete ? 'succeeded' : 'failed',
+        packageSnapshotId: lineage.packageSnapshotId,
+        policyDigest: `sha256:${snapshotDigest(input.environmentPackage.policy)}`,
+        placement: input.backend.placement,
+        summary,
+        threadId: lineage.threadId,
+        turnId: lineage.turnId,
+        workspaceId: lineage.workspaceId,
+      },
+    })
+  )();
 
   return result;
+}
+
+/** Prepared synchronized evidence metadata; payload publication remains with its independent owner. */
+export interface WorkerRuntimeProvenanceMetadataInput {
+  readonly complete: boolean;
+  readonly rawBundle: Parameters<typeof recordWorkspaceEvidenceBundle>[1];
+  readonly indexBundle: Parameters<typeof recordWorkspaceEvidenceBundle>[1] | null;
+  readonly runtimeEvidence: Omit<
+    Parameters<typeof recordWorkerRuntimeProvenanceEvidence>[1],
+    'evidenceBundleIds'
+  >;
+}
+
+/** Commits the complete provenance metadata decision on one owning handle without publishing bytes or ending its transaction. */
+export function recordWorkerRuntimeProvenanceMetadata(
+  writer: WorkspaceDb,
+  input: WorkerRuntimeProvenanceMetadataInput
+): ImportWorkerRuntimeProvenanceResult {
+  if (!writer.sqlite.inTransaction)
+    throw new Error('Runtime provenance metadata requires its owning transaction.');
+  const rawBundle = recordWorkspaceEvidenceBundle(writer, input.rawBundle);
+  const indexBundle = input.indexBundle
+    ? recordWorkspaceEvidenceBundle(writer, input.indexBundle)
+    : null;
+  const evidence = recordWorkerRuntimeProvenanceEvidence(writer, {
+    ...input.runtimeEvidence,
+    evidenceBundleIds: [rawBundle.id, ...(indexBundle ? [indexBundle.id] : [])],
+  });
+  return {
+    complete: input.complete,
+    indexBundleId: indexBundle?.id ?? null,
+    rawBundleId: rawBundle.id,
+    runtimeEvidenceId: evidence.id,
+  };
 }
 
 /** Verifies manifest, streams, frame mappings, native graph closure, and capture completeness. */

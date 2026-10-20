@@ -1,7 +1,8 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { recordTestAgentEnvironmentPackage } from '../test-support/agent-environment.js';
@@ -188,6 +189,77 @@ const exactHandoffTamperCases: ReadonlyArray<
 ];
 
 describe('worker backend cleanup projection', () => {
+  it('acknowledges the complete native cleanup body on its exact scoped SQLite and ORM handle', async () => {
+    const { environmentPackage, workspaceDb } = createFixture();
+    const beforeEvidence = listWorkspaceRuntimeEvidence(workspaceDb, workspaceDb.workspaceId);
+    const client = getControlStoreWorkerClient();
+    try {
+      await client.open({
+        database: 'native-cleanup',
+        path: workspaceDb.sqlite.name,
+        dataRoot: workspaceDb.dataRoot,
+        create: false,
+        initialize: 'workspace',
+        productOwner: { kind: 'workspace', workspaceId: workspaceDb.workspaceId },
+      });
+      const result = await client.projectCleanup(
+        'native-cleanup',
+        cleanupInput(environmentPackage)
+      );
+      expect(result.workspaceHandoffComplete).toBe(true);
+      expect(result.handles.length).toBeGreaterThan(0);
+      expect(result.handles.every((handle) => handle.cleanupStatus === 'cleaned')).toBe(true);
+      expect(listBackendWorkspaceHandles(workspaceDb, workspaceDb.workspaceId)).toEqual(
+        result.handles
+      );
+      expect(
+        listWorkspaceRuntimeEvidence(workspaceDb, workspaceDb.workspaceId).toSorted((a, b) =>
+          a.id.localeCompare(b.id)
+        )
+      ).toEqual([...beforeEvidence, result.evidence].toSorted((a, b) => a.id.localeCompare(b.id)));
+    } finally {
+      try {
+        await client.shutdown();
+      } finally {
+        workspaceDb.sqlite.close();
+        rmSync(workspaceDb.dataRoot, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('rolls back native handle updates together with rejected cleanup evidence', async () => {
+    const { environmentPackage, workspaceDb } = createFixture();
+    const before = listBackendWorkspaceHandles(workspaceDb, workspaceDb.workspaceId);
+    const beforeEvidence = listWorkspaceRuntimeEvidence(workspaceDb, workspaceDb.workspaceId);
+    workspaceDb.sqlite.exec(
+      `CREATE TRIGGER native_cleanup_evidence_abort BEFORE INSERT ON runtime_evidence BEGIN SELECT RAISE(ABORT, 'native_cleanup_evidence_abort'); END`
+    );
+    const client = getControlStoreWorkerClient();
+    try {
+      await client.open({
+        database: 'native-cleanup',
+        path: workspaceDb.sqlite.name,
+        dataRoot: workspaceDb.dataRoot,
+        create: false,
+        initialize: 'workspace',
+        productOwner: { kind: 'workspace', workspaceId: workspaceDb.workspaceId },
+      });
+      await expect(
+        client.projectCleanup('native-cleanup', cleanupInput(environmentPackage))
+      ).rejects.toMatchObject({ code: 'constraint', commit: 'not-committed' });
+      expect(listBackendWorkspaceHandles(workspaceDb, workspaceDb.workspaceId)).toEqual(before);
+      expect(listWorkspaceRuntimeEvidence(workspaceDb, workspaceDb.workspaceId)).toEqual(
+        beforeEvidence
+      );
+    } finally {
+      try {
+        await client.shutdown();
+      } finally {
+        workspaceDb.sqlite.close();
+        rmSync(workspaceDb.dataRoot, { recursive: true, force: true });
+      }
+    }
+  });
   it.each([
     'pending',
     'complete',

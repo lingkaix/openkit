@@ -67,6 +67,30 @@ export interface WorkspaceDb {
   workspaceId: string;
 }
 
+/** Binds ORM access to the exact admitted Core connection; never opens, migrates, closes or grants fresh initialization. */
+export function bindCoreSqlite(
+  sqlite: Database.Database,
+  dataRoot: string,
+  canInitializeLocalUser = false
+): CoreDb {
+  return {
+    scope: 'core',
+    canInitializeLocalUser,
+    sqlite,
+    db: drizzle(sqlite, { schema }),
+    dataRoot,
+  };
+}
+
+/** Binds a supplied Workspace writer to its same-connection ORM view; the admitting caller owns identity and lifetime. */
+export function bindWorkspaceSqlite(
+  sqlite: Database.Database,
+  dataRoot: string,
+  workspaceId: string
+): WorkspaceDb {
+  return { scope: 'workspace', sqlite, db: drizzle(sqlite, { schema }), dataRoot, workspaceId };
+}
+
 let singleton: CoreDb | undefined;
 
 /**
@@ -111,13 +135,7 @@ export function openCoreDb(
 
   const sqlite = openOwnedSqlite(coreDbPath(dataRoot));
 
-  return {
-    scope: 'core',
-    canInitializeLocalUser,
-    sqlite,
-    db: drizzle(sqlite, { schema }),
-    dataRoot,
-  };
+  return bindCoreSqlite(sqlite, dataRoot, canInitializeLocalUser);
 }
 
 /**
@@ -157,13 +175,7 @@ export function openExistingCoreDbWithIntegrityCheck(dataRoot: string): CoreDb {
   assertSqliteIntegrity(path);
   const sqlite = openOwnedSqlite(path, { fileMustExist: true });
 
-  return {
-    scope: 'core',
-    canInitializeLocalUser: false,
-    sqlite,
-    db: drizzle(sqlite, { schema }),
-    dataRoot,
-  };
+  return bindCoreSqlite(sqlite, dataRoot);
 }
 
 /**
@@ -250,13 +262,7 @@ export function openWorkspaceDb(dataRoot: string, workspaceId: string): Workspac
 
   const sqlite = openOwnedSqlite(workspaceDbPath(dataRoot, workspaceId));
 
-  return {
-    scope: 'workspace',
-    sqlite,
-    db: drizzle(sqlite, { schema }),
-    dataRoot,
-    workspaceId,
-  };
+  return bindWorkspaceSqlite(sqlite, dataRoot, workspaceId);
 }
 
 /** Opens an existing Workspace database after the current boot already verified its layout. */
@@ -264,13 +270,7 @@ export function openBootVerifiedWorkspaceDb(dataRoot: string, workspaceId: strin
   assertScopeAdmitted(dataRoot, 'workspace', workspaceId);
   const sqlite = openOwnedSqlite(workspaceDbPath(dataRoot, workspaceId), { fileMustExist: true });
 
-  return {
-    scope: 'workspace',
-    sqlite,
-    db: drizzle(sqlite, { schema }),
-    dataRoot,
-    workspaceId,
-  };
+  return bindWorkspaceSqlite(sqlite, dataRoot, workspaceId);
 }
 
 /**
@@ -288,13 +288,7 @@ export function openWorkspaceDbAtRoot(input: {
 
   const sqlite = openOwnedSqlite(join(input.workspaceRoot, 'db', 'workspace.sqlite'));
 
-  return {
-    scope: 'workspace',
-    sqlite,
-    db: drizzle(sqlite, { schema }),
-    dataRoot: input.dataRoot,
-    workspaceId: input.workspaceId,
-  };
+  return bindWorkspaceSqlite(sqlite, input.dataRoot, input.workspaceId);
 }
 
 /**

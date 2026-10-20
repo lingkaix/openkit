@@ -2,6 +2,10 @@ import { existsSync, realpathSync, statSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { isMainThread, parentPort } from 'node:worker_threads';
 import Database from 'better-sqlite3';
+import {
+  ProjectWorkerBackendCleanupInputSchema,
+  projectWorkerBackendCleanupInDb,
+} from '../runtime/worker-backend-cleanup-projection.js';
 import { ControlStoreBusyError, controlStoreFor } from './control-store.js';
 import { applyControlAdmission } from './control-store-admission.js';
 import {
@@ -26,6 +30,8 @@ import {
   isControlWorkerReply,
   isControlWorkerRequest,
 } from './control-store-worker-protocol.js';
+import { bindCoreSqlite, bindWorkspaceSqlite, type CoreDb, type WorkspaceDb } from './db.js';
+import { coreDbPath, workspaceDbPath } from './fs-layout.js';
 import { applyNativeScopeMigrations } from './migrate.js';
 
 if (isMainThread || parentPort === null) {
@@ -36,7 +42,7 @@ const port = parentPort;
 /** A queued transition, not a durable request or a second command receipt. */
 type WriteRequest = Extract<
   ControlWorkerRequest,
-  { operation: 'write' | 'transition' | 'products' }
+  { operation: 'write' | 'transition' | 'products' | 'project-cleanup' }
 > & {
   readonly preparedEntries?: readonly PreparedControlEntry[] | undefined;
 };
@@ -44,6 +50,8 @@ type WriteRequest = Extract<
 /** One worker-owned writable connection and its finite, disposable pending work. */
 interface OwnedDatabase {
   readonly sqlite: Database.Database;
+  /** Concrete domain handle, including ORM access on this exact worker-owned connection. */
+  readonly scopeDb: CoreDb | WorkspaceDb | undefined;
   readonly writer: ReturnType<typeof controlStoreFor>;
   readonly path: string;
   readonly identity: string;
@@ -182,6 +190,22 @@ function flush(owner: OwnedDatabase): void {
               status: 'ok',
               operation: 'products',
             };
+          } else if (request.operation === 'project-cleanup') {
+            const input = ProjectWorkerBackendCleanupInputSchema.parse(request.input);
+            if (
+              owner.scopeDb?.scope !== 'workspace' ||
+              input.workspaceId !== owner.scopeDb.workspaceId ||
+              input.environmentPackage.scope.workspaceId !== owner.scopeDb.workspaceId
+            )
+              throw new ControlProductPreconditionError();
+            const result = projectWorkerBackendCleanupInDb(owner.scopeDb, input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'project-cleanup',
+              result,
+            };
           } else {
             const results = apply(sqlite, request.statements);
             outcome = {
@@ -283,6 +307,16 @@ function openDatabase(request: Extract<ControlWorkerRequest, { operation: 'open'
     request.create && !existsSync(request.path)
       ? join(realpathSync(dirname(request.path)), basename(request.path))
       : realpathSync(request.path);
+  const dataRoot = request.dataRoot === undefined ? undefined : realpathSync(request.dataRoot);
+  if (dataRoot !== undefined) {
+    if (!request.productOwner) throw new ControlProductPreconditionError();
+    const expected =
+      request.productOwner.kind === 'server'
+        ? coreDbPath(dataRoot)
+        : workspaceDbPath(dataRoot, request.productOwner.workspaceId);
+    if (join(realpathSync(dirname(expected)), basename(expected)) !== path)
+      throw new ControlProductPreconditionError();
+  }
   const existing = statSync(path, { throwIfNoEntry: false });
   const existingIdentity = existing ? `${existing.dev}:${existing.ino}` : null;
   if (paths.has(path) || (existingIdentity !== null && identities.has(existingIdentity))) {
@@ -301,6 +335,12 @@ function openDatabase(request: Extract<ControlWorkerRequest, { operation: 'open'
     const identity = `${metadata.dev}:${metadata.ino}`;
     databases.set(request.database, {
       sqlite,
+      scopeDb:
+        dataRoot === undefined || request.productOwner === undefined
+          ? undefined
+          : request.productOwner.kind === 'server'
+            ? bindCoreSqlite(sqlite, dataRoot)
+            : bindWorkspaceSqlite(sqlite, dataRoot, request.productOwner.workspaceId),
       writer,
       path,
       identity,
@@ -374,7 +414,8 @@ function receive(value: unknown): void {
     if (
       value.operation === 'write' ||
       value.operation === 'transition' ||
-      value.operation === 'products'
+      value.operation === 'products' ||
+      value.operation === 'project-cleanup'
     ) {
       if (owner.pending.length >= CONTROL_WORKER_LIMITS.pendingTransitions) {
         reply(failure(value.id, 'busy'));

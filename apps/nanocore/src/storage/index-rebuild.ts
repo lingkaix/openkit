@@ -58,7 +58,13 @@ import {
   type UserMemoryRetrievalAccess,
 } from '../retrieval-knowledge-adapter.js';
 import { getRetrievalService } from '../retrieval-service.js';
-import { resolveDataRootPath, serverKnowledgeRoot, userMemoryRoot } from './fs-layout.js';
+import { openControlStoreProductReadHandle } from './control-store-products.js';
+import {
+  resolveDataRootPath,
+  serverKnowledgeRoot,
+  userMemoryRoot,
+  workspaceDbPath,
+} from './fs-layout.js';
 import { publishRetrievalTrace, readRetrievalTrace } from './retrieval-traces.js';
 import { assertCanonicalDirectory, readCanonicalTextFile } from './workspace-file-records.js';
 
@@ -316,18 +322,13 @@ export function rebuildWorkspaceDerivedIndexes(
   assertScopeAdmitted(input.dataRoot, 'workspace', input.workspaceId);
   const workspaceRoot = resolveDataRootPath(input.dataRoot, 'workspaces', input.workspaceId);
   const retiredWorkspacePath = join(workspaceRoot, 'workspace.json');
-  const workspacePath = join(workspaceRoot, 'workspace-record.json');
 
   if (existsSync(retiredWorkspacePath)) {
     throw new Error(
       `Unsupported Workspace projection: ${toReportPath(input.dataRoot, retiredWorkspacePath)}`
     );
   }
-  if (!existsSync(workspacePath)) {
-    throw new Error(
-      `Workspace projection is missing: ${toReportPath(input.dataRoot, workspacePath)}`
-    );
-  }
+  assertNativeWorkspaceRecord(input.dataRoot, input.workspaceId);
 
   const indexesRoot = join(workspaceRoot, 'indexes');
   const indexPath = join(indexesRoot, 'knowledge-validation.json');
@@ -415,7 +416,7 @@ const DERIVED_INDEX_FILES = [
   { name: 'knowledge-source-refs.json', collection: 'references' },
 ] as const;
 
-/** One Workspace directory that has a canonical projection and no retired projection. */
+/** One admitted Workspace directory whose native system record exists. */
 interface CanonicalWorkspaceDirectory {
   /** Workspace id. */
   workspaceId: string;
@@ -441,14 +442,27 @@ function listCanonicalWorkspaces(dataRoot: string): CanonicalWorkspaceDirectory[
     if (existsSync(join(workspaceRoot, 'workspace.json'))) {
       throw new Error(`Unsupported Workspace projection: workspaces/${workspaceId}/workspace.json`);
     }
-    if (!existsSync(join(workspaceRoot, 'workspace-record.json'))) {
-      continue;
-    }
-
+    // Unpublished staging directories have no admitted database; a present database must contain its exact native authority.
+    if (!existsSync(workspaceDbPath(dataRoot, workspaceId))) continue;
+    assertNativeWorkspaceRecord(dataRoot, workspaceId);
     workspaces.push({ workspaceId, workspaceRoot });
   }
 
   return workspaces;
+}
+
+/** Reads the native Workspace identity without migration, file fallback, pruning or an escaping SQL transaction. */
+function assertNativeWorkspaceRecord(dataRoot: string, workspaceId: string): void {
+  const reader = openControlStoreProductReadHandle(workspaceDbPath(dataRoot, workspaceId), {
+    kind: 'workspace',
+    workspaceId,
+  });
+  try {
+    if (!reader.get('workspace', workspaceId))
+      throw new Error(`Native Workspace metadata is missing: ${workspaceId}`);
+  } finally {
+    reader.close();
+  }
 }
 
 /**

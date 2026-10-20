@@ -1,5 +1,11 @@
 import { isAbsolute } from 'node:path';
 import {
+  type ProjectWorkerBackendCleanupInput,
+  ProjectWorkerBackendCleanupInputSchema,
+  type WorkerBackendCleanupProjectionResult,
+  WorkerBackendCleanupProjectionResultSchema,
+} from '../runtime/worker-backend-cleanup-projection.js';
+import {
   type ControlAdmission,
   type ControlAdmissionResult,
   ControlAdmissionSchema,
@@ -14,7 +20,7 @@ import {
 import { StoredWorkOwnerV1Schema } from './retained-work-metadata-v1.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
-export const CONTROL_WORKER_VERSION = 4;
+export const CONTROL_WORKER_VERSION = 5;
 
 /** Fixed, qualified batching and per-database pending admission bounds. */
 export const CONTROL_WORKER_LIMITS = {
@@ -76,12 +82,15 @@ export type ControlWorkerCommand =
           readonly initialize?: ControlInitializationScope;
           /** Explicit admitted product owner; absent on legacy primitive-only fixture scopes. */
           readonly productOwner?: ControlProductOwner;
+          /** Exact admitted root for same-connection scoped domain bodies; never inferred from a caller-selected database key. */
+          readonly dataRoot?: string;
           /** Admitted private Storage binding; never derived from an incoming content locator. */
           readonly contentMount?: ControlProductContentMount;
         }
       | { readonly operation: 'write'; readonly statements: readonly ControlSqlStatement[] }
       | { readonly operation: 'transition'; readonly transition: ControlAdmission }
       | { readonly operation: 'products'; readonly transition: ControlProductTransition }
+      | { readonly operation: 'project-cleanup'; readonly input: ProjectWorkerBackendCleanupInput }
       | { readonly operation: 'checkpoint' | 'reclaim' | 'close' }
     ));
 
@@ -128,6 +137,11 @@ export type ControlWorkerReply = {
       readonly status: 'ok';
       readonly operation: 'transition';
       readonly result: ControlAdmissionResult;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'project-cleanup';
+      readonly result: WorkerBackendCleanupProjectionResult;
     }
   | {
       readonly status: 'ok';
@@ -215,6 +229,8 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     reply.operation === 'products'
   )
     return true;
+  if (reply.operation === 'project-cleanup')
+    return WorkerBackendCleanupProjectionResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'write')
     return Array.isArray(reply.results) && reply.results.every(isSqlResult);
   if (reply.operation === 'transition') {
@@ -321,11 +337,13 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       exactFields(
         value,
         [...scoped, 'path', 'create'],
-        ['initialize', 'productOwner', 'contentMount']
+        ['initialize', 'productOwner', 'dataRoot', 'contentMount']
       ) &&
       typeof value.path === 'string' &&
       isAbsolute(value.path) &&
       typeof value.create === 'boolean' &&
+      (value.dataRoot === undefined ||
+        (typeof value.dataRoot === 'string' && isAbsolute(value.dataRoot))) &&
       (value.productOwner === undefined ||
         StoredWorkOwnerV1Schema.safeParse(value.productOwner).success) &&
       (value.contentMount === undefined ||
@@ -345,6 +363,17 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
         exactFields(value, [...scoped, 'transition']) &&
         schema.safeParse(value.transition).success &&
         JSON.stringify(value.transition).length <= 2 * 1024 * 1024
+      );
+    } catch {
+      return false;
+    }
+  }
+  if (value.operation === 'project-cleanup') {
+    try {
+      return (
+        exactFields(value, [...scoped, 'input']) &&
+        ProjectWorkerBackendCleanupInputSchema.safeParse(value.input).success &&
+        JSON.stringify(value.input).length <= 2 * 1024 * 1024
       );
     } catch {
       return false;

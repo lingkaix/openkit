@@ -36,7 +36,7 @@ import {
   readWorkspaceSourceFixture,
 } from '../test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { openCoreDb } from './db.js';
+import { openCoreDb, openWorkspaceDb } from './db.js';
 import {
   rebuildExistingWorkspaceDerivedIndexes,
   rebuildInvalidExistingWorkspaceDerivedIndexes,
@@ -165,6 +165,46 @@ function publishedPage(workspaceRoot: string, path: string): string {
   const notebook = workspaceNotebook(workspaceRoot);
   return notebook.readRevision(notebook.publishedRevision(), [path]).files[path]!;
 }
+
+it('discovers native Workspaces and rebuilds indexes without former Workspace metadata files', () => {
+  const dataRoot = createDataRoot();
+  const store = new FsStore({ dataRoot });
+  const workspace = store.createWorkspace('Native index owner');
+  const formerMetadata = join(dataRoot, 'workspaces', workspace.id, 'workspace-record.json');
+  rmSync(formerMetadata, { force: true });
+
+  expect(rebuildWorkspaceDerivedIndexes({ dataRoot, workspaceId: workspace.id }).workspaceId).toBe(
+    workspace.id
+  );
+  expect(
+    rebuildExistingWorkspaceDerivedIndexes(dataRoot).some(
+      (entry) => entry.workspaceId === workspace.id
+    )
+  ).toBe(true);
+  expect(existsSync(formerMetadata)).toBe(false);
+});
+
+it('refuses missing native Workspace authority rather than using a former metadata file', () => {
+  const dataRoot = createDataRoot();
+  const store = new FsStore({ dataRoot });
+  const workspace = store.createWorkspace('Native authority must exist');
+  const formerMetadata = join(dataRoot, 'workspaces', workspace.id, 'workspace-record.json');
+  writeFileSync(formerMetadata, JSON.stringify({ id: workspace.id, name: 'Not authority' }));
+  const db = openWorkspaceDb(dataRoot, workspace.id);
+  try {
+    // Deliberate retained-authority loss, not an ordinary producer or an alternative writer.
+    db.sqlite.prepare('DELETE FROM control_workspaces WHERE id = ?').run(workspace.id);
+  } finally {
+    db.sqlite.close();
+  }
+
+  expect(() => rebuildWorkspaceDerivedIndexes({ dataRoot, workspaceId: workspace.id })).toThrow(
+    'Native Workspace metadata is missing'
+  );
+  expect(() => rebuildExistingWorkspaceDerivedIndexes(dataRoot)).toThrow(
+    'Native Workspace metadata is missing'
+  );
+});
 
 let pageSequence = 0;
 /** Publishes canonical fixture bytes through the existing test-owned Git content seam. */

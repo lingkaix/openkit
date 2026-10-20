@@ -2,6 +2,10 @@ import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { isMainThread, Worker } from 'node:worker_threads';
+import type {
+  ProjectWorkerBackendCleanupInput,
+  WorkerBackendCleanupProjectionResult,
+} from '../runtime/worker-backend-cleanup-projection.js';
 import type { ControlCheckpoint } from './control-store.js';
 import type { ControlAdmission, ControlAdmissionResult } from './control-store-admission.js';
 import type { ControlProductTransition } from './control-store-products.js';
@@ -167,6 +171,15 @@ class ControlStoreWorkerClient {
   /** Submits a whole non-command product/lifecycle transition; success follows outer FULL COMMIT, never a queued-write acknowledgement. */
   async products(database: string, transition: ControlProductTransition): Promise<void> {
     await this.request({ operation: 'products', database, transition });
+  }
+
+  /** Commits the complete Workspace cleanup projection on its admitted scoped handle; physical release authority remains with its existing producer. */
+  async projectCleanup(
+    database: string,
+    input: ProjectWorkerBackendCleanupInput
+  ): Promise<WorkerBackendCleanupProjectionResult> {
+    const reply = await this.request({ operation: 'project-cleanup', database, input });
+    return (reply as Extract<Success, { operation: 'project-cleanup' }>).result;
   }
 
   /** Attempts native checkpoint progress after prior submitted work. */

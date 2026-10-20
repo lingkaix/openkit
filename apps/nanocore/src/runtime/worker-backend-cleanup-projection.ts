@@ -1,5 +1,14 @@
-import type { BackendWorkspaceHandle, RuntimeEvidenceRecord } from '@openkit/app-api-schemas';
-import type { AgentEnvironmentPackage } from '@openkit/config-schema';
+import {
+  type BackendWorkspaceHandle,
+  BackendWorkspaceHandleSchema,
+  type RuntimeEvidenceRecord,
+  RuntimeEvidenceRecordSchema,
+} from '@openkit/app-api-schemas';
+import {
+  type AgentEnvironmentPackage,
+  AgentEnvironmentPackageSchema,
+} from '@openkit/config-schema';
+import { z } from 'zod';
 import type { WorkspaceDb } from '../storage/db.js';
 import {
   type RecordWorkerBackendTeardownEvidenceInput,
@@ -26,8 +35,38 @@ export type ProjectWorkerBackendCleanupInput = Omit<
   /** Durable Core proof of whether the workspace handoff transaction was published. */
   readonly workspaceHandoffState: 'pending' | 'complete';
   /** Exact failed preparation and successful cleanup prove no materialization was published; absence alone is insufficient. */
-  readonly materializationNotPublished?: boolean;
+  readonly materializationNotPublished?: boolean | undefined;
 };
+
+/** Closed native cleanup request; package and scoped lineage are checked again by the whole SQL body. */
+export const ProjectWorkerBackendCleanupInputSchema: z.ZodType<ProjectWorkerBackendCleanupInput> = z
+  .object({
+    agentSessionId: z.string().min(1),
+    backendType: z.string().min(1),
+    backendVersion: z.string().nullable(),
+    completedAt: z.string().datetime(),
+    outcome: z.literal('succeeded'),
+    packageSnapshotId: z.string().min(1),
+    placement: RuntimeEvidenceRecordSchema.shape.placement,
+    threadId: z.string().min(1),
+    turnId: z.string().min(1),
+    workerImage: z.string().nullable(),
+    workspaceId: z.string().min(1),
+    environmentPackage: AgentEnvironmentPackageSchema,
+    backendSessionId: z.string().min(1),
+    workspaceHandoffState: z.enum(['pending', 'complete']),
+    materializationNotPublished: z.boolean().optional(),
+  })
+  .strict();
+
+/** Closed durable acknowledgement projection, not a physical release or a second cleanup record. */
+export const WorkerBackendCleanupProjectionResultSchema = z
+  .object({
+    handles: z.array(BackendWorkspaceHandleSchema),
+    evidence: RuntimeEvidenceRecordSchema,
+    workspaceHandoffComplete: z.boolean(),
+  })
+  .strict();
 
 /** Atomic workspace projection produced after one physical backend cleanup attempt. */
 export interface WorkerBackendCleanupProjectionResult {
@@ -53,59 +92,70 @@ export function projectWorkerBackendCleanup(
 ): WorkerBackendCleanupProjectionResult {
   workspaceDb.sqlite.exec('BEGIN IMMEDIATE');
   try {
-    const packageHandles = listBackendWorkspaceHandles(workspaceDb, input.workspaceId).filter(
-      (handle) => handle.packageSnapshotId === input.packageSnapshotId
-    );
-    const packageMaterializations = listWorkspaceMaterializationRecords(
-      workspaceDb,
-      input.workspaceId
-    ).filter((record) => record.packageSnapshotId === input.packageSnapshotId);
-    const anyHandoffRows = packageHandles.length > 0 || packageMaterializations.length > 0;
-    const workspaceHandoffComplete =
-      input.workspaceHandoffState === 'complete' ||
-      anyHandoffRows ||
-      input.environmentPackage.workspace.inputs.length === 0 ||
-      input.materializationNotPublished === true;
-    // Exact no-materialization proof survives the complete marker.
-    // Any published row still requires the full handoff validator, even when the caller supplies that proof.
-    if (
-      anyHandoffRows ||
-      (input.workspaceHandoffState === 'complete' && input.materializationNotPublished !== true)
-    ) {
-      const verifiedHandles = requireCompleteBackendWorkspaceHandleHandoff(
-        workspaceDb,
-        input.environmentPackage,
-        {
-          backendKind: input.backendType,
-          backendVersion: input.backendVersion,
-          workerSessionId: input.backendSessionId,
-        }
-      );
-      if (
-        verifiedHandles.some(
-          (handle) =>
-            (handle.cleanupStatus === 'pending' && handle.updatedAt !== handle.createdAt) ||
-            (handle.cleanupStatus === 'cleaned' && handle.updatedAt !== input.completedAt) ||
-            !['pending', 'retained', 'cleaned'].includes(handle.cleanupStatus)
-        )
-      ) {
-        throw new Error(
-          `Workspace backend handle handoff is incomplete for package ${input.packageSnapshotId}.`
-        );
-      }
-    }
-    const handles = updateBackendWorkspaceHandleCleanupStatus(
-      workspaceDb,
-      input.workspaceId,
-      input.packageSnapshotId,
-      'cleaned',
-      input.completedAt
-    );
-    const evidence = recordWorkerBackendTeardownEvidence(workspaceDb, input);
+    const result = projectWorkerBackendCleanupInDb(workspaceDb, input);
     workspaceDb.sqlite.exec('COMMIT');
-    return { evidence, handles, workspaceHandoffComplete };
+    return result;
   } catch (error) {
     workspaceDb.sqlite.exec('ROLLBACK');
     throw error;
   }
+}
+
+/** Applies the whole cleanup decision in the caller's owning transaction, without opening or committing a sibling body. */
+export function projectWorkerBackendCleanupInDb(
+  workspaceDb: WorkspaceDb,
+  input: ProjectWorkerBackendCleanupInput
+): WorkerBackendCleanupProjectionResult {
+  if (!workspaceDb.sqlite.inTransaction)
+    throw new Error('Backend cleanup projection requires its owning transaction.');
+  const packageHandles = listBackendWorkspaceHandles(workspaceDb, input.workspaceId).filter(
+    (handle) => handle.packageSnapshotId === input.packageSnapshotId
+  );
+  const packageMaterializations = listWorkspaceMaterializationRecords(
+    workspaceDb,
+    input.workspaceId
+  ).filter((record) => record.packageSnapshotId === input.packageSnapshotId);
+  const anyHandoffRows = packageHandles.length > 0 || packageMaterializations.length > 0;
+  const workspaceHandoffComplete =
+    input.workspaceHandoffState === 'complete' ||
+    anyHandoffRows ||
+    input.environmentPackage.workspace.inputs.length === 0 ||
+    input.materializationNotPublished === true;
+  // Exact no-materialization proof survives the complete marker.
+  // Any published row still requires the full handoff validator, even when the caller supplies that proof.
+  if (
+    anyHandoffRows ||
+    (input.workspaceHandoffState === 'complete' && input.materializationNotPublished !== true)
+  ) {
+    const verifiedHandles = requireCompleteBackendWorkspaceHandleHandoff(
+      workspaceDb,
+      input.environmentPackage,
+      {
+        backendKind: input.backendType,
+        backendVersion: input.backendVersion,
+        workerSessionId: input.backendSessionId,
+      }
+    );
+    if (
+      verifiedHandles.some(
+        (handle) =>
+          (handle.cleanupStatus === 'pending' && handle.updatedAt !== handle.createdAt) ||
+          (handle.cleanupStatus === 'cleaned' && handle.updatedAt !== input.completedAt) ||
+          !['pending', 'retained', 'cleaned'].includes(handle.cleanupStatus)
+      )
+    ) {
+      throw new Error(
+        `Workspace backend handle handoff is incomplete for package ${input.packageSnapshotId}.`
+      );
+    }
+  }
+  const handles = updateBackendWorkspaceHandleCleanupStatus(
+    workspaceDb,
+    input.workspaceId,
+    input.packageSnapshotId,
+    'cleaned',
+    input.completedAt
+  );
+  const evidence = recordWorkerBackendTeardownEvidence(workspaceDb, input);
+  return { evidence, handles, workspaceHandoffComplete };
 }

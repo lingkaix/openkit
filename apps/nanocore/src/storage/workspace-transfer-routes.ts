@@ -1175,6 +1175,61 @@ export function workspaceDeletionRecoveryExportId(requestId: string): string {
   return deriveEntityId('wsexp', ['delete', requestId]);
 }
 
+/** Complete export Usage decision; verified file publication and database lifetime remain outside this supplied-handle body. */
+export function recordVerifiedWorkspaceExportUsage(
+  writer: WorkspaceDb,
+  input: {
+    readonly authorityActor: ActorRef;
+    readonly workspaceId: string;
+    readonly exportId: string;
+    readonly fileCount: number;
+    readonly totalBytes: number;
+    readonly now: Date;
+  }
+): void {
+  const call = startCapabilityCall({
+    authorityActor: input.authorityActor,
+    workspaceDb: writer,
+    callId: deriveEntityId('cap', ['storage_export', input.exportId]),
+    workspaceId: input.workspaceId,
+    family: 'storage',
+    operation: 'workspace.export.write',
+    capabilityId: 'storage.workspace_export',
+    providerRef: 'nanocore-storage',
+    serviceRef: 'workspace-export',
+    redactionClass: 'metadata-only',
+    summary: `Workspace export ${input.exportId}`,
+    now: input.now,
+  });
+  recordUsage({
+    workspaceDb: writer,
+    call,
+    records: [
+      {
+        category: 'storage',
+        unit: 'files',
+        quantity: input.fileCount,
+        providerRef: 'nanocore-storage',
+        source: 'workspace-export-inventory',
+      },
+      {
+        category: 'storage',
+        unit: 'bytes',
+        quantity: input.totalBytes,
+        providerRef: 'nanocore-storage',
+        source: 'workspace-export-inventory',
+      },
+    ],
+    now: input.now,
+  });
+  finishCapabilityCall({
+    workspaceDb: writer,
+    callId: call.id,
+    status: 'succeeded',
+    now: input.now,
+  });
+}
+
 /** Creates and verifies one server-managed portable Workspace export. */
 export function createVerifiedWorkspaceExport({
   authorityActor,
@@ -1627,42 +1682,14 @@ export function createVerifiedWorkspaceExport({
     const now = new Date();
 
     try {
-      const call = startCapabilityCall({
+      recordVerifiedWorkspaceExportUsage(workspaceDb, {
         authorityActor: authorityActor ?? { kind: 'user', id: authorityUserId },
-        workspaceDb,
-        callId: deriveEntityId('cap', ['storage_export', exportId]),
         workspaceId,
-        family: 'storage',
-        operation: 'workspace.export.write',
-        capabilityId: 'storage.workspace_export',
-        providerRef: 'nanocore-storage',
-        serviceRef: 'workspace-export',
-        redactionClass: 'metadata-only',
-        summary: `Workspace export ${exportId}`,
+        exportId,
+        fileCount,
+        totalBytes,
         now,
       });
-      recordUsage({
-        workspaceDb,
-        call,
-        records: [
-          {
-            category: 'storage',
-            unit: 'files',
-            quantity: fileCount,
-            providerRef: 'nanocore-storage',
-            source: 'workspace-export-inventory',
-          },
-          {
-            category: 'storage',
-            unit: 'bytes',
-            quantity: totalBytes,
-            providerRef: 'nanocore-storage',
-            source: 'workspace-export-inventory',
-          },
-        ],
-        now,
-      });
-      finishCapabilityCall({ workspaceDb, callId: call.id, status: 'succeeded', now });
     } finally {
       workspaceDb.sqlite.close();
     }
