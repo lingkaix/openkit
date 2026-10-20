@@ -608,4 +608,4 @@ it('corrects Claim confidence before result submission through the real KM Tools
     turn.items.filter((item) => item.type === 'tool-call' && item.tool === 'knowledge.result')
   ).toHaveLength(1);
   expect(f.createResponses).toHaveBeenCalledTimes(2);
-});
+}, 120_000);

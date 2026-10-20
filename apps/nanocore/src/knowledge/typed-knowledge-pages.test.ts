@@ -87,6 +87,7 @@ describe('governed domain page fields', () => {
     for (const applies_to of [undefined, [], [''], [1], 'tool:invoice.check']) {
       expect(validate(page('domain', type, workspaceId, { applies_to }), schema).errors).toEqual([
         { pageId: 'domain', code: 'notebook.invalid_page' },
+        { pageId: 'domain', code: 'scope_schema.invalid_applies_to' },
       ]);
     }
   });
@@ -95,14 +96,15 @@ describe('governed domain page fields', () => {
       /allowed_types: .*/,
       'allowed_types: [Effect]'
     );
-    for (const fields of [
-      { basis: undefined },
-      { basis: '' },
-      { last_checked_at: undefined },
-      { last_checked_at: '2026-10-19' },
-    ]) {
+    for (const [fields, code] of [
+      [{ basis: undefined }, 'scope_schema.invalid_effect_basis'],
+      [{ basis: '' }, 'scope_schema.invalid_effect_basis'],
+      [{ last_checked_at: undefined }, 'scope_schema.invalid_effect_last_check'],
+      [{ last_checked_at: '2026-10-19' }, 'scope_schema.invalid_effect_last_check'],
+    ] as const) {
       expect(validate(page('domain', 'Effect', workspaceId, fields), schema).errors).toEqual([
         { pageId: 'domain', code: 'notebook.invalid_page' },
+        { pageId: 'domain', code },
       ]);
     }
   });
