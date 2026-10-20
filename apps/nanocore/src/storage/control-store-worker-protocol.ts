@@ -11,6 +11,7 @@ import {
   ControlAdmissionSchema,
 } from './control-store-admission.js';
 import {
+  CONTROL_PRODUCT_LIMITS,
   type ControlProductContentMount,
   ControlProductContentMountSchema,
   type ControlProductOwner,
@@ -18,6 +19,12 @@ import {
   ControlProductTransitionSchema,
 } from './control-store-products.js';
 import { StoredWorkOwnerV1Schema } from './retained-work-metadata-v1.js';
+import {
+  type ControlWorkObservationInput,
+  ControlWorkObservationInputSchema,
+  type ControlWorkObservationResult,
+  parseWorkObservationRecord,
+} from './work-observations.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
 export const CONTROL_WORKER_VERSION = 5;
@@ -91,6 +98,7 @@ export type ControlWorkerCommand =
       | { readonly operation: 'transition'; readonly transition: ControlAdmission }
       | { readonly operation: 'products'; readonly transition: ControlProductTransition }
       | { readonly operation: 'project-cleanup'; readonly input: ProjectWorkerBackendCleanupInput }
+      | { readonly operation: 'observation'; readonly input: ControlWorkObservationInput }
       | { readonly operation: 'checkpoint' | 'reclaim' | 'close' }
     ));
 
@@ -142,6 +150,11 @@ export type ControlWorkerReply = {
       readonly status: 'ok';
       readonly operation: 'project-cleanup';
       readonly result: WorkerBackendCleanupProjectionResult;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'observation';
+      readonly result: ControlWorkObservationResult;
     }
   | {
       readonly status: 'ok';
@@ -231,6 +244,21 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return true;
   if (reply.operation === 'project-cleanup')
     return WorkerBackendCleanupProjectionResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'observation') {
+    if (
+      !isRecord(reply.result) ||
+      (reply.result.disposition !== 'committed' && reply.result.disposition !== 'duplicate')
+    )
+      return false;
+    try {
+      const observation = parseWorkObservationRecord(reply.result.observation);
+      if (reply.result.publication === null) return true;
+      const publication = parseWorkObservationRecord(reply.result.publication);
+      return publication.type === 'content.published' && publication.parent === observation.id;
+    } catch {
+      return false;
+    }
+  }
   if (reply.operation === 'write')
     return Array.isArray(reply.results) && reply.results.every(isSqlResult);
   if (reply.operation === 'transition') {
@@ -368,12 +396,16 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       return false;
     }
   }
-  if (value.operation === 'project-cleanup') {
+  if (value.operation === 'project-cleanup' || value.operation === 'observation') {
     try {
+      const schema =
+        value.operation === 'project-cleanup'
+          ? ProjectWorkerBackendCleanupInputSchema
+          : ControlWorkObservationInputSchema;
       return (
         exactFields(value, [...scoped, 'input']) &&
-        ProjectWorkerBackendCleanupInputSchema.safeParse(value.input).success &&
-        JSON.stringify(value.input).length <= 2 * 1024 * 1024
+        schema.safeParse(value.input).success &&
+        Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
       );
     } catch {
       return false;

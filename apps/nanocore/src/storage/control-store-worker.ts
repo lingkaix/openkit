@@ -33,6 +33,7 @@ import {
 import { bindCoreSqlite, bindWorkspaceSqlite, type CoreDb, type WorkspaceDb } from './db.js';
 import { coreDbPath, workspaceDbPath } from './fs-layout.js';
 import { applyNativeScopeMigrations } from './migrate.js';
+import { applyControlWorkObservation } from './work-observations.js';
 
 if (isMainThread || parentPort === null) {
   throw new Error('The database writer entrypoint requires a dedicated worker thread.');
@@ -42,7 +43,7 @@ const port = parentPort;
 /** A queued transition, not a durable request or a second command receipt. */
 type WriteRequest = Extract<
   ControlWorkerRequest,
-  { operation: 'write' | 'transition' | 'products' | 'project-cleanup' }
+  { operation: 'write' | 'transition' | 'products' | 'project-cleanup' | 'observation' }
 > & {
   readonly preparedEntries?: readonly PreparedControlEntry[] | undefined;
 };
@@ -189,6 +190,16 @@ function flush(owner: OwnedDatabase): void {
               id: request.id,
               status: 'ok',
               operation: 'products',
+            };
+          } else if (request.operation === 'observation') {
+            if (!owner.productOwner || !owner.scopeDb) throw new ControlProductPreconditionError();
+            const result = applyControlWorkObservation(sqlite, owner.productOwner, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'observation',
+              result,
             };
           } else if (request.operation === 'project-cleanup') {
             const input = ProjectWorkerBackendCleanupInputSchema.parse(request.input);
@@ -415,7 +426,8 @@ function receive(value: unknown): void {
       value.operation === 'write' ||
       value.operation === 'transition' ||
       value.operation === 'products' ||
-      value.operation === 'project-cleanup'
+      value.operation === 'project-cleanup' ||
+      value.operation === 'observation'
     ) {
       if (owner.pending.length >= CONTROL_WORKER_LIMITS.pendingTransitions) {
         reply(failure(value.id, 'busy'));

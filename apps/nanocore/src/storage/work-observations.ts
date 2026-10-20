@@ -689,7 +689,8 @@ const controlObservationSelectorSchema = z.object({
   threadId: z.string().min(1),
   turnId: TurnIdSchema,
 });
-const controlObservationInputSchema = controlObservationSelectorSchema
+/** Closed native transport envelope; the complete SQL body validates retained observation semantics. */
+export const ControlWorkObservationInputSchema = controlObservationSelectorSchema
   .extend({
     observation: z.record(z.string(), z.unknown()),
     bodies: z.array(bodyDescriptorSchema.strict()),
@@ -1166,7 +1167,7 @@ export function applyControlWorkObservation(
 ): ControlWorkObservationResult {
   if (!sqlite.inTransaction || sqlite.readonly)
     throw new Error('Native observations require the owning SQL transaction');
-  const parsed = controlObservationInputSchema.parse(value);
+  const parsed = ControlWorkObservationInputSchema.parse(value);
   const input: ControlWorkObservationInput = {
     ...parsed,
     observation: parsed.observation as unknown as WorkObservationDraft,

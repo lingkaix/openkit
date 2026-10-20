@@ -189,6 +189,42 @@ const exactHandoffTamperCases: ReadonlyArray<
 ];
 
 describe('worker backend cleanup projection', () => {
+  it('refuses changed native package lineage before any cleanup SQL effect', async () => {
+    const { environmentPackage, workspaceDb } = createFixture();
+    const beforeHandles = listBackendWorkspaceHandles(workspaceDb, workspaceDb.workspaceId);
+    const beforeEvidence = listWorkspaceRuntimeEvidence(workspaceDb, workspaceDb.workspaceId);
+    const client = getControlStoreWorkerClient();
+    try {
+      await client.open({
+        database: 'native-cleanup',
+        path: workspaceDb.sqlite.name,
+        dataRoot: workspaceDb.dataRoot,
+        create: false,
+        initialize: 'workspace',
+        productOwner: { kind: 'workspace', workspaceId: workspaceDb.workspaceId },
+      });
+      await expect(
+        client.projectCleanup('native-cleanup', {
+          ...cleanupInput(environmentPackage),
+          packageSnapshotId: 'foreign-package',
+        })
+      ).rejects.toMatchObject({ code: 'invalid-request', commit: 'not-committed' });
+      expect(listBackendWorkspaceHandles(workspaceDb, workspaceDb.workspaceId)).toEqual(
+        beforeHandles
+      );
+      expect(listWorkspaceRuntimeEvidence(workspaceDb, workspaceDb.workspaceId)).toEqual(
+        beforeEvidence
+      );
+    } finally {
+      try {
+        await client.shutdown();
+      } finally {
+        workspaceDb.sqlite.close();
+        rmSync(workspaceDb.dataRoot, { recursive: true, force: true });
+      }
+    }
+  });
+
   it('acknowledges the complete native cleanup body on its exact scoped SQLite and ORM handle', async () => {
     const { environmentPackage, workspaceDb } = createFixture();
     const beforeEvidence = listWorkspaceRuntimeEvidence(workspaceDb, workspaceDb.workspaceId);

@@ -310,7 +310,7 @@ export interface RebuildExistingWorkspaceDerivedIndexesOptions {
 }
 
 /**
- * Rebuilds derived workspace indexes from file-backed source records.
+ * Rebuilds derived Workspace indexes from native identity and Notebook source records.
  *
  * @param input Rebuild target and optional clock.
  * @returns Rebuild result with relative index path and counts.
@@ -453,7 +453,9 @@ function listCanonicalWorkspaces(dataRoot: string): CanonicalWorkspaceDirectory[
 
 /** Reads the native Workspace identity without migration, file fallback, pruning or an escaping SQL transaction. */
 function assertNativeWorkspaceRecord(dataRoot: string, workspaceId: string): void {
-  const reader = openControlStoreProductReadHandle(workspaceDbPath(dataRoot, workspaceId), {
+  const path = workspaceDbPath(dataRoot, workspaceId);
+  if (!existsSync(path)) throw new Error(`Native Workspace metadata is missing: ${workspaceId}`);
+  const reader = openControlStoreProductReadHandle(path, {
     kind: 'workspace',
     workspaceId,
   });

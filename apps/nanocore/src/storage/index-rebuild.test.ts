@@ -36,6 +36,8 @@ import {
   readWorkspaceSourceFixture,
 } from '../test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { openControlStoreProductReadHandle } from './control-store-products.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import {
   rebuildExistingWorkspaceDerivedIndexes,
@@ -50,6 +52,7 @@ import { readRetrievalTrace } from './retrieval-traces.js';
 const fixtureRoots: string[] = [];
 afterEach(async () => {
   await closeRetrievalServices();
+  await shutdownControlStoreWorkerClient();
   for (const root of fixtureRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -236,6 +239,44 @@ function notebookInitialization() {
 }
 
 describe('workspace derived index rebuild', () => {
+  it('keeps equal Workspace ids in distinct data roots on distinct native bindings', async () => {
+    const first = createDemoStore({ dataRoot: createDataRoot() });
+    const second = createDemoStore({ dataRoot: createDataRoot() });
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const left = await first.createThread(workspaceId, 'First root');
+    const right = await second.createThread(workspaceId, 'Second root');
+    expect(first.getThread(workspaceId, left.id)).toEqual(left);
+    expect(second.getThread(workspaceId, right.id)).toEqual(right);
+    expect(first.listThreads(workspaceId).some((thread) => thread.id === right.id)).toBe(false);
+    expect(second.listThreads(workspaceId).some((thread) => thread.id === left.id)).toBe(false);
+  });
+
+  it('retains the imported starter Thread as native metadata before its private scope is published', () => {
+    const dataRoot = createDataRoot();
+    const store = createDemoStore({ dataRoot });
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const threadId = 'th_00000000-0000-7000-8000-000000000001';
+    const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
+    const reader = openControlStoreProductReadHandle(
+      join(workspaceRoot, 'db', 'workspace.sqlite'),
+      {
+        kind: 'workspace',
+        workspaceId,
+      }
+    );
+    try {
+      expect(reader.get('thread', threadId)).toMatchObject({
+        revision: 1,
+        record: { id: threadId, owner: { kind: 'workspace', workspaceId } },
+      });
+    } finally {
+      reader.close();
+    }
+    expect(new FsStore({ dataRoot }).getThread(workspaceId, threadId)).toEqual(
+      store.getThread(workspaceId, threadId)
+    );
+    expect(existsSync(join(workspaceRoot, 'threads', threadId, 'thread.json'))).toBe(false);
+  });
   it('uses the same registered-source resolution for validation and reference indexing', async () => {
     const dataRoot = createDataRoot();
     const store = createDemoStore({ dataRoot });
@@ -648,7 +689,7 @@ describe('workspace derived index rebuild', () => {
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     const knowledgePageId = 'reviewed-task-proof';
     const material = 'The current registered source supplies exact evidence.';
-    const sourceThread = store.createThread(
+    const sourceThread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Current evidence origin'
     );
@@ -760,10 +801,19 @@ describe('workspace derived index rebuild', () => {
         sourceRefs: sourceReferences,
       })
     );
-    Object.assign(afterStore.getThread(source.workspaceId, sourceThread.id), {
-      visibility: 'private',
-      privateOwnerUserId: LOCAL_USER_ID,
-    });
+    // Construct the narrower current canonical fixture; mutating a disposable native read projection cannot change authority.
+    const sourceDb = openWorkspaceDb(dataRoot, source.workspaceId);
+    try {
+      expect(
+        sourceDb.sqlite
+          .prepare(
+            "UPDATE control_threads SET revision=revision+1,record_json=json_set(record_json,'$.visibility','private','$.privateOwnerUserId',?) WHERE id=?"
+          )
+          .run(LOCAL_USER_ID, sourceThread.id).changes
+      ).toBe(1);
+    } finally {
+      sourceDb.sqlite.close();
+    }
 
     expect(() =>
       resolveWorkspaceKnowledgeRetrievalPages({
@@ -864,7 +914,7 @@ describe('workspace derived index rebuild', () => {
     const dataRoot = createDataRoot();
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Retrieval trace recovery', notebookInitialization());
-    const thread = store.createThread(workspace.id, 'Retrieval owner');
+    const thread = await store.createThread(workspace.id, 'Retrieval owner');
     const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
     const traceRoot = join(workspaceRoot, 'threads', thread.id, 'retrieval-traces');
     mkdirSync(traceRoot, { recursive: true });
@@ -904,7 +954,7 @@ describe('workspace derived index rebuild', () => {
     const dataRoot = createDataRoot();
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Retrieval trace symlink', notebookInitialization());
-    const thread = store.createThread(workspace.id, 'Retrieval owner');
+    const thread = await store.createThread(workspace.id, 'Retrieval owner');
     const traceId = 'krt_00000000-0000-77b7-88ff-44dd0f21d48d';
     const tracePath = join(
       dataRoot,
@@ -940,9 +990,7 @@ describe('workspace derived index rebuild', () => {
 
     expect(() =>
       rebuildWorkspaceDerivedIndexes({ dataRoot, workspaceId: testEntityId('ws', 'missing') })
-    ).toThrow(
-      `Workspace projection is missing: workspaces/${testEntityId('ws', 'missing')}/workspace-record.json`
-    );
+    ).toThrow(`Native Workspace metadata is missing: ${testEntityId('ws', 'missing')}`);
   });
 
   it('rejects a symlinked canonical subtree instead of reading external content', () => {
@@ -1746,10 +1794,10 @@ describe('workspace derived index rebuild', () => {
     expect(graph.edges).toHaveLength(2);
   });
 
-  it('rebuilds existing workspace indexes during boot scan', () => {
+  it('rebuilds existing workspace indexes during boot scan', async () => {
     const dataRoot = createDataRoot();
     const store = createDemoStore({ dataRoot });
-    store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Boot rebuild thread');
+    await store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Boot rebuild thread');
     const indexesRoot = join(
       dataRoot,
       'workspaces',

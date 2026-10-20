@@ -6,6 +6,7 @@ import { allocateEntityId } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { ControlProductOwner } from './control-store-products.js';
+import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
 import {
@@ -178,6 +179,62 @@ function bodyInput(f: ReturnType<typeof fixture>): ControlWorkObservationPrepara
     ],
   };
 }
+
+describe('native WorkObservation transport', () => {
+  it('acknowledges the native order and manifest only after their shared outer commit', async () => {
+    const f = fixture('server');
+    const client = getControlStoreWorkerClient();
+    try {
+      await client.open({
+        database: 'native-observation',
+        path: f.sqlite.name,
+        dataRoot: f.root,
+        create: false,
+        initialize: 'core',
+        productOwner: f.owner,
+      });
+      const result = await client.observation('native-observation', input(f));
+      expect(result.disposition).toBe('committed');
+      expect(result.observation.seq).toBe(1);
+      expect(result.publication).toBeNull();
+      expect(readControlWorkObservations(f.sqlite, f.owner, f)).toEqual([result.observation]);
+      expect(turnRaw(f).requiredFeatures).toContain('openkit.work-observations.v1');
+      expect(await client.observation('native-observation', input(f))).toEqual({
+        ...result,
+        disposition: 'duplicate',
+      });
+    } finally {
+      await client.shutdown();
+    }
+  });
+
+  it('rolls back the native capture manifest when the actual observation insert aborts', async () => {
+    const f = fixture('server');
+    const before = turnRaw(f);
+    f.sqlite.exec(
+      `CREATE TRIGGER native_observation_abort BEFORE INSERT ON control_work_observations BEGIN SELECT RAISE(ABORT, 'native_observation_abort'); END`
+    );
+    const client = getControlStoreWorkerClient();
+    try {
+      await client.open({
+        database: 'native-observation',
+        path: f.sqlite.name,
+        dataRoot: f.root,
+        create: false,
+        initialize: 'core',
+        productOwner: f.owner,
+      });
+      await expect(client.observation('native-observation', input(f))).rejects.toMatchObject({
+        code: 'constraint',
+        commit: 'not-committed',
+      });
+      expect(turnRaw(f)).toEqual(before);
+      expect(readControlWorkObservations(f.sqlite, f.owner, f)).toEqual([]);
+    } finally {
+      await client.shutdown();
+    }
+  });
+});
 
 describe.each(['server', 'workspace'] as const)('native %s WorkObservation SQL body', (kind) => {
   it('assigns and deduplicates exact sequence and rolls back metadata and feature markers', () => {

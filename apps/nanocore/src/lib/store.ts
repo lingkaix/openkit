@@ -112,7 +112,10 @@ import {
   recordCommandRequestRecordInDb,
 } from '../storage/command-request-records.js';
 import type { ControlAdmission } from '../storage/control-store-admission.js';
-import { openControlStoreProductReadHandle } from '../storage/control-store-products.js';
+import {
+  decode as decodeControlProduct,
+  openControlStoreProductReadHandle,
+} from '../storage/control-store-products.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import {
   type CoreDb,
@@ -1788,6 +1791,16 @@ export class FsStore {
               workspaceId,
               JSON.stringify(writeRetainedV1(projectWorkspaceSystemRecord(records.workspace)))
             );
+          // Imported starter Threads share this unpublished scope; no file or later live write can complete their bootstrap.
+          for (const thread of records.threads) {
+            const record = writeRetainedV1(thread);
+            decodeControlProduct('thread', record, { kind: 'workspace', workspaceId });
+            productDb.sqlite
+              .prepare(
+                'INSERT INTO control_threads (id,schema_version,revision,workspace_id,status,record_json) VALUES (?,1,1,?,?,?)'
+              )
+              .run(thread.id, workspaceId, thread.status, JSON.stringify(record));
+          }
         })();
       } finally {
         productDb.sqlite.close();
@@ -3370,10 +3383,11 @@ export class FsStore {
           { kind: 'thread' as const, expectedRevision: 0, record: writeRetainedV1(thread) },
         ];
         const client = getControlStoreWorkerClient();
-        const database = `workspace:${workspaceId}`;
+        const database = `workspace:${path}`;
         await client.open({
           database,
           path,
+          dataRoot: this.dataRoot,
           create: false,
           initialize: 'workspace',
           productOwner: owner,
@@ -3442,10 +3456,11 @@ export class FsStore {
           updatedAt: now(),
         });
         const client = getControlStoreWorkerClient();
-        const database = `workspace:${workspaceId}`;
+        const database = `workspace:${path}`;
         await client.open({
           database,
           path,
+          dataRoot: this.dataRoot,
           create: false,
           initialize: 'workspace',
           productOwner: owner,

@@ -21,6 +21,10 @@ import {
   isControlWorkerReply,
   isControlWorkerRequest,
 } from './control-store-worker-protocol.js';
+import type {
+  ControlWorkObservationInput,
+  ControlWorkObservationResult,
+} from './work-observations.js';
 
 /** A refusal or uncertain result, never a substitute for the original SQL command receipt. */
 export class ControlStoreWorkerError extends Error {
@@ -49,7 +53,7 @@ let singleton: ControlStoreWorkerClient | undefined;
 /**
  * Returns the one process-local writer host, without opening a database.
  *
- * A failed host is never restarted by this getter. Explicit shutdown must finish before a later call can start a new host; no request is replayed. This component remains unused by ordinary product callers until the scope's factory/write closure is switched. Do not activate a product writer until every producer and shared receipt path observes the accepted family boundary; a legacy main writable handle is not a table-level access-control boundary.
+ * A failed host is never restarted by this getter. Explicit shutdown must finish before a later call can start a new host; no request is replayed. A released product scope must transfer its complete producer and shared receipt closure before using this host. A legacy main writable handle is not a table-level access-control boundary.
  *
  * @returns Shared host for admitted database scopes, never a synchronous SQL facade.
  */
@@ -57,6 +61,11 @@ export function getControlStoreWorkerClient(): ControlStoreWorkerClient {
   if (!isMainThread) throw new ControlStoreWorkerError('unavailable', 'not-committed');
   if (singleton === undefined || singleton.isClosed) singleton = new ControlStoreWorkerClient();
   return singleton;
+}
+
+/** Stops the existing process-local host without creating one; callers must finish shutdown before removing its database roots. */
+export async function shutdownControlStoreWorkerClient(): Promise<void> {
+  await singleton?.shutdown();
 }
 
 /** Owns the worker lifetime, finite pre-post admission and asynchronous acknowledgements. */
@@ -180,6 +189,15 @@ class ControlStoreWorkerClient {
   ): Promise<WorkerBackendCleanupProjectionResult> {
     const reply = await this.request({ operation: 'project-cleanup', database, input });
     return (reply as Extract<Success, { operation: 'project-cleanup' }>).result;
+  }
+
+  /** Appends native observation order and publication metadata; independently published body bytes are not carried through SQL. */
+  async observation(
+    database: string,
+    input: ControlWorkObservationInput
+  ): Promise<ControlWorkObservationResult> {
+    const reply = await this.request({ operation: 'observation', database, input });
+    return (reply as Extract<Success, { operation: 'observation' }>).result;
   }
 
   /** Attempts native checkpoint progress after prior submitted work. */

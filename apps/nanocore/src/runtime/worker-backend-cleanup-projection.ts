@@ -57,7 +57,16 @@ export const ProjectWorkerBackendCleanupInputSchema: z.ZodType<ProjectWorkerBack
     workspaceHandoffState: z.enum(['pending', 'complete']),
     materializationNotPublished: z.boolean().optional(),
   })
-  .strict();
+  .strict()
+  .refine(
+    (input) =>
+      input.packageSnapshotId === input.environmentPackage.snapshotId &&
+      input.workspaceId === input.environmentPackage.scope.workspaceId &&
+      input.threadId === input.environmentPackage.scope.threadId &&
+      input.turnId === input.environmentPackage.scope.turnId &&
+      input.agentSessionId === input.environmentPackage.scope.agentSessionId,
+    'Native cleanup input must retain its exact admitted package lineage.'
+  );
 
 /** Closed durable acknowledgement projection, not a physical release or a second cleanup record. */
 export const WorkerBackendCleanupProjectionResultSchema = z
