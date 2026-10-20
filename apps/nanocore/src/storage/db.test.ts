@@ -696,6 +696,8 @@ describe('scoped storage databases', () => {
         '-e',
         `import Database from 'better-sqlite3';
 const sqlite = new Database(process.argv[1]);
+// This fault needs a rollback journal even when owned connections default to WAL.
+sqlite.pragma('journal_mode = DELETE');
 sqlite.exec('BEGIN IMMEDIATE');
 sqlite.prepare('UPDATE __drizzle_migrations SET hash = ?').run('uncommitted-crash-write');
 process.kill(process.pid, 'SIGKILL');`,
