@@ -23,7 +23,7 @@ Focused checks follow the changed packages. Complete qualification uses the exac
 
 ## Current Checkpoint
 
-Owner amendments are in progress. Production implementation and independent regression delivery remain pending. The additive Core migration must retain existing records and all prior migration bytes. No live operation, deployment or Host action is part of this change.
+The accepted owner amendments are recorded. Independent regressions are in progress against unchanged production; implementation remains pending. The additive Core migration must retain existing records and all prior migration bytes. No live operation, deployment or Host action is part of this change.
 
 ## Next Action
 
