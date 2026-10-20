@@ -1062,6 +1062,48 @@ it.each([
   expect(f.store.getTurnById(f.owner.turnId).items).toEqual([]);
 });
 
+// RET §Native Transcripts And Runtime Logs: a truncated prefix is incomplete; Web §Runtime Activity In The Thread Timeline: partial capture stays partial.
+it('RET-2 projects an unavailable native source with a published truncated prefix as partial without progress', () => {
+  const f = nativeReceiver('on', 3);
+  const bytes = Buffer.from('abc');
+  const value = nativeMetadata(f, 'published-truncated-prefix', bytes, { start: 64 });
+  const observation = {
+    ...value,
+    fact: {
+      ...value.fact,
+      coverage: 'unavailable',
+      reason: 'limit-exceeded',
+      native: {
+        ...value.fact.native,
+        range: { start: 64, end: 67 },
+        observedBytes: 8,
+        retainedBytes: 3,
+        omittedBytes: 5,
+      },
+    },
+  };
+  expect(observation.content.bytes).toBe(3);
+  expect(f.send(1, 'observation.recorded', observation).accepted).toBe(true);
+  expect(nativeBodies(f)).toEqual([]);
+  expect(
+    f.send(2, 'observation.content.chunk', nativeChunk('published-truncated-prefix', bytes))
+      .accepted
+  ).toBe(true);
+  expect(f.rows().find((row) => row.type === 'runtime.observed')!.payload).toEqual(observation);
+  expect(f.rows().filter((row) => row.type === 'content.published')).toHaveLength(1);
+  const bodies = nativeBodies(f);
+  expect(bodies).toHaveLength(1);
+  expect(bodies[0]!.bytes).toEqual(Buffer.from('abc'));
+  const activity = readThreadRuntimeActivity(f.db, {
+    threadId: f.owner.threadId,
+    turnIds: [f.owner.turnId],
+  });
+  expect(activity).toHaveLength(1);
+  expect(activity[0]!.coverage).toBe('partial');
+  expect(activity[0]!.entries).toEqual([]);
+  expect(f.store.getTurnById(f.owner.turnId).items).toEqual([]);
+});
+
 // RET §§Native Transcripts And Runtime Logs, Capture Safety And Restricted Access; WCP incremental observations.
 it.each([
   'semantic-control',
