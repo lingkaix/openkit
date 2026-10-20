@@ -357,6 +357,21 @@ fn storage_targets_allowed(policy: &SandboxPolicy, storage: &StorageAttachmentRe
     })
 }
 
+/// Projects lifecycle state and admits resource observations only on Sandbox deletion.
+fn sandbox_lifecycle_result(
+    kind: RuntimeEffectKind,
+    sandbox_id: &str,
+    output: epoch_coordinator::LifecycleEffectOutput,
+) -> serde_json::Value {
+    let mut result = serde_json::json!({"sandboxId": sandbox_id, "state": output.state});
+    if kind == RuntimeEffectKind::DeleteSandbox
+        && let Some(summary) = output.resource_summary
+    {
+        result["resourceSummary"] = summary;
+    }
+    result
+}
+
 /// Calls the one existing local owner selected by a fixed effect path.
 ///
 /// # Errors
@@ -481,10 +496,7 @@ fn execute_effect_command(
                     None,
                 )
                 .map_err(|_| "lifecycle effect failed")?;
-            let mut result = serde_json::json!({
-                "sandboxId": sandbox_id,
-                "state": state,
-            });
+            let mut result = sandbox_lifecycle_result(command.kind, sandbox_id, state);
             if let Some(storage) = storage_attachment {
                 let inspection = coordinator
                     .inspect_storage(&storage.storage_ref, storage.attachment_generation);
@@ -537,7 +549,7 @@ fn execute_effect_command(
             Ok(ExecutedEffectResult::Json(serde_json::json!({
                 "accepted": true,
                 "integrationReady": true,
-                "state": state,
+                "state": state.state,
             })))
         }
         RuntimeEffectKind::AcquireImage => {
@@ -2463,6 +2475,44 @@ mod tests {
                 "terminal display leaks {forbidden}"
             );
         }
+    }
+
+    #[test]
+    fn resource_summary_carriage_is_delete_only_and_missing_means_absent() {
+        use crate::epoch_coordinator::{LifecycleEffectOutput, RuntimeEffectKind};
+        for kind in [
+            RuntimeEffectKind::CreateSandbox,
+            RuntimeEffectKind::DeleteSandbox,
+            RuntimeEffectKind::OpenBridge,
+            RuntimeEffectKind::CloseBridge,
+        ] {
+            let result = super::sandbox_lifecycle_result(
+                kind,
+                "fixture",
+                LifecycleEffectOutput {
+                    state: "unchanged".into(),
+                    resource_summary: Some(serde_json::json!({"pidsPeak": 2})),
+                },
+            );
+            assert_eq!(result["sandboxId"], "fixture");
+            assert_eq!(result["state"], "unchanged");
+            assert_eq!(
+                result.get("resourceSummary").is_some(),
+                kind == RuntimeEffectKind::DeleteSandbox
+            );
+        }
+        let result = super::sandbox_lifecycle_result(
+            RuntimeEffectKind::DeleteSandbox,
+            "fixture",
+            LifecycleEffectOutput {
+                state: "deleted".into(),
+                resource_summary: None,
+            },
+        );
+        assert_eq!(
+            result,
+            serde_json::json!({"sandboxId":"fixture","state":"deleted"})
+        );
     }
 
     #[test]
