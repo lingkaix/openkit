@@ -1370,7 +1370,8 @@ describe('Worker Harness loop', () => {
     } as SandboxIntegrationClient;
     const run = runWorkerHarness({ signal: controller.signal }).catch((error: unknown) => error);
     try {
-      await clock.advance(phase === 'text' ? 300_000 : 1_000);
+      // Both response phases share the original allowance; expiry still abandons collected bytes.
+      await clock.advance(300_000);
       await clock.advance(250);
       expect(await run).toBeInstanceOf(Error);
     } finally {
@@ -1379,8 +1380,7 @@ describe('Worker Harness loop', () => {
       clock.restore();
     }
     expect(handle).not.toHaveBeenCalled();
-    expect(requests).toHaveLength(phase === 'text' ? 1 : 2);
-    if (phase === 'collected') expect(requests[1]).toEqual(requests[0]);
+    expect(requests).toHaveLength(1);
     expect(requests[0]).toEqual({
       path: '/worker-control/harness/poll',
       body: '{"schemaVersion":2,"harnesses":[]}',
@@ -1578,6 +1578,256 @@ describe('Worker Harness loop', () => {
       await run;
       clock.restore();
     }
+  });
+
+  describe('session.open carriage', () => {
+    const selected = {
+      ...command('session.open', 0, {
+        adapterId: 'fixture-fourth',
+        agentSessionId: 'as_00000000-0000-75b0-a387-3019b80ed6d1',
+        agentSessionRuntimeBindingId: 'binding-open-carriage',
+        agentSessionCompatibilityKey: DIGEST,
+        capabilityLoopbackCredential: credential('carriage-capability'),
+        effectiveSetupGeneration: 1,
+        inferenceLoopbackCredential: credential('carriage-inference'),
+        maxActiveTurns: 20,
+        resume: null,
+        threadId: 'th_00000000-0000-730e-88b8-d76794f39a2f',
+        workspaceId: 'ws_00000000-0000-7ac9-b7d9-236a01857edc',
+      }),
+      harnessInstanceId: 'harness-one',
+    };
+    // Native opening is outside this loop test. Its exact settled result enters the real receipt path.
+    const settled = {
+      schemaVersion: 2 as const,
+      harnessInstanceId: selected.harnessInstanceId,
+      operationId: selected.operationId,
+      sequence: 0,
+      disposition: 'succeeded' as const,
+      body: {
+        state: 'open',
+        nativeHandleState: 'pending',
+        nativeHandleDigest: null,
+        maxActiveTurns: 20,
+      },
+    };
+
+    it.each([
+      'poll',
+      'result',
+    ] as const)('keeps delayed %s headers alive and preserves immutable serial acknowledgement', async (phase) => {
+      const clock = controlSchedulingTime();
+      const controller = new AbortController();
+      const entered = observation();
+      const releaseHeaders = observation();
+      const retryEntered = observation();
+      const releaseAcknowledgement = observation();
+      const handle = vi.spyOn(WorkerHarness.prototype, 'handle').mockResolvedValue(settled);
+      const polls: unknown[] = [];
+      const results: string[] = [];
+      let requestSignal: AbortSignal | undefined;
+      loopFixture.client = {
+        ready: Promise.resolve(),
+        close: async () => undefined,
+        harnessControlFetch: async (path, init) => {
+          const isPoll = path.endsWith('/poll');
+          if (isPoll) {
+            polls.push(JSON.parse(init.body));
+            if (polls.length > 1) return { ok: false, status: 404, text: async () => '' };
+          } else results.push(init.body);
+          if (phase === (isPoll ? 'poll' : 'result') && (isPoll || results.length === 1)) {
+            requestSignal = init.signal;
+            entered.resolve();
+            await releaseHeaders.promise;
+          }
+          if (isPoll) return { ok: true, status: 200, text: async () => JSON.stringify(selected) };
+          if (results.length === 1) return { ok: false, status: 503, text: async () => '' };
+          retryEntered.resolve();
+          await releaseAcknowledgement.promise;
+          return { ok: true, status: 204, text: async () => '' };
+        },
+      } as SandboxIntegrationClient;
+      const run = runWorkerHarness({ signal: controller.signal }).catch((error: unknown) => error);
+      try {
+        await entered.promise;
+        await clock.advance(1_500);
+        expect(requestSignal?.aborted, 'delivery is still inside the original allowance').toBe(
+          false
+        );
+        expect(polls).toHaveLength(1);
+        expect(handle).toHaveBeenCalledTimes(phase === 'poll' ? 0 : 1);
+        releaseHeaders.resolve();
+        await clock.advance(250);
+        await retryEntered.promise;
+        expect(polls).toHaveLength(1);
+        expect(handle).toHaveBeenCalledExactlyOnceWith(selected);
+        expect(results).toHaveLength(2);
+        expect(results[1]).toBe(results[0]);
+        expect(JSON.parse(results[0]!)).toEqual(settled);
+        releaseAcknowledgement.resolve();
+        expect(await run).toEqual(new Error('Harness poll failed with HTTP 404.'));
+        expect(polls).toEqual([
+          { schemaVersion: 2, harnesses: [] },
+          { schemaVersion: 2, harnesses: [{ harnessInstanceId: 'harness-one', nextSequence: 1 }] },
+        ]);
+      } finally {
+        controller.abort(new Error('fixture-complete'));
+        releaseHeaders.resolve();
+        releaseAcknowledgement.resolve();
+        await run;
+        clock.restore();
+      }
+    });
+
+    it.each([
+      ['poll', 'headers'],
+      ['poll', 'body'],
+      ['result', 'headers'],
+      ['result', 'body'],
+    ] as const)('honors genuine cancellation during %s %s', async (phase, stage) => {
+      const clock = controlSchedulingTime();
+      const controller = new AbortController();
+      const entered = observation();
+      const handle = vi.spyOn(WorkerHarness.prototype, 'handle').mockResolvedValue(settled);
+      const close = vi.fn(async () => undefined);
+      const requests: string[] = [];
+      let requestSignal: AbortSignal | undefined;
+      const lateText = vi.fn(async () => (phase === 'poll' ? JSON.stringify(selected) : ''));
+      loopFixture.client = {
+        ready: Promise.resolve(),
+        close,
+        harnessControlFetch: async (path, init) => {
+          requests.push(path);
+          const isPoll = path.endsWith('/poll');
+          if (phase !== (isPoll ? 'poll' : 'result'))
+            return { ok: true, status: 200, text: async () => JSON.stringify(selected) };
+          requestSignal = init.signal;
+          /** Returns late bytes after cancellation to exercise abandonment, not only rejection. */
+          const waitForCancellation = async () => {
+            const aborted = new Promise<void>((resolve) =>
+              requestSignal!.addEventListener('abort', () => resolve(), { once: true })
+            );
+            entered.resolve();
+            await aborted;
+          };
+          if (stage === 'headers') await waitForCancellation();
+          return {
+            ok: true,
+            status: isPoll ? 200 : 204,
+            text: async () => {
+              if (stage === 'body') await waitForCancellation();
+              return lateText();
+            },
+          };
+        },
+      } as SandboxIntegrationClient;
+      const run = runWorkerHarness({ signal: controller.signal }).catch((error: unknown) => error);
+      try {
+        await entered.promise;
+        await clock.advance(500);
+        const cancellation = new Error('caller-cancelled-session-open');
+        controller.abort(cancellation);
+        expect(await run).toBe(cancellation);
+        expect(requestSignal?.aborted).toBe(true);
+        expect(handle).toHaveBeenCalledTimes(phase === 'poll' ? 0 : 1);
+        expect(requests).toEqual(
+          phase === 'poll'
+            ? ['/worker-control/harness/poll']
+            : ['/worker-control/harness/poll', '/worker-control/harness/result']
+        );
+        expect(lateText).toHaveBeenCalledTimes(stage === 'headers' ? 0 : 1);
+        expect(close).toHaveBeenCalledTimes(1);
+      } finally {
+        controller.abort(new Error('fixture-complete'));
+        await run;
+        clock.restore();
+      }
+    });
+
+    it.each([
+      'poll',
+      'result',
+    ] as const)('expires %s at the original allowance across retry, headers and late body', async (phase) => {
+      const clock = controlSchedulingTime();
+      const controller = new AbortController();
+      const firstRequest = observation();
+      const retryEntered = observation();
+      const releaseHeaders = observation();
+      const bodyEntered = observation();
+      const handle = vi.spyOn(WorkerHarness.prototype, 'handle').mockResolvedValue(settled);
+      const close = vi.fn(async () => undefined);
+      const requests: string[] = [];
+      let time = 0;
+      let attempts = 0;
+      let requestSignal: AbortSignal | undefined;
+      let finished = false;
+      vi.spyOn(performance, 'now').mockImplementation(() => time);
+      loopFixture.client = {
+        ready: Promise.resolve(),
+        close,
+        harnessControlFetch: async (path, init) => {
+          requests.push(path);
+          const isPoll = path.endsWith('/poll');
+          if (phase !== (isPoll ? 'poll' : 'result'))
+            return { ok: true, status: 200, text: async () => JSON.stringify(selected) };
+          attempts += 1;
+          if (attempts === 1) {
+            time = 299_000;
+            firstRequest.resolve();
+            return { ok: false, status: 503, text: async () => '' };
+          }
+          requestSignal = init.signal;
+          retryEntered.resolve();
+          await releaseHeaders.promise;
+          return {
+            ok: true,
+            status: isPoll ? 200 : 204,
+            text: async () => {
+              const aborted = new Promise<void>((resolve) =>
+                requestSignal!.addEventListener('abort', () => resolve(), { once: true })
+              );
+              bodyEntered.resolve();
+              await aborted;
+              return isPoll ? JSON.stringify(selected) : '';
+            },
+          };
+        },
+      } as SandboxIntegrationClient;
+      const run = runWorkerHarness({ signal: controller.signal })
+        .catch((error: unknown) => error)
+        .finally(() => {
+          finished = true;
+        });
+      try {
+        await firstRequest.promise;
+        await clock.advance(0);
+        time = 299_250;
+        await clock.advance(250);
+        await retryEntered.promise;
+        time = 299_500;
+        await clock.advance(250);
+        releaseHeaders.resolve();
+        await bodyEntered.promise;
+        time = 299_999;
+        await clock.advance(499);
+        expect(finished).toBe(false);
+        expect(requestSignal?.aborted).toBe(false);
+        time = 300_000;
+        await clock.advance(1);
+        expect(requestSignal?.aborted).toBe(true);
+        expect(finished).toBe(true);
+        expect(await run).toBeInstanceOf(Error);
+        expect(attempts).toBe(2);
+        expect(requests).toHaveLength(phase === 'poll' ? 2 : 3);
+        expect(handle).toHaveBeenCalledTimes(phase === 'poll' ? 0 : 1);
+        expect(close).toHaveBeenCalledTimes(1);
+      } finally {
+        controller.abort(new Error('fixture-complete'));
+        releaseHeaders.resolve();
+        await run;
+        clock.restore();
+      }
+    });
   });
 
   it('ends on a nonretryable status and when the monotonic outage budget is spent', async () => {
