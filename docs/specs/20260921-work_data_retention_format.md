@@ -203,6 +203,8 @@ When an upstream request was prepared but its delivery is unknown, retain the ob
 
 Use the existing [Storage Service immutable content](20261018-file_storage_and_knowledge_packages.md) and the scope's existing control records. Workspace-attributed calls store their blobs and references inside that Workspace; backup or move includes their reachable closure. Calls without Workspace attribution use existing server-scoped Storage roots and an explicit server-scope coverage observation. Never invent a Workspace/Thread/Turn identity or a global capture owner.
 
+The scoped-reference/staging prerequisite reuses the shared Storage reference's native case: explicit `knowledgeBaseId: null`, actual Server or Workspace owner, `backend-evidence` mount and `sha256/<digest>` path under that scope's existing `evidence/backend/` root. Knowledge references continue to require their exact real Knowledge Base ID. Current `work-capture` admission is a transient trusted-caller basis, not a retained grant, Knowledge authority or permission inferred from a digest. The existing owner authorizes each operation and consumes sealed staged bytes before publishing its references; Storage itself does not publish. This prerequisite changes no collector, capture default, Turn lifecycle or replay authority.
+
 A call without a Turn binds its effective coverage in that existing scope before dispatch and references the existing call/attempt. A Workspace-only call resolves server -> Workspace policy; an unattributed call resolves server policy. Historical absent bindings remain unknown. Missing required binding/storage follows existing admission/failure rules, not a claimed successful capture.
 
 | Retained shape | Completeness gap closed |

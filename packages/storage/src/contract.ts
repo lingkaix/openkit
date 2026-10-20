@@ -5,14 +5,32 @@ export type StorageLocator = ContentReference['locator'];
 
 /** Current native admission supplied per request, never a new retained grant. */
 export type StorageAccess = {
-  knowledgeBaseId: string;
   ownerScope: StorageLocator['ownerScope'];
   mount: string;
   pathPrefix: string;
   mode: 'read-only' | 'staged-write';
 } & (
-  | { basis: 'lease'; grantId: string; expiresAt: string; revoked: boolean }
-  | { basis: 'knowledge'; grantId?: never; expiresAt?: never; revoked?: never }
+  | {
+      basis: 'lease';
+      knowledgeBaseId: string;
+      grantId: string;
+      expiresAt: string;
+      revoked: boolean;
+    }
+  | {
+      basis: 'knowledge';
+      knowledgeBaseId: string;
+      grantId?: never;
+      expiresAt?: never;
+      revoked?: never;
+    }
+  | {
+      basis: 'work-capture';
+      knowledgeBaseId: null;
+      grantId?: never;
+      expiresAt?: never;
+      revoked?: never;
+    }
 );
 
 /** Observed byte facts; the existing Source or Artifact record owns their retention. */
@@ -40,7 +58,8 @@ export type StorageResult<T> = { status: 'ok'; value: T } | StorageFailure;
 
 /** An admitted mount binding; credentials and Policy decisions are not mount configuration. */
 export interface LocalStorageMount {
-  knowledgeBaseId: string;
+  /** Null only for a Server or Workspace backend-evidence mount, never an anonymous Knowledge Base. */
+  knowledgeBaseId: string | null;
   ownerScope: StorageLocator['ownerScope'];
   name: string;
   root: string;
