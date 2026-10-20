@@ -26,7 +26,11 @@ import { KnowledgeNotebook } from './notebook.js';
 import { updateOkfFrontmatter } from './okf.js';
 
 /** Actual owners and virtual Tools surround a fake role runner; no provider or retrieval process is needed. */
-function fixture(enabled = true, protectedPages: string[] = []) {
+function fixture(
+  enabled = true,
+  protectedPages: string[] = [],
+  initialFiles: (workspaceId: string) => Record<string, string> = () => ({})
+) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'knowledge-maintenance-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -37,28 +41,41 @@ function fixture(enabled = true, protectedPages: string[] = []) {
   });
   const store = new FsStore({ dataRoot });
   const actor = { kind: 'user', id: FIXTURE_LOCAL_USER_ID } as const;
-  const workspace = store.createWorkspace('Maintenance fixture', {
-    requestId: randomUUID(),
-    producer: actor,
-    instructionReference: 'fixture',
+  const timestamp = new Date().toISOString();
+  const workspaceId = allocateEntityId('ws');
+  // One native initialization is sufficient: these cases need the human text, not a prior empty commit.
+  const workspace = store.importWorkspaceSnapshot({
+    workspace: {
+      id: workspaceId,
+      name: 'Maintenance fixture',
+      kind: 'general',
+      status: 'active',
+      counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    },
+    threads: [],
+    turns: [],
+    knowledge: [],
+    itemRevisions: [],
+    artifacts: [],
+    agentSessions: [],
+    turnEvents: [],
+    initialNotebookFiles: {
+      'index.md': '---\nokf_version: "0.2"\n---\n# Human correction\n',
+      ...initialFiles(workspaceId),
+    },
+    notebookInitialization: {
+      requestId: randomUUID(),
+      producer: actor,
+      instructionReference: 'fixture-human',
+    },
   });
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: actor.id });
   const notebook = new KnowledgeNotebook({
     repositoryPath: join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'notebook.git'),
   });
-  const baseRevision = notebook.publishedRevision();
-  const humanRevision = notebook.prepare({
-    baseRevision,
-    changes: { 'index.md': '---\nokf_version: "0.2"\n---\n# Human correction\n' },
-    metadata: {
-      summary: 'Human correction',
-      changeRequest: { requestId: randomUUID(), inputDigest: commandInputHash('human edit') },
-      producer: actor,
-      authority: { kind: 'direct', instructionReference: 'fixture-human' },
-      sourceReferences: [],
-    },
-  });
-  notebook.publish({ baseRevision, candidateRevision: humanRevision });
+  const humanRevision = notebook.publishedRevision();
   const ordinary = store.createThread(workspace.id, 'Ordinary shared work');
   const ordinaryTurn = store.createTurn(
     workspace.id,
@@ -67,7 +84,6 @@ function fixture(enabled = true, protectedPages: string[] = []) {
     actor,
     null
   );
-  const timestamp = new Date().toISOString();
   store.createItem({
     id: allocateEntityId('it'),
     owner: { kind: 'workspace', workspaceId: workspace.id },
@@ -378,15 +394,16 @@ describe('Workspace Knowledge Manager maintenance admission', () => {
     ).toEqual(result);
   });
   it('includes a human page removal outside the active editing snapshot', async () => {
-    const f = fixture();
-    const content = `---
+    let content = '';
+    const f = fixture(true, [], (workspaceId) => {
+      content = `---
  type: KnowledgePage
  title: Removed lesson
  schema_version: openkit-scope-knowledge-schema-v4
  requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]
  openkit_status: active
  status: stable
- scope: {kind: workspace, workspaceId: ${f.workspace.id}}
+ scope: {kind: workspace, workspaceId: ${workspaceId}}
  source_refs: []
  review_state: user-authored
  sensitivity: normal
@@ -396,23 +413,49 @@ describe('Workspace Knowledge Manager maintenance admission', () => {
 ---
 An obsolete human lesson.
 `.replace(/^ /gm, '');
-    const publish = (changes: Record<string, string | null>) => {
-      const baseRevision = f.notebook.publishedRevision();
-      const candidateRevision = f.notebook.prepare({
-        baseRevision,
-        changes,
-        metadata: {
-          summary: 'Human correction',
-          producer: f.input.actor,
-          changeRequest: { requestId: randomUUID(), inputDigest: commandInputHash(changes) },
-          authority: { kind: 'direct', instructionReference: 'human correction' },
-          sourceReferences: [],
+      return { 'obsolete.md': content };
+    });
+    // Only the deletion is new human input since this prior maintenance checkpoint.
+    const thread = f.store.createThread(f.workspace.id, 'Previous maintenance');
+    const prior = f.store.createTurn(
+      f.workspace.id,
+      thread.id,
+      'Previous maintenance',
+      f.input.actor,
+      null
+    );
+    f.store.updateTurn(prior.id, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+      internalExecution: {
+        roleId: 'knowledge-manager',
+        logicalModelId: 'test-role-model',
+        contextStrategy: 'compaction',
+        threshold: 1000,
+        knowledge: {
+          purpose: 'maintenance',
+          ownerScope: { kind: 'workspace', workspaceId: f.workspace.id },
+          baseRevision: f.humanRevision,
+          trigger: 'request',
+          instructions: 'Previous maintenance',
+          sourceRange: [],
         },
-      });
-      f.notebook.publish({ baseRevision, candidateRevision });
-    };
-    publish({ 'obsolete.md': content });
-    publish({ 'obsolete.md': null });
+      },
+    });
+    const changes = { 'obsolete.md': null };
+    const baseRevision = f.humanRevision;
+    const candidateRevision = f.notebook.prepare({
+      baseRevision,
+      changes,
+      metadata: {
+        summary: 'Human correction',
+        producer: f.input.actor,
+        changeRequest: { requestId: randomUUID(), inputDigest: commandInputHash(changes) },
+        authority: { kind: 'direct', instructionReference: 'human correction' },
+        sourceReferences: [],
+      },
+    });
+    f.notebook.publish({ baseRevision, candidateRevision });
     const result = await maintainKnowledgeAgent(f.dependencies, f.input);
     expect(result.outcome).toBe('published');
     const run = f.run.mock.calls[0]![0];
