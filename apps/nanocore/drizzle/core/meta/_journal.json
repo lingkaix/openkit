@@ -92,6 +92,20 @@
       "when": 1792486932994,
       "tag": "0012_quarantined_workspace_retirement",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1792499555710,
+      "tag": "0013_control_store",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1792505951861,
+      "tag": "0014_execution_journal",
+      "breakpoints": true
     }
   ]
 }

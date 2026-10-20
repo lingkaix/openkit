@@ -16,6 +16,7 @@ export type {
   EvidenceBundleSensitivityClass,
 } from './evidence-bundles.js';
 export { evidenceBundles } from './evidence-bundles.js';
+export { controlExecutionSteps, controlExecutions } from './execution-journal.js';
 export { externalTriggerAdmissions } from './external-trigger-admissions.js';
 export { generativePresentations } from './generative-presentations.js';
 export * from './goals.js';
@@ -81,6 +82,13 @@ export type {
   VaultUseResolvingPath,
 } from './vault-use-records.js';
 export { vaultUseRecords } from './vault-use-records.js';
+export {
+  controlAgentSessions,
+  controlProductEntries,
+  controlThreads,
+  controlTurns,
+  controlWorkspaces,
+} from './work-product.js';
 export type {
   WorkerBackendSessionPlacement,
   WorkerBackendSessionState,

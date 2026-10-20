@@ -218,6 +218,8 @@ Acceptance requires provider serialization to contain no field beyond the three 
 
 An in-process execution target, including the existing virtual shell or a future isolate, is a degenerate placement with no provider allocation. Such placement MUST NOT create Worker state or synthetic receipts. External effects retain their existing evidence requirements.
 
+Code mode is a Tool invocation in which model-written code orchestrates admitted harness Tools, including commands, files, models or delegation where their owners permit them. The interpreter is an execution target; each nested Tool call retains its own execution location, authority, deadline and effect evidence. For NanoCore agents, the agent loop stays in Core, and the script gains no independent scheduling authority.
+
 Shell and file Tools MUST expose the same admitted scratch view for every exposed path. Canonical files remain in OpenKit storage under their existing owners; targets are ephemeral and scratch edits remain candidates until Core accepts them.
 
 Core-loop execution targets MUST contain no credentials, including scoped tokens; transport credentials stay outside the target. Secret injection MUST occur only after authorization at the Core Gateway/egress boundary under [Unified Mediation And Policy](20261018-nanocore_interception_and_information_consolidation.md#unified-mediation-and-policy). Egress MUST be denied by default per target, including host bindings; only admitted Gateway/egress calls may leave it.
@@ -278,6 +280,8 @@ No durable toolset snapshot, provider transcript, loop state record, or duplicat
 After process or provider failure, NanoCore abandons the in-memory run. The context owner verifies its latest summary and later canonical Items within the admitted history. Knowledge Manager starts a fresh bounded run from current notebook/run inputs and needed records. Recovery admits a new product execution, assembles current trusted state, and invokes a new loop run under the existing idempotent command identity and recovery contracts so accepted effects are not duplicated.
 
 The runtime does not resume an exact hidden token stream, partial reasoning trace, or historical Tool implementation. An uncertain external effect remains unknown until its owner inspects or reconciles it; the loop MUST NOT replay it automatically.
+
+Conversation reconstruction, interpreter replay and persistent target state are distinct continuity contracts. The current loop reconstructs newly admitted work and does not resume or exactly replay a failed run. Interpreter replay or target-state persistence requires a separately admitted consumer contract under the existing execution and storage owners.
 
 Acceptance requires restart reconstruction without a durable loop or toolset record and no duplicate accepted effect when a prior Tool call already settled.
 

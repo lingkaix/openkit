@@ -176,7 +176,7 @@ async function preparationFixture() {
 }
 
 describe('ordinary preparation adapter controls before journal wiring', () => {
-  it('keeps authorization, exact receipt replay and Core-only operation on the real image producer', async () => {
+  it('commits intent before native image.acquire delivery and preserves receipt controls', async () => {
     const f = await preparationFixture();
     const input = {
       authorize: () => true,
@@ -198,6 +198,21 @@ describe('ordinary preparation adapter controls before journal wiring', () => {
       throw new Error('Native acquisition was not delivered.');
     expect(f.db.sqlite.inTransaction).toBe(false);
     expect(readWorkerImageSettlement(f.db, acquire.requestId)).toBeNull();
+    // Read committed native rows at delivery, before the controlled Host returns any result.
+    // A soft assertion preserves the independent authorization, receipt and cold-reopen controls below.
+    const intents = f.db.sqlite
+      .prepare(
+        `SELECT s.schema_version AS schemaVersion, s.state, r.definition_version AS definitionVersion
+         FROM control_execution_steps s JOIN control_executions r ON r.id = s.execution_id
+         WHERE json_extract(s.invocation_json, '$.carriage.operation') = 'image.acquire'
+           AND json_extract(s.invocation_json, '$.carriage.requestId') = ?`
+      )
+      .all(acquire.requestId);
+    expect
+      .soft(intents, 'Native image.acquire delivery requires its committed journal intent.')
+      .toStrictEqual([
+        { schemaVersion: 1, state: 'intent', definitionVersion: 'core-image-acquire/v1' },
+      ]);
     const result = { requestId: acquire.requestId, digest: imageDigest };
     await f.dispatch.result(f.physical, 'image.acquire', result);
     await new Promise<void>((resolve) => setImmediate(resolve));

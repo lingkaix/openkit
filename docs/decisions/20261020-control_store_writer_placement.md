@@ -1,6 +1,7 @@
 ---
-status: Accepted
+status: Superseded
 date: "2026-10-20"
+superseded-by: docs/decisions/20261020-control_store_mixed_writer_exception.md
 decider: Engineer, on a coordinator proposal
 ---
 # Control Store Writer Placement And Load Envelope

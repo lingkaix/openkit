@@ -69,6 +69,8 @@ describe('createDiagnosticsSnapshot', () => {
             'core_0010_retained_record_formats',
             'core_0011_audit_authentication',
             'core_0012_quarantined_workspace_retirement',
+            'core_0013_control_store',
+            'core_0014_execution_journal',
           ],
         },
         mode: 'local',
