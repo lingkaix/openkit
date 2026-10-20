@@ -180,6 +180,77 @@ describe('native control database worker', () => {
     }
   });
 
+  it.each([
+    "INSERT OR ROLLBACK INTO thread_read_receipts VALUES ('fixture', 'failed', '[]')",
+    "INSERT OR --\r'\nROLLBACK INTO thread_read_receipts VALUES ('fixture', 'failed', '[]'); --'",
+  ])('rejects transaction-wide rollback before batching without failing successful siblings %#', async (sql) => {
+    const f = fixture();
+    expect(await f.send({ operation: 'open', path: f.path, create: true })).toMatchObject({
+      status: 'ok',
+    });
+    expect(await f.write(setup)).toMatchObject({ status: 'ok' });
+    const results = await Promise.all([
+      f.write(tuple('one')),
+      f.write([
+        ...tuple('failed'),
+        {
+          mode: 'run',
+          sql,
+          parameters: [],
+        },
+      ]),
+      f.write(tuple('two')),
+    ]);
+    expect(results.map((r) => r.status)).toEqual(['ok', 'error', 'ok']);
+    expect(results[1]).toMatchObject({ code: 'invalid-request', commit: 'not-committed' });
+    const reader = new Database(f.path, { readonly: true, fileMustExist: true });
+    try {
+      expect(
+        reader
+          .prepare('SELECT request_key FROM idempotency_requests ORDER BY request_key')
+          .pluck()
+          .all()
+      ).toEqual(['one', 'two']);
+    } finally {
+      reader.close();
+    }
+  });
+
+  it('refuses an already populated schema with transaction-wide rollback semantics', async () => {
+    const f = fixture();
+    const creator = new Database(f.path);
+    creator.exec(setup[0]!.sql.replace('NOT NULL', 'NOT NULL ON CONFLICT ROLLBACK'));
+    creator.close();
+    expect(await f.send({ operation: 'open', path: f.path, create: false })).toMatchObject({
+      status: 'error',
+    });
+  });
+
+  it('refuses unknown effect fields and assertions belonging to another statement mode', async () => {
+    const f = fixture();
+    expect(
+      await f.send({
+        operation: 'open',
+        path: f.path,
+        create: true,
+        expectedAuthority: 'unrecognized',
+      })
+    ).toMatchObject({ status: 'error', code: 'invalid-request' });
+    expect(await f.send({ operation: 'open', path: f.path, create: true })).toMatchObject({
+      status: 'ok',
+    });
+    expect(await f.write(setup)).toMatchObject({ status: 'ok' });
+    expect(
+      await f.send({
+        operation: 'write',
+        statements: [{ ...tuple('ignored')[0], expectRow: 'present' }],
+      })
+    ).toMatchObject({ status: 'error', code: 'invalid-request' });
+    expect(
+      await f.write([{ mode: 'get', sql: "SELECT 'ROLLBACK' AS word", parameters: [] }])
+    ).toMatchObject({ status: 'ok' });
+  });
+
   it('does not acknowledge before outer COMMIT and is visible to a read-only reader after ack', async () => {
     const f = fixture(true);
     expect(await f.send({ operation: 'open', path: f.path, create: true })).toMatchObject({
@@ -244,6 +315,48 @@ describe('native control database worker', () => {
         statements: [{ mode: 'unknown', sql: 'SELECT 1', parameters: [] }],
       })
     ).toMatchObject({ status: 'error', code: 'invalid-request' });
+  });
+
+  it('rolls back unsupported native results before COMMIT instead of losing acknowledgement afterward', async () => {
+    const f = fixture();
+    expect(await f.send({ operation: 'open', path: f.path, create: true })).toMatchObject({
+      status: 'ok',
+    });
+    expect(await f.write(setup)).toMatchObject({ status: 'ok' });
+    expect(
+      await f.write([
+        ...tuple('invalid-result'),
+        { mode: 'get', sql: 'SELECT 1e999 AS value', parameters: [] },
+      ])
+    ).toMatchObject({ status: 'error', code: 'sql-failed', commit: 'not-committed' });
+    const reader = new Database(f.path, { readonly: true, fileMustExist: true });
+    try {
+      reader.pragma('query_only = ON');
+      expect(reader.prepare('SELECT request_key FROM idempotency_requests').all()).toEqual([]);
+      expect(reader.prepare('SELECT thread_id FROM thread_read_receipts').all()).toEqual([]);
+    } finally {
+      reader.close();
+    }
+    expect(await f.write(tuple('valid-result'))).toMatchObject({ status: 'ok' });
+  });
+
+  it('preserves signed SQLite integer results without a lossy number conversion', async () => {
+    const f = fixture();
+    expect(await f.send({ operation: 'open', path: f.path, create: true })).toMatchObject({
+      status: 'ok',
+    });
+    expect(await f.write(setup)).toMatchObject({ status: 'ok' });
+    const id = 9223372036854775806n;
+    expect(
+      await f.write([
+        {
+          mode: 'run',
+          sql: "INSERT INTO thread_read_receipts (rowid, workspace_id, thread_id, item_ids_json) VALUES (?, 'fixture', 'wide', '[]')",
+          parameters: [id],
+        },
+        { mode: 'get', sql: 'SELECT rowid FROM thread_read_receipts', parameters: [] },
+      ])
+    ).toMatchObject({ status: 'ok', results: [{ lastInsertRowid: id }, { row: { rowid: id } }] });
   });
 
   it('does not create missing existing-only databases and supports ordered maintenance/close', async () => {

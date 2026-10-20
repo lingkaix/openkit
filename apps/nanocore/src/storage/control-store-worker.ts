@@ -1,5 +1,5 @@
 import { existsSync, realpathSync, statSync } from 'node:fs';
-import { basename, dirname, isAbsolute, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { isMainThread, parentPort } from 'node:worker_threads';
 import Database from 'better-sqlite3';
 import { ControlStoreBusyError, controlStoreFor } from './control-store.js';
@@ -13,7 +13,11 @@ import {
   type ControlWorkerFailureCode,
   type ControlWorkerReply,
   type ControlWorkerRequest,
+  hasControlSqlRollback,
+  isControlWorkerReply,
+  isControlWorkerRequest,
 } from './control-store-worker-protocol.js';
+import { applyNativeScopeMigrations } from './migrate.js';
 
 if (isMainThread || parentPort === null) {
   throw new Error('The database writer entrypoint requires a dedicated worker thread.');
@@ -63,6 +67,9 @@ function failureCode(error: unknown): ControlWorkerFailureCode {
   if (error instanceof PreconditionError) return 'precondition';
   if (error instanceof ControlStoreBusyError) return 'busy';
   const code = error !== null && typeof error === 'object' && 'code' in error ? error.code : null;
+  if (code === 'migration_missing' || code === 'migration_failed') return code;
+  if (code === 'SQLITE_NOTADB' || (typeof code === 'string' && code.startsWith('SQLITE_CORRUPT')))
+    return 'integrity';
   if (typeof code === 'string' && code.startsWith('SQLITE_CONSTRAINT')) return 'constraint';
   if (code === 'SQLITE_BUSY' || code === 'SQLITE_LOCKED') return 'busy';
   return 'sql-failed';
@@ -83,7 +90,7 @@ function apply(
   statements: readonly ControlSqlStatement[]
 ): ControlSqlResult[] {
   return statements.map((step) => {
-    const statement = sqlite.prepare(step.sql);
+    const statement = sqlite.prepare(step.sql).safeIntegers(true);
     const parameters = step.parameters.map(parameter);
     if (step.mode === 'run') {
       const result = statement.run(...parameters);
@@ -92,7 +99,7 @@ function apply(
       }
       return { mode: 'run', ...result };
     }
-    const row = statement.safeIntegers(true).get(...parameters) as ControlSqlRow | undefined;
+    const row = statement.get(...parameters) as ControlSqlRow | undefined;
     if (
       (step.expectRow === 'present' && row === undefined) ||
       (step.expectRow === 'absent' && row !== undefined)
@@ -129,19 +136,22 @@ function flush(owner: OwnedDatabase): void {
         sqlite.exec('SAVEPOINT control_transition');
         try {
           const results = apply(sqlite, request.statements);
-          // Fail serialization before COMMIT, never after acknowledging durable truth.
-          structuredClone(results);
-          sqlite.exec('RELEASE control_transition');
-          outcomes.push({
+          const outcome: ControlWorkerReply = {
             version: CONTROL_WORKER_VERSION,
             id: request.id,
             status: 'ok',
             operation: 'write',
             results,
-          });
+          };
+          // Refuse unsupported results and serialization before the durable boundary.
+          if (!isControlWorkerReply(outcome)) throw new Error('Invalid database writer result.');
+          structuredClone(outcome);
+          sqlite.exec('RELEASE control_transition');
+          outcomes.push(outcome);
         } catch (error) {
           sqlite.exec('ROLLBACK TO control_transition');
           sqlite.exec('RELEASE control_transition');
+          if (failureCode(error) === 'integrity') throw error;
           outcomes.push(failure(request.id, failureCode(error)));
         }
       }
@@ -150,11 +160,12 @@ function flush(owner: OwnedDatabase): void {
     });
   } catch (error) {
     const unknown = bodyFinished || owner.sqlite.inTransaction;
-    owner.poisoned = unknown;
+    const code = failureCode(error);
+    owner.poisoned = unknown || code === 'integrity';
     replies = batch.map((request) =>
       failure(
         request.id,
-        unknown ? 'commit-unknown' : failureCode(error),
+        code === 'integrity' ? code : unknown ? 'commit-unknown' : code,
         unknown ? 'unknown' : 'not-committed'
       )
     );
@@ -185,6 +196,17 @@ function drain(owner: OwnedDatabase): void {
   unschedule(owner);
 }
 
+/** Refuses stored conflict/trigger semantics that can undo successful batch siblings. */
+function assertSavepointSafeSchema(sqlite: Database.Database): void {
+  const rows = sqlite
+    .prepare('SELECT sql FROM sqlite_schema WHERE sql IS NOT NULL')
+    .iterate() as Iterable<{ sql: string }>;
+  for (const row of rows) {
+    if (hasControlSqlRollback(row.sql))
+      throw new Error('Database schema cannot isolate control transitions.');
+  }
+}
+
 /** Opens only a trusted admitted path; neither directory discovery nor opening grants ownership. */
 function openDatabase(request: Extract<ControlWorkerRequest, { operation: 'open' }>): void {
   if (databases.has(request.database)) {
@@ -203,6 +225,11 @@ function openDatabase(request: Extract<ControlWorkerRequest, { operation: 'open'
   }
   const sqlite = new Database(path, { fileMustExist: !request.create });
   try {
+    assertSavepointSafeSchema(sqlite);
+    if (request.initialize !== undefined) {
+      applyNativeScopeMigrations(sqlite, request.initialize);
+      assertSavepointSafeSchema(sqlite);
+    }
     const writer = controlStoreFor(sqlite);
     const metadata = statSync(path);
     const identity = `${metadata.dev}:${metadata.ino}`;
@@ -225,74 +252,6 @@ function openDatabase(request: Extract<ControlWorkerRequest, { operation: 'open'
   reply({ version: CONTROL_WORKER_VERSION, id: request.id, status: 'ok', operation: 'open' });
 }
 
-/** Checks wire scalars before any admission or native SQL execution. */
-function validValue(value: unknown): value is ControlSqlValue {
-  return (
-    value === null ||
-    typeof value === 'string' ||
-    typeof value === 'bigint' ||
-    (typeof value === 'number' && Number.isFinite(value)) ||
-    value instanceof Uint8Array
-  );
-}
-
-/** Refuses transaction/connection control inside an entry's owned savepoint. */
-function validStatement(value: unknown): value is ControlSqlStatement {
-  if (value === null || typeof value !== 'object') return false;
-  const step = value as Partial<ControlSqlStatement>;
-  if (typeof step.sql !== 'string' || !Array.isArray(step.parameters)) return false;
-  const sql = step.sql.replace(/^(?:\s|--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)+/, '');
-  if (
-    !/^(SELECT|WITH|INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP|EXPLAIN|VALUES)\b/i.test(sql)
-  ) {
-    return false;
-  }
-  if (!step.parameters.every(validValue)) return false;
-  if (step.mode === 'run') {
-    return (
-      step.expectChanges === undefined ||
-      (Number.isSafeInteger(step.expectChanges) && step.expectChanges >= 0)
-    );
-  }
-  return (
-    step.mode === 'get' &&
-    (step.expectRow === undefined || step.expectRow === 'present' || step.expectRow === 'absent')
-  );
-}
-
-/** Unknown core wire meanings fail closed; unknown additive fields carry no authority. */
-function validRequest(value: unknown): value is ControlWorkerRequest {
-  if (value === null || typeof value !== 'object') return false;
-  const request = value as Partial<ControlWorkerRequest>;
-  if (
-    request.version !== CONTROL_WORKER_VERSION ||
-    !Number.isSafeInteger(request.id) ||
-    (request.id ?? -1) < 0 ||
-    typeof request.database !== 'string' ||
-    request.database.length === 0
-  )
-    return false;
-  if (request.operation === 'open') {
-    return (
-      typeof request.path === 'string' &&
-      isAbsolute(request.path) &&
-      typeof request.create === 'boolean'
-    );
-  }
-  if (request.operation === 'write') {
-    return (
-      Array.isArray(request.statements) &&
-      request.statements.length > 0 &&
-      request.statements.every(validStatement)
-    );
-  }
-  return (
-    request.operation === 'checkpoint' ||
-    request.operation === 'reclaim' ||
-    request.operation === 'close'
-  );
-}
-
 /** Routes trusted protocol messages without transporting connections or executing caller code. */
 function receive(value: unknown): void {
   const id = value !== null && typeof value === 'object' && 'id' in value ? value.id : undefined;
@@ -300,7 +259,7 @@ function receive(value: unknown): void {
   if (typeof id === 'number' && pendingIds.has(id)) {
     throw new Error('Duplicate database writer message identity.');
   }
-  if (!validRequest(value)) {
+  if (!isControlWorkerRequest(value)) {
     if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 0) {
       // An uncorrelatable message cannot safely complete any caller's promise.
       throw new Error('Invalid database writer protocol.');
@@ -310,6 +269,18 @@ function receive(value: unknown): void {
   }
   pendingIds.add(value.id);
   try {
+    if (value.operation === 'shutdown') {
+      for (const owner of databases.values()) {
+        drain(owner);
+        owner.sqlite.close();
+      }
+      databases.clear();
+      paths.clear();
+      identities.clear();
+      reply({ version: CONTROL_WORKER_VERSION, id: value.id, status: 'ok', operation: 'shutdown' });
+      port.close();
+      return;
+    }
     if (value.operation === 'open') {
       openDatabase(value);
       return;
@@ -361,8 +332,9 @@ function receive(value: unknown): void {
         complete: owner.writer.reclaim(),
       });
     }
-  } catch {
-    reply(failure(value.id, 'unavailable', 'unknown'));
+  } catch (error) {
+    const code = failureCode(error);
+    reply(failure(value.id, code === 'sql-failed' ? 'unavailable' : code, 'unknown'));
   }
 }
 

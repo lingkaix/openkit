@@ -1,5 +1,7 @@
-/** Internal wire version; this is not a public operation or a retained record format. */
-export const CONTROL_WORKER_VERSION = 1;
+import { isAbsolute } from 'node:path';
+
+/** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
+export const CONTROL_WORKER_VERSION = 2;
 
 /** Fixed, qualified batching and per-database pending admission bounds. */
 export const CONTROL_WORKER_LIMITS = {
@@ -40,37 +42,53 @@ export type ControlSqlResult =
   | { readonly mode: 'run'; readonly changes: number; readonly lastInsertRowid: number | bigint }
   | { readonly mode: 'get'; readonly row: ControlSqlRow | null };
 
+/** Existing journals that require no app-specific recovery-copy callback. */
+export type ControlInitializationScope = 'core' | 'user' | 'workspace';
+
 /**
  * Trusted internal database-worker requests.
  *
  * An id is transient message correlation, never a replacement command receipt. A database key denotes an already-admitted physical scope, not new ownership. The host must cap outstanding writes before postMessage using the same pending bound: a worker-side cap alone cannot bound a blocked MessagePort's backlog. Pure reads use separate read-only/query_only connections and do not use this API.
  */
-export type ControlWorkerRequest = {
+export type ControlWorkerCommand =
+  | { readonly operation: 'shutdown' }
+  | ({ readonly database: string } & (
+      | {
+          readonly operation: 'open';
+          /** Absolute, admitted path with an existing parent; never a public path argument. */
+          readonly path: string;
+          /** Explicit fresh-scope admission; false must never initialize a missing database. */
+          readonly create: boolean;
+          /** Apply the existing scope journal before opening completes; never bypass app recovery. */
+          readonly initialize?: ControlInitializationScope;
+        }
+      | { readonly operation: 'write'; readonly statements: readonly ControlSqlStatement[] }
+      | { readonly operation: 'checkpoint' | 'reclaim' | 'close' }
+    ));
+
+/** Transient correlation header; the command receipt remains in the owning SQL tuple. */
+export type ControlWorkerRequest = ControlWorkerCommand & {
   readonly version: typeof CONTROL_WORKER_VERSION;
   readonly id: number;
-  readonly database: string;
-} & (
-  | {
-      readonly operation: 'open';
-      /** Absolute, admitted path with an existing parent; never a public path argument. */
-      readonly path: string;
-      /** Explicit fresh-scope admission; false must never initialize a missing database. */
-      readonly create: boolean;
-    }
-  | { readonly operation: 'write'; readonly statements: readonly ControlSqlStatement[] }
-  | { readonly operation: 'checkpoint' | 'reclaim' | 'close' }
-);
+};
 
 /** Closed failure categories; SQL text, bindings and native error messages are not returned. */
-export type ControlWorkerFailureCode =
-  | 'invalid-request'
-  | 'not-open'
-  | 'busy'
-  | 'precondition'
-  | 'constraint'
-  | 'sql-failed'
-  | 'unavailable'
-  | 'commit-unknown';
+export const CONTROL_WORKER_FAILURE_CODES = [
+  'invalid-request',
+  'not-open',
+  'busy',
+  'precondition',
+  'constraint',
+  'sql-failed',
+  'unavailable',
+  'commit-unknown',
+  'migration_missing',
+  'migration_failed',
+  'integrity',
+] as const;
+
+/** Closed native failure code, with no SQL text or bound values. */
+export type ControlWorkerFailureCode = (typeof CONTROL_WORKER_FAILURE_CODES)[number];
 
 /**
  * Worker reply. Success for writes follows the outer FULL-durability COMMIT.
@@ -81,7 +99,7 @@ export type ControlWorkerReply = {
   readonly version: typeof CONTROL_WORKER_VERSION;
   readonly id: number;
 } & (
-  | { readonly status: 'ok'; readonly operation: 'open' | 'close' }
+  | { readonly status: 'ok'; readonly operation: 'open' | 'close' | 'shutdown' }
   | {
       readonly status: 'ok';
       readonly operation: 'write';
@@ -105,3 +123,183 @@ export type ControlWorkerReply = {
       readonly commit: 'not-committed' | 'unknown';
     }
 );
+
+/** Checks cloneable SQLite values without accepting non-finite or executable content. */
+export function isControlSqlValue(value: unknown): value is ControlSqlValue {
+  return (
+    value === null ||
+    typeof value === 'string' ||
+    typeof value === 'bigint' ||
+    (typeof value === 'number' && Number.isFinite(value)) ||
+    (value instanceof Uint8Array && !(value.buffer instanceof SharedArrayBuffer))
+  );
+}
+
+/** Recognizes data records, not dates, binary buffers, arrays or other native objects. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== 'object') return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+/** Checks a materialized result; no iterator or callback may cross the boundary. */
+function isSqlResult(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  const result = value;
+  if (result.mode === 'run') {
+    return (
+      Number.isSafeInteger(result.changes) &&
+      (result.changes as number) >= 0 &&
+      (typeof result.lastInsertRowid === 'bigint' || Number.isSafeInteger(result.lastInsertRowid))
+    );
+  }
+  return (
+    result.mode === 'get' &&
+    (result.row === null ||
+      (isRecord(result.row) && Object.values(result.row).every(isControlSqlValue)))
+  );
+}
+
+/**
+ * Checks worker replies before a caller promise can be completed.
+ *
+ * Unknown additive fields are ignored; unknown versions, operations and core result values fail closed.
+ *
+ * @param value Structured-cloned message from the dedicated writer.
+ * @returns Whether its closed core has a supported meaning.
+ */
+export function isControlWorkerReply(value: unknown): value is ControlWorkerReply {
+  if (!isRecord(value)) return false;
+  const reply = value;
+  if (
+    reply.version !== CONTROL_WORKER_VERSION ||
+    !Number.isSafeInteger(reply.id) ||
+    (reply.id as number) < 0
+  )
+    return false;
+  if (reply.status === 'error') {
+    return (
+      CONTROL_WORKER_FAILURE_CODES.some((code) => code === reply.code) &&
+      (reply.commit === 'not-committed' || reply.commit === 'unknown')
+    );
+  }
+  if (reply.status !== 'ok') return false;
+  if (reply.operation === 'open' || reply.operation === 'close' || reply.operation === 'shutdown')
+    return true;
+  if (reply.operation === 'write')
+    return Array.isArray(reply.results) && reply.results.every(isSqlResult);
+  if (reply.operation === 'reclaim') return typeof reply.complete === 'boolean';
+  if (reply.operation !== 'checkpoint' || !isRecord(reply.pressure)) return false;
+  const pressure = reply.pressure as Record<string, unknown>;
+  return (
+    Number.isSafeInteger(pressure.busy) &&
+    (pressure.busy as number) >= 0 &&
+    Number.isSafeInteger(pressure.log) &&
+    (pressure.log as number) >= -1 &&
+    Number.isSafeInteger(pressure.checkpointed) &&
+    (pressure.checkpointed as number) >= -1 &&
+    Number.isSafeInteger(pressure.walBytes) &&
+    (pressure.walBytes as number) >= 0 &&
+    typeof pressure.walAgeMs === 'number' &&
+    Number.isFinite(pressure.walAgeMs) &&
+    pressure.walAgeMs >= 0
+  );
+}
+
+/** Removes quoted data/identifiers and comments only for the narrow SQL admission checks. */
+function sqlCode(sql: string): string {
+  // SQLite ends -- comments only at LF; a CR and any quotes after it are still comment data.
+  return sql.replace(
+    /--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/|'(?:''|[^'])*'|"(?:""|[^"])*"|`(?:``|[^`])*`|\[[^\]]*\]/g,
+    ' '
+  );
+}
+
+/** Refuses SQLite semantics that can roll back an outer batch instead of one savepoint. */
+export function hasControlSqlRollback(sql: string): boolean {
+  return /\bROLLBACK\b/i.test(sqlCode(sql));
+}
+
+/** Effect messages have exact keys; no unknown assertion can silently disappear. */
+function exactFields(
+  value: Record<string, unknown>,
+  required: readonly string[],
+  optional: readonly string[] = []
+): boolean {
+  const allowed = new Set([...required, ...optional]);
+  return (
+    required.every((key) => Object.hasOwn(value, key)) &&
+    Object.keys(value).every((key) => allowed.has(key))
+  );
+}
+
+/** Checks a trusted SQL step without permitting transaction control or shared mutable bindings. */
+function isSqlStatement(value: unknown): value is ControlSqlStatement {
+  if (!isRecord(value) || typeof value.sql !== 'string' || !Array.isArray(value.parameters))
+    return false;
+  if (
+    !/^(SELECT|WITH|INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP|EXPLAIN|VALUES)\b/i.test(
+      sqlCode(value.sql).trimStart()
+    ) ||
+    hasControlSqlRollback(value.sql)
+  )
+    return false;
+  if (!value.parameters.every(isControlSqlValue)) return false;
+  if (value.mode === 'run') {
+    return (
+      exactFields(value, ['mode', 'sql', 'parameters'], ['expectChanges']) &&
+      (value.expectChanges === undefined ||
+        (Number.isSafeInteger(value.expectChanges) && (value.expectChanges as number) >= 0))
+    );
+  }
+  return (
+    value.mode === 'get' &&
+    exactFields(value, ['mode', 'sql', 'parameters'], ['expectRow']) &&
+    (value.expectRow === undefined || value.expectRow === 'present' || value.expectRow === 'absent')
+  );
+}
+
+/**
+ * Validates the complete effect-bearing request before posting and again before native admission.
+ *
+ * @param value Proposed message including its transient correlation header.
+ * @returns Whether every effect/assertion is supported; unknown fields fail closed.
+ */
+export function isControlWorkerRequest(value: unknown): value is ControlWorkerRequest {
+  if (
+    !isRecord(value) ||
+    value.version !== CONTROL_WORKER_VERSION ||
+    !Number.isSafeInteger(value.id) ||
+    (value.id as number) < 0
+  )
+    return false;
+  const header = ['version', 'id', 'operation'];
+  if (value.operation === 'shutdown') return exactFields(value, header);
+  if (typeof value.database !== 'string' || value.database.length === 0) return false;
+  const scoped = [...header, 'database'];
+  if (value.operation === 'open') {
+    return (
+      exactFields(value, [...scoped, 'path', 'create'], ['initialize']) &&
+      typeof value.path === 'string' &&
+      isAbsolute(value.path) &&
+      typeof value.create === 'boolean' &&
+      (value.initialize === undefined ||
+        value.initialize === 'core' ||
+        value.initialize === 'user' ||
+        value.initialize === 'workspace')
+    );
+  }
+  if (value.operation === 'write')
+    return (
+      exactFields(value, [...scoped, 'statements']) &&
+      Array.isArray(value.statements) &&
+      value.statements.length > 0 &&
+      value.statements.every(isSqlStatement)
+    );
+  return (
+    (value.operation === 'checkpoint' ||
+      value.operation === 'reclaim' ||
+      value.operation === 'close') &&
+    exactFields(value, scoped)
+  );
+}
