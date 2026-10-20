@@ -692,7 +692,7 @@ export async function executeGoalOperation<K extends GoalOperationId>(
     )
       throw new GoalCommandError('thread_busy', 'The Goal Thread already has a Turn in flight.');
     // Ordinary admission can freeze ready outcomes through its own SQL connection; admit before the Goal transaction.
-    proposalTurn = store.createTurn(
+    proposalTurn = await store.createTurn(
       goal.workspaceId,
       goal.threadId,
       'Propose a Goal Plan',
@@ -1052,7 +1052,7 @@ export async function executeGoalOperation<K extends GoalOperationId>(
           advanceGoalRevision(db, goalId);
       })();
     if (proposalTurn)
-      store.updateTurn(proposalTurn.id, {
+      await store.updateTurn(proposalTurn.id, {
         status: 'failed',
         completedAt: now(),
         error: {
@@ -1062,7 +1062,8 @@ export async function executeGoalOperation<K extends GoalOperationId>(
       });
     throw error;
   }
-  if (proposalTurn) store.updateTurn(proposalTurn.id, { status: 'completed', completedAt: now() });
+  if (proposalTurn)
+    await store.updateTurn(proposalTurn.id, { status: 'completed', completedAt: now() });
   if (id === 'goal.create' && input.originThreadId && result.goal) {
     // The committed Goal is authority; publish its replayable origin snapshot outside SQL admission.
     const origin = input.originThreadId;
@@ -1070,7 +1071,7 @@ export async function executeGoalOperation<K extends GoalOperationId>(
     if (!store.listThreadItems(input.workspaceId, origin).some((item) => item.id === itemId)) {
       const turn = context.originTurnId
         ? store.getTurnById(context.originTurnId)
-        : store.createTurn(
+        : await store.createTurn(
             input.workspaceId,
             origin,
             'Goal handoff',
@@ -1089,7 +1090,7 @@ export async function executeGoalOperation<K extends GoalOperationId>(
           403
         );
       const at = now();
-      store.createItem({
+      await store.createItem({
         id: itemId,
         owner: { kind: 'workspace', workspaceId: input.workspaceId },
         threadId: origin,
@@ -1101,7 +1102,7 @@ export async function executeGoalOperation<K extends GoalOperationId>(
         createdAt: at,
       });
       if (!context.originTurnId)
-        store.updateTurn(turn.id, { status: 'completed', completedAt: at });
+        await store.updateTurn(turn.id, { status: 'completed', completedAt: at });
     }
   }
 

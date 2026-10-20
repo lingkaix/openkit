@@ -349,7 +349,7 @@ export function createWorkerEnvironmentActivation(
             now()
           );
           dependencies.store.createArtifact(artifact);
-          dependencies.store.updateTurn(turn.id, {
+          await dependencies.store.updateTurn(turn.id, {
             completedAt: artifact.createdAt,
             status: 'completed',
           });

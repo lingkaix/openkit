@@ -3101,7 +3101,7 @@ export function createConversationService({
         const sourceTitles = knowledgeAnswer.citations
           .map((citation) => citation.reference)
           .join(', ');
-        const answerItem = store.createItem({
+        const answerItem = await store.createItem({
           id: deriveEntityId('it', ['chat-answer', turn.id]),
           owner: { kind: 'workspace', workspaceId: workspaceId },
           threadId,
@@ -3114,7 +3114,7 @@ export function createConversationService({
           createdAt: turn.startedAt ?? completedAt,
           completedAt,
         });
-        const completedTurn = store.updateTurn(turn.id, { status: 'completed', completedAt });
+        const completedTurn = await store.updateTurn(turn.id, { status: 'completed', completedAt });
         return {
           body: ConversationCommandBodySchema.parse({
             outcome: 'answered',
@@ -3214,12 +3214,12 @@ export function createConversationService({
             );
           }
           const title = chatInput.input.trim().split(/\r?\n/, 1)[0] || 'Artifact task';
-          receivingThreadId = store.createThread(
-            workspaceId,
-            title,
-            createdThreadId,
-            'conversation',
-            { visibility: 'workspace', threadSource: 'worker', parentThreadId: threadId }
+          receivingThreadId = (
+            await store.createThread(workspaceId, title, createdThreadId, 'conversation', {
+              visibility: 'workspace',
+              threadSource: 'worker',
+              parentThreadId: threadId,
+            })
           ).id;
         }
         if (!agentId) {
@@ -3541,7 +3541,7 @@ export function createConversationService({
           );
           const turn = createChatTurn(new Date().toISOString());
           const at = new Date().toISOString();
-          const item = store.createItem({
+          const item = await store.createItem({
             id: deriveEntityId('it', ['chat-goal-intent', turn.id]),
             owner: { kind: 'workspace', workspaceId: workspaceId },
             threadId,
@@ -3554,7 +3554,7 @@ export function createConversationService({
             createdAt: at,
             completedAt: at,
           });
-          const ended = store.updateTurn(turn.id, { status: 'completed', completedAt: at });
+          const ended = await store.updateTurn(turn.id, { status: 'completed', completedAt: at });
           return {
             body: ConversationCommandBodySchema.parse({
               outcome: 'accepted',
@@ -3733,7 +3733,7 @@ export function createConversationService({
           const aborted =
             error instanceof TurnStartValidationError && error.code === 'provider_call_aborted';
           try {
-            store.updateTurn(turn.id, {
+            await store.updateTurn(turn.id, {
               status: aborted ? 'interrupted' : 'failed',
               completedAt: new Date().toISOString(),
               error: aborted
@@ -3775,7 +3775,10 @@ export function createConversationService({
             actorId,
             proposedHandoff
           );
-          const completedTurn = store.updateTurn(turn.id, { status: 'completed', completedAt });
+          const completedTurn = await store.updateTurn(turn.id, {
+            status: 'completed',
+            completedAt,
+          });
           return {
             body: ConversationCommandBodySchema.parse({
               outcome: 'clarification-needed',
@@ -3789,7 +3792,7 @@ export function createConversationService({
             status: 202,
           };
         }
-        const item = store.createItem({
+        const item = await store.createItem({
           id: deriveEntityId('it', ['chat-answer', turn.id]),
           owner: { kind: 'workspace', workspaceId: workspaceId },
           threadId,
@@ -3800,7 +3803,7 @@ export function createConversationService({
           createdAt: turn.startedAt ?? completedAt,
           completedAt,
         });
-        const completedTurn = store.updateTurn(turn.id, {
+        const completedTurn = await store.updateTurn(turn.id, {
           status: 'completed',
           completedAt,
         });
@@ -4143,7 +4146,7 @@ export function createConversationService({
           handoffRecord.answerMap?.handoff?.[0] === 'Confirm exact handoff';
         if (proposed && !selected) {
           const at = new Date().toISOString();
-          store.createItem({
+          await store.createItem({
             id: deriveEntityId('it', ['chat-refused', turn.id]),
             owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
             threadId: turn.threadId,
@@ -4156,7 +4159,7 @@ export function createConversationService({
             createdAt: at,
             completedAt: at,
           });
-          store.updateTurn(turn.id, { status: 'completed', completedAt: at });
+          await store.updateTurn(turn.id, { status: 'completed', completedAt: at });
           return;
         }
         const selectedActor = handoffRecord?.decidingActorContext;
@@ -4255,7 +4258,7 @@ export function createConversationService({
               409
             );
           handoffEffectStarted = true;
-          store.createThread(
+          await store.createThread(
             targetWorkspaceId,
             proposed.input.trim().split(/\r?\n/, 1)[0] || 'Confirmed task',
             receivingThreadId,
@@ -4376,7 +4379,7 @@ export function createConversationService({
           try {
             await observed.accepted;
             const completedAt = new Date().toISOString();
-            store.createItem({
+            await store.createItem({
               id: assistantPendingHandoffResultItemId(turn.id, 'task'),
               owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
               threadId: turn.threadId,
@@ -4390,7 +4393,7 @@ export function createConversationService({
               createdAt: turn.startedAt ?? completedAt,
               completedAt,
             });
-            store.updateTurn(turn.id, { status: 'completed', completedAt });
+            await store.updateTurn(turn.id, { status: 'completed', completedAt });
             return;
           } finally {
             publicationDone();
@@ -4421,7 +4424,7 @@ export function createConversationService({
               goalServices?.()
             );
             const at = new Date().toISOString();
-            store.createItem({
+            await store.createItem({
               id: assistantPendingHandoffResultItemId(turn.id, 'goal'),
               owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
               threadId: turn.threadId,
@@ -4435,7 +4438,7 @@ export function createConversationService({
               createdAt: at,
               completedAt: at,
             });
-            store.updateTurn(turn.id, { status: 'completed', completedAt: at });
+            await store.updateTurn(turn.id, { status: 'completed', completedAt: at });
           } finally {
             db.sqlite.close();
           }
@@ -4600,11 +4603,14 @@ export function createConversationService({
             actorId,
             nextHandoff
           );
-          store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
+          await store.updateTurn(turn.id, {
+            status: 'completed',
+            completedAt: new Date().toISOString(),
+          });
           return;
         }
         const completedAt = new Date().toISOString();
-        store.createItem({
+        await store.createItem({
           id: deriveEntityId('it', ['chat-answer', turn.id]),
           owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
           threadId: turn.threadId,
@@ -4615,11 +4621,11 @@ export function createConversationService({
           createdAt: turn.startedAt ?? completedAt,
           completedAt,
         });
-        store.updateTurn(turn.id, { status: 'completed', completedAt });
+        await store.updateTurn(turn.id, { status: 'completed', completedAt });
       } catch (error) {
         if (handoffRecord?.assistantHandoff && !handoffEffectStarted) {
           const at = new Date().toISOString();
-          store.createItem({
+          await store.createItem({
             id: assistantPendingHandoffResultItemId(turn.id, 'refused'),
             owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
             threadId: turn.threadId,
@@ -4635,10 +4641,10 @@ export function createConversationService({
             createdAt: at,
             completedAt: at,
           });
-          store.updateTurn(turn.id, { status: 'completed', completedAt: at });
+          await store.updateTurn(turn.id, { status: 'completed', completedAt: at });
           return;
         }
-        store.updateTurn(turn.id, {
+        await store.updateTurn(turn.id, {
           status: 'failed',
           completedAt: new Date().toISOString(),
           error: handoffEffectStarted

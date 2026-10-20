@@ -69,7 +69,7 @@ export async function admitExternalTriggerEvent(
 
     const threadId = allocateEntityId('th');
     const reservedTurnId = allocateEntityId('tu');
-    input.store.createThread(
+    await input.store.createThread(
       schedule.workspaceId,
       brief.data.trim().split(/\r?\n/, 1)[0] || 'External event',
       threadId,

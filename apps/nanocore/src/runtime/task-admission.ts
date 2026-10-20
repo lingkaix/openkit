@@ -31,7 +31,7 @@ export type TaskWorkerStarter = (input: {
   store: FsStore;
   triggerActor: { kind: 'user'; id: string };
   /** Native Task handoff cause supplied independently of the responsible actor. */
-  triggerSource?: ReturnType<FsStore['createTurn']>['triggerSource'];
+  triggerSource?: Awaited<ReturnType<FsStore['createTurn']>>['triggerSource'];
   requestActor: Actor;
   workspaceId: string;
   threadId: string;
@@ -40,8 +40,11 @@ export type TaskWorkerStarter = (input: {
   requestedAgentId: string;
   reservedTurnId: string;
   /** Called only after the ordinary scheduler has admitted and persisted this exact Task Turn. */
-  onTurnCreated: (turn: ReturnType<FsStore['createTurn']>, agentSessionId: string | null) => void;
-}) => Promise<ReturnType<FsStore['createTurn']>>;
+  onTurnCreated: (
+    turn: Awaited<ReturnType<FsStore['createTurn']>>,
+    agentSessionId: string | null
+  ) => void;
+}) => Promise<Awaited<ReturnType<FsStore['createTurn']>>>;
 /** Task inputs contain current read citations, never a second per-Task proposal. */
 const CoordinatorTaskInputSchema = z
   .object({
@@ -159,7 +162,7 @@ export function createCoordinatorTaskTool(options: {
           responseKind: 'turn',
           responseId: (turn) => turn.id,
           execute: async () => {
-            options.store.createThread(
+            await options.store.createThread(
               goal.workspaceId,
               input.request.objective.slice(0, 100),
               threadId,
@@ -170,12 +173,14 @@ export function createCoordinatorTaskTool(options: {
                 parentThreadId: coordinator.threadId,
               }
             );
-            let resolveAccepted!: (turn: ReturnType<FsStore['createTurn']>) => void;
+            let resolveAccepted!: (turn: Awaited<ReturnType<FsStore['createTurn']>>) => void;
             let rejectAccepted!: (reason: unknown) => void;
-            const accepted = new Promise<ReturnType<FsStore['createTurn']>>((resolve, reject) => {
-              resolveAccepted = resolve;
-              rejectAccepted = reject;
-            });
+            const accepted = new Promise<Awaited<ReturnType<FsStore['createTurn']>>>(
+              (resolve, reject) => {
+                resolveAccepted = resolve;
+                rejectAccepted = reject;
+              }
+            );
             const workerDb = options.openWorkspace(goal.workspaceId);
             const workerLoop = runWorkerTurnLoop({
               store: options.store,

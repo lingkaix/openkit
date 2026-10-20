@@ -463,7 +463,6 @@ export function prepareAuditEvent(
     occurredAt,
   });
 
-  assertNoUnsafeAuditValue(event);
   return event;
 }
 

@@ -1582,7 +1582,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       }
     }
     if (!predecessorIsTerminal) {
-      store.updateAgentSession(current.id, {
+      await store.updateAgentSession(current.id, {
         message: 'Replaced before a Turn with incompatible or unproved runtime continuity.',
         status: 'closed',
         updatedAt: this.now(),
@@ -2339,7 +2339,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             409
           );
         }
-        store.updateAgentSession(agentSessionId, {
+        await store.updateAgentSession(agentSessionId, {
           retainedStorage: materialization.retainedStorage,
           updatedAt: this.now(),
         });
@@ -2397,7 +2397,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         });
       }
 
-      const busySession = store.updateAgentSession(resolvedAgentSessionId, {
+      const busySession = await store.updateAgentSession(resolvedAgentSessionId, {
         message: null,
         status: 'busy',
         updatedAt: this.now(),
@@ -2511,7 +2511,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       !materializationPublished &&
       requireSchedulerExecutionAttempt(this.coreDb!, context.attemptId!).operationId === null
     ) {
-      store.updateTurn(turnId, { status: 'pending' });
+      await store.updateTurn(turnId, { status: 'pending' });
       workspaceDb?.sqlite.close();
       throw primaryError;
     }
@@ -2581,7 +2581,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             );
           if (terminalObserved) {
             try {
-              store.updateTurn(turn.id, {});
+              await store.updateTurn(turn.id, {});
             } catch (persistError) {
               errors.push(persistError);
             }
@@ -3674,7 +3674,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     store: FsStore,
     environmentPackage: AgentEnvironmentPackage,
     requestId: string | null,
-    item: ReturnType<FsStore['createItem']>
+    item: Awaited<ReturnType<FsStore['createItem']>>
   ): void {
     store.emitTurnEvent(
       environmentPackage.scope.turnId,
@@ -3714,7 +3714,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     store: FsStore,
     environmentPackage: AgentEnvironmentPackage,
     requestId: string | null,
-    agentSession: ReturnType<FsStore['createAgentSession']>
+    agentSession: Awaited<ReturnType<FsStore['createAgentSession']>>
   ): void {
     store.emitTurnEvent(
       environmentPackage.scope.turnId,

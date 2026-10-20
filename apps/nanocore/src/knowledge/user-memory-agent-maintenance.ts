@@ -918,7 +918,7 @@ export async function runUserMemoryMaintenanceCommand(
     responseId: (result) => result.turnId,
     execute: async () => {
       const prepared = prepareUserMemoryMaintenance(dependencies, input);
-      dependencies.store.recordCommandRequest(
+      await dependencies.store.recordCommandRequest(
         {
           command,
           requestId: input.requestId,

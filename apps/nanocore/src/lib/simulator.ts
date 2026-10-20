@@ -546,7 +546,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
         409
       );
     }
-    store.updateAgentSession(current.id, {
+    await store.updateAgentSession(current.id, {
       message: 'Replaced before a Turn with incompatible static runtime inputs.',
       status: 'closed',
       updatedAt: new Date().toISOString(),
@@ -812,14 +812,14 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
         );
       }
       const agentSession = existingAgentSession
-        ? store.updateAgentSession(existingAgentSession.id, {
+        ? await store.updateAgentSession(existingAgentSession.id, {
             configVersion: turn.configVersion,
             environmentPackageSnapshotId: environmentPackage!.snapshotId,
             message: null,
             status: 'initializing',
             updatedAt: timestamp,
           })
-        : store.createAgentSession({
+        : await store.createAgentSession({
             id: agentSessionId,
             agentId: manifest.id,
             workspaceId: workspaceIdForOwner(turn.owner),
@@ -844,7 +844,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
         manifest.profiles?.[0]?.id ??
         null;
 
-      store.updateTurn(turnId, {
+      await store.updateTurn(turnId, {
         agentProfileId: selectedProfileId,
         agentSessionId: agentSession.id,
       });
@@ -1055,18 +1055,18 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
           return;
         }
         const completedAt = new Date().toISOString();
-        const idleSession = store.updateAgentSession(state.agentSessionId, {
+        const idleSession = await store.updateAgentSession(state.agentSessionId, {
           status: 'idle',
           message: null,
           updatedAt: completedAt,
         });
-        const completedTurn = store.updateTurn(state.turnId, {
+        const completedTurn = await store.updateTurn(state.turnId, {
           status: 'completed',
           completedAt,
         });
         this.emitTurnUpdated(store, state, completedTurn);
         this.emitAgentSessionUpdated(store, state, idleSession);
-        store.emitTurnEvent(
+        await store.emitTurnEvent(
           state.turnId,
           {
             event: 'turn.completed',
@@ -1139,17 +1139,17 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
     };
     state.requestId = context.requestId;
     const completedAt = new Date().toISOString();
-    const agentSession = store.updateAgentSession(state.agentSessionId, {
+    const agentSession = await store.updateAgentSession(state.agentSessionId, {
       status: 'failed',
       message: 'The simulator turn was interrupted.',
       updatedAt: completedAt,
     });
-    const turn = store.updateTurn(turnId, {
+    const turn = await store.updateTurn(turnId, {
       status: 'interrupted',
       completedAt,
     });
 
-    store.emitTurnEvent(
+    await store.emitTurnEvent(
       turnId,
       {
         event: 'agent.session.updated',
@@ -1161,6 +1161,8 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       },
       ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
+    // Preserve Main's synchronous terminal-notification tail; awaiting this event changes which closeout producer runs first.
+    // Revisit this boundary only with C2-B2 S's complete native terminal handoff, not neutral preparation.
     store.emitTurnEvent(
       turnId,
       {
@@ -1248,7 +1250,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
   private emitStartedEnvelope(
     store: FsStore,
     state: SimulatedTurnState,
-    agentSession: ReturnType<FsStore['createAgentSession']>,
+    agentSession: Awaited<ReturnType<FsStore['createAgentSession']>>,
     input: string,
     actor: ActorRef
   ): void {
@@ -1559,7 +1561,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       requestItem = recordedItem;
     } else {
       // Standalone protocol fixtures have no durable product owner or answer command.
-      requestItem = store.createItem({
+      requestItem = await store.createItem({
         id: deriveEntityId('it', [state.userInputRequestId, 'request']),
         owner: { kind: 'workspace', workspaceId: state.workspaceId },
         threadId: state.threadId,
@@ -1687,7 +1689,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
   private emitItemCreated(
     store: FsStore,
     state: SimulatedTurnState,
-    item: ReturnType<FsStore['createItem']>
+    item: Awaited<ReturnType<FsStore['createItem']>>
   ): void {
     store.emitTurnEvent(
       state.turnId,
@@ -1770,7 +1772,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
   private emitTurnUpdated(
     store: FsStore,
     state: SimulatedTurnState,
-    turn: ReturnType<FsStore['updateTurn']>
+    turn: Awaited<ReturnType<FsStore['updateTurn']>>
   ): void {
     store.emitTurnEvent(
       state.turnId,
@@ -1792,7 +1794,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
   private emitAgentSessionUpdated(
     store: FsStore,
     state: SimulatedTurnState,
-    agentSession: ReturnType<FsStore['updateAgentSession']>
+    agentSession: Awaited<ReturnType<FsStore['updateAgentSession']>>
   ): void {
     store.emitTurnEvent(
       state.turnId,
