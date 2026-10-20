@@ -1,13 +1,14 @@
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
+import { FsStore } from './lib/store.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -21,13 +22,14 @@ import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 const fixtures: Array<ReturnType<typeof fixture>> = [];
 
 /** Compose actual public admission, Store, SQLite and Git through the existing fresh-scope initializer. */
-function fixture() {
+function fixture(snapshotRoot?: string) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-notebook-history-'));
+  if (snapshotRoot) cpSync(snapshotRoot, dataRoot, { recursive: true });
   const coreDb = openCoreDb(dataRoot);
   try {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = snapshotRoot ? new FsStore({ dataRoot }) : createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       workspaceId: DEMO_WORKSPACE_ID,
@@ -106,13 +108,15 @@ async function call(
       : text,
   };
 }
-afterEach(() => {
+/** Closes incomplete suite setup as well as case-local owners. */
+function cleanupFixtures() {
   for (const f of fixtures.splice(0)) {
-    f.workspaceDb.sqlite.close();
-    f.coreDb.sqlite.close();
+    if (f.workspaceDb.sqlite.open) f.workspaceDb.sqlite.close();
+    if (f.coreDb.sqlite.open) f.coreDb.sqlite.close();
     rmSync(f.dataRoot, { recursive: true, force: true });
   }
-});
+}
+afterEach(cleanupFixtures);
 
 /** Seed through current native source admission and fixed-base publication. */
 async function seed(f: ReturnType<typeof fixture>) {
@@ -166,144 +170,204 @@ async function seed(f: ReturnType<typeof fixture>) {
 }
 
 describe('native Workspace Notebook history and restore', () => {
-  it('returns authorized exact history/diff and restores with new evidence without overwriting a stale winner', async () => {
-    const f = fixture();
-    const s = await seed(f);
-    const restored = s.original.replace('review_state: accepted', 'review_state: user-authored');
-    const updated = restored.replace('Original exact bytes.', 'Later exact bytes.');
-    const edit = await call(f, 'knowledge.notebook.update', {
-      requestId: randomUUID(),
-      baseRevision: s.revision,
-      changes: [{ path: 'alpha.md', content: updated }],
-      summary: 'Later human text',
-    });
-    expect(edit.status, JSON.stringify(edit.body)).toBe(200);
-    const baseRevision = edit.body.notebookRevision;
-    const history = await call(f, 'knowledge.notebook.history', { limit: 2 });
-    expect(history.status, JSON.stringify(history.body)).toBe(200);
-    expect(history.body.revisions).toEqual([
-      {
-        revision: baseRevision,
-        parentRevision: s.revision,
-        availability: 'available',
+  describe('exact history, diff and restore', () => {
+    let snapshotRoot: string;
+    let restoredSnapshotRoot: string;
+    let restoreInput: {
+      requestId: string;
+      baseRevision: string;
+      fromRevision: string;
+      pageIds: string[];
+      summary: string;
+    };
+    let restoreResult: Awaited<ReturnType<typeof call>>;
+    let s: Awaited<ReturnType<typeof seed>>;
+    let restored: string;
+    let updated: string;
+    let baseRevision: string;
+    beforeAll(async () => {
+      const f = fixture();
+      s = await seed(f);
+      restored = s.original.replace('review_state: accepted', 'review_state: user-authored');
+      updated = restored.replace('Original exact bytes.', 'Later exact bytes.');
+      const edit = await call(f, 'knowledge.notebook.update', {
+        requestId: randomUUID(),
+        baseRevision: s.revision,
+        changes: [{ path: 'alpha.md', content: updated }],
         summary: 'Later human text',
-        producer: { kind: 'user', id: LOCAL_USER_ID },
-        changedPaths: ['alpha.md'],
-      },
-      {
-        revision: s.revision,
-        parentRevision: s.initial,
+      });
+      expect(edit.status, JSON.stringify(edit.body)).toBe(200);
+      baseRevision = edit.body.notebookRevision;
+      // Close both databases before copying; the baseline is never mutated by a case.
+      f.workspaceDb.sqlite.close();
+      f.coreDb.sqlite.close();
+      snapshotRoot = f.dataRoot;
+      fixtures.splice(fixtures.indexOf(f), 1);
+      const restoredFixture = fixture(snapshotRoot);
+      restoreInput = {
+        requestId: randomUUID(),
+        baseRevision,
+        fromRevision: s.revision,
+        pageIds: ['alpha'],
+        summary: 'Restore original text',
+      };
+      restoreResult = await call(restoredFixture, 'knowledge.notebook.restore', restoreInput);
+      expect(restoreResult.status, JSON.stringify(restoreResult.body)).toBe(200);
+      restoredFixture.workspaceDb.sqlite.close();
+      restoredFixture.coreDb.sqlite.close();
+      restoredSnapshotRoot = restoredFixture.dataRoot;
+      fixtures.splice(fixtures.indexOf(restoredFixture), 1);
+    });
+    afterAll(() => {
+      cleanupFixtures();
+      if (snapshotRoot) rmSync(snapshotRoot, { recursive: true, force: true });
+      if (restoredSnapshotRoot) rmSync(restoredSnapshotRoot, { recursive: true, force: true });
+    });
+
+    it('returns authorized exact history and diff bytes', async () => {
+      const f = fixture(snapshotRoot);
+      const history = await call(f, 'knowledge.notebook.history', { limit: 2 });
+      expect(history.status, JSON.stringify(history.body)).toBe(200);
+      expect(history.body.revisions).toEqual([
+        {
+          revision: baseRevision,
+          parentRevision: s.revision,
+          availability: 'available',
+          summary: 'Later human text',
+          producer: { kind: 'user', id: LOCAL_USER_ID },
+          changedPaths: ['alpha.md'],
+        },
+        {
+          revision: s.revision,
+          parentRevision: s.initial,
+          availability: 'available',
+          summary: 'Original human text',
+          producer: { kind: 'user', id: LOCAL_USER_ID },
+          changedPaths: ['alpha.md'],
+        },
+      ]);
+      expect(history.body.nextRevision).toBe(s.initial);
+      // Native capture publishes a Source pointer between initialization and the page proposal.
+      const sourceHistory = await call(f, 'knowledge.notebook.history', {
+        revision: s.initial,
+        limit: 1,
+      });
+      expect(sourceHistory.status, JSON.stringify(sourceHistory.body)).toBe(200);
+      expect(sourceHistory.body.revisions[0]).toMatchObject({
+        revision: s.initial,
+        parentRevision: s.rootRevision,
         availability: 'available',
-        summary: 'Original human text',
-        producer: { kind: 'user', id: LOCAL_USER_ID },
-        changedPaths: ['alpha.md'],
-      },
-    ]);
-    expect(history.body.nextRevision).toBe(s.initial);
-    // Native capture publishes a Source pointer between initialization and the page proposal.
-    const sourceHistory = await call(f, 'knowledge.notebook.history', {
-      revision: s.initial,
-      limit: 1,
+        changedPaths: [`@sources/${s.sourceId}.md`],
+      });
+      expect(sourceHistory.body.nextRevision).toBe(s.rootRevision);
+      const rootHistory = await call(f, 'knowledge.notebook.history', {
+        revision: s.rootRevision,
+        limit: 1,
+      });
+      expect(rootHistory.status, JSON.stringify(rootHistory.body)).toBe(200);
+      expect(rootHistory.body.revisions[0]).toMatchObject({
+        revision: s.rootRevision,
+        parentRevision: null,
+        availability: 'available',
+        changedPaths: ['index.md', 'mem_project.md'],
+      });
+      expect(rootHistory.body.nextRevision).toBeNull();
+      const diff = await call(f, 'knowledge.notebook.diff', {
+        baseRevision,
+        fromRevision: s.revision,
+        pageIds: ['alpha'],
+      });
+      expect(diff.status, JSON.stringify(diff.body)).toBe(200);
+      expect(diff.body.changes).toEqual([{ path: 'alpha.md', before: updated, after: s.original }]);
+      const preview = await call(f, 'knowledge.notebook.diff', {
+        baseRevision,
+        fromRevision: s.revision,
+        pageIds: ['alpha'],
+        forRestore: true,
+      });
+      expect(preview.status, JSON.stringify(preview.body)).toBe(200);
+      expect(preview.body.truncated).toBe(false);
+      expect(preview.body.changes).toEqual([
+        { path: 'alpha.md', before: updated, after: restored },
+      ]);
     });
-    expect(sourceHistory.status, JSON.stringify(sourceHistory.body)).toBe(200);
-    expect(sourceHistory.body.revisions[0]).toMatchObject({
-      revision: s.initial,
-      parentRevision: s.rootRevision,
-      availability: 'available',
-      changedPaths: [`@sources/${s.sourceId}.md`],
+
+    it('restores exact bytes as new evidence', async () => {
+      const f = fixture(snapshotRoot);
+      const missing = await call(f, 'knowledge.notebook.restore', {
+        requestId: randomUUID(),
+        baseRevision,
+        fromRevision: s.revision,
+        pageIds: ['unavailable'],
+        summary: 'Missing historical page',
+      });
+      expect(missing.status, JSON.stringify(missing.body)).toBe(403);
+      expect(git(f, 'rev-parse', 'refs/heads/published')).toBe(baseRevision);
+      const input = restoreInput;
+      const restore = await call(f, 'knowledge.notebook.restore', input);
+      expect(restore.status, JSON.stringify(restore.body)).toBe(200);
+      const winner = restore.body.notebookRevision;
+      expect(winner).not.toBe(s.revision);
+      expect(git(f, 'rev-parse', `${winner}^`)).toBe(baseRevision);
+      expect(
+        execFileSync('git', ['--git-dir', f.repositoryPath, 'show', `${winner}:pages/alpha.md`], {
+          encoding: 'utf8',
+        })
+      ).toBe(restored);
+      expect(restore.body.receiptRef.operation).toBe('knowledge.notebook.restore');
     });
-    expect(sourceHistory.body.nextRevision).toBe(s.rootRevision);
-    const rootHistory = await call(f, 'knowledge.notebook.history', {
-      revision: s.rootRevision,
-      limit: 1,
+
+    it('replays the exact restore receipt and refuses a stale request without overwriting the winner', async () => {
+      const f = fixture(restoredSnapshotRoot);
+      const input = restoreInput;
+      const restore = restoreResult;
+      const winner = restore.body.notebookRevision;
+      expect(await call(f, 'knowledge.notebook.restore', input)).toEqual(restore);
+      const stale = await call(f, 'knowledge.notebook.restore', {
+        ...input,
+        requestId: randomUUID(),
+      });
+      expect(stale.status, JSON.stringify(stale.body)).toBe(409);
+      expect(git(f, 'rev-parse', 'refs/heads/published')).toBe(winner);
+      const admissions = f.workspaceDb.sqlite
+        .prepare(
+          "SELECT notebook_admission_json AS admission FROM audit_events WHERE request_id = ? AND action = 'knowledge.notebook.restore'"
+        )
+        .all(input.requestId);
+      expect(admissions).toHaveLength(1);
     });
-    expect(rootHistory.status, JSON.stringify(rootHistory.body)).toBe(200);
-    expect(rootHistory.body.revisions[0]).toMatchObject({
-      revision: s.rootRevision,
-      parentRevision: null,
-      availability: 'available',
-      changedPaths: ['index.md', 'mem_project.md'],
+
+    it('requires explicit removal confirmation and retains the original history bytes', async () => {
+      const f = fixture(restoredSnapshotRoot);
+      const winner = restoreResult.body.notebookRevision;
+      const removal = {
+        requestId: randomUUID(),
+        baseRevision: winner,
+        fromRevision: s.initial,
+        pageIds: ['alpha'],
+        summary: 'Explicit removal through restore',
+      };
+      expect((await call(f, 'knowledge.notebook.restore', removal)).status).toBe(400);
+      expect(git(f, 'rev-parse', 'refs/heads/published')).toBe(winner);
+      const removed = await call(f, 'knowledge.notebook.restore', {
+        ...removal,
+        confirmRemoval: true,
+      });
+      expect(removed.status, JSON.stringify(removed.body)).toBe(200);
+      expect(
+        git(f, 'ls-tree', '--name-only', `${removed.body.notebookRevision}:pages`)
+      ).not.toContain('alpha.md');
+      expect(
+        execFileSync(
+          'git',
+          ['--git-dir', f.repositoryPath, 'show', `${s.revision}:pages/alpha.md`],
+          {
+            encoding: 'utf8',
+          }
+        )
+      ).toBe(s.original);
     });
-    expect(rootHistory.body.nextRevision).toBeNull();
-    const diff = await call(f, 'knowledge.notebook.diff', {
-      baseRevision,
-      fromRevision: s.revision,
-      pageIds: ['alpha'],
-    });
-    expect(diff.status, JSON.stringify(diff.body)).toBe(200);
-    expect(diff.body.changes).toEqual([{ path: 'alpha.md', before: updated, after: s.original }]);
-    const preview = await call(f, 'knowledge.notebook.diff', {
-      baseRevision,
-      fromRevision: s.revision,
-      pageIds: ['alpha'],
-      forRestore: true,
-    });
-    expect(preview.status, JSON.stringify(preview.body)).toBe(200);
-    expect(preview.body.truncated).toBe(false);
-    expect(preview.body.changes).toEqual([{ path: 'alpha.md', before: updated, after: restored }]);
-    const missing = await call(f, 'knowledge.notebook.restore', {
-      requestId: randomUUID(),
-      baseRevision,
-      fromRevision: s.revision,
-      pageIds: ['unavailable'],
-      summary: 'Missing historical page',
-    });
-    expect(missing.status, JSON.stringify(missing.body)).toBe(403);
-    expect(git(f, 'rev-parse', 'refs/heads/published')).toBe(baseRevision);
-    const input = {
-      requestId: randomUUID(),
-      baseRevision,
-      fromRevision: s.revision,
-      pageIds: ['alpha'],
-      summary: 'Restore original text',
-    };
-    const restore = await call(f, 'knowledge.notebook.restore', input);
-    expect(restore.status, JSON.stringify(restore.body)).toBe(200);
-    const winner = restore.body.notebookRevision;
-    expect(winner).not.toBe(s.revision);
-    expect(git(f, 'rev-parse', `${winner}^`)).toBe(baseRevision);
-    expect(
-      execFileSync('git', ['--git-dir', f.repositoryPath, 'show', `${winner}:pages/alpha.md`], {
-        encoding: 'utf8',
-      })
-    ).toBe(restored);
-    expect(restore.body.receiptRef.operation).toBe('knowledge.notebook.restore');
-    expect(await call(f, 'knowledge.notebook.restore', input)).toEqual(restore);
-    const stale = await call(f, 'knowledge.notebook.restore', {
-      ...input,
-      requestId: randomUUID(),
-    });
-    expect(stale.status, JSON.stringify(stale.body)).toBe(409);
-    expect(git(f, 'rev-parse', 'refs/heads/published')).toBe(winner);
-    const removal = {
-      requestId: randomUUID(),
-      baseRevision: winner,
-      fromRevision: s.initial,
-      pageIds: ['alpha'],
-      summary: 'Explicit removal through restore',
-    };
-    expect((await call(f, 'knowledge.notebook.restore', removal)).status).toBe(400);
-    expect(git(f, 'rev-parse', 'refs/heads/published')).toBe(winner);
-    const removed = await call(f, 'knowledge.notebook.restore', {
-      ...removal,
-      confirmRemoval: true,
-    });
-    expect(removed.status, JSON.stringify(removed.body)).toBe(200);
-    expect(
-      git(f, 'ls-tree', '--name-only', `${removed.body.notebookRevision}:pages`)
-    ).not.toContain('alpha.md');
-    expect(
-      execFileSync('git', ['--git-dir', f.repositoryPath, 'show', `${s.revision}:pages/alpha.md`], {
-        encoding: 'utf8',
-      })
-    ).toBe(s.original);
-    const admissions = f.workspaceDb.sqlite
-      .prepare(
-        "SELECT notebook_admission_json AS admission FROM audit_events WHERE request_id = ? AND action = 'knowledge.notebook.restore'"
-      )
-      .all(input.requestId);
-    expect(admissions).toHaveLength(1);
-  }, 90_000);
+  });
   it('bounds ordinary UTF-8 diff display and refuses an oversized restore before publication', async () => {
     const f = fixture();
     const s = await seed(f);
