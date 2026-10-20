@@ -659,7 +659,7 @@ describe('retained-only quarantine retirement: native operation and Core authori
     const response = await f.call('administration.cleanup-read');
     expect(response.status).toBe(200);
     const text = await response.text();
-    const body = JSON.parse(text) as { items: Array<Record<string, unknown>> };
+    const body = JSON.parse(text) as { items: Array<{ target: Record<string, unknown> }> };
     expect(Buffer.byteLength(text)).toBeLessThanOrEqual(262144);
     expect(body.items.length).toBeLessThanOrEqual(100);
     expect(text).not.toContain(f.dataRoot);
@@ -667,6 +667,6 @@ describe('retained-only quarantine retirement: native operation and Core authori
     expect(content).not.toHaveBeenCalled();
     expect(listing).not.toHaveBeenCalled();
     expect(open).not.toHaveBeenCalled();
-    expect(body.items.some((item) => item.workspaceId === f.workspaceId)).toBe(true);
+    expect(body.items.some((item) => item.target.workspaceId === f.workspaceId)).toBe(true);
   });
 });
