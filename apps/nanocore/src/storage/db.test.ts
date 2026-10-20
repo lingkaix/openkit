@@ -323,6 +323,7 @@ describe('scoped storage databases', () => {
         'workspace_0009_review_selection_judgements',
         'workspace_0010_product_control',
         'workspace_0011_workspace_capture_protection',
+        'workspace_0012_execution_journal',
       ]);
     } finally {
       workspaceDb.sqlite.close();

@@ -77,6 +77,8 @@ const WORKSPACE_TABLES = [
   'backend_workspace_handles',
   'capability_calls',
   'control_agent_sessions',
+  'control_execution_steps',
+  'control_executions',
   'control_product_entries',
   'control_threads',
   'control_turns',
