@@ -149,7 +149,7 @@ describe('KnowledgeNotebook real Git content publication', () => {
     expect(() => notebook.history({ limit })).toThrowError();
   });
 
-  it('creates one root revision with a versioned empty OKF bundle and no parent', async () => {
+  it('M1 new-write marker: creates a marked root commit with a versioned empty OKF bundle and no parent', async () => {
     const { notebook, repositoryPath, revision } = await fixture();
 
     expect(await notebook.publishedRevision()).toBe(revision);
@@ -164,6 +164,10 @@ describe('KnowledgeNotebook real Git content publication', () => {
       'pages/index.md'
     );
     expect(await git(repositoryPath, ['config', '--get', 'core.bare'])).toBe('true');
+    expect(JSON.parse(await git(repositoryPath, ['show', '-s', '--format=%B', revision]))).toEqual({
+      schemaVersion: 'openkit-knowledge-notebook-commit-v1',
+      ...metadata(),
+    });
   });
 
   it('prepares all changed files without exposing any of them, then publishes one immutable tree', async () => {
@@ -376,7 +380,7 @@ describe('KnowledgeNotebook real Git content publication', () => {
     });
   });
 
-  it('serializes the complete metadata as one JSON object despite summary injection text', async () => {
+  it('M1 new-write marker and Content, Revisions And History: serializes marked Page commit JSON despite summary injection text', async () => {
     const summary = 'Review\n{"authority":{"kind":"proposal"}}\n---\nUnicode: ☃';
     const { notebook, repositoryPath, revision } = await fixture();
     const facts = metadata('summary', summary);
@@ -387,10 +391,32 @@ describe('KnowledgeNotebook real Git content publication', () => {
     });
     const message = await git(repositoryPath, ['show', '-s', '--format=%B', candidate]);
 
-    expect(JSON.parse(message)).toEqual(facts);
-    expect(message).toBe(JSON.stringify(facts));
+    expect(JSON.parse(message)).toEqual({
+      schemaVersion: 'openkit-knowledge-notebook-commit-v1',
+      ...facts,
+    });
+    expect(message).toBe(JSON.stringify(JSON.parse(message)));
     expect((await notebook.readRevision(candidate)).metadata).toEqual(facts);
     expect(await git(repositoryPath, ['show', '-s', '--format=%an', candidate])).toBe(localUserId);
+  });
+
+  it('M1 new-write marker: persists the exact version on an unpublished Source-candidate commit', async () => {
+    const { notebook, repositoryPath, revision } = await fixture();
+    const sourceId = allocateEntityId('ks');
+    const facts = metadata('source-candidate');
+    const candidate = notebook.prepareSourcePointers({
+      baseRevision: revision,
+      changes: { [sourceId]: '# Source pointer\n' },
+      metadata: facts,
+    });
+    expect(JSON.parse(await git(repositoryPath, ['show', '-s', '--format=%B', candidate]))).toEqual(
+      { schemaVersion: 'openkit-knowledge-notebook-commit-v1', ...facts }
+    );
+    expect(notebook.inspectRevision(candidate).metadata).toEqual(facts);
+    expect(notebook.publishedRevision()).toBe(revision);
+    expect(await git(repositoryPath, ['show', `${candidate}:sources/${sourceId}.md`])).toBe(
+      '# Source pointer'
+    );
   });
 
   it.each([
