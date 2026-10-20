@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   copyFileSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -13,7 +14,7 @@ import {
 } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -281,18 +282,32 @@ describe('retired registry consumers and retained Core migration', () => {
     if (fault === 'records')
       writeFileSync(join(targetRoot, 'workspace-record.json'), f.originalWorkspaceRecord);
     const before = bytes(targetRoot);
+    /** Reads only a detached copy while the fixture or child is stopped; WAL readers can create sidecars. */
     const readCallStatus = () => {
-      const db = new Database(workspaceDbPath(f.dataRoot, f.workspaceId), {
-        readonly: true,
-        fileMustExist: true,
-      });
+      const beforeObservation = bytes(targetRoot);
+      const observerRoot = mkdtempSync(join(tmpdir(), 'retirement-status-observer-'));
       try {
-        return db
-          .prepare('SELECT status FROM capability_calls WHERE call_id = ?')
-          .pluck()
-          .get(testEntityId('cap', 'retirement-running-call'));
+        const databasePath = workspaceDbPath(f.dataRoot, f.workspaceId);
+        // Copy the entire database directory, including retained WAL, SHM and rollback journals.
+        cpSync(dirname(databasePath), observerRoot, { recursive: true });
+        const db = new Database(join(observerRoot, basename(databasePath)), {
+          readonly: true,
+          fileMustExist: true,
+        });
+        try {
+          return db
+            .prepare('SELECT status FROM capability_calls WHERE call_id = ?')
+            .pluck()
+            .get(testEntityId('cap', 'retirement-running-call'));
+        } finally {
+          db.close();
+        }
       } finally {
-        db.close();
+        rmSync(observerRoot, { recursive: true, force: true });
+        expect(
+          bytes(targetRoot),
+          'status observation must preserve every source path and byte'
+        ).toEqual(beforeObservation);
       }
     };
     if (fault === 'records') expect(readCallStatus()).toBe('running');
