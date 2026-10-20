@@ -78,10 +78,10 @@ import { artifactFilePayloadPath } from './artifacts/file-records.js';
 import { CanonicalPublicationError } from './canonical-publication-error.js';
 import { reserveCanonicalFileWrite } from './canonical-write-capacity.js';
 import {
-  assertWorkspaceThreadOwner,
+  assertWorkspaceWorkOwner,
   ensureLayoutDirectories,
   ensureWorkspaceLayoutRoot,
-  ThreadOwnershipViolationError,
+  WorkOwnershipViolationError,
 } from './fs-layout.js';
 import {
   StoredArtifactSnapshotV1Schema,
@@ -989,7 +989,7 @@ export function loadWorkspaceFileRecords(dataRoot: string): WorkspaceFileRecords
     try {
       records.push(loadWorkspace(join(workspacesRoot, workspaceId), workspaceId));
     } catch (error) {
-      if (error instanceof ThreadOwnershipViolationError) throw error;
+      if (error instanceof WorkOwnershipViolationError) throw error;
       refuseScope(dataRoot, { scope: 'workspace', id: workspaceId, check: 'records' });
     }
   }
@@ -1211,6 +1211,7 @@ function loadWorkspace(workspaceRoot: string, workspaceId: string): WorkspaceFil
         readJson(turnPath),
         (record) => record as Record<string, unknown>
       );
+      assertWorkspaceWorkOwner(rawTurn, workspaceId);
       if (
         rawTurn.items !== undefined &&
         (!Array.isArray(rawTurn.items) || rawTurn.items.length > 0)
@@ -2113,7 +2114,7 @@ function assertExistingWorkspaceDirectoryParents(workspaceRoot: string): void {
 /** Validates the reset-cohort Thread envelope without converting or rewriting predecessors. */
 function parseCanonicalThreadRecord(input: unknown, workspaceId: string, threadId: string): Thread {
   const envelope = parseRecordEnvelope(input, { supportedFeatures: THREAD_REQUIRED_FEATURES });
-  assertWorkspaceThreadOwner(input, workspaceId);
+  assertWorkspaceWorkOwner(input, workspaceId);
   if (
     envelope.schemaVersion !== 1 ||
     envelope.recordType !== 'thread' ||

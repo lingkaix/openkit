@@ -17,28 +17,28 @@ import {
   type RequiredFeatureId,
 } from '@openkit/config-schema';
 
-import { allocateEntityId, isEntityId, WorkOwnerSchema } from '@openkit/protocol';
+import { allocateEntityId, isEntityId, readRetainedV1, WorkOwnerSchema } from '@openkit/protocol';
 
 import { assertScopeAdmitted, isScopeAdmitted, refuseScope } from '../bootstrap/readiness.js';
 import { ensureEncryptedFileVaultStoreDirectory } from '../vault/vault-store-directory.js';
 
-/** A valid foreign Thread owner violates the shared layout boundary, not only local record semantics. */
-export class ThreadOwnershipViolationError extends Error {
+/** A valid foreign work owner violates the shared layout boundary, not only local record semantics. */
+export class WorkOwnershipViolationError extends Error {
   /** Creates the strict cross-owner refusal without exposing record content. */
   constructor(workspaceId: string) {
-    super(`DATA_ROOT Thread ownership violation in Workspace ${workspaceId}.`);
-    this.name = 'ThreadOwnershipViolationError';
+    super(`DATA_ROOT work ownership violation in Workspace ${workspaceId}.`);
+    this.name = 'WorkOwnershipViolationError';
   }
 }
 
 /**
- * Rejects supported Thread ownership that crosses its physical Workspace home.
+ * Rejects supported work ownership that crosses its physical Workspace home.
  * Missing or unsupported owner shapes remain the local record reader's responsibility.
- * @param record Canonical Thread object after envelope support validation.
+ * @param record Canonical Thread or Turn after envelope support validation.
  * @param workspaceId Workspace selected by the canonical path, not by record content.
- * @throws ThreadOwnershipViolationError for a valid Server or different Workspace owner.
+ * @throws WorkOwnershipViolationError for a valid Server or different Workspace owner.
  */
-export function assertWorkspaceThreadOwner(record: unknown, workspaceId: string): void {
+export function assertWorkspaceWorkOwner(record: unknown, workspaceId: string): void {
   const parsed = WorkOwnerSchema.safeParse(
     typeof record === 'object' && record !== null && 'owner' in record ? record.owner : undefined
   );
@@ -46,7 +46,7 @@ export function assertWorkspaceThreadOwner(record: unknown, workspaceId: string)
     parsed.success &&
     (parsed.data.kind !== 'workspace' || parsed.data.workspaceId !== workspaceId)
   ) {
-    throw new ThreadOwnershipViolationError(workspaceId);
+    throw new WorkOwnershipViolationError(workspaceId);
   }
 }
 
@@ -648,11 +648,19 @@ function verifyCanonicalRecordEnvelopeSupport(root: string): void {
     }
 
     const record = readJsonRecord(path);
-    if (!isRecordEnvelopeCandidate(record)) {
+    const turnHome = /^workspaces\/([^/]+)\/threads\/[^/]+\/turns\/[^/]+\/turn\.json$/.exec(
+      reportPath
+    );
+    if (!turnHome && !isRecordEnvelopeCandidate(record)) {
       continue;
     }
 
     try {
+      if (turnHome) {
+        const turn = readRetainedV1(record, (value) => value);
+        assertWorkspaceWorkOwner(turn, turnHome[1]!);
+        continue;
+      }
       const envelope = parseRecordEnvelope(record, {
         supportedFeatures: Object.keys(REQUIRED_FEATURE_REGISTRY) as RequiredFeatureId[],
       });
@@ -661,10 +669,10 @@ function verifyCanonicalRecordEnvelopeSupport(root: string): void {
       }
       const threadHome = /^workspaces\/([^/]+)\/threads\/[^/]+\/thread\.json$/.exec(reportPath);
       if (envelope.recordType === 'thread' && threadHome) {
-        assertWorkspaceThreadOwner(record, threadHome[1]!);
+        assertWorkspaceWorkOwner(record, threadHome[1]!);
       }
     } catch (error) {
-      if (error instanceof ThreadOwnershipViolationError) throw error;
+      if (error instanceof WorkOwnershipViolationError) throw error;
       const owner = /^(workspaces|users)\/([^/]+)\//.exec(reportPath);
       if (!owner) {
         throw new Error(
