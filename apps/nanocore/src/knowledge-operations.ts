@@ -361,7 +361,7 @@ export function createKnowledgeOperationImplementations(
     if (!dependencies.knowledgeAgent || !coreDb)
       throw new OperationError('knowledge_unavailable', 'Knowledge Manager is unavailable.', 503);
     const db = repositoryWorkspaceDb(input.workspaceId);
-    const call = startCapabilityCall({
+    const call = await startCapabilityCall({
       workspaceDb: db,
       workspaceId: input.workspaceId,
       authorityActor: context.actorRef,
@@ -391,7 +391,7 @@ export function createKnowledgeOperationImplementations(
           outputTurnId: context.queryContext?.turnId,
         },
       });
-      finishCapabilityCall({
+      await finishCapabilityCall({
         workspaceDb: db,
         callId: call.id,
         status: 'succeeded',
@@ -399,7 +399,7 @@ export function createKnowledgeOperationImplementations(
       });
       return result;
     } catch (error) {
-      finishCapabilityCall({
+      await finishCapabilityCall({
         workspaceDb: db,
         callId: call.id,
         status: 'failed',
@@ -1403,8 +1403,8 @@ export function createKnowledgeOperationImplementations(
             : null;
         if (receipt && receipt.inputHash !== commandInputHash(input))
           throw new IdempotencyKeyConflictError();
-        store.projectKnowledgeProposalDraft(workspaceId, proposalId);
-        const decision = store.projectKnowledgeProposalDecision(workspaceId, input.reviewId);
+        await store.projectKnowledgeProposalDraft(workspaceId, proposalId);
+        const decision = await store.projectKnowledgeProposalDecision(workspaceId, input.reviewId);
         if (
           decision.review.proposalId !== proposalId ||
           decision.review.decision !== 'accepted' ||

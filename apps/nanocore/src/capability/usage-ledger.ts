@@ -219,7 +219,7 @@ export interface FinishCapabilityCallInput {
 /** Input for binding a running call to its observed schema snapshot. */
 export interface StampCapabilityCallSchemaSnapshotInput {
   /** Database handle for the immutable call owner. */
-  readonly workspaceDb: WorkspaceDb | CoreDb;
+  readonly workspaceDb: Pick<WorkspaceDb, 'sqlite'>;
   /** Durable running capability call id. */
   readonly callId: string;
   /** Stable schema snapshot id used for validation. */
@@ -434,7 +434,7 @@ export function startCapabilityCall(
 
 /** Reads paired attribution captured before effect contact, including after process restart. */
 function readCapabilityAdmissionAttribution(
-  db: WorkspaceDb | CoreDb,
+  db: Pick<WorkspaceDb, 'sqlite'>,
   callId: string
 ): Pick<AuditEvent, 'actor' | 'authentication' | 'requestId'> {
   const row = db.sqlite
@@ -573,7 +573,7 @@ export function recordUsage(input: RecordUsageInput): string[] {
  * @returns The retained measurement ID when an equivalent record is already stored.
  */
 function hasEquivalentUsageRecord(
-  workspaceDb: WorkspaceDb | CoreDb,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
   usage: UsageRecord | ServerUsageRecord
 ): string | undefined {
   const row = workspaceDb.sqlite
@@ -901,7 +901,7 @@ export function importWorkspaceCapabilityUsageLedger(input: {
  * @returns Stored row when present.
  */
 function findCapabilityCallById(
-  workspaceDb: WorkspaceDb | CoreDb,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
   callId: string
 ): CapabilityCallRow | undefined {
   const row = workspaceDb.sqlite
