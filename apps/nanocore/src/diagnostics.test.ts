@@ -118,7 +118,7 @@ describe('Settings diagnostics app API', () => {
           baseUrl: 'https://user:password@openrouter.ai/api/v1',
           displayName: 'OpenRouter',
           id: 'openrouter',
-          kind: 'gateway',
+          kind: 'llm-gateway',
           models: ['openai/gpt-5.1'],
           secretRef: 'env:OPENROUTER_API_KEY',
         },
@@ -149,7 +149,7 @@ describe('Settings diagnostics app API', () => {
           displayName: 'OpenRouter',
           gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
           id: 'openrouter',
-          kind: 'gateway',
+          kind: 'llm-gateway',
           models: ['openai/gpt-5.1'],
         },
       ]);

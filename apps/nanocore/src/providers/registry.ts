@@ -179,7 +179,7 @@ export class ProviderRegistry {
  * @returns True for hosted provider kinds or profiles that explicitly declare credentials.
  */
 export function providerRequiresCredentials(profile: ProviderProfile): boolean {
-  return profile.kind === 'direct' || profile.kind === 'gateway' || Boolean(profile.secretRef);
+  return profile.kind === 'direct' || profile.kind === 'llm-gateway' || Boolean(profile.secretRef);
 }
 
 /**

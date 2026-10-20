@@ -105,7 +105,7 @@ Each Provider file declares one Server-supplied Provider profile. `server.jsonc.
 | --- | --- |
 | `id` | Stable private Provider profile ID. |
 | `displayName` | Operator-facing label. |
-| `kind` | `direct`, `gateway`, `local`, `oauth`, or `custom`. |
+| `kind` | `direct`, `llm-gateway`, `local`, `oauth`, or `custom`. Historical `gateway` is supported only when reading retained v1 profiles. |
 | `vendor` | Optional Provider family used by adapters and subscription routing. |
 | `baseUrl` | Optional API endpoint without URL credentials. |
 | `models` | Non-empty list of private upstream model IDs. |

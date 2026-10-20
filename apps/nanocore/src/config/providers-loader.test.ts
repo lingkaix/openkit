@@ -44,7 +44,7 @@ const EXPECTED_V003_PROVIDER_TEMPLATES = [
     displayName: 'OpenRouter',
     fileName: 'openrouter-default.provider.jsonc',
     id: 'openrouter',
-    kind: 'gateway',
+    kind: 'llm-gateway',
   },
   {
     baseUrl: 'https://api.x.ai/v1',

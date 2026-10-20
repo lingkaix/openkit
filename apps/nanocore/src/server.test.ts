@@ -5480,7 +5480,7 @@ describe('nanocore server', () => {
           defaultModel: 'openai/gpt-5.2',
           displayName: 'OpenRouter',
           id: 'agent-openrouter',
-          kind: 'gateway',
+          kind: 'llm-gateway',
           models: ['openai/gpt-5.2'],
           secretRef: 'vault://vault_00000000-0000-773b-907f-1cbec0ca03c0',
         },

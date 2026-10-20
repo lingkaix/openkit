@@ -328,7 +328,7 @@ describe('resolveLogicalModelCatalog', () => {
       new ProviderRegistry([
         profile({
           id: 'openrouter-test',
-          kind: 'gateway',
+          kind: 'llm-gateway',
           models: ['openrouter/free'],
           vendor: 'openrouter',
         }),
@@ -720,7 +720,7 @@ describe('resolveLogicalModelCatalog', () => {
     const effective = resolveEffectiveModelMetadata(
       profile({
         id: 'openrouter-test',
-        kind: 'gateway',
+        kind: 'llm-gateway',
         modelMetadata: {
           'openai/gpt-5.1': {
             cost: { input: 0 },
@@ -744,7 +744,7 @@ describe('resolveLogicalModelCatalog', () => {
     const inherited = resolveEffectiveModelMetadata(
       profile({
         id: 'openrouter-test',
-        kind: 'gateway',
+        kind: 'llm-gateway',
         models: ['openai/gpt-5.1'],
         vendor: 'openrouter',
       }),
@@ -756,7 +756,7 @@ describe('resolveLogicalModelCatalog', () => {
     const replaced = resolveEffectiveModelMetadata(
       profile({
         id: 'openrouter-test',
-        kind: 'gateway',
+        kind: 'llm-gateway',
         modelMetadata: {
           'openai/gpt-5.1': {
             limit: { context: 8192 },

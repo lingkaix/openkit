@@ -10,7 +10,7 @@ import {
 /**
  * Supported provider profile kinds.
  */
-export const ProviderKindSchema = z.enum(['direct', 'gateway', 'local', 'oauth', 'custom']);
+export const ProviderKindSchema = z.enum(['direct', 'llm-gateway', 'local', 'oauth', 'custom']);
 
 /**
  * Supported provider profile kind.
@@ -225,8 +225,9 @@ export const ProviderProfileSchema = ProviderProfileObjectSchema.superRefine(
   addProviderProfileCrossFieldIssues
 );
 
-/** Authored Provider file format v1; native I/O checks this marker before decoding the profile. */
+/** Authored Provider v1; only its historical gateway kind is normalized, without rewriting bytes. */
 export const AuthoredProviderProfileSchema = ProviderProfileObjectSchema.extend({
+  kind: z.preprocess((kind) => (kind === 'gateway' ? 'llm-gateway' : kind), ProviderKindSchema),
   schemaVersion: z.literal(RETAINED_FORMAT_VERSION),
 }).superRefine(addProviderProfileCrossFieldIssues);
 

@@ -66,7 +66,7 @@ function supply(kind: SupplyCase) {
             },
           }
         : {
-            kind: 'gateway' as const,
+            kind: 'llm-gateway' as const,
             vendor: 'openai',
             baseUrl: 'https://inference.example.com/v1',
             secretRef: 'env:READINESS_FIXTURE_KEY',
