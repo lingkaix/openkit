@@ -489,6 +489,7 @@ export function prepareKnowledgeMaintenance(
             .listKnowledgeSources(input.workspaceId)
             .map((source) => [source.id, source.contentDigest])
         );
+        const editableSources = new Set(suppliedSource ? [suppliedSource.id] : []);
         for (const supplied of input.sources) {
           const resolution = resolveRegisteredKnowledgeSourceReference(
             supplied.startsWith('source:') ? supplied : `source:${supplied}`,
@@ -496,6 +497,7 @@ export function prepareKnowledgeMaintenance(
           );
           if (!resolution.resolved || !resolution.targetId)
             throw new NotebookError('invalid_request');
+          editableSources.add(resolution.targetId);
           sources.set(
             resolution.targetId,
             store.getKnowledgeSource(input.workspaceId, resolution.targetId)
@@ -506,6 +508,16 @@ export function prepareKnowledgeMaintenance(
           admitBytes(text);
           sourceFiles[source.id] = text;
           admittedReferences.add(`source:${source.id}@${source.contentDigest}`);
+        }
+        for (const id of editableSources) {
+          const path = `@sources/${id}.md`;
+          const content = notebook.readContent(baseRevision, [path])[path]!;
+          admitBytes(content);
+          files[path] = content;
+          const parsed = parseOkfDocument({ path, content });
+          if (!parsed.ok) throw new NotebookError('recovery_required');
+          for (const ref of stringListFrontmatterField(parsed.document, 'source_refs') ?? [])
+            admittedReferences.add(ref);
         }
         const historyReads: Array<{ notebookRevision: string; path: string; content: string }> = [];
         const assertCurrent = () => {
@@ -519,7 +531,7 @@ export function prepareKnowledgeMaintenance(
                 source.contentDigest
             )
               throw new NotebookError('recovery_required');
-          for (const path of Object.keys(files))
+          for (const path of Object.keys(files).filter((path) => !path.startsWith('@sources/')))
             readAuthorizedWorkspaceNotebookPages({ ...target, pageIds: [path.slice(0, -3)] });
           for (const selection of historyReads) {
             const page = readAuthorizedWorkspaceNotebookPages({
@@ -558,14 +570,20 @@ export function prepareKnowledgeMaintenance(
             const request = { ...edit, workspaceId: input.workspaceId };
             const refs = [
               ...new Set(
-                edit.changes.flatMap(({ path, content }) =>
-                  content === null
-                    ? []
-                    : (stringListFrontmatterField(
-                        parseOkfDocument({ path, content }).document!,
-                        'source_refs'
-                      ) ?? [])
-                )
+                edit.changes.flatMap(({ path, content }) => {
+                  if (content === null) return [];
+                  const parsed = parseOkfDocument({ path, content });
+                  if (!parsed.ok) throw new NotebookError('invalid_request');
+                  const refs = stringListFrontmatterField(parsed.document, 'source_refs') ?? [];
+                  if (path.startsWith('@sources/')) {
+                    const id = path.slice('@sources/'.length, -3);
+                    const source = sources.get(id);
+                    if (!editableSources.has(id) || !source)
+                      throw new NotebookError('invalid_request');
+                    refs.push(`source:${id}@${source.contentDigest}`);
+                  }
+                  return refs;
+                })
               ),
             ].sort();
             if (refs.some((ref) => !admittedReferences.has(ref)))
@@ -702,13 +720,13 @@ export function prepareKnowledgeMaintenance(
           tool(
             'knowledge.notebook-workspace.update',
             'script',
-            'Run an edit script against the admitted virtual Knowledge snapshot. This edits pages but does not publish them; submit the prior edits with knowledge.notebook.update.',
+            'Run an edit script against the admitted virtual Knowledge snapshot. This edits pages and selected Source summaries; submit the prior edits with knowledge.notebook.update.',
             (value) => editor.workspaceUpdate({ script: value.script! })
           ),
           tool(
             'knowledge.notebook.update',
             'summary',
-            'Submit prior knowledge.notebook-workspace.update edits for Knowledge page publication or required Review. The summary describes the edits and is not page content. Literal Source capture is not Knowledge page integration. A native no_change outcome means the editor has no page changes.',
+            'Submit prior knowledge.notebook-workspace.update edits for Knowledge publication or required Review. The summary describes the edits and is not page content. Literal Source capture is not Knowledge page integration. A native no_change outcome means the editor has no page changes.',
             async (value) => {
               const result = await editor.notebookUpdate({ summary: value.summary! });
               if (result.outcome === 'no_change') outcome = response('no-change', value.summary!);

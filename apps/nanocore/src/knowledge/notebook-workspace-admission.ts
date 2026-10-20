@@ -25,6 +25,8 @@ import {
   stringListFrontmatterField,
 } from './okf.js';
 
+import { assertSourcePointerEdit } from './source-pointers.js';
+
 /** Current native owners needed at the final direct-human Workspace publication boundary. */
 interface WorkspacePublicationAuthority {
   readonly store: FsStore;
@@ -169,6 +171,17 @@ export function readWorkspaceNotebookAdmission(
     visited.add(key);
     resolvedReferences.set(path.slice(0, -3), resolved);
   };
+  // A summary edit admits the Source itself, even when its supporting source_refs list is empty.
+  for (const { path, content } of input.request.changes) {
+    if (!path.startsWith('@sources/')) continue;
+    const id = path.slice('@sources/'.length, -3);
+    const source = sourceRecords.get(id);
+    const original = input.notebook.readSourcePointers(base.revision)[id];
+    if (!source || original === undefined || content === null)
+      throw new NotebookError('invalid_request');
+    assertSourcePointerEdit(original, content);
+    if (source.originatingThreadId) permitThreadDisclosure(source.originatingThreadId);
+  }
   // Deletion and its replay still require current access to the exact removed bytes and Sources.
   for (const { path, content } of input.request.changes) {
     if (content !== null || !base.entries[path]) continue;

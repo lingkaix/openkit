@@ -69449,9 +69449,18 @@
             "minLength": 1
           },
           "path": {
-            "type": "string",
-            "maxLength": 243,
-            "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 243,
+                "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
+              },
+              {
+                "type": "string",
+                "maxLength": 243,
+                "pattern": "^@sources\\/[^/]+\\.md$"
+              }
+            ]
           },
           "offset": {
             "default": 0,
@@ -69492,15 +69501,33 @@
             "maxItems": 256,
             "type": "array",
             "items": {
-              "type": "string",
-              "maxLength": 243,
-              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 243,
+                  "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
+                },
+                {
+                  "type": "string",
+                  "maxLength": 243,
+                  "pattern": "^@sources\\/[^/]+\\.md$"
+                }
+              ]
             }
           },
           "path": {
-            "type": "string",
-            "maxLength": 243,
-            "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 243,
+                "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
+              },
+              {
+                "type": "string",
+                "maxLength": 243,
+                "pattern": "^@sources\\/[^/]+\\.md$"
+              }
+            ]
           },
           "before": {
             "anyOf": [
@@ -70118,9 +70145,18 @@
                     "changedPaths": {
                       "type": "array",
                       "items": {
-                        "type": "string",
-                        "maxLength": 243,
-                        "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "maxLength": 243,
+                            "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
+                          },
+                          {
+                            "type": "string",
+                            "maxLength": 243,
+                            "pattern": "^@sources\\/[^/]+\\.md$"
+                          }
+                        ]
                       }
                     }
                   },
@@ -70247,9 +70283,18 @@
               "type": "object",
               "properties": {
                 "path": {
-                  "type": "string",
-                  "maxLength": 243,
-                  "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "maxLength": 243,
+                      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
+                    },
+                    {
+                      "type": "string",
+                      "maxLength": 243,
+                      "pattern": "^@sources\\/[^/]+\\.md$"
+                    }
+                  ]
                 },
                 "before": {
                   "type": [
@@ -70430,9 +70475,18 @@
               "type": "object",
               "properties": {
                 "path": {
-                  "type": "string",
-                  "maxLength": 243,
-                  "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "maxLength": 243,
+                      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
+                    },
+                    {
+                      "type": "string",
+                      "maxLength": 243,
+                      "pattern": "^@sources\\/[^/]+\\.md$"
+                    }
+                  ]
                 },
                 "content": {
                   "type": [
@@ -71147,9 +71201,18 @@
             "minLength": 1
           },
           "path": {
-            "type": "string",
-            "maxLength": 243,
-            "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 243,
+                "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
+              },
+              {
+                "type": "string",
+                "maxLength": 243,
+                "pattern": "^@sources\\/[^/]+\\.md$"
+              }
+            ]
           },
           "offset": {
             "default": 0,
@@ -71189,15 +71252,33 @@
             "maxItems": 256,
             "type": "array",
             "items": {
-              "type": "string",
-              "maxLength": 243,
-              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 243,
+                  "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
+                },
+                {
+                  "type": "string",
+                  "maxLength": 243,
+                  "pattern": "^@sources\\/[^/]+\\.md$"
+                }
+              ]
             }
           },
           "path": {
-            "type": "string",
-            "maxLength": 243,
-            "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 243,
+                "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
+              },
+              {
+                "type": "string",
+                "maxLength": 243,
+                "pattern": "^@sources\\/[^/]+\\.md$"
+              }
+            ]
           },
           "before": {
             "anyOf": [
@@ -73130,9 +73211,18 @@
                     "changedPaths": {
                       "type": "array",
                       "items": {
-                        "type": "string",
-                        "maxLength": 243,
-                        "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "maxLength": 243,
+                            "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
+                          },
+                          {
+                            "type": "string",
+                            "maxLength": 243,
+                            "pattern": "^@sources\\/[^/]+\\.md$"
+                          }
+                        ]
                       }
                     }
                   },
@@ -73254,9 +73344,18 @@
               "type": "object",
               "properties": {
                 "path": {
-                  "type": "string",
-                  "maxLength": 243,
-                  "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "maxLength": 243,
+                      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
+                    },
+                    {
+                      "type": "string",
+                      "maxLength": 243,
+                      "pattern": "^@sources\\/[^/]+\\.md$"
+                    }
+                  ]
                 },
                 "before": {
                   "type": [
@@ -112225,9 +112324,18 @@
             "pattern": "^kp_[a-f0-9]{64}$"
           },
           "path": {
-            "type": "string",
-            "maxLength": 243,
-            "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 243,
+                "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
+              },
+              {
+                "type": "string",
+                "maxLength": 243,
+                "pattern": "^@sources\\/[^/]+\\.md$"
+              }
+            ]
           },
           "offset": {
             "default": 0,
@@ -112267,15 +112375,33 @@
             "maxItems": 256,
             "type": "array",
             "items": {
-              "type": "string",
-              "maxLength": 243,
-              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 243,
+                  "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
+                },
+                {
+                  "type": "string",
+                  "maxLength": 243,
+                  "pattern": "^@sources\\/[^/]+\\.md$"
+                }
+              ]
             }
           },
           "path": {
-            "type": "string",
-            "maxLength": 243,
-            "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 243,
+                "pattern": "^[a-z0-9][a-z0-9._-]{0,63}(?:\\/[a-z0-9][a-z0-9._-]{0,63})*\\.md$"
+              },
+              {
+                "type": "string",
+                "maxLength": 243,
+                "pattern": "^@sources\\/[^/]+\\.md$"
+              }
+            ]
           },
           "before": {
             "anyOf": [
@@ -150593,5 +150719,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:d4508568f560217012a0d46103b8cd0474d9b2db6273b79eff8bb997077f2c44"
+  "x-openkit-source-digest": "sha256:c0dc842a4b1c6d5bb78acaac509042466c7f3df6f59a6284e5bc48b716913726"
 }

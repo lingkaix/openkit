@@ -1,6 +1,7 @@
 import {
   KnowledgeBaseIdSchema,
   KnowledgeNotebookPageSchema,
+  KnowledgeSourceIdSchema,
   RequestIdSchema,
   WorkspaceIdSchema,
 } from '@openkit/protocol';
@@ -13,6 +14,18 @@ export const KnowledgeNotebookPathSchema = z
   .regex(/^[a-z0-9][a-z0-9._-]{0,63}(?:\/[a-z0-9][a-z0-9._-]{0,63})*\.md$/)
   .refine((path) => !path.slice(0, -3).endsWith('.md'));
 
+/** Transient edit address; the Source branch cannot collide with a bundle-relative Page path. */
+export const KnowledgeNotebookEditPathSchema = z.union([
+  KnowledgeNotebookPathSchema,
+  z
+    .string()
+    .max(243)
+    .regex(/^@sources\/[^/]+\.md$/)
+    .refine(
+      (path) => KnowledgeSourceIdSchema.safeParse(path.slice('@sources/'.length, -3)).success
+    ),
+]);
+
 /** Fixed-base explicit human edit; no actor, approval or filesystem root comes from this payload. */
 export const UpdateKnowledgeNotebookRequestSchema = z
   .object({
@@ -22,7 +35,7 @@ export const UpdateKnowledgeNotebookRequestSchema = z
       .array(
         z
           .object({
-            path: KnowledgeNotebookPathSchema,
+            path: KnowledgeNotebookEditPathSchema,
             content: z
               .string()
               .refine((text) => new TextEncoder().encode(text).length <= 2 * 1024 * 1024)

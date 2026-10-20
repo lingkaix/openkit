@@ -37,7 +37,7 @@ export type NotebookPublicationOperation =
   | 'knowledge.notebook.delete'
   | 'knowledge.package.import';
 
-/** Exact human edit submitted through native admission; paths are bundle-relative, never host paths. */
+/** Exact native edit; Page paths are bundle-relative and Source edit addresses use @sources/. */
 export interface NotebookUpdate {
   readonly workspaceId: string;
   readonly requestId: string;
@@ -359,12 +359,14 @@ export async function publishNotebook(
     // A saved unpublished candidate is not a completed publication.
     dependencies.notebook.history({ revision, limit: 1 });
     const base = dependencies.notebook.readRevision(request.baseRevision);
-    const expected = { ...base.files };
+    const baseContent = dependencies.notebook.readContent(request.baseRevision);
+    const candidateContent = dependencies.notebook.readContent(revision);
+    const expected = { ...baseContent };
     for (const { path, content } of request.changes) {
       if (content === null) delete expected[path];
       else
         expected[path] =
-          dependencies.reviewedCandidate || base.files[path] === content
+          dependencies.reviewedCandidate || baseContent[path] === content
             ? content
             : attributedNotebookPageBytes(
                 path,
@@ -373,9 +375,11 @@ export async function publishNotebook(
                 dependencies.producer.kind === 'agent' ? 'delegated' : 'user-authored'
               );
     }
+    for (const [id, content] of Object.entries(dependencies.sourcePointers ?? {}))
+      expected[`@sources/${id}.md`] = content;
     if (
-      Object.keys(expected).length !== Object.keys(candidate.files).length ||
-      Object.entries(expected).some(([path, content]) => candidate.files[path] !== content)
+      Object.keys(expected).length !== Object.keys(candidateContent).length ||
+      Object.entries(expected).some(([path, content]) => candidateContent[path] !== content)
     )
       throw new NotebookError('recovery_required');
     const changedPageIds = [
@@ -454,13 +458,14 @@ export async function publishNotebook(
         new Set(request.changes.map((change) => change.path)).size !== request.changes.length
       )
         throw new NotebookError('invalid_request');
-      const base = dependencies.notebook.readRevision(request.baseRevision);
-      const files = { ...base.files };
+      const baseContent = dependencies.notebook.readContent(request.baseRevision);
+      const base = { files: baseContent };
+      const files = { ...baseContent };
       for (const { path, content } of request.changes) {
         if (content === null) delete files[path];
         else
           files[path] =
-            dependencies.reviewedCandidate || base.files[path] === content
+            dependencies.reviewedCandidate || baseContent[path] === content
               ? content
               : attributedNotebookPageBytes(
                   path,
@@ -581,7 +586,7 @@ export async function publishNotebook(
           throw new NotebookError('conflict');
         // Verify the retained candidate before recording its human decision or advancing the ref.
         readNotebookAdmissionRevision(dependencies, request, evidence, ownerScope);
-        const retainedFiles = dependencies.notebook.readRevision(candidateRevision).files;
+        const retainedFiles = dependencies.notebook.readContent(candidateRevision);
         if (
           Object.keys(retainedFiles).length !== Object.keys(files).length ||
           Object.entries(files).some(([path, bytes]) => retainedFiles[path] !== bytes)
