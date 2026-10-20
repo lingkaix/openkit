@@ -1827,6 +1827,7 @@ pub struct LifecycleEffectOutput {
 async fn sandbox_delete_with_observation(
     deletion: impl std::future::Future<Output = Result<LifecycleEffectResult, EpochFault>>,
     observation: impl std::future::Future<Output = Option<serde_json::Value>>,
+    _operation_deadline: tokio::time::Instant,
 ) -> (
     Result<LifecycleEffectResult, EpochFault>,
     Option<serde_json::Value>,
@@ -2492,6 +2493,7 @@ impl EpochCoordinator {
                                     &sandbox.id,
                                     &sandbox.name,
                                 ),
+                                tokio::time::Instant::now() + lifecycle_timeout,
                             )
                             .await
                         }
@@ -5867,61 +5869,142 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resource_summary_race_starts_deletion_first_and_preserves_its_outcome() {
-        let started = std::cell::Cell::new(false);
-        let (release, released) = tokio::sync::oneshot::channel();
+    async fn resource_summary_collects_before_sdk_delete_can_remove_the_container() {
+        use std::io::Write;
+
+        let fixture = crate::resource_summary::collector_tests::Fixture::new();
         let deletion = async {
-            started.set(true);
-            released.await.unwrap();
-            Err(super::EpochFault::DeleteOutcomeUncertain)
+            writeln!(
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(fixture.root.join("events"))
+                    .unwrap(),
+                "sdk-delete"
+            )
+            .unwrap();
+            // The lifecycle boundary removes the only fixture observation source.
+            std::fs::remove_file(fixture.root.join("inspect.json")).unwrap();
+            Ok(crate::openshell_client::LifecycleEffectResult::SandboxDeleted)
         };
-        let observation = async {
-            assert!(started.get(), "diagnostics must not precede deletion");
-            release.send(()).unwrap();
-            Some(serde_json::json!({"pidsPeak": 2}))
-        };
-        let (result, summary) = super::sandbox_delete_with_observation(deletion, observation).await;
-        assert!(matches!(
-            result,
-            Err(super::EpochFault::DeleteOutcomeUncertain)
-        ));
-        assert_eq!(summary, Some(serde_json::json!({"pidsPeak": 2})));
         let (result, summary) = super::sandbox_delete_with_observation(
-            async { Ok(crate::openshell_client::LifecycleEffectResult::SandboxDeleted) },
-            async { panic!("completed deletion must not start collection") },
+            deletion,
+            fixture.observe(),
+            tokio::time::Instant::now() + Duration::from_secs(120),
         )
         .await;
         assert!(matches!(
             result,
             Ok(crate::openshell_client::LifecycleEffectResult::SandboxDeleted)
         ));
-        assert!(summary.is_none());
+        assert_eq!(
+            std::fs::read_to_string(fixture.root.join("events")).unwrap(),
+            "ls\ninspect\ninspect\nsdk-delete\n",
+            "all actual collector commands must finish before SDK deletion starts"
+        );
+        assert_eq!(
+            summary,
+            Some(serde_json::json!({"backendOomKilled": false, "exitState": "running"}))
+        );
+    }
+
+    /// Records observation destruction, which must precede SDK admission on timeout or completion.
+    struct ResourceObservationDrop<'a>(&'a std::cell::RefCell<Vec<&'static str>>);
+
+    impl Drop for ResourceObservationDrop<'_> {
+        fn drop(&mut self) {
+            self.0.borrow_mut().push("observation-dropped");
+        }
     }
 
     #[tokio::test]
-    async fn resource_summary_delete_completion_kills_a_started_stalled_collector() {
+    async fn resource_summary_abandons_stalled_private_io_before_sdk_delete() {
         let fixture = crate::resource_summary::collector_tests::Fixture::new();
         fixture.script(&format!(
             "echo $$ > '{}/child.pid'\nexec sleep 20\n",
             fixture.root.display()
         ));
+        let events = std::cell::RefCell::new(Vec::new());
+        let observation = async {
+            events.borrow_mut().push("observation-started");
+            let _drop = ResourceObservationDrop(&events);
+            fixture.observe().await
+        };
         let deletion = async {
+            events.borrow_mut().push("sdk-delete");
             fixture.child_pid().await;
-            Ok(crate::openshell_client::LifecycleEffectResult::SandboxDeleted)
+            Err(super::EpochFault::DeleteOutcomeUncertain)
         };
         let (result, summary) = tokio::time::timeout(
-            Duration::from_millis(750),
-            super::sandbox_delete_with_observation(deletion, fixture.observe()),
+            Duration::from_secs(3),
+            super::sandbox_delete_with_observation(
+                deletion,
+                observation,
+                tokio::time::Instant::now() + Duration::from_secs(120),
+            ),
         )
         .await
-        .expect("deletion must not wait for the one-second collector cap");
-        assert!(matches!(
-            result,
-            Ok(crate::openshell_client::LifecycleEffectResult::SandboxDeleted)
-        ));
-        assert!(summary.is_none());
+        .expect("the owned command and lifecycle must settle within the fixture guard");
         let pid = fixture.child_pid().await;
         fixture.assert_reaped(pid).await;
+        assert!(matches!(
+            result,
+            Err(super::EpochFault::DeleteOutcomeUncertain)
+        ));
+        assert!(summary.is_none());
+        assert_eq!(
+            *events.borrow(),
+            ["observation-started", "observation-dropped", "sdk-delete"]
+        );
+    }
+
+    /// Uses paused monotonic time to measure the collector allowance without scheduler tolerances.
+    async fn assert_resource_summary_allowance(remaining: Duration, expected: Duration) {
+        let start = tokio::time::Instant::now();
+        let events = std::cell::RefCell::new(Vec::new());
+        let observation = async {
+            events.borrow_mut().push("observation-started");
+            let _drop = ResourceObservationDrop(&events);
+            std::future::pending::<Option<serde_json::Value>>().await
+        };
+        let deletion = async {
+            events.borrow_mut().push("sdk-delete");
+            Err(super::EpochFault::DeleteOutcomeUncertain)
+        };
+        let (result, summary) = tokio::time::timeout(
+            Duration::from_secs(2),
+            super::sandbox_delete_with_observation(deletion, observation, start + remaining),
+        )
+        .await
+        .expect("stalled observation must not consume the lifecycle allowance");
+        assert!(matches!(
+            result,
+            Err(super::EpochFault::DeleteOutcomeUncertain)
+        ));
+        assert!(summary.is_none());
+        assert_eq!(tokio::time::Instant::now() - start, expected);
+        let expected_events = if remaining.is_zero() {
+            vec!["sdk-delete"]
+        } else {
+            vec!["observation-started", "observation-dropped", "sdk-delete"]
+        };
+        assert_eq!(*events.borrow(), expected_events);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn resource_summary_caps_collection_at_one_second_before_delete() {
+        assert_resource_summary_allowance(Duration::from_secs(120), Duration::from_secs(1)).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn resource_summary_uses_only_the_remaining_operation_budget() {
+        assert_resource_summary_allowance(Duration::from_millis(125), Duration::from_millis(125))
+            .await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn resource_summary_expired_operation_does_not_start_observation() {
+        assert_resource_summary_allowance(Duration::ZERO, Duration::ZERO).await;
     }
 
     #[tokio::test]
@@ -5934,6 +6017,7 @@ mod tests {
         let mut deletion = Box::pin(super::sandbox_delete_with_observation(
             std::future::pending(),
             fixture.observe(),
+            tokio::time::Instant::now() + Duration::from_secs(120),
         ));
         let pid = tokio::select! {
             pid = fixture.child_pid() => pid,

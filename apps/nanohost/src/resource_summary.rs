@@ -347,6 +347,76 @@ pub(crate) mod collector_tests {
     }
 
     #[tokio::test]
+    async fn resource_summary_independent_source_containment_excludes_parent_and_symlink() {
+        let fixture = Fixture::new();
+        let group = format!("host.slice/docker-{}.scope", fixture.id);
+        std::fs::create_dir_all(fixture.proc_root.join("42")).unwrap();
+        std::fs::create_dir_all(fixture.cgroup_root.join(&group)).unwrap();
+        std::fs::write(
+            fixture.proc_root.join("42/cgroup"),
+            format!("0::/{group}\n"),
+        )
+        .unwrap();
+        // Both decoys are valid numbers, so a parser cannot hide a containment failure.
+        std::fs::write(fixture.cgroup_root.join("host.slice/memory.peak"), "999999").unwrap();
+        let outside = fixture.root.join("unrelated-memory.peak");
+        std::fs::write(&outside, "888888").unwrap();
+        std::os::unix::fs::symlink(
+            &outside,
+            fixture.cgroup_root.join(&group).join("memory.peak"),
+        )
+        .unwrap();
+        std::fs::write(fixture.cgroup_root.join(&group).join("pids.peak"), "3").unwrap();
+        std::fs::write(
+            fixture.cgroup_root.join(&group).join("cpu.stat"),
+            "usage_usec 500000\nthrottled_usec invalid\n",
+        )
+        .unwrap();
+        assert_eq!(
+            fixture.observe().await,
+            Some(json!({"pidsPeak": 3, "cpuUsageSeconds": 0.5,
+                "backendOomKilled": false, "exitState": "running"}))
+        );
+        std::fs::write(fixture.proc_root.join("42/cgroup"), "0::/host.slice\n").unwrap();
+        assert_eq!(
+            fixture.observe().await,
+            Some(json!({"backendOomKilled": false, "exitState": "running"}))
+        );
+    }
+
+    #[tokio::test]
+    async fn resource_summary_independent_final_identity_loss_discards_observation() {
+        for gone in [false, true] {
+            let fixture = Fixture::new();
+            let mut changed: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(fixture.root.join("inspect.json")).unwrap())
+                    .unwrap();
+            changed[0]["Config"]["Labels"]["openshell.ai/sandbox-name"] =
+                json!("different-sandbox");
+            std::fs::write(fixture.root.join("changed.json"), changed.to_string()).unwrap();
+            let final_reply = if gone {
+                "exit 1".to_string()
+            } else {
+                format!("cat '{}/changed.json'", fixture.root.display())
+            };
+            fixture.script(&format!(
+                "if [ \"$4\" = ls ]; then printf '%s\\n' '{}';\n\
+                 elif [ -e '{}/seen' ]; then {final_reply};\n\
+                 else touch '{}/seen'; cat '{}/inspect.json'; fi\n",
+                fixture.id,
+                fixture.root.display(),
+                fixture.root.display(),
+                fixture.root.display(),
+            ));
+            assert!(fixture.observe().await.is_none());
+            assert_eq!(
+                std::fs::read_to_string(fixture.root.join("events")).unwrap(),
+                "ls\ninspect\ninspect\n"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn resource_summary_collects_exact_lifetime_counters_and_checks_presence() {
         let fixture = Fixture::new();
         let group = format!("system.slice/docker-{}.scope", fixture.id);
