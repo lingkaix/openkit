@@ -30,7 +30,7 @@ import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { prepareKnowledgeMaintenance } from './knowledge-agent-maintenance.js';
 import { KnowledgeNotebook } from './notebook.js';
-import type { NotebookUpdate } from './notebook-publication.js';
+import { type NotebookUpdate, publishWorkspaceNotebook } from './notebook-publication.js';
 import { readWorkspaceNotebookAdmission } from './notebook-workspace-admission.js';
 import { parseOkfDocument, updateOkfFrontmatter } from './okf.js';
 import { parseSourcePointer } from './source-pointers.js';
@@ -140,6 +140,106 @@ async function fixture() {
 }
 
 describe('ordinary SourceSummary editing through native owners', () => {
+  it.each([
+    'unchanged Source summary',
+    'joint Source summary repair',
+  ])('preserves live Page links during confirmed deletion with %s', async (mode) => {
+    const f = await fixture();
+    const linked = updateOkfFrontmatter({
+      path: f.sourcePath,
+      content: f.pointer,
+      updates: {},
+      body: '[Notes](../pages/unrelated.md)\n',
+    });
+    const linkedResult = await f.call('knowledge.notebook.update', {
+      requestId: randomUUID(),
+      baseRevision: f.baseRevision,
+      summary: 'Link the existing curated Page from the Source summary',
+      changes: [{ path: f.path, content: linked }],
+    });
+    expect(linkedResult.status, JSON.stringify(linkedResult.body)).toBe(200);
+    const linkedRevision = f.notebook.publishedRevision();
+    expect(f.notebook.readSourcePointers(linkedRevision)[f.source.id]).toBe(linked);
+    if (mode === 'unchanged Source summary') {
+      const deleted = await f.call('knowledge.notebook.delete', {
+        requestId: randomUUID(),
+        baseRevision: linkedRevision,
+        path: 'unrelated.md',
+        expectedContentDigest: `sha256:${createHash('sha256').update(f.page).digest('hex')}`,
+        confirmRemoval: true,
+        summary: 'Attempt exact confirmed removal while a live Source summary still links here',
+      });
+      expect(deleted.status, JSON.stringify(deleted.body)).toBe(400);
+      expect(f.notebook.publishedRevision()).toBe(linkedRevision);
+      expect(f.notebook.readRevision(linkedRevision).files['unrelated.md']).toBe(f.page);
+      expect(f.notebook.readSourcePointers(linkedRevision)[f.source.id]).toBe(linked);
+    } else {
+      const repaired = updateOkfFrontmatter({
+        path: f.sourcePath,
+        content: linked,
+        updates: {},
+        body: 'The linked Page was removed; retained Source evidence is unchanged.\n',
+      });
+      const request: NotebookUpdate = {
+        workspaceId: f.workspace.id,
+        requestId: randomUUID(),
+        baseRevision: linkedRevision,
+        summary: 'Remove the exactly confirmed Page and repair its live Source link together',
+        changes: [
+          { path: 'unrelated.md', content: null },
+          { path: f.path, content: repaired },
+        ],
+      };
+      const actor = { kind: 'user', id: f.userId } as const;
+      const snapshot = createInMemoryRuntimeConfigSnapshot({ dataRoot: null });
+      const runtimeConfigManager = { current: () => snapshot };
+      const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+      const currentAuthority = () => {
+        if (!currentWorkspaceAuthority(f.coreDb, f.workspace.id, actor, 'knowledge.write', true))
+          throw new OperationError(
+            'workspace_access_denied',
+            'Current native admission denied.',
+            403
+          );
+      };
+      // Native confirmation binds both removed bytes and the complete joint candidate.
+      const published = await publishWorkspaceNotebook(
+        {
+          store: f.store,
+          workspaceDb: f.workspaceDb,
+          notebook: f.notebook,
+          actor,
+          producer: actor,
+          confirmedRemovals: { 'unrelated.md': f.page },
+          inflightCommands: new WeakMap(),
+          revalidate: () =>
+            readWorkspaceNotebookAdmission({
+              store: f.store,
+              coreDb: f.coreDb,
+              workspaceDb: f.workspaceDb,
+              notebook: f.notebook,
+              runtimeConfigManager,
+              workspaceMutationAdmission,
+              currentAuthority,
+              actor,
+              request,
+            }),
+        },
+        request
+      );
+      const reopened = new KnowledgeNotebook({ repositoryPath: f.repositoryPath });
+      expect(reopened.publishedRevision()).toBe(published.notebookRevision);
+      expect(reopened.readRevision(published.notebookRevision).files).not.toHaveProperty(
+        'unrelated.md'
+      );
+      expect(reopened.readSourcePointers(published.notebookRevision)[f.source.id]).toBe(repaired);
+      expect(parseSourcePointer(f.owner, f.source.id, repaired).fields).toEqual(f.parsed.fields);
+    }
+    expect(f.notebook.readRevision(linkedRevision).files['unrelated.md']).toBe(f.page);
+    expect(f.notebook.readSourcePointers(linkedRevision)[f.source.id]).toBe(linked);
+    expect(readFileSync(f.rawPath)).toEqual(Buffer.from(f.original));
+  });
+
   it('separates transient Source edit addresses from curated Page paths', () => {
     const id = allocateEntityId('ks');
     const sourceAddress = `@sources/${id}.md`;
