@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
@@ -21,6 +21,77 @@ import { respondRecordedApproval } from './pending-request-flow.js';
 import { readPendingRequest } from './pending-requests.js';
 
 describe('Goal durable owner', () => {
+  it('rolls back the Goal Thread with its rejected receipt and retries the same request once', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'goal-receipt-rollback-'));
+    const store = new FsStore({ dataRoot: root });
+    const workspace = store.createWorkspace('Goal receipt rollback');
+    let db = openWorkspaceDb(root, workspace.id);
+    applyScopedMigrations(db);
+    const context = {
+      actor: { kind: 'local' as const, userId: 'usr_00000000-0000-7000-8000-000000000001' },
+    };
+    const input = {
+      workspaceId: workspace.id,
+      requestId: '55555555-5555-4555-8555-555555555555',
+      intent: 'Produce a reviewed design',
+    };
+    const scope = { workspaceId: workspace.id, actorId: context.actor.userId };
+    try {
+      // Abort the final receipt in the real owner's transaction, after Goal and Thread creation.
+      db.sqlite.exec(`
+        CREATE TRIGGER reject_goal_receipt BEFORE INSERT ON idempotency_requests
+        WHEN NEW.command_name = 'goal.create'
+        BEGIN SELECT RAISE(ABORT, 'goal receipt rejected'); END;
+      `);
+      await expect(
+        executeGoalOperation('goal.create', input, context, store, db)
+      ).rejects.toMatchObject({
+        code: 'SQLITE_CONSTRAINT_TRIGGER',
+        message: 'goal receipt rejected',
+      });
+      expect(db.sqlite.prepare('SELECT goal_id FROM goals').all()).toEqual([]);
+      expect(db.sqlite.prepare('SELECT request_id FROM idempotency_requests').all()).toEqual([]);
+      expect(store.getCommandRequest('goal.create', input.requestId, scope, db)).toBeNull();
+      const inMemory = store.listThreads(workspace.id).map((thread) => thread.id);
+      const canonicalFiles = readdirSync(join(root, 'workspaces', workspace.id), {
+        recursive: true,
+      }).filter((path) => /(?:^|[/\\])thread\.json$/.test(path as string));
+      db.sqlite.exec('DROP TRIGGER reject_goal_receipt');
+      db.sqlite.close();
+      db = openWorkspaceDb(root, workspace.id);
+      const reopened = new FsStore({ dataRoot: root });
+      expect(db.sqlite.prepare('SELECT goal_id FROM goals').all()).toEqual([]);
+      expect(db.sqlite.prepare('SELECT request_id FROM idempotency_requests').all()).toEqual([]);
+      expect(reopened.getCommandRequest('goal.create', input.requestId, scope, db)).toBeNull();
+      expect({
+        inMemory,
+        canonicalFiles,
+        afterReopen: reopened.listThreads(workspace.id).map((thread) => thread.id),
+      }).toEqual({ inMemory: [], canonicalFiles: [], afterReopen: [] });
+
+      const created = await executeGoalOperation('goal.create', input, context, reopened, db);
+      expect(created.goal).toMatchObject({ intent: input.intent });
+      expect(await executeGoalOperation('goal.create', input, context, reopened, db)).toEqual(
+        created
+      );
+      expect(reopened.listThreads(workspace.id).map((thread) => thread.id)).toEqual([
+        created.goal!.threadId,
+      ]);
+      expect(db.sqlite.prepare('SELECT goal_id FROM goals').all()).toEqual([
+        { goal_id: created.goal!.goalId },
+      ]);
+      expect(db.sqlite.prepare('SELECT request_id FROM idempotency_requests').all()).toEqual([
+        { request_id: input.requestId },
+      ]);
+      expect(reopened.getCommandRequest('goal.create', input.requestId, scope, db)).toMatchObject({
+        response: { kind: 'goal', id: created.goal!.goalId },
+      });
+    } finally {
+      db.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('creates intent and cards without work and preserves intent history after revision', async () => {
     const root = mkdtempSync(join(tmpdir(), 'goal-owner-'));
     const store = new FsStore({ dataRoot: root });

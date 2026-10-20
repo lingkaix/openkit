@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
@@ -22,6 +22,7 @@ import {
   maintainKnowledgeAgent,
   prepareKnowledgeMaintenance,
 } from './knowledge-agent-maintenance.js';
+import { runKnowledgeMaintenanceCommand } from './knowledge-maintenance-command.js';
 import { KnowledgeNotebook } from './notebook.js';
 import { updateOkfFrontmatter } from './okf.js';
 
@@ -206,6 +207,95 @@ function fixture(
 }
 
 describe('Workspace Knowledge Manager maintenance admission', () => {
+  it('leaves no prepared Thread or Turn when its receipt is rejected and retries once', async () => {
+    const f = fixture();
+    const root = f.dependencies.coreDb.dataRoot;
+    const workspaceRoot = join(root, 'workspaces', f.workspace.id);
+    const threadsBefore = f.store.listThreads(f.workspace.id).map((thread) => thread.id);
+    const turnsBefore = threadsBefore.flatMap((id) =>
+      f.store.listThreadTurns(f.workspace.id, id).map((turn) => turn.id)
+    );
+    const filesBefore = readdirSync(workspaceRoot, { recursive: true })
+      .filter((path) => /(?:^|[/\\])(?:thread|turn)\.json$/.test(path as string))
+      .sort();
+    const scope = { workspaceId: f.workspace.id, actorId: f.input.actor.id };
+    let db = f.dependencies.openWorkspace(f.workspace.id);
+    try {
+      // A persistent fixture trigger also reaches the command owner's separate connection.
+      db.sqlite.exec(`
+        CREATE TRIGGER reject_maintenance_receipt BEFORE INSERT ON idempotency_requests
+        WHEN NEW.command_name = 'knowledge.maintain'
+        BEGIN SELECT RAISE(ABORT, 'maintenance receipt rejected'); END;
+      `);
+      await expect(runKnowledgeMaintenanceCommand(f.dependencies, f.input)).rejects.toMatchObject({
+        code: 'SQLITE_CONSTRAINT_TRIGGER',
+        message: 'maintenance receipt rejected',
+      });
+      expect(f.run).not.toHaveBeenCalled();
+      expect(
+        f.store.getCommandRequest('knowledge.maintain', f.input.requestId, scope, db)
+      ).toBeNull();
+      expect(
+        db.sqlite
+          .prepare(
+            "SELECT request_id FROM idempotency_requests WHERE command_name = 'knowledge.maintain'"
+          )
+          .all()
+      ).toEqual([]);
+      const inMemory = f.store.listThreads(f.workspace.id).map((thread) => thread.id);
+      const turnsInMemory = inMemory.flatMap((id) =>
+        f.store.listThreadTurns(f.workspace.id, id).map((turn) => turn.id)
+      );
+      const canonicalFiles = readdirSync(workspaceRoot, { recursive: true })
+        .filter((path) => /(?:^|[/\\])(?:thread|turn)\.json$/.test(path as string))
+        .sort();
+      db.sqlite.exec('DROP TRIGGER reject_maintenance_receipt');
+      db.sqlite.close();
+      db = f.dependencies.openWorkspace(f.workspace.id);
+      const reopened = new FsStore({ dataRoot: root });
+      const afterReopen = reopened.listThreads(f.workspace.id).map((thread) => thread.id);
+      expect(
+        reopened.getCommandRequest('knowledge.maintain', f.input.requestId, scope, db)
+      ).toBeNull();
+      expect({
+        inMemory,
+        turnsInMemory,
+        canonicalFiles,
+        afterReopen,
+        turnsAfterReopen: afterReopen.flatMap((id) =>
+          reopened.listThreadTurns(f.workspace.id, id).map((turn) => turn.id)
+        ),
+      }).toEqual({
+        inMemory: threadsBefore,
+        turnsInMemory: turnsBefore,
+        canonicalFiles: filesBefore,
+        afterReopen: threadsBefore,
+        turnsAfterReopen: turnsBefore,
+      });
+
+      const result = await runKnowledgeMaintenanceCommand(f.dependencies, f.input);
+      expect(result.outcome).toBe('published');
+      expect(await runKnowledgeMaintenanceCommand(f.dependencies, f.input)).toEqual(result);
+      expect(f.run).toHaveBeenCalledTimes(1);
+      expect(f.store.listThreads(f.workspace.id).map((thread) => thread.id)).toEqual([
+        ...threadsBefore,
+        result.threadId,
+      ]);
+      expect(
+        f.store.listThreadTurns(f.workspace.id, result.threadId).map((turn) => turn.id)
+      ).toEqual([result.turnId]);
+      expect(
+        db.sqlite
+          .prepare(
+            "SELECT request_id FROM idempotency_requests WHERE command_name = 'knowledge.maintain'"
+          )
+          .all()
+      ).toEqual([{ request_id: f.input.requestId }]);
+    } finally {
+      db.sqlite.close();
+    }
+  });
+
   it('returns actionable feedback until a native notebook outcome exists', async () => {
     const f = fixture();
     f.run.mockImplementationOnce(async (run) => {
