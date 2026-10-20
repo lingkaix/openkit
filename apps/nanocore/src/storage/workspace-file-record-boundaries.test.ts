@@ -1,19 +1,22 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
   appendFileSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
+  readlinkSync,
   renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-
+import { join, relative } from 'node:path';
 import { ItemSchema, PROTOCOL_VERSION, writeRetainedV1 } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
+import { scopeAdmissionFailures } from '../bootstrap/readiness.js';
 
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { FsStore } from '../lib/store.js';
@@ -126,6 +129,67 @@ function createNotebookBoundaryFixture() {
   };
 }
 
+/**
+ * Validates one retained fault in a fresh admission lifetime without resetting process state.
+ *
+ * Copies exact authority, seeds an independent healthy sibling, and checks refusal and preservation.
+ * Each copy has a new root identity, so later faults cannot reuse an earlier refusal.
+ *
+ * @param dataRoot Source fixture containing the injected fault.
+ * @param workspaceId Owning Workspace that must be quarantined.
+ * @returns Reopened Store and isolated root for additional native readback checks.
+ */
+function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
+  const restartRoot = mkdtempSync(join(tmpdir(), 'openkit-local-refusal-'));
+  onTestFinished(() => rmSync(restartRoot, { recursive: true, force: true }));
+  const seed = new FsStore({ dataRoot: restartRoot });
+  const sibling = seed.createWorkspace('Healthy refusal control');
+  const siblingThread = seed.createThread(sibling.id, 'Retained sibling thread');
+  const siblingBefore = seed.getWorkspace(sibling.id);
+  cpSync(dataRoot, restartRoot, { recursive: true, verbatimSymlinks: true });
+
+  /** Records every directory, link target and file byte, including the absence of deleted entries. */
+  function snapshot(root: string): Record<string, Buffer | string> {
+    const entries: Record<string, Buffer | string> = {};
+    const visit = (directory: string, prefix = '') => {
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        const key = join(prefix, entry.name);
+        const path = join(directory, entry.name);
+        if (entry.isDirectory()) {
+          entries[key] = 'directory';
+          visit(path, key);
+        } else {
+          entries[key] = entry.isSymbolicLink() ? `link:${readlinkSync(path)}` : readFileSync(path);
+        }
+      }
+    };
+    visit(root);
+    return entries;
+  }
+
+  const refusedRoot = join(restartRoot, 'workspaces', workspaceId);
+  const before = snapshot(refusedRoot);
+  const reopened = new FsStore({ dataRoot: restartRoot });
+  expect(scopeAdmissionFailures(restartRoot)).toContainEqual(
+    expect.objectContaining({ scope: 'workspace', id: workspaceId })
+  );
+  expect(() => reopened.getWorkspace(workspaceId)).toThrow(
+    expect.objectContaining({ code: 'recovery_required' })
+  );
+  expect(() => reopened.createThread(workspaceId, 'Must remain refused')).toThrow(
+    expect.objectContaining({ code: 'recovery_required' })
+  );
+  expect(reopened.getWorkspace(sibling.id)).toEqual(siblingBefore);
+  expect(reopened.getThread(sibling.id, siblingThread.id)).toEqual(siblingThread);
+  const progress = reopened.createThread(sibling.id, 'Healthy sibling progress');
+  expect(new FsStore({ dataRoot: restartRoot }).getThread(sibling.id, progress.id)).toEqual(
+    progress
+  );
+  expect(snapshot(refusedRoot)).toEqual(before);
+  expect(snapshot(join(dataRoot, 'workspaces', workspaceId))).toEqual(before);
+  return { store: reopened, dataRoot: restartRoot };
+}
+
 describe('workspace file-record write and load boundaries', () => {
   // Fresh navigation and body-only normalization belong to notebook-initialization.test.ts, under the Notebook owner's Content, Revisions And History section.
   it('preserves the authored Git index during Thread writes without adopting materialized bytes', () => {
@@ -174,7 +238,7 @@ describe('workspace file-record write and load boundaries', () => {
     );
 
     expect(() => f.notebook.publishedRevision()).toThrow('Notebook recovery required.');
-    expect(() => new FsStore({ dataRoot: f.dataRoot })).toThrow('Notebook recovery required.');
+    expectLocalWorkspaceRefusal(f.dataRoot, f.workspace.id);
     expect(readFileSync(publishedPath, 'utf8')).toBe(corruptRef);
     expect(readFileSync(indexPath, 'utf8')).toBe(authored);
   });
@@ -616,7 +680,7 @@ describe('workspace file-record write and load boundaries', () => {
       ),
       `${supportingRequest ? `${JSON.stringify(writeRetainedV1(supportingRequest))}\n` : ''}${JSON.stringify(writeRetainedV1(item))}\n${JSON.stringify(writeRetainedV1(changedItem))}\n`
     );
-    expect(() => new FsStore({ dataRoot })).toThrow(/attribution cannot change/);
+    expectLocalWorkspaceRefusal(dataRoot, workspace.id);
   });
 
   it('rejects a foreign-user response when reloading canonical Turn items', () => {
@@ -666,7 +730,7 @@ describe('workspace file-record write and load boundaries', () => {
       `${JSON.stringify(writeRetainedV1(response))}\n`
     );
 
-    expect(() => new FsStore({ dataRoot })).toThrow(/responsible user/);
+    expectLocalWorkspaceRefusal(dataRoot, first.workspace.id);
   });
 
   it('leaves item read models unchanged when the canonical append fails', () => {
@@ -986,6 +1050,8 @@ describe('workspace file-record write and load boundaries', () => {
     const { dataRoot, first, second, store } = createBoundaryFixture();
     const timestamp = second.turn.startedAt ?? new Date().toISOString();
     let event: Parameters<FsStore['emitTurnEvent']>[1];
+    let ownRecordPath: string;
+    let readSecond: (candidate: FsStore) => unknown;
 
     switch (family) {
       case 'item': {
@@ -1005,8 +1071,18 @@ describe('workspace file-record write and load boundaries', () => {
           workspaceId: first.workspace.id,
           threadId: first.thread.id,
           turnId: first.turn.id,
-          data: { type: 'item-created', item },
+          data: { type: 'item-created', item: { ...item, text: 'Non-owning foreign snapshot.' } },
         };
+        ownRecordPath = join(
+          second.root,
+          'threads',
+          second.thread.id,
+          'turns',
+          second.turn.id,
+          'items.jsonl'
+        );
+        readSecond = (candidate) =>
+          candidate.listThreadItems(second.workspace.id, second.thread.id);
         break;
       }
 
@@ -1038,8 +1114,13 @@ describe('workspace file-record write and load boundaries', () => {
           workspaceId: first.workspace.id,
           threadId: first.thread.id,
           turnId: first.turn.id,
-          data: { type: 'artifact-created', artifact },
+          data: {
+            type: 'artifact-created',
+            artifact: { ...artifact, title: 'Non-owning foreign snapshot' },
+          },
         };
+        ownRecordPath = join(second.root, 'artifacts', artifact.id, 'artifact.json');
+        readSecond = (candidate) => candidate.getArtifact(second.workspace.id, artifact.id);
         break;
       }
 
@@ -1059,12 +1140,27 @@ describe('workspace file-record write and load boundaries', () => {
           workspaceId: first.workspace.id,
           threadId: first.thread.id,
           turnId: first.turn.id,
-          data: { type: 'agent-session-updated', agentSession },
+          data: {
+            type: 'agent-session-updated',
+            agentSession: { ...agentSession, message: 'Non-owning foreign snapshot.' },
+          },
         };
+        ownRecordPath = join(
+          second.root,
+          'runtime',
+          'agent-sessions',
+          agentSession.id,
+          'session.json'
+        );
+        readSecond = (candidate) => candidate.getAgentSession(agentSession.id);
         break;
       }
     }
 
+    const ownBytes = readFileSync(ownRecordPath);
+    const expectedSecond = readSecond(store);
+    expect(readSecond(new FsStore({ dataRoot }))).toEqual(expectedSecond);
+    expect(relative(second.root, ownRecordPath)).not.toMatch(/^\.\./);
     expect.soft(() => store.emitTurnEvent(first.turn.id, event)).toThrow();
     expect.soft(store.getTurnEvents(first.turn.id)).toEqual([]);
 
@@ -1089,7 +1185,24 @@ describe('workspace file-record write and load boundaries', () => {
         })
       )}\n`
     );
-    expect.soft(() => new FsStore({ dataRoot })).toThrow();
+    const refused = expectLocalWorkspaceRefusal(dataRoot, first.workspace.id);
+    expect(readSecond(refused.store)).toEqual(expectedSecond);
+    expect(readFileSync(join(refused.dataRoot, relative(dataRoot, ownRecordPath)))).toEqual(
+      ownBytes
+    );
+    const progress = refused.store.createThread(
+      second.workspace.id,
+      'Second owner remains writable'
+    );
+    const reopened = new FsStore({ dataRoot: refused.dataRoot });
+    expect(reopened.getThread(second.workspace.id, progress.id)).toEqual(progress);
+    expect(readSecond(reopened)).toEqual(expectedSecond);
+    expect(readFileSync(join(refused.dataRoot, relative(dataRoot, ownRecordPath)))).toEqual(
+      ownBytes
+    );
+    expect(readFileSync(join(refused.dataRoot, relative(dataRoot, eventLogPath)))).toEqual(
+      readFileSync(eventLogPath)
+    );
   });
 
   it.each([
@@ -1156,11 +1269,9 @@ describe('workspace file-record write and load boundaries', () => {
     store.emitTurnEvent(first.turn.id, event);
     rmSync(recordRoot, { recursive: true });
 
-    expect(() => new FsStore({ dataRoot })).toThrow(
-      family === 'artifact'
-        ? /Artifact reference .* has invalid lineage/i
-        : /references missing .*state/i
-    );
+    const refused = expectLocalWorkspaceRefusal(dataRoot, first.workspace.id);
+    expect(existsSync(recordRoot)).toBe(false);
+    expect(existsSync(join(refused.dataRoot, relative(dataRoot, recordRoot)))).toBe(false);
   });
 
   it.each([
@@ -1227,6 +1338,6 @@ describe('workspace file-record write and load boundaries', () => {
       writeFileSync(artifactPath, `${JSON.stringify(artifactRecord, null, 2)}\n`);
     }
 
-    expect(() => new FsStore({ dataRoot })).toThrow();
+    expectLocalWorkspaceRefusal(dataRoot, first.workspace.id);
   });
 });

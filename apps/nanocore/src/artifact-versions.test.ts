@@ -1,11 +1,20 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { importArtifactFile } from './artifact-file-commands.js';
 import { commitArtifactVersionCommand } from './artifact-versions.js';
+import { scopeAdmissionFailures } from './bootstrap/readiness.js';
 import { FsStore } from './lib/store.js';
 import { OperationError } from './operation-error.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
@@ -128,6 +137,67 @@ function forbiddenRetrySource() {
   };
 }
 
+/**
+ * Validates one retained fault in a fresh admission lifetime without resetting process state.
+ *
+ * Copies exact authority, seeds an independent healthy sibling, and checks refusal and preservation.
+ * Each copy has a new root identity, so later faults cannot reuse an earlier refusal.
+ *
+ * @param dataRoot Source fixture containing the injected fault.
+ * @param workspaceId Owning Workspace that must be quarantined.
+ * @returns Reopened Store and isolated root for additional native readback checks.
+ */
+function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
+  const restartRoot = mkdtempSync(join(tmpdir(), 'openkit-local-refusal-'));
+  onTestFinished(() => rmSync(restartRoot, { recursive: true, force: true }));
+  const seed = new FsStore({ dataRoot: restartRoot });
+  const sibling = seed.createWorkspace('Healthy refusal control');
+  const siblingThread = seed.createThread(sibling.id, 'Retained sibling thread');
+  const siblingBefore = seed.getWorkspace(sibling.id);
+  cpSync(dataRoot, restartRoot, { recursive: true, verbatimSymlinks: true });
+
+  /** Records every directory, link target and file byte, including the absence of deleted entries. */
+  function snapshot(root: string): Record<string, Buffer | string> {
+    const entries: Record<string, Buffer | string> = {};
+    const visit = (directory: string, prefix = '') => {
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        const key = join(prefix, entry.name);
+        const path = join(directory, entry.name);
+        if (entry.isDirectory()) {
+          entries[key] = 'directory';
+          visit(path, key);
+        } else {
+          entries[key] = entry.isSymbolicLink() ? `link:${readlinkSync(path)}` : readFileSync(path);
+        }
+      }
+    };
+    visit(root);
+    return entries;
+  }
+
+  const refusedRoot = join(restartRoot, 'workspaces', workspaceId);
+  const before = snapshot(refusedRoot);
+  const reopened = new FsStore({ dataRoot: restartRoot });
+  expect(scopeAdmissionFailures(restartRoot)).toContainEqual(
+    expect.objectContaining({ scope: 'workspace', id: workspaceId })
+  );
+  expect(() => reopened.getWorkspace(workspaceId)).toThrow(
+    expect.objectContaining({ code: 'recovery_required' })
+  );
+  expect(() => reopened.createThread(workspaceId, 'Must remain refused')).toThrow(
+    expect.objectContaining({ code: 'recovery_required' })
+  );
+  expect(reopened.getWorkspace(sibling.id)).toEqual(siblingBefore);
+  expect(reopened.getThread(sibling.id, siblingThread.id)).toEqual(siblingThread);
+  const progress = reopened.createThread(sibling.id, 'Healthy sibling progress');
+  expect(new FsStore({ dataRoot: restartRoot }).getThread(sibling.id, progress.id)).toEqual(
+    progress
+  );
+  expect(snapshot(refusedRoot)).toEqual(before);
+  expect(snapshot(join(dataRoot, 'workspaces', workspaceId))).toEqual(before);
+  return { store: reopened, dataRoot: restartRoot };
+}
+
 describe('exact Artifact version commands', () => {
   it('preserves exact originals when an inline version is followed by a binary version', async () => {
     const state = await fixture();
@@ -167,6 +237,11 @@ describe('exact Artifact version commands', () => {
   });
   it('refuses partial next-version authority before retry capture and after restart', async () => {
     const state = await fixture();
+    const originalPath = artifactFilePayloadPath(
+      join(state.dataRoot, 'workspaces', state.workspace.id),
+      state.metadata.artifactId,
+      1
+    );
     mkdirSync(
       join(
         state.dataRoot,
@@ -181,10 +256,8 @@ describe('exact Artifact version commands', () => {
     const retry = forbiddenRetrySource();
     await expect(state.submit(retry.source)).rejects.toMatchObject({ code: 'recovery_required' });
     expect(retry.read).not.toHaveBeenCalled();
-    expect(() => new FsStore({ dataRoot: state.dataRoot })).toThrow(
-      expect.objectContaining({ code: 'recovery_required' })
-    );
-    expect(state.read(1)).toEqual(state.original);
+    expectLocalWorkspaceRefusal(state.dataRoot, state.workspace.id);
+    expect(readFileSync(originalPath)).toEqual(state.original);
   });
   it('retains both binary originals and replays the historical result after another version advances', async () => {
     const state = await fixture();
