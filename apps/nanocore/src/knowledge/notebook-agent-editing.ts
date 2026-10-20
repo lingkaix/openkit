@@ -1,5 +1,5 @@
 import { posix } from 'node:path';
-import { Bash, InMemoryFs } from 'just-bash';
+import { Bash, InMemoryFs, parse } from 'just-bash';
 import type { KnowledgeNotebook } from './notebook.js';
 import { NotebookError, validateNotebookFiles } from './notebook.js';
 import type { NotebookEdit } from './notebook-publication.js';
@@ -62,6 +62,13 @@ const COMMANDS = [
   'sha256sum',
 ] as const;
 
+/** Only native categories cross the Tool boundary; exception text and paths stay private. */
+function scriptRefusal(
+  category: 'syntax_error' | 'limit_exceeded' | 'path_refused' | 'command_unsupported' | 'failed'
+): NotebookError {
+  return new NotebookError('invalid_request', undefined, [`notebook.script_${category}`]);
+}
+
 /** All data lives in memory; the mutation boundary also protects omitted immutable base members. */
 class NotebookEditingFs extends InMemoryFs {
   private changed = new Set<string>();
@@ -76,7 +83,7 @@ class NotebookEditingFs extends InMemoryFs {
 
   private writable(path: string, directory = false): string {
     const normalized = posix.resolve('/', path);
-    if (!normalized.startsWith('/notebook/')) throw new Error('Notebook path is read-only.');
+    if (!normalized.startsWith('/notebook/')) throw scriptRefusal('path_refused');
     const relative = normalized.slice('/notebook/'.length);
     if (directory) {
       if (
@@ -87,11 +94,15 @@ class NotebookEditingFs extends InMemoryFs {
             (part) => /^[a-z0-9][a-z0-9._-]{0,63}$/.test(part) && part !== '.' && part !== '..'
           )
       )
-        throw new Error('Invalid notebook directory.');
+        throw scriptRefusal('path_refused');
     } else {
-      validateNotebookFiles({ [relative]: '' }, true);
+      try {
+        validateNotebookFiles({ [relative]: '' }, true);
+      } catch {
+        throw scriptRefusal('path_refused');
+      }
       if (this.basePaths.has(relative) && !this.selected.has(relative))
-        throw new Error('Notebook path is outside the editable selection.');
+        throw scriptRefusal('path_refused');
     }
     return normalized;
   }
@@ -106,7 +117,9 @@ class NotebookEditingFs extends InMemoryFs {
     if (unchanged) next.delete(path);
     else next.add(path);
     if (next.size > NOTEBOOK_EDITING_LIMITS.changedFiles)
-      throw new Error('Notebook edits exceed 256 changed files.');
+      throw Object.assign(scriptRefusal('limit_exceeded'), {
+        message: 'Notebook edits exceed 256 changed files.',
+      });
     return next;
   }
 
@@ -121,12 +134,11 @@ class NotebookEditingFs extends InMemoryFs {
       typeof content === 'string'
         ? Buffer.from(content, encoding === 'binary' ? 'latin1' : (encoding ?? 'utf8'))
         : Buffer.from(content);
-    if (bytes.length > NOTEBOOK_EDITING_LIMITS.fileBytes)
-      throw new Error('Notebook file exceeds 2 MiB.');
+    if (bytes.length > NOTEBOOK_EDITING_LIMITS.fileBytes) throw scriptRefusal('limit_exceeded');
     try {
       new TextDecoder('utf-8', { fatal: true }).decode(bytes);
     } catch {
-      throw new Error('Notebook files must contain UTF-8 text.');
+      throw scriptRefusal('failed');
     }
     const next = this.changedPaths(path, bytes);
     await super.writeFile(path, bytes);
@@ -179,7 +191,7 @@ class NotebookEditingFs extends InMemoryFs {
     options?: Parameters<InMemoryFs['cp']>[2]
   ): Promise<void> {
     if ((await this.stat(src)).isDirectory) {
-      if (!options?.recursive) throw new Error('Recursive copy is required.');
+      if (!options?.recursive) throw scriptRefusal('command_unsupported');
       this.writable(dest, true);
       await this.mkdir(dest, { recursive: true });
       for (const name of await this.readdir(src))
@@ -213,13 +225,13 @@ class NotebookEditingFs extends InMemoryFs {
   }
 
   override async chmod(): Promise<void> {
-    throw new Error('Notebook file modes are fixed.');
+    throw scriptRefusal('command_unsupported');
   }
   override async symlink(): Promise<void> {
-    throw new Error('Notebook links are disabled.');
+    throw scriptRefusal('command_unsupported');
   }
   override async link(): Promise<void> {
-    throw new Error('Notebook links are disabled.');
+    throw scriptRefusal('command_unsupported');
   }
 }
 
@@ -291,10 +303,11 @@ export function createNotebookAgentEditing<Result extends { readonly outcome: st
       assertOpen();
       if (
         typeof request.script !== 'string' ||
-        Object.keys(request).some((key) => key !== 'script') ||
-        Buffer.byteLength(request.script) > NOTEBOOK_EDITING_LIMITS.scriptBytes
+        Object.keys(request).some((key) => key !== 'script')
       )
-        throw new NotebookError('invalid_request');
+        throw scriptRefusal('failed');
+      if (Buffer.byteLength(request.script) > NOTEBOOK_EDITING_LIMITS.scriptBytes)
+        throw scriptRefusal('limit_exceeded');
       busy = true;
       try {
         // Each interpreter shares only the admitted filesystem, not shell variables, plugins or ambient state.
@@ -312,6 +325,14 @@ export function createNotebookAgentEditing<Result extends { readonly outcome: st
           },
         });
         const result = await bash.exec(request.script, { signal: input.signal, rawScript: true });
+        // The interpreter folds parser errors into exit 2; a command can also exit 2 normally.
+        if (result.exitCode === 2) {
+          try {
+            parse(request.script);
+          } catch {
+            throw scriptRefusal('syntax_error');
+          }
+        }
         const stdout = Buffer.from(result.stdout)
           .subarray(0, NOTEBOOK_EDITING_LIMITS.outputBytes)
           .toString('utf8');
@@ -326,9 +347,16 @@ export function createNotebookAgentEditing<Result extends { readonly outcome: st
             Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr) >=
             NOTEBOOK_EDITING_LIMITS.outputBytes,
         };
-      } catch {
+      } catch (error) {
         input.signal.throwIfAborted();
-        throw new NotebookError('invalid_request');
+        if (error instanceof NotebookError && error.diagnostics?.length) throw error;
+        // Pinned interpreter labels select constants only; never return a library error message.
+        const name = error instanceof Error ? error.name : '';
+        if (error instanceof SyntaxError || name === 'ParseException' || name === 'LexerError')
+          throw scriptRefusal('syntax_error');
+        if (name === 'ExecutionLimitError') throw scriptRefusal('limit_exceeded');
+        if (name === 'SecurityViolationError') throw scriptRefusal('command_unsupported');
+        throw scriptRefusal('failed');
       } finally {
         busy = false;
       }

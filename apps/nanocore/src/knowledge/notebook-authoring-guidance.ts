@@ -22,6 +22,7 @@ export function notebookAuthoringGuidance(
     'Claim requires confidence: a finite number from zero through one. Rule, Effect and Objective require applies_to as a nonempty array of exact tool or work-step identifiers. Effect also requires a nonempty descriptive basis and last_checked_at as an actual supplied check timestamp with an explicit offset; do not invent a check.',
     'Portable status may be omitted only for active pages (default stable). Otherwise write status matching openkit_status: draft -> draft; archived/superseded/invalid/deleted -> deprecated. Reusable procedures belong in Skills.',
     'Edit the admitted virtual notebook first, then submit through the existing notebook Tool. Full current-schema validation, fixed-base conflict checks and required human Review remain mandatory.',
+    'Page Markdown links resolve relative to the containing Page against the complete resulting tree; a leading / resolves at the bundle root. /notebook is the virtual editor working directory, not the Page link root. /sources holds raw original bytes, not the Page link root; cite exact admitted source:<id>@sha256:<digest> pins instead of raw Source or transient @sources editor addresses.',
     ...(ownerScope.kind === 'workspace'
       ? [
           'For selected /notebook/@sources/<id>.md summaries, edit only title, description, tags and summary text. Preserve captured facts, identity and governance; original /sources bytes are read-only.',

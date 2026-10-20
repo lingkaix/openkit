@@ -12,6 +12,8 @@ import {
 import { assertSourcePointerEdit, decodeSourcePointer } from './source-pointers.js';
 
 const markdown = new MarkdownIt({ html: false, linkify: false });
+// Keep the authored destination before URL/path normalization for same-author feedback.
+markdown.normalizeLink = (target) => target;
 const MAX_DIAGNOSTICS = 100;
 
 /** Bounded structural diagnostics; current source disclosure and publication authority remain separate checks. */
@@ -19,13 +21,17 @@ export interface NotebookValidationResult {
   readonly changedPaths: readonly string[];
   readonly removedPaths: readonly string[];
   readonly sourceReferences: readonly string[];
-  readonly errors: readonly { readonly pageId: string; readonly code: string }[];
+  readonly errors: readonly {
+    readonly pageId: string;
+    readonly code: string;
+    readonly target?: string;
+  }[];
   readonly diagnosticsTruncated: boolean;
 }
 
 /** Reads actual Markdown links, excluding code examples, images and external resources. */
-function pageLinks(path: string, body: string): ReadonlySet<string> {
-  const links = new Set<string>();
+function pageLinks(path: string, body: string): readonly { target: string; resolved: string }[] {
+  const links: Array<{ target: string; resolved: string }> = [];
   for (const block of markdown.parse(body, {})) {
     for (const token of block.children ?? []) {
       if (token.type !== 'link_open') continue;
@@ -42,7 +48,7 @@ function pageLinks(path: string, body: string): ReadonlySet<string> {
         target = decodeURIComponent(href.split(/[?#]/, 1)[0]!);
       } catch {
         // A malformed local path cannot resolve to an admitted page.
-        links.add('');
+        links.push({ target: href, resolved: '' });
         continue;
       }
       if (!target.endsWith('.md')) continue;
@@ -58,7 +64,7 @@ function pageLinks(path: string, body: string): ReadonlySet<string> {
             ? target.slice('pages/'.length)
             : '';
       else if (target.startsWith('@sources/')) target = '';
-      links.add(target);
+      links.push({ target: href, resolved: target });
     }
   }
   return links;
@@ -98,16 +104,21 @@ export function validateNotebookCandidate(input: {
       )
       .map((path) => path.slice(0, -3))
   );
-  const errors: Array<{ pageId: string; code: string }> = [];
+  const errors: Array<{ pageId: string; code: string; target?: string }> = [];
   const sources = new Set<string>();
   let diagnosticsTruncated = false;
-  const fail = (pageId: string, code: string): void => {
-    if (errors.length < MAX_DIAGNOSTICS) errors.push({ pageId, code });
+  const fail = (pageId: string, code: string, target?: string): void => {
+    if (errors.length < MAX_DIAGNOSTICS)
+      errors.push({ pageId, code, ...(target !== undefined ? { target } : {}) });
     else diagnosticsTruncated = true;
   };
   for (const path of removedPaths)
     if (path.startsWith('@sources/')) fail(path.slice(0, -3), 'notebook.invalid_source_edit');
-  for (const path of Object.keys(input.candidate.files).sort()) {
+  for (const path of Object.keys(input.candidate.files).sort((left, right) => {
+    const a = left.slice(0, -3);
+    const b = right.slice(0, -3);
+    return a < b ? -1 : a > b ? 1 : 0;
+  })) {
     const pageId = path.slice(0, -3);
     const content = input.candidate.files[path]!;
     if (path.startsWith('@sources/') && changed.has(path)) {
@@ -193,14 +204,18 @@ export function validateNotebookCandidate(input: {
       }
     }
     const links = pageLinks(path, parsed.document.body);
-    for (const target of links) {
-      if (suppressedPaths.has(target) && !Object.hasOwn(input.candidate.files, target)) continue;
+    let unresolved = false;
+    for (const { target, resolved } of links) {
+      if (suppressedPaths.has(resolved) && !Object.hasOwn(input.candidate.files, resolved))
+        continue;
       if (
-        (changed.has(path) && !Object.hasOwn(input.candidate.files, target)) ||
-        (!changed.has(path) && removed.has(target))
+        (changed.has(path) && !Object.hasOwn(input.candidate.files, resolved)) ||
+        (!changed.has(path) && removed.has(resolved))
       ) {
-        fail(pageId, 'notebook.unresolved_page_link');
-        break;
+        // Unchanged outside-selection referrers keep generic diagnostics, never authored values.
+        if (!unresolved || changed.has(path))
+          fail(pageId, 'notebook.unresolved_page_link', changed.has(path) ? target : undefined);
+        unresolved = true;
       }
     }
     // A Source-style local page citation must also survive removal, even in an unchanged referrer.
