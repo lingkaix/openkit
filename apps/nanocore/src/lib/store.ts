@@ -292,6 +292,7 @@ export type CommandRequestName =
   | 'workspace.ownership.transfer'
   | 'workspace.access.recover'
   | 'workspace.delete'
+  | 'workspace.retire-quarantined'
   | 'user.disable'
   | 'knowledge.notebook.create'
   | 'knowledge.notebook.delete'
@@ -1119,7 +1120,7 @@ export function commandRequestKey(
  * @param createdAt Record creation timestamp.
  * @returns Expiry timestamp after the retention window.
  */
-function commandRequestExpiresAt(createdAt: string): string {
+export function commandRequestExpiresAt(createdAt: string): string {
   return new Date(new Date(createdAt).getTime() + COMMAND_REQUEST_RETENTION_MS).toISOString();
 }
 

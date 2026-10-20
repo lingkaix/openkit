@@ -1,5 +1,5 @@
 import { isCanonicalUserActive } from './auth/user-lifecycle.js';
-import type { FsStore } from './lib/store.js';
+import { type FsStore, quickChatWorkspaceIdForUser } from './lib/store.js';
 import type { CoreDb } from './storage/db.js';
 
 /** Raised when owner provisioning encounters retained removal rather than first-use absence. */
@@ -48,6 +48,11 @@ export function ensureUserQuickChatWorkspace(input: EnsureUserQuickChatWorkspace
   if (!isCanonicalUserActive(input.coreDb, input.userId)) {
     throw new Error('Personal workspace requires an active canonical user.');
   }
+  // Retirement reserves the personal identity; authentication must not reprovision its unreadable data.
+  const registry = input.coreDb.sqlite
+    .prepare('SELECT status FROM workspace_registry WHERE workspace_id = ?')
+    .get(quickChatWorkspaceIdForUser(input.userId)) as { status: string } | undefined;
+  if (registry?.status === 'retired') return;
   const workspace = input.store.ensureQuickChatWorkspace(input.userId);
   recordWorkspaceOwnerMembership({
     coreDb: input.coreDb,

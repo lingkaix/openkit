@@ -1,19 +1,22 @@
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import type { BootReadinessSnapshot } from '@openkit/app-api-schemas';
+import { WorkspaceIdSchema } from '@openkit/protocol';
 import { OperationError } from '../operation-error.js';
+import type { CoreDb } from '../storage/db.js';
+import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 
 /** A refused authority or unavailable projection; never persisted or used as replacement truth. */
 export interface ScopeAdmissionFailure {
   readonly scope: 'workspace' | 'user';
   readonly id: string;
-  readonly check: 'layout' | 'database' | 'records' | 'recovery' | 'index';
+  readonly check: 'layout' | 'database' | 'records' | 'recovery' | 'index' | 'retired';
 }
 
 // Boot and ordinary callers share the same refusal until process restart revalidates authority.
 const scopeFailures = new Map<string, Map<string, ScopeAdmissionFailure>>();
 
-/** Records the first failed check in its owning scope without changing retained bytes. */
+/** Records the first failed check; trusted durable retirement supersedes that diagnostic without changing bytes. */
 export function refuseScope(dataRoot: string, failure: ScopeAdmissionFailure): void {
   const root = resolve(dataRoot);
   let failures = scopeFailures.get(root);
@@ -22,7 +25,26 @@ export function refuseScope(dataRoot: string, failure: ScopeAdmissionFailure): v
     scopeFailures.set(root, failures);
   }
   const key = `${failure.scope}:${failure.id}:${failure.check === 'index' ? 'index' : 'authority'}`;
-  if (!failures.has(key)) failures.set(key, failure);
+  if (failure.check === 'retired' || !failures.has(key)) failures.set(key, failure);
+}
+
+/**
+ * Restores registry-owned retirement exclusion before any scoped migration, content load or recovery.
+ * @param input Verified Core authority and the existing process-local mutation gate.
+ * @throws When retired registry identity cannot be established; no retained Workspace is opened.
+ */
+export function restoreWorkspaceRetirementAdmission(input: {
+  readonly coreDb: CoreDb;
+  readonly workspaceMutationAdmission: WorkspaceMutationAdmission;
+}): void {
+  const rows = input.coreDb.sqlite
+    .prepare("SELECT workspace_id AS workspaceId FROM workspace_registry WHERE status = 'retired'")
+    .all() as Array<{ workspaceId: string }>;
+  for (const row of rows) {
+    const workspaceId = WorkspaceIdSchema.parse(row.workspaceId);
+    refuseScope(input.coreDb.dataRoot, { scope: 'workspace', id: workspaceId, check: 'retired' });
+    input.workspaceMutationAdmission.restoreClosed(workspaceId);
+  }
 }
 
 /** Returns bounded, owner-authored diagnoses for the existing authorized readiness projection. */
@@ -60,7 +82,11 @@ export function withScopeAdmissionReadiness(
   snapshot: BootReadinessSnapshot,
   dataRoot: string
 ): BootReadinessSnapshot {
-  const failures = scopeAdmissionFailures(dataRoot);
+  const failures = scopeAdmissionFailures(dataRoot).filter(
+    (failure) =>
+      scopeFailures.get(resolve(dataRoot))?.get(`${failure.scope}:${failure.id}:authority`)
+        ?.check !== 'retired'
+  );
   if (failures.length === 0) return snapshot;
   const subsystems = { ...snapshot.subsystems };
   for (const name of ['storage', 'knowledgeIndex'] as const) {

@@ -5524,6 +5524,66 @@
         }
       }
     },
+    "/api/app/operations/workspace.retire-quarantined": {
+      "post": {
+        "operationId": "workspace.retire-quarantined",
+        "tags": [
+          "workspace"
+        ],
+        "summary": "Retire a quarantined Workspace while retaining all data and reclaiming no storage.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/workspace.retire-quarantined.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Retire a quarantined Workspace while retaining all data and reclaiming no storage.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/workspace.retire-quarantined.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/app/operations/workspace.delete": {
       "post": {
         "operationId": "workspace.delete",
@@ -47293,6 +47353,79 @@
         },
         "required": [
           "user"
+        ],
+        "additionalProperties": false
+      },
+      "workspace.retire-quarantined.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "workspaceId": {
+            "type": "string",
+            "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "expectedRegistryRevision": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "confirmation": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspaceId",
+          "expectedRegistryRevision",
+          "confirmation"
+        ],
+        "additionalProperties": false
+      },
+      "workspace.retire-quarantined.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "retirement": {
+            "type": "object",
+            "properties": {
+              "workspaceId": {
+                "type": "string",
+                "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              },
+              "ownerUserId": {
+                "type": "string",
+                "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              },
+              "registryRevision": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "status": {
+                "type": "string",
+                "const": "retired"
+              },
+              "dataRetained": {
+                "type": "boolean",
+                "const": true
+              },
+              "storageReclaimed": {
+                "type": "boolean",
+                "const": false
+              }
+            },
+            "required": [
+              "workspaceId",
+              "ownerUserId",
+              "registryRevision",
+              "status",
+              "dataRetained",
+              "storageReclaimed"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "retirement"
         ],
         "additionalProperties": false
       },
@@ -138100,6 +138233,237 @@
                   "properties": {
                     "source": {
                       "type": "string",
+                      "const": "workspace-registry"
+                    },
+                    "sourceOwner": {
+                      "type": "string",
+                      "const": "docs/specs/20260715-multi_user_workspace_system.md"
+                    },
+                    "target": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "workspace-registry"
+                        },
+                        "workspaceId": {
+                          "type": "string",
+                          "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "workspaceId"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "state": {
+                      "type": "object",
+                      "properties": {
+                        "registryStatus": {
+                          "type": "string",
+                          "enum": [
+                            "active",
+                            "deleting",
+                            "deleted",
+                            "retired"
+                          ]
+                        },
+                        "registryRevision": {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "quarantineCheck": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "enum": [
+                                "layout",
+                                "database",
+                                "records",
+                                "recovery"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "retirement": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "dataRetained": {
+                                  "type": "boolean",
+                                  "const": true
+                                },
+                                "storageReclaimed": {
+                                  "type": "boolean",
+                                  "const": false
+                                }
+                              },
+                              "required": [
+                                "dataRetained",
+                                "storageReclaimed"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "registryStatus",
+                        "registryRevision",
+                        "quarantineCheck",
+                        "retirement"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "sourceUpdatedAt": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "minLength": 1,
+                          "format": "date-time",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "observedAt": {
+                      "type": "string",
+                      "minLength": 1,
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                    },
+                    "evidence": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "unknown"
+                            },
+                            "reason": {
+                              "type": "string",
+                              "enum": [
+                                "missing",
+                                "stale",
+                                "contradictory",
+                                "unavailable"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "reason"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "recorded"
+                            },
+                            "recordedAt": {
+                              "type": "string",
+                              "minLength": 1,
+                              "format": "date-time",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                            },
+                            "reference": {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "workspace-registry"
+                                },
+                                "workspaceId": {
+                                  "type": "string",
+                                  "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "workspaceId"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "recordedAt",
+                            "reference"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    "nextInspection": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "source-record"
+                        },
+                        "sourceOwner": {
+                          "type": "string",
+                          "const": "docs/specs/20260715-multi_user_workspace_system.md"
+                        },
+                        "target": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "workspace-registry"
+                            },
+                            "workspaceId": {
+                              "type": "string",
+                              "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "workspaceId"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "sourceOwner",
+                        "target"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "source",
+                    "sourceOwner",
+                    "target",
+                    "state",
+                    "sourceUpdatedAt",
+                    "observedAt",
+                    "evidence",
+                    "nextInspection"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "source": {
+                      "type": "string",
                       "const": "execution-attempt"
                     },
                     "sourceOwner": {
@@ -139346,8 +139710,8 @@
             }
           },
           "sources": {
-            "minItems": 6,
-            "maxItems": 6,
+            "minItems": 7,
+            "maxItems": 7,
             "type": "array",
             "items": {
               "type": "object",
@@ -139356,6 +139720,7 @@
                   "type": "string",
                   "enum": [
                     "workspace-deletion",
+                    "workspace-registry",
                     "execution-attempt",
                     "backend-session",
                     "agent-session-binding",
@@ -150228,5 +150593,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:a813b1cbe1858e66ead7411535b92ded97aecbd983df30825ccd1eea659e510c"
+  "x-openkit-source-digest": "sha256:d4508568f560217012a0d46103b8cd0474d9b2db6273b79eff8bb997077f2c44"
 }

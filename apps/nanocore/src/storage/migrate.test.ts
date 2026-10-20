@@ -302,6 +302,7 @@ describe('database setup', () => {
         '0009_policy_audit_v1.sql',
         '0010_retained_record_formats.sql',
         '0011_audit_authentication.sql',
+        '0012_quarantined_workspace_retirement.sql',
       ]);
       expect(
         ['app', 'core', 'user', 'workspace'].every((scope) =>
@@ -322,6 +323,7 @@ describe('database setup', () => {
         'core_0009_policy_audit_v1',
         'core_0010_retained_record_formats',
         'core_0011_audit_authentication',
+        'core_0012_quarantined_workspace_retirement',
       ]);
       expect(listTableNames(coreDb)).toEqual(beforeTables);
       for (const table of ['capability_calls', 'usage_records', 'evidence_bundles']) {
@@ -1021,6 +1023,7 @@ describe('database setup', () => {
       .filter((path) => !path.endsWith(`storage${sep}host-repository-cutover.ts`))
       .filter((path) => !path.endsWith(`storage${sep}host-repository-cutover.test.ts`))
       // These exact tests inject SQL faults into private databases; they own no production schema.
+      .filter((path) => path !== join(sourceRoot, 'workspace-retirement.test.ts'))
       .filter((path) => !path.endsWith(`bootstrap${sep}scope-admission.test.ts`))
       .filter((path) => !path.endsWith(`runtime${sep}pending-requests.scope-admission.test.ts`))
       .filter((path) => !path.endsWith(`storage${sep}workspace-file-admission.test.ts`))

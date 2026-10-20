@@ -249,7 +249,10 @@ function projectRecord(
     const workspace = coreDb.sqlite
       .prepare('SELECT status FROM workspace_registry WHERE workspace_id = ?')
       .get(row.workspace_id) as { status: unknown } | undefined;
-    if (!workspace || !['active', 'deleting', 'deleted'].includes(String(workspace.status))) {
+    if (
+      !workspace ||
+      !['active', 'deleting', 'deleted', 'retired'].includes(String(workspace.status))
+    ) {
       throw new Error('Cleanup source scope is unavailable.');
     }
   }

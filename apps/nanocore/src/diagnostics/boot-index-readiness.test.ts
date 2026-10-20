@@ -13,8 +13,10 @@ import {
 } from 'typescript';
 import { describe, expect, it, vi } from 'vitest';
 import { type BootPhase, runBootPhases } from '../bootstrap/phases.js';
+import { restoreWorkspaceRetirementAdmission } from '../bootstrap/readiness.js';
 import { createApp } from '../test-support/app.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 
 /** Evaluates the actual entrypoint migration phase with only its storage effects substituted. */
 function entrypointMigrationPhase(rebuild: () => unknown[]): BootPhase {
@@ -48,6 +50,8 @@ function entrypointMigrationPhase(rebuild: () => unknown[]): BootPhase {
   return new Function(
     'openCoreDbWithIntegrityCheck',
     'applyMigrations',
+    'restoreWorkspaceRetirementAdmission',
+    'workspaceMutationAdmission',
     'recoverRunningCapabilityCalls',
     'verifyAndMigrateExistingScopedDatabases',
     'rebuildInvalidExistingWorkspaceDerivedIndexes',
@@ -61,8 +65,11 @@ function entrypointMigrationPhase(rebuild: () => unknown[]): BootPhase {
     'refuseScope',
     `let coreDb; let sharedStore; const dataRoot = '/fixture'; const dataRootLock = {}; const freshCoreInitialization = false;\n${javascript}\nreturn phase;`
   )(
+    // Keep real retirement restoration and its gate; neither registry query has rows.
     vi.fn(() => ({ sqlite: { prepare: vi.fn(() => ({ all: vi.fn(() => []) })) } })),
     vi.fn(),
+    restoreWorkspaceRetirementAdmission,
+    new WorkspaceMutationAdmission(),
     vi.fn(),
     vi.fn((_dataRoot: string, validateFileAuthority?: () => void) => validateFileAuthority?.()),
     rebuild,
