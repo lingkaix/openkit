@@ -310,6 +310,7 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
         if (store.listThreadItems(workspaceId, threadId).some((item) => item.id === markerId))
           fail('configuration_recovery_required');
         const prepared = prepare(body);
+        // Warnings describe proposal-time uncertainty. Later discovery must not invalidate the confirmed restriction.
         if (
           JSON.stringify(prepared.after) !== JSON.stringify(body.after) ||
           prepared.restartRequired !== body.restartRequired
@@ -611,11 +612,15 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
         operation: 'update',
         ...('failureEvidence' in prepared ? { failureEvidence: prepared.failureEvidence } : {}),
         ...('policyProposal' in prepared ? { policyProposal: prepared.policyProposal } : {}),
+        ...('warnings' in prepared && prepared.warnings.length > 0
+          ? { warnings: prepared.warnings }
+          : {}),
       });
       const candidate = publish(body, home.threadId, home.turnId, home.requestId);
       return {
         candidate,
         preview: body,
+        ...('plan' in prepared ? { plan: prepared.plan } : {}),
         confirmation: { action: body.command, contentDigest: candidate.contentDigest },
       };
     },

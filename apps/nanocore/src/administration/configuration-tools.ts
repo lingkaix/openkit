@@ -234,7 +234,7 @@ function configurationFailure(code: string): AgentToolResult {
         : code === 'configuration_schema_unavailable'
           ? 'The registered Agent schema is unavailable.'
           : code === 'policy_mcp_tool_unobserved'
-            ? "A proposed MCP Tool has no admitted schema observation in its Workspace. A Turn in that Workspace must discover that MCP server's Tools before a Policy can name them. Do not retry this proposal unchanged."
+            ? 'An MCP Tool permission that requires an observed name has no admitted schema observation. Restrictive prohibit and require_approval statements may name future Tools with a warning; they grant no access.'
             : 'Configuration request was rejected. Read the current target and allowed schema before proposing again.';
   return { content: [{ type: 'text', text: JSON.stringify({ code, message }) }], isError: true };
 }
