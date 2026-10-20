@@ -61,6 +61,8 @@ A retained Task-to-Goal status Item keeps its immutable `goalId` separately from
 
 `KnowledgeNotebookPageSchema` projects only id, path, complete OKF Markdown and its exact contentDigest. The containing Notebook read owns Knowledge Base and notebookRevision. Workspace resources use this same page shape; no KnowledgeEntry DTO or openkit_entry_kind type system is retained. The OKF type remains inside its authoritative bytes.
 
+`KnowledgeNotebookCommitMetadataSchema` validates the optional retained `schemaVersion: "openkit-knowledge-notebook-commit-v1"` header and projects historical admission facts; Notebook writers always emit it, while readers accept historical absence and reject unsupported explicit markers.
+
 `src/common/retained-format.ts` supplies the single retained marker helper: `writeRetainedV1` emits `schemaVersion: 1`, and `readRetainedV1` checks that exact marker before its family decoder runs. Stored schemas remain with their persistence owners; wire schemas, content versions and digests do not select a retained decoder. The v1 marker remains 1; a future family format must select its own decoder rather than bump the shared constant.
 
 `AuditEvent.authentication` is optional, closed non-secret attribution: local/session/token credential kind and nullable canonical access Token or authentication Session record id. It carries no channel, credential value or hash. Its generated JSON Schema and conformance tests enforce the same boundary; imported identity remains historical, not an authorization binding.
