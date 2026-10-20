@@ -164,6 +164,16 @@ export const WORKSPACE_EXPORT_NON_PORTABLE_WORKSPACE_SQLITE_TABLES = [
       'capture lifecycle belongs to Workspace backup coordination, not portable Workspace product history',
   },
   {
+    table: 'control_executions',
+    reason:
+      'non-portable execution control state; operational backup and MOVE retain Workspace database bytes',
+  },
+  {
+    table: 'control_execution_steps',
+    reason:
+      'non-portable execution control state; operational backup and MOVE retain Workspace database bytes',
+  },
+  {
     table: 'control_workspaces',
     reason:
       'unactivated Workspace product table; portable Workspace metadata still comes from canonical files',
