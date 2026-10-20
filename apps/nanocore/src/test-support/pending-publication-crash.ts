@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { once } from 'node:events';
 import { mkdtempSync, readFileSync, rmSync, writeSync } from 'node:fs';
 import { type FileHandle, open } from 'node:fs/promises';
+import { connect as connectHttp2, createServer as createHttp2Server } from 'node:http2';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -8,12 +10,18 @@ import type Database from 'better-sqlite3';
 import { createApp } from '../app.js';
 import { importArtifactFile } from '../artifact-file-commands.js';
 import {
+  createNanoHostTransportSessionAuthority,
+  readNanoHostPhysicalConnectionContext,
+} from '../auth/nanohost-transport-session.js';
+import {
   createInMemoryRuntimeConfigSnapshot,
   type RuntimeConfigManager,
 } from '../config/runtime-config.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import { allocateNanoHostRuntimeTargetConnectionGeneration } from '../runtime/nanohost-runtime-target.js';
+import { createNanoHostSessionDispatch } from '../runtime/nanohost-session-dispatch.js';
 import {
   raiseRecordedPendingRequest,
   recoverPendingRequestsAtBoot,
@@ -25,11 +33,13 @@ import {
 } from '../runtime/pending-requests.js';
 import { startProductTurn } from '../runtime/product-turn-start.js';
 import { runSchedulerDispatchLoop } from '../runtime/scheduler-dispatch-loop.js';
+import { createConfiguredWorkerLifecycleRuntime } from '../runtime/turn-executor-factory.js';
+import { readWorkerImageSettlement } from '../runtime/worker-image-settlements.js';
 import { listSchedulerAdmissionEntriesForWorkspace } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { artifactFilePayloadPath } from '../storage/artifacts/file-records.js';
-import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
-import { workspaceDbPath } from '../storage/fs-layout.js';
+import { listExistingWorkspaceDatabaseScopes, openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import { readDataRootLayoutMarker, workspaceDbPath } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import {
   createWorkerEnvironmentActivation,
@@ -41,6 +51,172 @@ import { createDemoStore } from './demo-store.js';
 import { ensureLocalUser } from './local-user.js';
 import { admitTestNativeEnvironment } from './native-environment.js';
 import { operationRequest } from './operation-request.js';
+
+/** Loses only Core process state after a refused server image write, then observes ordinary discovery with a retained external result. */
+async function probeServerImageSettlement(): Promise<void> {
+  const { effect, result } = JSON.parse(process.argv[5]!);
+  const authority = createNanoHostTransportSessionAuthority();
+  const fileAdmission = new FileStorageAdmission(dataRoot, () => 0n);
+  const dispatch = createNanoHostSessionDispatch({
+    coreDb,
+    fileAdmission,
+    sessionAuthority: authority,
+  });
+  const identity = {
+    deploymentId: readDataRootLayoutMarker(dataRoot).deploymentId,
+    identityId: 'host-image-restart',
+    targetId: 'host-image-restart',
+  };
+  const target = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    ...identity,
+    observedAt: new Date().toISOString(),
+  });
+  let resolveConnected!: (value: object) => void;
+  let rejectConnected!: (reason: Error) => void;
+  const connected = new Promise<object>((resolve, reject) => {
+    resolveConnected = resolve;
+    rejectConnected = reject;
+  });
+  const server = createHttp2Server((request, response) => {
+    const physical = readNanoHostPhysicalConnectionContext(request);
+    if (physical) resolveConnected(physical);
+    else rejectConnected(new Error('Native H2 physical context is missing.'));
+    response.writeHead(204).end();
+  });
+  let client: ReturnType<typeof connectHttp2> | undefined;
+  try {
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Missing image fixture address.');
+    client = connectHttp2(`http://127.0.0.1:${address.port}`);
+    client.request({ ':method': 'POST', ':path': '/' }).end();
+    const physical = await connected;
+    authority.admit({
+      connectionGeneration: target.connectionGeneration,
+      identityId: identity.identityId,
+      physicalConnection: physical,
+    });
+    await dispatch.readiness!(
+      physical,
+      Buffer.from(JSON.stringify({ physicalEpoch: 'a'.repeat(64) })),
+      { coreDb, ...identity }
+    );
+    if (!authority.mayCarryWork(physical))
+      throw new Error('Image fixture connection is not admitted.');
+    const scopes = listExistingWorkspaceDatabaseScopes(dataRoot);
+    if (scopes.length)
+      throw new Error('Server-only fixture unexpectedly contains a Workspace database.');
+    if (phase === 'before-local-result') {
+      const pending = dispatch.effect(effect).then(
+        () => null,
+        (error: unknown) => error
+      );
+      const command = await dispatch.poll(physical, 'image.acquire');
+      if (
+        !command ||
+        command.requestId !== effect.requestId ||
+        command.imageReference !== effect.input.imageReference
+      )
+        throw new Error('Image effect delivery checkpoint was not reached.');
+      // This targets the actual writer on the frozen main, not a future main-thread read connection.
+      coreDb.sqlite.exec('PRAGMA query_only = ON');
+      let refusal: unknown;
+      try {
+        await dispatch.result(physical, 'image.acquire', result);
+      } catch (error) {
+        refusal = error;
+      }
+      const deferred = await pending;
+      if (
+        (refusal as { status?: number } | undefined)?.status !== 503 ||
+        !deferred ||
+        typeof deferred !== 'object' ||
+        !('code' in deferred) ||
+        deferred.code !== 'recovery_required'
+      )
+        throw new Error('Server image persistence fault was not reached.');
+      if (readWorkerImageSettlement(coreDb, effect.requestId) !== null)
+        throw new Error('Image result unexpectedly committed before process loss.');
+      writeSync(
+        1,
+        `${JSON.stringify({ checkpoint: 'server-image-result-before-local-store', command, workspaceScopes: scopes })}\n`
+      );
+      process.kill(process.pid, 'SIGKILL');
+      throw new Error('Image fixture missed SIGKILL.');
+    }
+    if (phase !== 'ordinary-restart') throw new Error('Unknown server image fixture phase.');
+    const serverStore = new FsStore({ dataRoot });
+    const runtime = createConfiguredWorkerLifecycleRuntime({
+      coreDb,
+      env: {},
+      store: serverStore,
+      fileAdmission,
+      nanoHostSessionDispatch: dispatch,
+    });
+    const backend = runtime.turnExecutor.executionBackend;
+    if (!backend) throw new Error('Real runtime has no execution backend.');
+    let resolveRegistration!: () => void;
+    const registered = new Promise<void>((resolve) => {
+      resolveRegistration = resolve;
+    });
+    const original = dispatch.expectResultOnly;
+    const descriptor = Object.getOwnPropertyDescriptor(dispatch, 'expectResultOnly');
+    if (!original || !descriptor) throw new Error('Native result-only receiver is missing.');
+    let resultOnlyRegistrations = 0;
+    const observeRegistration: typeof original = (expectations) => {
+      const waiting = original.call(dispatch, expectations);
+      resultOnlyRegistrations++;
+      resolveRegistration();
+      return waiting;
+    };
+    Object.defineProperty(dispatch, 'expectResultOnly', {
+      ...descriptor,
+      value: observeRegistration,
+    });
+    try {
+      // Observe the real registration; never install a recovery expectation on behalf of the ordinary owner.
+      const pass = runSchedulerDispatchLoop({
+        coreDb,
+        store: serverStore,
+        turnExecutor: runtime.turnExecutor,
+        executionBackend: backend,
+        agentManifests: [],
+        providerRegistry: new ProviderRegistry([]),
+        gatewayConfig: createTestGatewayConfig(),
+        maxDispatches: 1,
+      });
+      void pass.catch(() => undefined);
+      await Promise.race([pass, registered]);
+      let resultError: { status: number | null; message: string } | null = null;
+      try {
+        await dispatch.result(physical, 'image.acquire', result);
+      } catch (error) {
+        resultError = {
+          status: (error as { status?: number } | null)?.status ?? null,
+          message: error instanceof Error ? error.message : String(error),
+        };
+      }
+      const nextCommand = await dispatch.poll(physical, 'image.acquire');
+      const ordinaryPass = await pass;
+      console.log(
+        JSON.stringify({
+          workspaceScopes: listExistingWorkspaceDatabaseScopes(dataRoot),
+          resultOnlyRegistrations,
+          resultError,
+          nextCommand,
+          ordinaryPass,
+          settlement: readWorkerImageSettlement(coreDb, effect.requestId),
+        })
+      );
+    } finally {
+      Object.defineProperty(dispatch, 'expectResultOnly', descriptor);
+    }
+  } finally {
+    client?.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
 
 /** Crosses real activation and product-admission owners, with configuration and image observations outside the tested boundary. */
 async function probeCrossWorkspaceActivation(): Promise<void> {
@@ -248,6 +424,11 @@ const [mode, phase, retainedRoot] = process.argv.slice(2);
 const dataRoot = retainedRoot ?? mkdtempSync(join(tmpdir(), 'pending-publication-crash-'));
 const coreDb = openCoreDb(dataRoot);
 applyMigrations(coreDb);
+if (mode === 'server-image') {
+  await probeServerImageSettlement();
+  coreDb.sqlite.close();
+  process.exit(0);
+}
 ensureLocalUser(coreDb);
 const store = retainedRoot ? new FsStore({ dataRoot }) : createDemoStore({ dataRoot });
 const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
