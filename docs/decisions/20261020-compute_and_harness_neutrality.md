@@ -9,6 +9,8 @@ decider: Engineer
 
 NanoCore is neutral to compute substrate and agent-harness location. NanoCore integrates resource and agent platforms directly. NanoHost is one first-party resource platform, a peer of external platforms, and never a mandatory intermediary. [Architecture](../core/architecture.md) owns this boundary.
 
+Loop placement and tool-execution placement are independent axes. NanoCore's own agents MUST keep their loop in Core and dispatch only tool commands to execution targets. NanoHost Workers run their CLI loop inside the Sandbox. An external loop with an OpenKit-owned executor remains externally owned; executor ownership does not make it a Core-owned loop.
+
 OpenKit retains the authority, Knowledge, BWM, MCP, and Skills plane. Governance applies at each integration boundary. Each integration declares its actual capabilities and limitations. Policy uses those declarations to select permitted platforms for a Workspace and refuses placement when required constraints cannot be met.
 
 Core retains non-negotiable scheduling and management authority over agents. Core decides admission, placement, start, stop, cancellation, budgets, and deadlines. External platforms are executors scheduled by Core, never the scheduler.
