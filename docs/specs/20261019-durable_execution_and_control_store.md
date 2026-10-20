@@ -52,9 +52,28 @@ Vault and host-owned Worker volumes retain their owners.
 
 ### Write And Space Budget
 
-Core serializes each Workspace database through one in-process writer queue in WAL mode; group ready transitions into one transaction, preserving individual conditions/atomicity, acknowledging only committed groups.
+One dedicated database worker thread runs every write to an OpenKit-owned database. It holds each database's only read-write connection, in WAL mode ([writer placement decision](../decisions/20261020-control_store_writer_placement.md)).
+- The complete read-check-write body of an accepted transition runs inside the worker's transaction.
+- No main-thread callback, awaited external effect or file synchronization runs inside SQL.
+- The worker groups ready transitions of one Workspace into one transaction: at most 32 transitions and at most 5 ms of intentional coalescing wait.
+- Each transition gets its own savepoint. A failed transition leaves no rows and does not fail its siblings.
+- The worker acknowledges a transition only after the outer COMMIT with `synchronous=FULL`. Writing callers await that acknowledgement, then publish caches and notifications.
+- A missing acknowledgement does not prove non-commit. The request identity and receipt rule above resolves it.
 
-Bound read transactions; enforce tested WAL size/age limits through checkpoints/backpressure.
+The main thread keeps read-only WAL connections (`query_only=ON`) for pure reads.
+- These reads stay synchronous, see the last committed state and never write.
+- A read ends its SQL transaction before streaming or awaiting a downstream consumer.
+- Export, backup copy and diagnostic scans are paged; none runs as one long main-thread read.
+- If a read must see a write that is not yet acknowledged, the caller's design is wrong. That is not a reason to route reads through the worker.
+
+Design load envelope:
+- **Reference configuration:** 640 offered transitions per second in total, from 8 concurrently active Turns in one Workspace plus three independently active sibling Workspaces.
+- **Within the envelope:** Core loses no accepted transition, keeps main event-loop delay p99 at or below 25 ms, and survives reopen with exactly the acknowledged receipts.
+- **Expected product peak:** well below 100 transitions per second.
+- **Beyond the envelope:** Core refuses new work explicitly through its bounded pending queue and the WAL backpressure below, scope-local where the owning scope is known. It never drops acknowledged work, never acknowledges before COMMIT, and never grows an unbounded queue.
+- **No latency isolation:** one worker serves all Workspaces in `v0.1.0`, so heavy load in one Workspace can delay SQL service for the others.
+
+Bound offered work, pending work and read duration. Keep WAL size at or below 32 MiB through checkpoints and backpressure. WAL age triggers backpressure and is reported for diagnosis; it is not a latency objective.
 
 At creation, including the authorized reset, set `auto_vacuum=INCREMENTAL` for all OpenKit-owned databases, including server, Workspace, user and Light App `data.sqlite`; opaque MCP databases remain app-owned.
 
@@ -447,7 +466,7 @@ Remove obsolete responsibilities with replacements; move tests without weakening
 | Order | Increment | Gates to extend |
 | --- | --- | --- |
 | 1 | Workspace quarantine and stock Host backoff | Startup/layout/readiness and service/installer faults; healthy siblings serve, corrupt server refuses boot. |
-| 2 | Immutable handoff and product/control SQL | Canonical-write-capacity/observation-recovery/pending-publication faults before/after sync/commit: no dangling references/cache. Many concurrent Turns within one Workspace plus several Workspaces measure commit-latency p99/WAL peak/age to select limits. |
+| 2 | Immutable handoff and product/control SQL | Canonical-write-capacity/observation-recovery/pending-publication faults before/after sync/commit: no dangling references/cache. Real concurrent transitions through the grouped worker: commit/acknowledgement/savepoint correctness, exact acknowledged receipts after reopen, no loss and main event-loop delay p99 <= 25 ms through the design load envelope, explicit refusal beyond it, 32 MiB WAL cap. |
 | 3 | Engine/journal/signals/timers/deadlines | First-release/restart/pending/recurring/shim faults; open intent survives, ended steps skip, later-Turn delivery, no replay. |
 | 4 | Global index/handles/reservations | Both commit gaps; absent-key cancel then delayed reserve; refusal then fresh admission; restored tombstone; missing Workspace/cache eviction. |
 | 5 | Retention placement, snapshot closure, ablations | Observation/export/snapshot-chain faults; exact shared content/prefix coverage; capture crash and explicit abandonment; Storage GC and Git prune/repack remain excluded. |
