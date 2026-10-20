@@ -50,21 +50,40 @@ Server configuration stays server-owned; AEP pins revisions/digests, distinct fr
 
 Vault and host-owned Worker volumes retain their owners.
 
+When AgentSession facts move into SQL, native continuation references retain the scope of their actual native owner, independently of executor placement. The current file-backed pair remains the NanoHost representation; do not give a generic column a NanoHost-placement meaning. Preserve the [AgentSession owner](../core/agent-session.md); this amendment adds no native-reference fields or provider integration.
+
 ### Write And Space Budget
 
-One dedicated database worker thread runs every write to an OpenKit-owned database. It holds each database's only read-write connection, in WAL mode ([writer placement decision](../decisions/20261020-control_store_writer_placement.md)).
-- The complete read-check-write body of an accepted transition runs inside the worker's transaction.
+For `v0.1.0`, one dedicated database worker owns the activated admission/product row families in WAL databases. Other families retain their current main-thread owner, including in the same database. Each family has exactly one logical writer; SQLite locking does not supply this ownership boundary ([mixed-writer decision](../decisions/20261020-control_store_mixed_writer_exception.md)). Both threads remain inside one NanoCore and its existing data-root authority. Preparing unused handlers or schema does not activate a family or replace its current authority.
+
+| Family | Writer and boundary |
+| --- | --- |
+| Activated Workspace product metadata, Workspace/Server Thread, Turn, AgentSession and ordered admission/product records | Database worker, with the entire dependent local tuple. Retain the product's actual server or Workspace scope; do not invent a Workspace for a server product. |
+| Original command receipts and required local Audit rows | The tuple's writer, partitioned by admitted operation identity and owning scope. Each writer commits and prunes only its own rows; no new ledger or ownership column. A legacy read that prunes is a write. |
+| Authentication, User identity/Tokens, Vault, Workspace registry/membership/sharing | Existing main-thread owner; no pre-v0.1.0 conversion requirement. Registry ownership is distinct from admission/product metadata. |
+| Channels, attention/deletion, Review/Material/presentation, Knowledge/configuration/catalog and User read receipts | Existing main-thread owner for SQL families; existing file owners remain until their separately accepted switch. |
+| Not-yet-moved scheduler/Goals/Pending Request, execution/binding/checkpoint/control, AEP/observation/evidence/synchronization, usage and Policy families | Existing main-thread owner. Unmeasured frequency does not make these families cold. A later move needs its complete tuple and explicit ownership switch. |
+| Independent Light App business databases | Existing scoped business/schema/recovery owner; no cross-database atomicity claim. |
+| Startup DDL/recovery, stopped migration/import and maintenance tools | Existing scoped owner under explicit phase exclusion. Stop or exclude the live writer before the phase; never compete with it. Live imports follow each target family's writer. |
+
+- The complete read-check-write body of a worker-owned transition runs inside the worker's transaction. If a required tuple dependency lacks a native handler, do not split the tuple between worker and main commits.
 - No main-thread callback, awaited external effect or file synchronization runs inside SQL.
 - The worker groups ready transitions of one Workspace into one transaction: at most 32 transitions and at most 5 ms of intentional coalescing wait.
 - Each transition gets its own savepoint. A failed transition leaves no rows and does not fail its siblings.
 - The worker acknowledges a transition only after the outer COMMIT with `synchronous=FULL`. Writing callers await that acknowledgement, then publish caches and notifications.
 - A missing acknowledgement does not prove non-commit. The request identity and receipt rule above resolves it.
 
-The main thread keeps read-only WAL connections (`query_only=ON`) for pure reads.
+The main thread keeps separate read-only WAL connections (`query_only=ON`) for worker-owned product reads. It retains writable connections for main-owned families. A legacy writable connection is not a table-level SQLite access-control boundary; enforce the family boundary in producers and shared receipt/Audit paths.
 - These reads stay synchronous, see the last committed state and never write.
 - A read ends its SQL transaction before streaming or awaiting a downstream consumer.
 - Export, backup copy and diagnostic scans are paged; none runs as one long main-thread read.
 - If a read must see a write that is not yet acknowledged, the caller's design is wrong. That is not a reason to route reads through the worker.
+
+At live mixed-writer activation, bound the main writable connections' busy wait; the initial default is 5 ms, not the native seconds-long default. Choose the smallest passing bound from the accepted 5 ms and 20 ms mixed-load candidates; preserve every existing qualification criterion and the event-loop and load objectives. This bounds lock waiting, not COMMIT/fsync time, transaction duration or operating-system scheduling. Do not retry automatically.
+
+Native BUSY/LOCKED uses the existing transport-neutral operation error owner: HTTP 503 and `operation_storage_unavailable`, with equivalent MCP framing. Tell the caller to inspect the original request outcome before retry. Do not expose SQL, classify busy as authorization refusal, promise non-commit from timeout alone or create another retry ledger. Only proved pre-effect failure or rollback establishes non-commit; COMMIT/reply uncertainty still resolves through the original receipt.
+
+Preparation does not activate these writable-handle or transport changes. Mixed-writer qualification must use actual native hot tuples and the same offered hot load with contending main-owned writes. Account for refused, late and unresolved offers; a main stall must not silently lower the offered dose. Preserve the existing load, FULL durability, batching and WAL limits. The earlier synthetic worker measurement does not qualify native mixed operation.
 
 Design load envelope:
 - **Reference configuration:** 640 offered transitions per second in total, from 8 concurrently active Turns in one Workspace plus three independently active sibling Workspaces.
@@ -462,6 +481,8 @@ Capacity, human waits, health/reclamation and cleanup pacing are not execution c
 ## Implementation Plan And Acceptance
 
 Remove obsolete responsibilities with replacements; move tests without weakening oracles.
+
+Admission preparation may land unused native handlers/schema before public activation; it does not satisfy public admission or mixed-load acceptance. After this owner amendment is accepted, adapt read-handle oracles to prove that the separate read-only/query-only product handles reject writes. Instrument ordinary producers to prove that main never mutates worker-owned families, including receipt/Audit pruning. Do not require the retained legacy writable connection to reject all writes. Before activation, qualify complete native tuples and mixed load under the unchanged envelope; no loss, dangling reference, early acknowledgement or cross-family mutation is permitted.
 
 | Order | Increment | Gates to extend |
 | --- | --- | --- |
