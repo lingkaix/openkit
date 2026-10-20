@@ -60,6 +60,7 @@ const FIELD_LABELS: Record<string, string> = {
   storageReclaimed: 'Storage reclaimed',
 };
 
+/** Scalar read-view fields keyed by projection field name. */
 type ScalarFields = Record<string, string | number | boolean | null>;
 
 /** Flatten registry retirement facts into scalar read-view fields. */
@@ -75,6 +76,7 @@ function workspaceRegistryStateFields(
   };
 }
 
+/** Select the scalar state fields shown for one cleanup source record. */
 function scalarStateFields(item: AdministratorCleanupItem): ScalarFields {
   if (item.source === 'workspace-registry') {
     return workspaceRegistryStateFields(item.state);
