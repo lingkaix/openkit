@@ -3598,8 +3598,29 @@ fn terminate_children(children: &mut [Child]) {
 #[cfg(test)]
 mod tests {
     /// Uses real native H2 carriage and the local storage owner, without a deployed host.
+    /// The process-global tracer needs an exact-test child so parallel tests cannot add spans or replace its provider.
+    /// Keep the complete span count, including incorrectly unparented delivery spans, rather than filtering traces.
     #[tokio::test]
     async fn native_trace_context_bounds_execution_and_survives_result_redelivery() {
+        const CHILD_MARKER: &str = "OPENKIT_TEST_NATIVE_TRACE_CHILD";
+        if std::env::var_os(CHILD_MARKER).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "epoch_coordinator::tests::native_trace_context_bounds_execution_and_survives_result_redelivery",
+                    "--nocapture",
+                ])
+                .env(CHILD_MARKER, "1")
+                .output()
+                .expect("run the process-global trace fixture in its own test process");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("test result: ok. 1 passed; 0 failed;"),
+                "isolated trace fixture must execute one real test successfully:\n{stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
         use bytes::Bytes;
         use opentelemetry::trace::TraceContextExt;
         use opentelemetry::{Context, global};
