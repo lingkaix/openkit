@@ -13,6 +13,13 @@ const CURRENT_ENTRYPOINTS = [
 ] as const;
 
 describe('built-in Agent System Prompts', () => {
+  it('guides Knowledge maintenance toward short syntheses with exact Source references', () => {
+    const prompt = assembleBuiltInSystemPrompt('knowledge-manager');
+    expect(prompt).toContain('short syntheses');
+    expect(prompt).toContain('keep originals in Sources');
+    expect(prompt).toContain('cite exact Source references');
+  });
+
   it('keeps every complete fixed assembly within 3000 Unicode code points', () => {
     for (const roleId of CURRENT_ENTRYPOINTS) {
       expect(BUILT_IN_SYSTEM_PROMPTS).toHaveProperty(roleId);
