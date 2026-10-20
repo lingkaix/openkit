@@ -210,7 +210,7 @@ describe('Turn environment retention', () => {
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({
         type: 'env.bound',
-        obs: 'core',
+        obs: 'nanocore',
         turnId: f.turn.id,
         ret: 'turn-evidence',
         payload: {
@@ -375,7 +375,7 @@ describe('Assistant Skill admission capture', () => {
         id: `env:${f.turn.id}`,
         ts: f.turn.startedAt,
         type: 'env.bound',
-        obs: 'core',
+        obs: 'nanocore',
         ret: 'turn-evidence',
         payload: {
           workspaceId: f.workspaceDb.workspaceId,
@@ -730,7 +730,7 @@ describe('Gateway model retention', () => {
         id: 'retained-request',
         type: 'model.observed',
         ts: f.turn.startedAt!,
-        obs: 'gateway',
+        obs: 'llm-gateway',
         ret: 'turn-evidence',
         payload: {
           direction: 'request',

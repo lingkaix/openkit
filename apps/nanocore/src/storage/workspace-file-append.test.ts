@@ -68,7 +68,7 @@ describe('canonical append writes', () => {
         id: 'warm',
         type: 'model.observed',
         ts: '2026-10-07T00:00:00.000Z',
-        obs: 'gateway' as const,
+        obs: 'llm-gateway' as const,
         payload: {
           direction: 'response',
           event: 'text_delta',
