@@ -264,7 +264,7 @@ export async function writeHotDataRootBackup(
 
 /**
  * Uses the public asynchronous SQLite backup API in one child while Core remains paused.
- * Recovery snapshots are immutable digest-bound bytes and must keep their original headers.
+ * Recovery snapshots are immutable digest-bound bytes and must keep their original headers. Mutable database captures become standalone DELETE-journal images before inventory; opening them for inspection must not create unlisted WAL sidecars.
  *
  * @param dataRoot Live source tree.
  * @param backupRoot Already copied destination tree.
@@ -295,6 +295,14 @@ const Database = require(nativeModule);
       await database.backup(destination);
     } finally {
       database.close();
+    }
+    const captured = new Database(destination, { fileMustExist: true });
+    try {
+      if (captured.pragma('journal_mode = DELETE', { simple: true }) !== 'delete') {
+        throw new Error('Backup capture requires a standalone SQLite image.');
+      }
+    } finally {
+      captured.close();
     }
   }
 })().catch(() => { process.exitCode = 1; });`,
