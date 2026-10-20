@@ -274,7 +274,7 @@ export async function startProductTurn(input: StartProductTurnInput) {
     .find((turn) => turn.id === turnId);
   const turn =
     existing ??
-    input.store.createTurn(
+    (await input.store.createTurn(
       input.input.workspaceId,
       input.input.threadId,
       input.input.input,
@@ -299,7 +299,7 @@ export async function startProductTurn(input: StartProductTurnInput) {
           ? { skillSelections: input.input.skillSelections }
           : {}),
       }
-    );
+    ));
   // This listener observes the existing product owner; it grants neither execution nor recovery.
   // Durable admission/checkpoint classification remains usable without this HTTP invocation.
   let unsubscribe: () => void = () => {};

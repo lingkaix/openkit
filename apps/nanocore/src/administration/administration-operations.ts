@@ -211,13 +211,13 @@ export function createAdministrationOperationImplementations(input: Administrati
             requireCurrentDeploymentAdmin(input.coreDb!, actor);
             const thread =
               currentThread ??
-              store.createThread(
+              (await store.createThread(
                 workspaceId,
                 administrationThreadTitle(request.input),
                 threadId,
                 'administration',
                 { visibility: 'private', privateOwnerUserId: actor.userId }
-              );
+              ));
             const turnId = administrationTurnId(actor.userId, thread.id, request.requestId);
             if (
               store
@@ -227,14 +227,21 @@ export function createAdministrationOperationImplementations(input: Administrati
               throw new AdministrationRecoveryRequiredError();
             }
             const triggerActor = { kind: 'user', id: actor.userId } as const satisfies ActorRef;
-            let turn: ReturnType<FsStore['createTurn']>;
+            let turn: Awaited<ReturnType<FsStore['createTurn']>>;
             try {
-              turn = store.createTurn(workspaceId, thread.id, request.input, triggerActor, null, {
-                turnId,
-                agentId: ADMINISTRATION_AGENT_ID,
-              });
+              turn = await store.createTurn(
+                workspaceId,
+                thread.id,
+                request.input,
+                triggerActor,
+                null,
+                {
+                  turnId,
+                  agentId: ADMINISTRATION_AGENT_ID,
+                }
+              );
               const createdAt = turn.startedAt ?? new Date().toISOString();
-              store.createItem({
+              await store.createItem({
                 id: deriveEntityId('it', ['administration_user', turn.id]),
                 owner: { kind: 'workspace', workspaceId: workspaceId },
                 threadId: thread.id,
@@ -473,7 +480,7 @@ export function createAdministrationOperationImplementations(input: Administrati
               requireCurrentDeploymentAdmin(input.coreDb!, actor);
               try {
                 const completedAt = new Date().toISOString();
-                const item = store.createItem({
+                const item = await store.createItem({
                   id: deriveEntityId('it', ['administration_answer', turn.id]),
                   owner: { kind: 'workspace', workspaceId: workspaceId },
                   threadId: thread.id,
@@ -486,7 +493,7 @@ export function createAdministrationOperationImplementations(input: Administrati
                 });
                 return {
                   body: administrationResponse(
-                    store.updateTurn(turn.id, { status: 'completed', completedAt }),
+                    await store.updateTurn(turn.id, { status: 'completed', completedAt }),
                     item,
                     selection.logicalModel.id,
                     'answered',
@@ -663,7 +670,7 @@ function failedAdministrationTurn(
 
 function administrationResponse(
   turn: ReturnType<FsStore['getTurnById']>,
-  item: ReturnType<FsStore['createItem']>,
+  item: Awaited<ReturnType<FsStore['createItem']>>,
   logicalModelId: string | null,
   outcome: 'answered' | 'refused',
   explanation: string

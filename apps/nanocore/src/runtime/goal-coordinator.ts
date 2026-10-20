@@ -773,7 +773,7 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
             )
             .join('\n\n');
           if (text)
-            store.createItem({
+            await store.createItem({
               id: allocateEntityId('it'),
               owner: { kind: 'workspace', workspaceId: goal.workspaceId },
               threadId: goal.threadId,
@@ -786,10 +786,13 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
             });
         }
       );
-      store.updateTurn(turnId, { status: 'completed', completedAt: new Date().toISOString() });
+      await store.updateTurn(turnId, {
+        status: 'completed',
+        completedAt: new Date().toISOString(),
+      });
     } catch (error) {
       if (!isSealedTurnTerminal(store.getTurnById(turnId).status))
-        store.updateTurn(turnId, {
+        await store.updateTurn(turnId, {
           status: 'failed',
           completedAt: new Date().toISOString(),
           error: internalContextFailure(error) ?? {
