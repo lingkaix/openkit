@@ -23,14 +23,17 @@ use openshell_sdk::{
 };
 use prost_types::{ListValue, Struct, Value as ProstValue, value::Kind};
 use tokio::sync::{mpsc, oneshot};
-use tokio::task::{AbortHandle, JoinHandle};
+use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::{Stream, StreamExt};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 use tower::service_fn;
 
-use crate::epoch_coordinator::{CreateCertaintyLossPoint, CreateUncertainty, EpochFault};
+use crate::epoch_coordinator::{
+    CreateCertaintyLossPoint, CreateUncertainty, EpochFault, MemberFailureSubject, WatchedTask,
+    record_task_abort, record_task_return,
+};
 use crate::nanocore_session::OuterRouteProjection;
 use crate::openshell_release;
 use crate::persistent_volume::{PERSISTENT_VOLUME_ROOT, StorageMount};
@@ -367,9 +370,15 @@ impl WorkerBootstrapRequest {
 
 /// Retained independent response task for the fixed worker bootstrap.
 pub struct WorkerBootstrapMonitor {
-    response: JoinHandle<Result<WorkerBootstrapCompletion, EpochFault>>,
-    bridge_route: Option<AbortHandle>,
+    response: WatchedTask<Result<WorkerBootstrapCompletion, EpochFault>>,
+    bridge_route: Option<WatchedTask<Result<(), h2::Error>>>,
 }
+
+/// Existing response/route completion proofs with shared joins used only for diagnostics.
+pub(crate) type HarnessTaskHandles = (
+    WatchedTask<Result<WorkerBootstrapCompletion, EpochFault>>,
+    WatchedTask<Result<(), h2::Error>>,
+);
 
 impl WorkerBootstrapMonitor {
     /// Returns whether the independent response stream remains live.
@@ -377,13 +386,14 @@ impl WorkerBootstrapMonitor {
         !self.response.is_finished()
     }
 
-    /// Shares only task completion proofs with the existing epoch member monitor.
-    pub(crate) fn task_handles(&self) -> Option<(AbortHandle, AbortHandle)> {
-        Some((self.response.abort_handle(), self.bridge_route.clone()?))
+    /// Shares completion proofs and diagnostic join ownership with the existing monitor.
+    pub(crate) fn task_handles(&self) -> Option<HarnessTaskHandles> {
+        Some((self.response.clone(), self.bridge_route.clone()?))
     }
 
     /// Stops the process-local response task after exact Sandbox absence fenced its worker.
     pub fn discard_after_sandbox_deletion(self) {
+        record_task_abort(MemberFailureSubject::HarnessResponse);
         self.response.abort();
     }
 }
@@ -700,7 +710,7 @@ impl NanoHostOpenShellClient {
         sandbox_id: &str,
         sandbox_integration_binding_ref: String,
         route_projection: OuterRouteProjection,
-    ) -> Result<(OpenSandboxBridge, AbortHandle), EpochFault> {
+    ) -> Result<(OpenSandboxBridge, WatchedTask<Result<(), h2::Error>>), EpochFault> {
         let client = self.connected()?;
         let mut grpc = client.raw_grpc();
         let session = grpc
@@ -783,7 +793,7 @@ impl NanoHostOpenShellClient {
             let route_sandbox_integration_binding_ref = sandbox_integration_binding_ref.clone();
             let mut route_server = tokio::spawn(async move {
                 let admission_binding_ref = route_sandbox_integration_binding_ref.clone();
-                let _ = serve_sandbox_http2(
+                let result = serve_sandbox_http2(
                     &mut stream,
                     &admission_binding_ref,
                     move |family, request, respond| {
@@ -802,19 +812,29 @@ impl NanoHostOpenShellClient {
                     },
                 )
                 .await;
+                let error_kind = result.as_ref().err().map(|error| {
+                    format!(
+                        "h2:reason:{:?}:io:{:?}",
+                        error.reason(),
+                        error.get_io().map(io::Error::kind)
+                    )
+                });
+                record_task_return(MemberFailureSubject::HarnessRoute, error_kind.as_deref());
+                result
             });
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             let mut route_server_finished = false;
             let deadline_reached = tokio::select! {
                 readiness = harness_ready_rx.recv() => {
                     if readiness.is_some() && !route_server.is_finished() {
-                        let route_monitor = route_server.abort_handle();
-                        return Ok((OpenSandboxBridge::new(
+                        let bridge = OpenSandboxBridge::new(
                             route_server,
                             session.token,
                             sandbox_integration_binding_ref,
                             true,
-                        ), route_monitor));
+                        );
+                        let route_monitor = bridge.task_handle();
+                        return Ok((bridge, route_monitor));
                     }
                     false
                 }
@@ -825,6 +845,7 @@ impl NanoHostOpenShellClient {
                 _ = tokio::time::sleep(remaining) => true,
             };
             if !route_server_finished {
+                record_task_abort(MemberFailureSubject::HarnessRoute);
                 route_server.abort();
                 let _ = route_server.await;
             }
@@ -1114,7 +1135,7 @@ impl NanoHostOpenShellClient {
             .map_err(|_| EpochFault::MemberExited(None))?
             .into_inner();
         let (marker_ready, marker_received) = oneshot::channel();
-        let mut response = tokio::spawn(monitor_worker_bootstrap(events, marker_ready));
+        let mut response = spawn_bootstrap_monitor(events, marker_ready);
         tokio::select! {
             biased;
             _ = &mut response => Err(EpochFault::MemberExited(None)),
@@ -1123,7 +1144,7 @@ impl NanoHostOpenShellClient {
                 if response.is_finished() {
                     return Err(EpochFault::MemberExited(None));
                 }
-                Ok(WorkerBootstrapMonitor { response, bridge_route: None })
+                Ok(WorkerBootstrapMonitor { response: WatchedTask::new(response), bridge_route: None })
             }
         }
     }
@@ -1132,6 +1153,28 @@ impl NanoHostOpenShellClient {
     fn connected(&self) -> Result<&OpenShellClient, EpochFault> {
         self.client.as_ref().ok_or(EpochFault::MemberExited(None))
     }
+}
+
+/// Logs the actual producer return before completing the unchanged supervised task.
+fn spawn_bootstrap_monitor<S>(
+    events: S,
+    marker_ready: oneshot::Sender<()>,
+) -> JoinHandle<Result<WorkerBootstrapCompletion, EpochFault>>
+where
+    S: Stream<Item = Result<ExecSandboxEvent, tonic::Status>> + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        let result = monitor_worker_bootstrap(events, marker_ready).await;
+        let error_kind = result.as_ref().err().map(|fault| match fault {
+            EpochFault::PartialStart => "partial-start",
+            EpochFault::MemberExited(_) => "member-exited",
+            EpochFault::IdentityMismatch => "identity-mismatch",
+            EpochFault::CreateOutcomeUncertain(_) => "create-outcome-uncertain",
+            EpochFault::DeleteOutcomeUncertain => "delete-outcome-uncertain",
+        });
+        record_task_return(MemberFailureSubject::HarnessResponse, error_kind);
+        result
+    })
 }
 
 /// Accepts the exact worker-entry marker and monitors the response through clean exit.
@@ -1189,10 +1232,10 @@ impl WorkerBootstrapMonitor {
     /// Creates a real response-task monitor for coordinator lifecycle regressions.
     pub(crate) fn from_test_task(
         response: JoinHandle<Result<WorkerBootstrapCompletion, EpochFault>>,
-        bridge_route: AbortHandle,
+        bridge_route: WatchedTask<Result<(), h2::Error>>,
     ) -> Self {
         Self {
-            response,
+            response: WatchedTask::new(response),
             bridge_route: Some(bridge_route),
         }
     }
@@ -1560,6 +1603,160 @@ mod tests {
         assert_eq!(completion.exit_status, 0);
     }
 
+    /// Captures the actual journal sink in an isolated test child, not a formatter proxy.
+    fn assert_task_outcome_log(kind: &str, test_name: &str) {
+        const CHILD_KIND: &str = "OPENKIT_TEST_WATCHED_TASK_OUTCOME";
+        if std::env::var(CHILD_KIND).ok().as_deref() == Some(kind) {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(task_outcome_fixture(kind));
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test_name, "--nocapture", "--test-threads=1"])
+            .env(CHILD_KIND, kind)
+            .output()
+            .expect("owned diagnostic test child");
+        assert!(output.status.success(), "diagnostic test child failed");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        let lines: Vec<_> = stderr
+            .lines()
+            .filter(|line| line.starts_with("nanohost watched task outcome "))
+            .collect();
+        let error_kind = if kind == "returned-err" {
+            "member-exited"
+        } else {
+            "none"
+        };
+        assert_eq!(
+            lines,
+            [format!(
+                "nanohost watched task outcome member=harness-response outcome={kind} error_kind={error_kind}"
+            )]
+        );
+        if kind == "cancelled" {
+            assert!(stderr.lines().any(|line| line
+                == "nanohost watched task abort member=harness-response action=requested"));
+        }
+    }
+
+    /// Drives the real response producer and completion classifier for each actual Tokio outcome.
+    async fn task_outcome_fixture(kind: &str) {
+        use crate::epoch_coordinator::{WatchedTask, fixture_finished_watched_task};
+        let (events, incoming) = mpsc::channel(4);
+        let mut keepalive = Some(events);
+        match kind {
+            "returned-ok" => {
+                keepalive
+                    .as_ref()
+                    .unwrap()
+                    .send(Ok(ExecSandboxEvent {
+                        payload: Some(exec_sandbox_event::Payload::Stdout(ExecSandboxStdout {
+                            data: WORKER_ENTRY_MARKER.to_vec(),
+                        })),
+                    }))
+                    .await
+                    .unwrap();
+                keepalive
+                    .as_ref()
+                    .unwrap()
+                    .send(Ok(ExecSandboxEvent {
+                        payload: Some(exec_sandbox_event::Payload::Exit(ExecSandboxExit {
+                            exit_code: 0,
+                        })),
+                    }))
+                    .await
+                    .unwrap();
+                keepalive.take();
+            }
+            "returned-err" => {
+                keepalive
+                    .as_ref()
+                    .unwrap()
+                    .send(Err(Status::unavailable("untrusted-error-canary")))
+                    .await
+                    .unwrap();
+                keepalive.take();
+            }
+            "panicked" => {
+                keepalive
+                    .as_ref()
+                    .unwrap()
+                    .send(Ok(ExecSandboxEvent { payload: None }))
+                    .await
+                    .unwrap();
+            }
+            "cancelled" => {}
+            _ => panic!("invalid fixed test outcome"),
+        }
+        let (ready, _ready_receiver) = oneshot::channel();
+        let stream = ReceiverStream::new(incoming);
+        let response = if kind == "panicked" {
+            super::spawn_bootstrap_monitor(
+                tokio_stream::StreamExt::map(stream, |_| -> Result<ExecSandboxEvent, Status> {
+                    panic!("untrusted-panic-canary")
+                }),
+                ready,
+            )
+        } else {
+            super::spawn_bootstrap_monitor(stream, ready)
+        };
+        let route = WatchedTask::new(tokio::spawn(std::future::pending()));
+        let monitor = WorkerBootstrapMonitor::from_test_task(response, route.clone());
+        let tasks = monitor.task_handles().unwrap();
+        if kind == "cancelled" {
+            monitor.discard_after_sandbox_deletion();
+        }
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !tasks.0.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("actual task must complete before diagnostic observation");
+        for _ in 0..2 {
+            assert_eq!(
+                fixture_finished_watched_task(&tasks).journal_tokens(),
+                "subject=harness-response observation=finished"
+            );
+        }
+        route.abort();
+    }
+
+    #[test]
+    fn watched_task_logs_returned_ok() {
+        assert_task_outcome_log(
+            "returned-ok",
+            "openshell_client::tests::watched_task_logs_returned_ok",
+        );
+    }
+
+    #[test]
+    fn watched_task_logs_returned_err() {
+        assert_task_outcome_log(
+            "returned-err",
+            "openshell_client::tests::watched_task_logs_returned_err",
+        );
+    }
+
+    #[test]
+    fn watched_task_logs_panicked() {
+        assert_task_outcome_log(
+            "panicked",
+            "openshell_client::tests::watched_task_logs_panicked",
+        );
+    }
+
+    #[test]
+    fn watched_task_logs_cancelled() {
+        assert_task_outcome_log(
+            "cancelled",
+            "openshell_client::tests::watched_task_logs_cancelled",
+        );
+    }
+
     #[tokio::test]
     async fn nhc_fnd_060_definite_sandbox_deletion_discards_the_bootstrap_monitor() {
         let response = tokio::spawn(async {
@@ -1568,7 +1765,7 @@ mod tests {
         });
         let abort = response.abort_handle();
         WorkerBootstrapMonitor {
-            response,
+            response: crate::epoch_coordinator::WatchedTask::new(response),
             bridge_route: None,
         }
         .discard_after_sandbox_deletion();
