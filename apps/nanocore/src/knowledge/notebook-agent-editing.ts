@@ -1,5 +1,5 @@
 import { posix } from 'node:path';
-import { Bash, InMemoryFs } from 'just-bash';
+import { Bash, InMemoryFs, parse } from 'just-bash';
 import type { KnowledgeNotebook } from './notebook.js';
 import { NotebookError, validateNotebookFiles } from './notebook.js';
 import type { NotebookEdit } from './notebook-publication.js';
@@ -116,7 +116,10 @@ class NotebookEditingFs extends InMemoryFs {
         : original !== undefined && Buffer.from(original).equals(Buffer.from(bytes));
     if (unchanged) next.delete(path);
     else next.add(path);
-    if (next.size > NOTEBOOK_EDITING_LIMITS.changedFiles) throw scriptRefusal('limit_exceeded');
+    if (next.size > NOTEBOOK_EDITING_LIMITS.changedFiles)
+      throw Object.assign(scriptRefusal('limit_exceeded'), {
+        message: 'Notebook edits exceed 256 changed files.',
+      });
     return next;
   }
 
@@ -322,6 +325,14 @@ export function createNotebookAgentEditing<Result extends { readonly outcome: st
           },
         });
         const result = await bash.exec(request.script, { signal: input.signal, rawScript: true });
+        // The interpreter folds parser errors into exit 2; a command can also exit 2 normally.
+        if (result.exitCode === 2) {
+          try {
+            parse(request.script);
+          } catch {
+            throw scriptRefusal('syntax_error');
+          }
+        }
         const stdout = Buffer.from(result.stdout)
           .subarray(0, NOTEBOOK_EDITING_LIMITS.outputBytes)
           .toString('utf8');

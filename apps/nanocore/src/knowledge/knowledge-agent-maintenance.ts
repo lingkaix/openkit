@@ -622,8 +622,12 @@ export function prepareKnowledgeMaintenance(
                   'invalid_request',
                   undefined,
                   validation.errors.map(({ code }) => code),
-                  validation.linkDiagnostics?.filter(({ pageId }) =>
+                  validation.errors.flatMap(({ code, pageId, target }) =>
+                    code === 'notebook.unresolved_page_link' &&
+                    target !== undefined &&
                     edit.changes.some(({ path }) => path === `${pageId}.md`)
+                      ? [{ code, pageId, target }]
+                      : []
                   )
                 );
               const setting = settings();

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { posix } from 'node:path';
 import { type KnowledgeOwnerScope, parseReferenceScope } from '@openkit/protocol';
 import MarkdownIt from 'markdown-it';
-import type { NotebookLinkDiagnostic, NotebookRevision } from './notebook.js';
+import type { NotebookRevision } from './notebook.js';
 import {
   parseKnowledgePageSourceReference,
   parseOkfDocument,
@@ -21,8 +21,11 @@ export interface NotebookValidationResult {
   readonly changedPaths: readonly string[];
   readonly removedPaths: readonly string[];
   readonly sourceReferences: readonly string[];
-  readonly errors: readonly { readonly pageId: string; readonly code: string }[];
-  readonly linkDiagnostics?: readonly NotebookLinkDiagnostic[];
+  readonly errors: readonly {
+    readonly pageId: string;
+    readonly code: string;
+    readonly target?: string;
+  }[];
   readonly diagnosticsTruncated: boolean;
 }
 
@@ -101,12 +104,12 @@ export function validateNotebookCandidate(input: {
       )
       .map((path) => path.slice(0, -3))
   );
-  const errors: Array<{ pageId: string; code: string }> = [];
-  const linkDiagnostics: NotebookLinkDiagnostic[] = [];
+  const errors: Array<{ pageId: string; code: string; target?: string }> = [];
   const sources = new Set<string>();
   let diagnosticsTruncated = false;
-  const fail = (pageId: string, code: string): void => {
-    if (errors.length < MAX_DIAGNOSTICS) errors.push({ pageId, code });
+  const fail = (pageId: string, code: string, target?: string): void => {
+    if (errors.length < MAX_DIAGNOSTICS)
+      errors.push({ pageId, code, ...(target !== undefined ? { target } : {}) });
     else diagnosticsTruncated = true;
   };
   for (const path of removedPaths)
@@ -209,18 +212,10 @@ export function validateNotebookCandidate(input: {
         (changed.has(path) && !Object.hasOwn(input.candidate.files, resolved)) ||
         (!changed.has(path) && removed.has(resolved))
       ) {
-        if (!unresolved) fail(pageId, 'notebook.unresolved_page_link');
-        unresolved = true;
         // Unchanged outside-selection referrers keep generic diagnostics, never authored values.
-        if (changed.has(path)) {
-          if (linkDiagnostics.length < 8)
-            linkDiagnostics.push({
-              code: 'notebook.unresolved_page_link',
-              pageId,
-              target: target.slice(0, 256),
-            });
-          else diagnosticsTruncated = true;
-        }
+        if (!unresolved || changed.has(path))
+          fail(pageId, 'notebook.unresolved_page_link', changed.has(path) ? target : undefined);
+        unresolved = true;
       }
     }
     // A Source-style local page citation must also survive removal, even in an unchanged referrer.
@@ -244,7 +239,6 @@ export function validateNotebookCandidate(input: {
     removedPaths,
     sourceReferences: [...sources].sort(),
     errors,
-    ...(linkDiagnostics.length ? { linkDiagnostics } : {}),
     diagnosticsTruncated,
   };
 }
