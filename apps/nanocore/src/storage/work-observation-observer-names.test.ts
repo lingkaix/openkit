@@ -274,9 +274,10 @@ describe('retained observer names', () => {
     f.db.sqlite.close();
     const reopened = workspaceDb(f.dataRoot, f.db.workspaceId);
     const { v: _v, seq: _seq, turnId: _turnId, ...draft } = metadata!;
+    const { bodies: _bodies, ...payload } = draft.payload;
     const input = {
       ...f.owner,
-      observation: { ...draft, obs: 'llm-gateway' as WorkObservationDraft['obs'] },
+      observation: { ...draft, payload, obs: 'llm-gateway' as WorkObservationDraft['obs'] },
       bodies: [
         {
           id: 'semantic',
@@ -295,7 +296,7 @@ describe('retained observer names', () => {
     expect(() =>
       appendWorkObservation(reopened, {
         ...input,
-        observation: { ...input.observation, payload: { ...draft.payload, model: 'changed' } },
+        observation: { ...input.observation, payload: { ...payload, model: 'changed' } },
       })
     ).toThrow('recovery_required: observation identity conflict');
     expect(readFileSync(f.ledger)).toEqual(bytes);
