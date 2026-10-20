@@ -41,7 +41,10 @@ const badId = 'ws_00000000-0000-7490-845b-dcfa3ee49925';
 const goodId = 'ws_00000000-0000-73c3-900f-8d310e4ba201';
 
 describe('scope-owned admission', () => {
-  it('refuses missing expected server authority without creating an empty replacement', () => {
+  it.each([
+    'absent',
+    'empty',
+  ] as const)('refuses %s expected server authority without an empty replacement', (fault) => {
     const dataRoot = root();
     const core = openCoreDb(dataRoot);
     applyMigrations(core);
@@ -50,13 +53,15 @@ describe('scope-owned admission', () => {
     const markerPath = join(dataRoot, 'server', 'layout.json');
     const marker = readFileSync(markerPath);
     const path = coreDbPath(dataRoot);
-    rmSync(path);
+    if (fault === 'absent') rmSync(path);
+    else writeFileSync(path, '');
     let replacement: ReturnType<typeof openCoreDbWithIntegrityCheck> | undefined;
     try {
       expect(() => {
         replacement = openCoreDbWithIntegrityCheck(dataRoot);
       }).toThrow(/Core database is missing/);
-      expect(existsSync(path)).toBe(false);
+      expect(existsSync(path)).toBe(fault === 'empty');
+      if (fault === 'empty') expect(readFileSync(path)).toEqual(Buffer.alloc(0));
       expect(readFileSync(markerPath)).toEqual(marker);
     } finally {
       replacement?.sqlite.close();
@@ -66,7 +71,8 @@ describe('scope-owned admission', () => {
   it.each([
     'corrupt',
     'missing',
-  ] as const)('contains a %s Workspace database without recreating it', (fault) => {
+    'empty',
+  ] as const)('refuses Workspace database state %s without recreation', (fault) => {
     const dataRoot = root();
     for (const id of [badId, goodId]) {
       const db = openWorkspaceDb(dataRoot, id);
@@ -74,15 +80,17 @@ describe('scope-owned admission', () => {
       db.sqlite.close();
     }
     const path = workspaceDbPath(dataRoot, badId);
-    const damaged = Buffer.from('unreadable canonical Workspace authority');
-    if (fault === 'corrupt') writeFileSync(path, damaged);
-    else rmSync(path);
+    const damaged =
+      fault === 'empty' ? Buffer.alloc(0) : Buffer.from('unreadable canonical Workspace authority');
+    if (fault === 'missing') rmSync(path);
+    else writeFileSync(path, damaged);
 
     expect(() => verifyAndMigrateExistingScopedDatabases(dataRoot)).not.toThrow();
+    expect(isScopeAdmitted(dataRoot, 'workspace', badId)).toBe(false);
     expect(() => openBootVerifiedWorkspaceDb(dataRoot, badId)).toThrow('quarantined');
     expect(() => openWorkspaceDb(dataRoot, badId)).toThrow('quarantined');
-    if (fault === 'corrupt') expect(readFileSync(path)).toEqual(damaged);
-    else expect(existsSync(path)).toBe(false);
+    if (fault === 'missing') expect(existsSync(path)).toBe(false);
+    else expect(readFileSync(path)).toEqual(damaged);
     const good = openBootVerifiedWorkspaceDb(dataRoot, goodId);
     try {
       good.sqlite.exec(
@@ -312,8 +320,12 @@ describe('scope-owned admission', () => {
   it('contains private User database loss without refusing a healthy Workspace', () => {
     const dataRoot = root();
     const userId = 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b';
-    openUserDb(dataRoot, userId).sqlite.close();
-    openWorkspaceDb(dataRoot, goodId).sqlite.close();
+    const user = openUserDb(dataRoot, userId);
+    applyScopedMigrations(user);
+    user.sqlite.close();
+    const good = openWorkspaceDb(dataRoot, goodId);
+    applyScopedMigrations(good);
+    good.sqlite.close();
     const path = userDbPath(dataRoot, userId);
     const damaged = Buffer.from('unreadable private User authority');
     writeFileSync(path, damaged);

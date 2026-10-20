@@ -109,11 +109,13 @@ export function openCoreDbWithIntegrityCheck(
 ): CoreDb {
   const freshInitialization =
     options.freshInitialization ?? isFreshCoreInitializationScope(dataRoot);
-  if (!freshInitialization && !existsSync(coreDbPath(dataRoot))) {
+  const path = coreDbPath(dataRoot);
+  // SQLite accepts a zero-byte file as new; an established deployment has no such initialization proof.
+  if (!freshInitialization && (!existsSync(path) || statSync(path).size === 0)) {
     throw new Error('Core database is missing from an existing deployment.');
   }
   ensureLayout(dataRoot);
-  assertSqliteIntegrity(coreDbPath(dataRoot));
+  assertSqliteIntegrity(path);
   return openCoreDb(dataRoot, { freshInitialization });
 }
 
@@ -160,8 +162,8 @@ export function verifyAndMigrateExistingScopedDatabases(
     if (!isScopeAdmitted(dataRoot, scope, id)) continue;
     try {
       const path = scope === 'workspace' ? workspaceDbPath(dataRoot, id) : userDbPath(dataRoot, id);
-      if (scope === 'workspace' && !existsSync(path))
-        throw new Error('Expected Workspace database is missing.');
+      if (scope === 'workspace' && (!existsSync(path) || statSync(path).size === 0))
+        throw new Error('Expected Workspace database is missing or uninitialized.');
       assertSqliteIntegrity(path);
     } catch {
       refuseScope(dataRoot, { scope, id, check: 'database' });

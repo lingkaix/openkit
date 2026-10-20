@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { lstat, readFile, rm } from 'node:fs/promises';
+import { lstat, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, expect, it } from 'vitest';
@@ -15,7 +15,10 @@ afterEach(async () => {
   await removeDataRoot(current.dataRoot);
 });
 
-it('refuses a missing server database before creating replacement authority', async () => {
+it.each([
+  'absent',
+  'empty',
+] as const)('refuses %s server authority before creating a replacement', async (fault) => {
   harness = await startNanoCoreHarness({ coreMode: 'server' });
   const { dataRoot } = harness;
   await harness.stop();
@@ -23,11 +26,13 @@ it('refuses a missing server database before creating replacement authority', as
   expect((await readFile(database)).length).toBeGreaterThan(0);
   const markerPath = join(dataRoot, 'server', 'layout.json');
   const marker = await readFile(markerPath);
-  await rm(database);
+  if (fault === 'absent') await rm(database);
+  else await writeFile(database, '');
   await expect(
     startNanoCoreHarness({ coreMode: 'server', dataRoot, seedDemoWorkspace: false })
   ).rejects.toThrow(/Core database is missing/);
-  await expect(lstat(database)).rejects.toMatchObject({ code: 'ENOENT' });
+  if (fault === 'absent') await expect(lstat(database)).rejects.toMatchObject({ code: 'ENOENT' });
+  else expect(await readFile(database)).toEqual(Buffer.alloc(0));
   expect(await readFile(markerPath)).toEqual(marker);
 });
 
