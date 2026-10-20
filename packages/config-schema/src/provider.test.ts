@@ -447,7 +447,7 @@ describe('provider config schema', () => {
       ProviderProfileSchema.safeParse({
         displayName: 'OpenRouter',
         id: 'openrouter',
-        kind: 'gateway',
+        kind: 'llm-gateway',
         models: ['openai/gpt-5.1'],
         vendor: 'openrouter',
       }).success
@@ -561,4 +561,80 @@ it('keeps materialized Provider metadata strict and generated descriptive shapes
   for (const { schema } of getConfigSchemaCatalog().filter(({ kind }) => kinds.has(kind))) {
     expect(schema.additionalProperties).toBe(false);
   }
+});
+
+describe('Provider.kind vocabulary V5', () => {
+  const profile = {
+    id: 'gateway',
+    displayName: 'gateway',
+    baseUrl: 'https://gateway.example.invalid/v1',
+    category: 'gateway',
+    defaultModel: 'gateway',
+    models: ['gateway'],
+    vendor: 'gateway',
+    extensions: { example: { kind: 'gateway', label: 'gateway' } },
+  };
+
+  // V5 ruling: new authored profiles use llm-gateway; the Provider class does not change.
+  it('admits llm-gateway in authored, logical, and materialized Provider profiles', () => {
+    const logical = { ...profile, kind: 'llm-gateway' };
+    const authored = { ...logical, schemaVersion: 1 };
+    const { category: _category, ...instance } = logical;
+
+    for (const [schema, input] of [
+      [AuthoredProviderProfileSchema, authored],
+      [ProviderProfileSchema, logical],
+      [OpenKitProviderInstanceSchema, instance],
+    ] as const) {
+      const result = schema.safeParse(input);
+      expect(result.success).toBe(true);
+      if (result.success) expect(result.data).toEqual(input);
+    }
+  });
+
+  // V5 continuity: retained schemaVersion=1 maps only Provider.kind, not other gateway strings.
+  it('projects only the historical authored kind to llm-gateway without mutating its input', () => {
+    const retained = { ...profile, schemaVersion: 1, kind: 'gateway' };
+    const before = JSON.stringify(retained);
+    const result = AuthoredProviderProfileSchema.safeParse(retained);
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data).toEqual({ ...profile, schemaVersion: 1, kind: 'llm-gateway' });
+    }
+    expect(JSON.stringify(retained)).toBe(before);
+  });
+
+  // Contract Evolution: unknown core values fail closed; V5 preserves the other four kinds.
+  it('preserves other Provider kinds and refuses unknown kinds and invalid retained versions', () => {
+    for (const kind of ['direct', 'local', 'oauth', 'custom']) {
+      const authored = { ...profile, schemaVersion: 1, kind };
+      expect(AuthoredProviderProfileSchema.parse(authored)).toEqual(authored);
+      expect(ProviderProfileSchema.parse({ ...profile, kind })).toEqual({ ...profile, kind });
+    }
+    for (const kind of ['unknown', 'mcp-gateway', '', null, 1, ['gateway']]) {
+      expect(
+        AuthoredProviderProfileSchema.safeParse({ ...profile, schemaVersion: 1, kind }).success
+      ).toBe(false);
+      expect(ProviderProfileSchema.safeParse({ ...profile, kind }).success).toBe(false);
+    }
+    for (const schemaVersion of [undefined, null, 0, 2, '1']) {
+      expect(
+        AuthoredProviderProfileSchema.safeParse({
+          ...profile,
+          schemaVersion,
+          kind: 'gateway',
+        }).success
+      ).toBe(false);
+    }
+  });
+
+  // V5 bounds the alias to retained authored files; it is not a new live-input alias.
+  it('refuses gateway in current logical and materialized profiles', () => {
+    expect(ProviderProfileSchema.safeParse({ ...profile, kind: 'gateway' }).success).toBe(false);
+    const { category: _category, ...instance } = profile;
+    expect(OpenKitProviderInstanceSchema.safeParse({ ...instance, kind: 'gateway' }).success).toBe(
+      false
+    );
+  });
 });
