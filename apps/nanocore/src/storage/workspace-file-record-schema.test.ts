@@ -1,8 +1,17 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
+import { scopeAdmissionFailures } from '../bootstrap/readiness.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { parseOkfDocument, updateOkfFrontmatter } from '../knowledge/okf.js';
 import { FsStore } from '../lib/store.js';
@@ -96,6 +105,67 @@ function createCanonicalRecordFixture() {
   };
 }
 
+/**
+ * Validates one retained fault in a fresh admission lifetime without resetting process state.
+ *
+ * Copies exact authority, seeds an independent healthy sibling, and checks refusal and preservation.
+ * Each copy has a new root identity, so later faults cannot reuse an earlier refusal.
+ *
+ * @param dataRoot Source fixture containing the injected fault.
+ * @param workspaceId Owning Workspace that must be quarantined.
+ * @returns Reopened Store and isolated root for additional native readback checks.
+ */
+function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
+  const restartRoot = mkdtempSync(join(tmpdir(), 'openkit-local-refusal-'));
+  onTestFinished(() => rmSync(restartRoot, { recursive: true, force: true }));
+  const seed = new FsStore({ dataRoot: restartRoot });
+  const sibling = seed.createWorkspace('Healthy refusal control');
+  const siblingThread = seed.createThread(sibling.id, 'Retained sibling thread');
+  const siblingBefore = seed.getWorkspace(sibling.id);
+  cpSync(dataRoot, restartRoot, { recursive: true, verbatimSymlinks: true });
+
+  /** Records every directory, link target and file byte, including the absence of deleted entries. */
+  function snapshot(root: string): Record<string, Buffer | string> {
+    const entries: Record<string, Buffer | string> = {};
+    const visit = (directory: string, prefix = '') => {
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        const key = join(prefix, entry.name);
+        const path = join(directory, entry.name);
+        if (entry.isDirectory()) {
+          entries[key] = 'directory';
+          visit(path, key);
+        } else {
+          entries[key] = entry.isSymbolicLink() ? `link:${readlinkSync(path)}` : readFileSync(path);
+        }
+      }
+    };
+    visit(root);
+    return entries;
+  }
+
+  const refusedRoot = join(restartRoot, 'workspaces', workspaceId);
+  const before = snapshot(refusedRoot);
+  const reopened = new FsStore({ dataRoot: restartRoot });
+  expect(scopeAdmissionFailures(restartRoot)).toContainEqual(
+    expect.objectContaining({ scope: 'workspace', id: workspaceId })
+  );
+  expect(() => reopened.getWorkspace(workspaceId)).toThrow(
+    expect.objectContaining({ code: 'recovery_required' })
+  );
+  expect(() => reopened.createThread(workspaceId, 'Must remain refused')).toThrow(
+    expect.objectContaining({ code: 'recovery_required' })
+  );
+  expect(reopened.getWorkspace(sibling.id)).toEqual(siblingBefore);
+  expect(reopened.getThread(sibling.id, siblingThread.id)).toEqual(siblingThread);
+  const progress = reopened.createThread(sibling.id, 'Healthy sibling progress');
+  expect(new FsStore({ dataRoot: restartRoot }).getThread(sibling.id, progress.id)).toEqual(
+    progress
+  );
+  expect(snapshot(refusedRoot)).toEqual(before);
+  expect(snapshot(join(dataRoot, 'workspaces', workspaceId))).toEqual(before);
+  return { store: reopened, dataRoot: restartRoot };
+}
+
 describe('workspace canonical record schemas', () => {
   it('reloads native proposal metadata without changing its canonical bytes', () => {
     const { dataRoot, store, workspace, workspaceRoot } = createCanonicalRecordFixture();
@@ -117,7 +187,7 @@ describe('workspace canonical record schemas', () => {
 
     writeFileSync(path, readFileSync(path, 'utf8').replace(`created_at: "${TIMESTAMP}"\n`, ''));
 
-    expect(() => new FsStore({ dataRoot })).toThrow();
+    expectLocalWorkspaceRefusal(dataRoot, workspace.id);
   });
 
   it('ignores an embedded Proposal status while preserving its source bytes', () => {
@@ -165,7 +235,7 @@ describe('workspace canonical record schemas', () => {
 
     writeFileSync(path, `${JSON.stringify(record)}\n`);
 
-    expect(() => new FsStore({ dataRoot })).toThrow();
+    expectLocalWorkspaceRefusal(dataRoot, workspace.id);
   });
 
   it.each([
@@ -245,7 +315,11 @@ describe('workspace canonical record schemas', () => {
     });
     notebook.publish({ baseRevision, candidateRevision });
 
-    expect(() => new FsStore({ dataRoot })).toThrow();
+    if (violation === 'foreign scope') {
+      expect(() => new FsStore({ dataRoot })).toThrow();
+    } else {
+      expectLocalWorkspaceRefusal(dataRoot, workspace.id);
+    }
   });
 
   it.each([
@@ -270,7 +344,7 @@ describe('workspace canonical record schemas', () => {
     delete record[field];
     writeFileSync(path, `${JSON.stringify(record)}\n`);
 
-    expect(() => new FsStore({ dataRoot })).toThrow();
+    expectLocalWorkspaceRefusal(dataRoot, workspace.id);
   });
 
   it('stores only a scalar environment package snapshot reference in an AgentSession', () => {

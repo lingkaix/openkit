@@ -1,13 +1,22 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { KnowledgeBaseIdSchema } from '@openkit/protocol';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
 import {
   seedDemoWorkspaceAuthority,
   seedDemoWorkspaceDataRoot,
 } from '../../../../tests/support/demo-data.mjs';
+import { scopeAdmissionFailures } from '../bootstrap/readiness.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { readWorkspaceNotebookIndexSource } from '../knowledge/notebook-index-source.js';
 import { parseOkfDocument } from '../knowledge/okf.js';
@@ -27,6 +36,67 @@ function dataRoot(): string {
   const root = mkdtempSync(join(tmpdir(), 'openkit-demo-contract-'));
   roots.push(root);
   return root;
+}
+
+/**
+ * Validates one retained fault in a fresh admission lifetime without resetting process state.
+ *
+ * Copies exact authority, seeds an independent healthy sibling, and checks refusal and preservation.
+ * Each copy has a new root identity, so later faults cannot reuse an earlier refusal.
+ *
+ * @param dataRoot Source fixture containing the injected fault.
+ * @param workspaceId Owning Workspace that must be quarantined.
+ * @returns Reopened Store and isolated root for additional native readback checks.
+ */
+function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
+  const restartRoot = mkdtempSync(join(tmpdir(), 'openkit-local-refusal-'));
+  onTestFinished(() => rmSync(restartRoot, { recursive: true, force: true }));
+  const seed = new FsStore({ dataRoot: restartRoot });
+  const sibling = seed.createWorkspace('Healthy refusal control');
+  const siblingThread = seed.createThread(sibling.id, 'Retained sibling thread');
+  const siblingBefore = seed.getWorkspace(sibling.id);
+  cpSync(dataRoot, restartRoot, { recursive: true, verbatimSymlinks: true });
+
+  /** Records every directory, link target and file byte, including the absence of deleted entries. */
+  function snapshot(root: string): Record<string, Buffer | string> {
+    const entries: Record<string, Buffer | string> = {};
+    const visit = (directory: string, prefix = '') => {
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        const key = join(prefix, entry.name);
+        const path = join(directory, entry.name);
+        if (entry.isDirectory()) {
+          entries[key] = 'directory';
+          visit(path, key);
+        } else {
+          entries[key] = entry.isSymbolicLink() ? `link:${readlinkSync(path)}` : readFileSync(path);
+        }
+      }
+    };
+    visit(root);
+    return entries;
+  }
+
+  const refusedRoot = join(restartRoot, 'workspaces', workspaceId);
+  const before = snapshot(refusedRoot);
+  const reopened = new FsStore({ dataRoot: restartRoot });
+  expect(scopeAdmissionFailures(restartRoot)).toContainEqual(
+    expect.objectContaining({ scope: 'workspace', id: workspaceId })
+  );
+  expect(() => reopened.getWorkspace(workspaceId)).toThrow(
+    expect.objectContaining({ code: 'recovery_required' })
+  );
+  expect(() => reopened.createThread(workspaceId, 'Must remain refused')).toThrow(
+    expect.objectContaining({ code: 'recovery_required' })
+  );
+  expect(reopened.getWorkspace(sibling.id)).toEqual(siblingBefore);
+  expect(reopened.getThread(sibling.id, siblingThread.id)).toEqual(siblingThread);
+  const progress = reopened.createThread(sibling.id, 'Healthy sibling progress');
+  expect(new FsStore({ dataRoot: restartRoot }).getThread(sibling.id, progress.id)).toEqual(
+    progress
+  );
+  expect(snapshot(refusedRoot)).toEqual(before);
+  expect(snapshot(join(dataRoot, 'workspaces', workspaceId))).toEqual(before);
+  return { store: reopened, dataRoot: restartRoot };
 }
 
 describe('shared black-box demo fixture contract', () => {
@@ -128,6 +198,8 @@ describe('shared black-box demo fixture contract', () => {
     const root = dataRoot();
     seedDemoWorkspaceDataRoot(root);
     await seedDemoWorkspaceAuthority(root);
+    const siblingId = workspaceIds[1]!;
+    const sibling = new FsStore({ dataRoot: root }).getWorkspace(siblingId);
     const path = join(root, 'workspaces', DEMO_WORKSPACE_ID, 'workspace-record.json');
     const record = JSON.parse(readFileSync(path, 'utf8'));
     delete record.schemaVersion;
@@ -137,7 +209,18 @@ describe('shared black-box demo fixture contract', () => {
 
     seedDemoWorkspaceDataRoot(root);
     await seedDemoWorkspaceAuthority(root);
-    expect(() => new FsStore({ dataRoot: root })).toThrow('Unsupported retained record format.');
+    const restarted = expectLocalWorkspaceRefusal(root, DEMO_WORKSPACE_ID);
+    expect(restarted.store.getWorkspace(siblingId)).toEqual(sibling);
+    const progress = restarted.store.createThread(siblingId, 'Other demo Workspace progresses');
+    expect(new FsStore({ dataRoot: restarted.dataRoot }).getThread(siblingId, progress.id)).toEqual(
+      progress
+    );
+    expect(
+      readFileSync(
+        join(restarted.dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'workspace-record.json'),
+        'utf8'
+      )
+    ).toBe(bytes);
     expect(readFileSync(path, 'utf8')).toBe(bytes);
   });
 });

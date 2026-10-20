@@ -1,8 +1,17 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
+import { scopeAdmissionFailures } from '../bootstrap/readiness.js';
 import { FsStore } from '../lib/store.js';
 import { appendWorkspaceTurnEvent, loadWorkspaceFileRecords } from './workspace-file-records.js';
 
@@ -114,6 +123,67 @@ function createRetainedFixture() {
   };
 }
 
+/**
+ * Validates one retained fault in a fresh admission lifetime without resetting process state.
+ *
+ * Copies exact authority, seeds an independent healthy sibling, and checks refusal and preservation.
+ * Each copy has a new root identity, so later faults cannot reuse an earlier refusal.
+ *
+ * @param dataRoot Source fixture containing the injected fault.
+ * @param workspaceId Owning Workspace that must be quarantined.
+ * @returns Reopened Store and isolated root for additional native readback checks.
+ */
+function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
+  const restartRoot = mkdtempSync(join(tmpdir(), 'openkit-local-refusal-'));
+  onTestFinished(() => rmSync(restartRoot, { recursive: true, force: true }));
+  const seed = new FsStore({ dataRoot: restartRoot });
+  const sibling = seed.createWorkspace('Healthy refusal control');
+  const siblingThread = seed.createThread(sibling.id, 'Retained sibling thread');
+  const siblingBefore = seed.getWorkspace(sibling.id);
+  cpSync(dataRoot, restartRoot, { recursive: true, verbatimSymlinks: true });
+
+  /** Records every directory, link target and file byte, including the absence of deleted entries. */
+  function snapshot(root: string): Record<string, Buffer | string> {
+    const entries: Record<string, Buffer | string> = {};
+    const visit = (directory: string, prefix = '') => {
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        const key = join(prefix, entry.name);
+        const path = join(directory, entry.name);
+        if (entry.isDirectory()) {
+          entries[key] = 'directory';
+          visit(path, key);
+        } else {
+          entries[key] = entry.isSymbolicLink() ? `link:${readlinkSync(path)}` : readFileSync(path);
+        }
+      }
+    };
+    visit(root);
+    return entries;
+  }
+
+  const refusedRoot = join(restartRoot, 'workspaces', workspaceId);
+  const before = snapshot(refusedRoot);
+  const reopened = new FsStore({ dataRoot: restartRoot });
+  expect(scopeAdmissionFailures(restartRoot)).toContainEqual(
+    expect.objectContaining({ scope: 'workspace', id: workspaceId })
+  );
+  expect(() => reopened.getWorkspace(workspaceId)).toThrow(
+    expect.objectContaining({ code: 'recovery_required' })
+  );
+  expect(() => reopened.createThread(workspaceId, 'Must remain refused')).toThrow(
+    expect.objectContaining({ code: 'recovery_required' })
+  );
+  expect(reopened.getWorkspace(sibling.id)).toEqual(siblingBefore);
+  expect(reopened.getThread(sibling.id, siblingThread.id)).toEqual(siblingThread);
+  const progress = reopened.createThread(sibling.id, 'Healthy sibling progress');
+  expect(new FsStore({ dataRoot: restartRoot }).getThread(sibling.id, progress.id)).toEqual(
+    progress
+  );
+  expect(snapshot(refusedRoot)).toEqual(before);
+  expect(snapshot(join(dataRoot, 'workspaces', workspaceId))).toEqual(before);
+  return { store: reopened, dataRoot: restartRoot };
+}
+
 describe('native retained file formats', () => {
   it.each(
     families
@@ -146,7 +216,11 @@ describe('native retained file formats', () => {
       const invalidBytes = `${JSON.stringify(record)}\n`;
       writeFileSync(path, invalidBytes);
 
-      expect(() => loadWorkspaceFileRecords(dataRoot)).toThrow();
+      const workspaceId = JSON.parse(readFileSync(paths.Workspace, 'utf8')).id as string;
+      const restarted = expectLocalWorkspaceRefusal(dataRoot, workspaceId);
+      expect(
+        loadWorkspaceFileRecords(restarted.dataRoot).map(({ workspace }) => workspace.id)
+      ).not.toContain(workspaceId);
       expect(readFileSync(path, 'utf8')).toBe(invalidBytes);
       writeFileSync(path, originalBytes);
       expect(loadWorkspaceFileRecords(dataRoot)).toHaveLength(1);
