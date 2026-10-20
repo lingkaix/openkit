@@ -22,11 +22,11 @@ import { allocateEntityId, isEntityId, readRetainedV1, WorkOwnerSchema } from '@
 import { assertScopeAdmitted, isScopeAdmitted, refuseScope } from '../bootstrap/readiness.js';
 import { ensureEncryptedFileVaultStoreDirectory } from '../vault/vault-store-directory.js';
 
-/** A valid foreign work owner violates the shared layout boundary, not only local record semantics. */
+/** A supported foreign record owner violates the shared boundary, not only local record semantics. */
 export class WorkOwnershipViolationError extends Error {
   /** Creates the strict cross-owner refusal without exposing record content. */
-  constructor(workspaceId: string) {
-    super(`DATA_ROOT work ownership violation in Workspace ${workspaceId}.`);
+  constructor(recordHome: string) {
+    super(`DATA_ROOT record ownership violation in ${recordHome}.`);
     this.name = 'WorkOwnershipViolationError';
   }
 }
@@ -46,7 +46,7 @@ export function assertWorkspaceWorkOwner(record: unknown, workspaceId: string): 
     parsed.success &&
     (parsed.data.kind !== 'workspace' || parsed.data.workspaceId !== workspaceId)
   ) {
-    throw new WorkOwnershipViolationError(workspaceId);
+    throw new WorkOwnershipViolationError(`Workspace ${workspaceId}`);
   }
 }
 
