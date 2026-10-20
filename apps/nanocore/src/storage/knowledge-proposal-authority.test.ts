@@ -717,7 +717,7 @@ describe('knowledge proposal authority', () => {
       () => f.store.projectKnowledgeProposalDecision(f.workspaceId, accepted.review.reviewId),
       'recovery_required'
     );
-  }, 90_000);
+  }, 60_000);
 
   it('fails closed when durable Review bytes contradict the accepted proposal', async () => {
     const f = await createFixture('proposal-review-tamper');

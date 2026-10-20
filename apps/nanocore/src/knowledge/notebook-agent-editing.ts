@@ -80,6 +80,7 @@ class NotebookEditingFs extends InMemoryFs {
     const relative = normalized.slice('/notebook/'.length);
     if (directory) {
       if (
+        relative !== '@sources' &&
         !relative
           .split('/')
           .every(
@@ -248,7 +249,7 @@ export function createNotebookAgentEditing<Result extends { readonly outcome: st
   const base = input.notebook.inspectRevision(input.baseRevision);
   validateNotebookFiles(fixedFiles, true);
   const selected = new Set(Object.keys(fixedFiles));
-  const admitted = input.notebook.readRevision(input.baseRevision, [...selected]).files;
+  const admitted = input.notebook.readContent(input.baseRevision, [...selected]);
   const initial: Record<string, string> = {};
   let admittedBytes = 0;
   for (const [path, content] of Object.entries(fixedFiles)) {
@@ -270,7 +271,13 @@ export function createNotebookAgentEditing<Result extends { readonly outcome: st
   }
   if (admittedBytes > NOTEBOOK_EDITING_LIMITS.workspaceBytes)
     throw new NotebookError('invalid_request');
-  const fs = new NotebookEditingFs(initial, new Set(Object.keys(base.entries)), selected);
+  const basePaths = new Set([
+    ...Object.keys(base.entries),
+    ...Object.keys(input.notebook.readSourcePointers(input.baseRevision)).map(
+      (id) => `@sources/${id}.md`
+    ),
+  ]);
+  const fs = new NotebookEditingFs(initial, basePaths, selected);
   let ended = false;
   let busy = false;
   const assertOpen = () => {

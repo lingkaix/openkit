@@ -210,7 +210,7 @@ describe('native Workspace Notebook history and restore', () => {
       revision: s.initial,
       parentRevision: s.rootRevision,
       availability: 'available',
-      changedPaths: [`sources/${s.sourceId}.md`],
+      changedPaths: [`@sources/${s.sourceId}.md`],
     });
     expect(sourceHistory.body.nextRevision).toBe(s.rootRevision);
     const rootHistory = await call(f, 'knowledge.notebook.history', {
