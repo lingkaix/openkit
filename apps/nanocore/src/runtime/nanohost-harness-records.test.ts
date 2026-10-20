@@ -44,12 +44,12 @@ describe('Workspace invocation deadline and exclusion controls', () => {
     observedAt,
     delivered,
   }) => {
-    vi.useFakeTimers({ toFake: ['Date'] });
-    vi.setSystemTime(new Date(now));
-    onTestFinished(() => vi.useRealTimers());
     const db = openOpeningBindingDb('openkit-harness-parent-budget-');
     try {
+      // Allocate the existing shared fixture identities before changing time; their cached IDs must not leak a future epoch into other cases.
       seedSubmittedAttempt(db);
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date(now));
       queueNanoHostHarnessOperation(db, {
         body: { ...concurrentTurnStartBody(1), deadline: '2098-08-21T00:00:01.000Z' },
         harnessInstanceId: 'harness-1',
@@ -66,6 +66,7 @@ describe('Workspace invocation deadline and exclusion controls', () => {
       expect(command !== null).toBe(delivered);
       if (command) expect(command.body.deadline).toBe('2098-08-21T00:00:01.000Z');
     } finally {
+      vi.useRealTimers();
       db.sqlite.close();
     }
   });
