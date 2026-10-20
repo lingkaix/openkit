@@ -1,4 +1,7 @@
 import { createHash } from 'node:crypto';
+import { closeSync, constants, openSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import {
   GOAL_OPERATION_DEFINITIONS,
   type GoalCard,
@@ -16,26 +19,53 @@ import {
   type CapabilityCall,
   deriveEntityId,
   type Item,
+  ItemSchema,
   isSealedTurnTerminal,
   PolicyDelegationV1Schema,
+  PolicyDocumentV1Schema,
+  RequestIdSchema,
   readRetainedV1,
-  type TurnSchema,
+  ThreadSchema,
+  TurnSchema,
+  UserIdSchema,
+  WorkspaceIdSchema,
   workspaceIdForOwner,
   writeRetainedV1,
 } from '@openkit/protocol';
-import type { z } from 'zod';
+import { LocalStorage, type StorageAccess, type StorageResult } from '@openkit/storage';
+import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
 import {
   authorizeWorkspace,
   isCurrentDeploymentAdministrator,
+  requireCurrentDeploymentAdmin,
 } from '../auth/operation-authorizer.js';
-import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
-import type { FsStore } from '../lib/store.js';
+import { commandRequestKey, type FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import type { GoalDomainPolicyService } from '../policy/goal-domains.js';
-import { policyDigest } from '../policy/statements.js';
+import { EMPTY_POLICY_DOCUMENT, policyDigest } from '../policy/statements.js';
+import { evaluateWorkspaceResourceAccess } from '../policy/workspace-resource-access.js';
+import {
+  mapCommandRequestRow,
+  readCommandRequestRecordsFromSqlite,
+  recordCommandRequestRecordInDb,
+} from '../storage/command-request-records.js';
+import {
+  applyControlProducts,
+  assertControlProductWriter,
+  type ControlProductContentMount,
+  ControlProductEntrySchema,
+  type PreparedControlEntry,
+  prepareControlEntries,
+  readProduct,
+} from '../storage/control-store-products.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
+import { workspaceDbPath } from '../storage/fs-layout.js';
+import { publishImmutableContent } from '../storage/immutable-content.js';
+import { ensureCanonicalDirectoryAsync } from '../storage/workspace-file-records.js';
 import {
   StoredGoalCardTaskV1Schema,
   StoredGoalCardV1Schema,
@@ -47,21 +77,27 @@ import {
 } from './goal-retained-v1.js';
 import {
   commandInputHash,
+  IdempotencyKeyConflictError,
+  type IdempotentCommandReceipt,
   type InflightIdempotentCommand,
   runIdempotentCommand,
 } from './idempotent-command.js';
-import {
-  raiseRecordedPendingRequest,
-  resolveCommandIntentApproval,
-} from './pending-request-flow.js';
+import { projectApprovalEffect } from './pending-request-disclosure.js';
 import {
   claimCommandIntentGrant,
+  denyPendingRequest,
   finishPendingExecution,
+  grantCommandIntentRequest,
   invalidateGoalPendingRequests,
+  isCommandIntentApproval,
+  isReadyOutcome,
   listThreadPendingRequests,
   type PendingRequestRecord,
+  projectApprovalRequest,
+  raisePendingRequest,
   readPendingRequest,
   refuseCommandIntentGrant,
+  validateCanonicalLoad,
 } from './pending-requests.js';
 
 type Turn = z.infer<typeof TurnSchema>;
@@ -278,8 +314,12 @@ export function listExportableGoalState(db: WorkspaceDb) {
   };
 }
 
-/** Derives admission and state from ordinary Task Turns; retained citations alone prove neither. */
-export function readGoalView(store: FsStore, db: WorkspaceDb, goalId: string): GoalView {
+/** Projects authoritative SQL products; the retained Store argument is not a read authority. */
+export function readGoalView(_store: FsStore, db: WorkspaceDb, goalId: string): GoalView {
+  return readNativeGoalView(db, goalId);
+}
+/** Derives admission and state from ordinary native Task Turns, without file or cache fallback. */
+function readNativeGoalView(db: WorkspaceDb, goalId: string): GoalView {
   const goal = readRecord(db, 'goals', 'goal_id', goalId, StoredGoalV1Schema);
   if (!goal) return { goal: null, cards: [], versions: [], tasks: [], requests: [] };
   const rows = <T>(table: string, schema: z.ZodType<T>) =>
@@ -301,10 +341,13 @@ export function readGoalView(store: FsStore, db: WorkspaceDb, goalId: string): G
       .sort((a, b) => a.sequence - b.sequence),
     tasks: rows('goal_card_tasks', StoredGoalCardTaskV1Schema).map((row) => {
       const link = GoalTaskLinkSchema.parse(row);
-      const missing = !store
-        .listThreads(goal.workspaceId)
-        .some((thread) => thread.id === link.threadId);
-      const turns = missing ? [] : store.listThreadTurns(goal.workspaceId, link.threadId);
+      const missing = !readProduct(
+        db.sqlite,
+        { kind: 'workspace', workspaceId: goal.workspaceId },
+        'thread',
+        link.threadId
+      );
+      const turns = missing ? [] : nativeTurns(db, link.threadId);
       return {
         ...link,
         // Historical reservation timestamps are not admission evidence; the Task Turn owns time.
@@ -347,9 +390,13 @@ function checkRevision(actual: number, expected: number): void {
     );
 }
 /** Refuses model-selected Coordinator identity, Thread, actor, or terminal Turn. */
-function coordinatorTurn(context: GoalOwnerContext, store: FsStore, goal: GoalRecord): Turn | null {
+function coordinatorTurn(
+  context: GoalOwnerContext,
+  db: WorkspaceDb,
+  goal: GoalRecord
+): Turn | null {
   if (!context.coordinatorTurnId) return null;
-  const turn = store.getTurnById(context.coordinatorTurnId);
+  const turn = nativeTurn(db, context.coordinatorTurnId);
   if (
     workspaceIdForOwner(turn.owner) !== goal.workspaceId ||
     turn.threadId !== goal.threadId ||
@@ -367,7 +414,7 @@ function coordinatorTurn(context: GoalOwnerContext, store: FsStore, goal: GoalRe
 }
 /** Validates the exact live Coordinator binding before a read can supply shared Goal input. */
 export function requireCoordinatorGoal(
-  store: FsStore,
+  _store: FsStore,
   db: WorkspaceDb,
   binding: { actor: Actor; goalId: string; workspaceId: string; threadId: string; turnId: string }
 ): GoalRecord {
@@ -375,56 +422,368 @@ export function requireCoordinatorGoal(
   if (
     goal.workspaceId !== binding.workspaceId ||
     goal.threadId !== binding.threadId ||
-    store.getThread(goal.workspaceId, goal.threadId).visibility !== 'workspace'
+    readProduct(
+      db.sqlite,
+      { kind: 'workspace', workspaceId: goal.workspaceId },
+      'thread',
+      goal.threadId
+    )?.record.visibility !== 'workspace'
   )
     throw new GoalCommandError(
       'coordinator_authority_denied',
       'Coordinator source is unavailable.',
       403
     );
-  coordinatorTurn({ actor: binding.actor, coordinatorTurnId: binding.turnId }, store, goal);
+  coordinatorTurn({ actor: binding.actor, coordinatorTurnId: binding.turnId }, db, goal);
   return goal;
 }
-/** Captures one exact command on the ordinary Pending Request owner. */
+const GoalActorSchema: z.ZodType<Actor> = z
+  .object({
+    userId: UserIdSchema,
+    kind: z.enum(['local', 'session', 'token']),
+    sessionId: z.string().min(1).optional(),
+    tokenId: z.string().min(1).optional(),
+    tokenScope: z.enum(['server-admin', 'workspace', 'workspace-readonly']).optional(),
+    tokenWorkspaceIds: z.array(WorkspaceIdSchema).optional(),
+    adminTokenId: z.string().min(1).optional(),
+  })
+  .strict()
+  .transform(
+    (value): Actor => ({
+      userId: value.userId,
+      kind: value.kind,
+      ...(value.sessionId ? { sessionId: value.sessionId } : {}),
+      ...(value.tokenId ? { tokenId: value.tokenId } : {}),
+      ...(value.tokenScope ? { tokenScope: value.tokenScope } : {}),
+      ...(value.tokenWorkspaceIds ? { tokenWorkspaceIds: value.tokenWorkspaceIds } : {}),
+      ...(value.adminTokenId ? { adminTokenId: value.adminTokenId } : {}),
+    })
+  );
+const GoalContextSchema = z
+  .object({
+    actor: GoalActorSchema,
+    coordinatorTurnId: z.string().min(1).optional(),
+    originTurnId: z.string().min(1).optional(),
+    assistantHandoff: z
+      .object({
+        originThreadId: z.string().min(1),
+        originTurnId: z.string().min(1),
+        sourceHash: z.string().min(1),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict()
+  .transform(
+    (value): GoalOwnerContext => ({
+      actor: value.actor,
+      ...(value.coordinatorTurnId ? { coordinatorTurnId: value.coordinatorTurnId } : {}),
+      ...(value.originTurnId ? { originTurnId: value.originTurnId } : {}),
+      ...(value.assistantHandoff ? { assistantHandoff: value.assistantHandoff } : {}),
+    })
+  );
+const GoalReceiptSchema = z
+  .object({
+    key: z.string().min(1),
+    command: z.enum([
+      'goal.create',
+      'goal.intent.revise',
+      'goal.card.create',
+      'goal.card.edit',
+      'goal.card.cancel',
+      'goal.plan.propose',
+      'goal.plan.approve',
+      'goal.cancel',
+      'goal.completion.accept',
+    ]),
+    requestId: RequestIdSchema,
+    scope: z
+      .object({
+        workspaceId: WorkspaceIdSchema,
+        actorId: UserIdSchema,
+        threadId: z.string().min(1).optional(),
+      })
+      .strict()
+      .transform((value) => ({
+        workspaceId: value.workspaceId,
+        actorId: value.actorId,
+        ...(value.threadId ? { threadId: value.threadId } : {}),
+      })),
+    inputHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    responseKind: z.literal('goal'),
+    createdAt: z.string().datetime(),
+    expiresAt: z.string().datetime(),
+  })
+  .strict();
+const GoalCommandSchema = z.discriminatedUnion('operation', [
+  z
+    .object({
+      operation: z.literal('goal.create'),
+      arguments: GOAL_OPERATION_DEFINITIONS['goal.create'].inputSchema.strict(),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('goal.intent.revise'),
+      arguments: GOAL_OPERATION_DEFINITIONS['goal.intent.revise'].inputSchema.strict(),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('goal.card.create'),
+      arguments: GOAL_OPERATION_DEFINITIONS['goal.card.create'].inputSchema.strict(),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('goal.card.edit'),
+      arguments: GOAL_OPERATION_DEFINITIONS['goal.card.edit'].inputSchema.strict(),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('goal.card.cancel'),
+      arguments: GOAL_OPERATION_DEFINITIONS['goal.card.cancel'].inputSchema.strict(),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('goal.plan.propose'),
+      arguments: GOAL_OPERATION_DEFINITIONS['goal.plan.propose'].inputSchema.strict(),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('goal.plan.approve'),
+      arguments: GOAL_OPERATION_DEFINITIONS['goal.plan.approve'].inputSchema.strict(),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('goal.cancel'),
+      arguments: GOAL_OPERATION_DEFINITIONS['goal.cancel'].inputSchema.strict(),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('goal.completion.accept'),
+      arguments: GOAL_OPERATION_DEFINITIONS['goal.completion.accept'].inputSchema.strict(),
+    })
+    .strict(),
+]);
+/** Closed transport facts. Core admission and file-owned evidence stay outside Workspace SQL; no authority callback crosses the worker boundary. */
+export const ControlGoalCommandInputSchema = z
+  .object({
+    command: GoalCommandSchema,
+    context: GoalContextSchema,
+    receipt: GoalReceiptSchema.nullable(),
+    administrator: z
+      .object({ userId: UserIdSchema, tokenId: z.string().min(1).nullable() })
+      .strict()
+      .nullable(),
+    resourcePolicy: PolicyDocumentV1Schema,
+    grantAdmission: z
+      .object({
+        requestId: z.string().min(1),
+        sourceHash: z.string().min(1),
+        failure: z.string().min(1).nullable(),
+      })
+      .strict()
+      .nullable(),
+    externalEvidence: z
+      .array(
+        z
+          .object({
+            kind: z.enum(['artifact', 'knowledge-source']),
+            id: z.string().min(1),
+            workspaceId: WorkspaceIdSchema,
+            threadId: z.string().min(1).nullable(),
+            digest: z.string().min(1),
+          })
+          .strict()
+      )
+      .max(200),
+    proposalTurnId: z.string().min(1).nullable(),
+    pendingItem: z
+      .object({ id: z.string().min(1), entry: z.lazy(() => ControlProductEntrySchema) })
+      .strict()
+      .nullable(),
+  })
+  .strict();
+/** Structured-clone command input; immutable Item bodies are represented only by synchronized references. */
+export type ControlGoalCommandInput = z.infer<typeof ControlGoalCommandInputSchema>;
+/** Native command outcome. A refused grant is durable but is not a successful command receipt. */
+export interface ControlGoalCommandResult {
+  readonly view: GoalView;
+  readonly replayed: boolean;
+  readonly refusal: {
+    readonly code: string;
+    readonly message: string;
+    readonly status: number;
+  } | null;
+}
+/** Native-only preparation. SQL compares each prepared Item's current descriptor before using its bytes. */
+export interface PreparedControlGoalCommand {
+  readonly entries: readonly PreparedControlEntry[];
+  readonly items: readonly {
+    readonly item: Item;
+    readonly revision: number;
+    readonly contentJson: string;
+  }[];
+}
+/** Verifies actual immutable references before the caller enters its SQL savepoint; never runs file I/O inside SQL. */
+export function prepareControlGoalCommand(
+  db: WorkspaceDb,
+  input: ControlGoalCommandInput,
+  mount?: ControlProductContentMount
+): PreparedControlGoalCommand {
+  if (db.sqlite.inTransaction)
+    throw new GoalCommandError('invalid_request', 'Goal content preparation must precede SQL.');
+  const owner = { kind: 'workspace', workspaceId: db.workspaceId } as const;
+  const args = input.command.arguments as GoalArguments;
+  const request = args.pendingRequestId
+    ? readPendingRequest(db.sqlite, args.pendingRequestId)
+    : null;
+  const ids = new Set<string>(request ? [request.requestItemId] : []);
+  const candidate =
+    request?.governedIntent?.operation === 'goal.completion.accept'
+      ? StoredGoalCompletionCandidateV1Schema.parse(request.governedIntent.candidate)
+      : null;
+  for (const evidence of candidate?.evidence ?? [])
+    if (evidence.kind === 'item') ids.add(evidence.id);
+  const binding = mount ?? (input.pendingItem || ids.size > 0 ? goalContentMount(db) : undefined);
+  const entries = prepareControlEntries(
+    owner,
+    binding,
+    input.pendingItem ? [input.pendingItem.entry] : []
+  );
+  const items: PreparedControlGoalCommand['items'][number][] = [];
+  for (const id of ids) {
+    const row = db.sqlite
+      .prepare(
+        "SELECT turn_id,sequence,revision,content_json FROM control_product_entries WHERE kind='item' AND id=? ORDER BY revision DESC LIMIT 1"
+      )
+      .get(id) as
+      | { turn_id: string; sequence: number; revision: number; content_json: string }
+      | undefined;
+    if (!row) continue;
+    const entry = ControlProductEntrySchema.parse({
+      kind: 'item',
+      turnId: row.turn_id,
+      sequence: row.sequence,
+      expectedRevision: row.revision - 1,
+      content: JSON.parse(row.content_json),
+    });
+    prepareControlEntries(owner, binding, [entry]);
+    if (!binding)
+      throw new GoalCommandError('recovery_required', 'Goal Item content mount is unavailable.');
+    const fd = openSync(
+      join(binding.root, entry.content.reference.locator.path),
+      constants.O_RDONLY | constants.O_NOFOLLOW
+    );
+    let bytes: Buffer;
+    try {
+      bytes = readFileSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    if (
+      `sha256:${createHash('sha256').update(bytes).digest('hex')}` !==
+      entry.content.reference.contentDigest
+    )
+      throw new GoalCommandError(
+        'revision_conflict',
+        'Goal Item content changed during preparation.'
+      );
+    const item = readRetainedV1(
+      JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)),
+      (value) => ItemSchema.parse(value)
+    );
+    if (item.id !== id)
+      throw new GoalCommandError('recovery_required', 'Goal Item identity is contradictory.');
+    items.push({ item, revision: row.revision, contentJson: row.content_json });
+  }
+  return { entries, items };
+}
+/** Reads one current native Turn without introducing a Store or a second connection. */
+function nativeTurn(db: WorkspaceDb, turnId: string, items: readonly Item[] = []): Turn {
+  const row = readProduct(
+    db.sqlite,
+    { kind: 'workspace', workspaceId: db.workspaceId },
+    'turn',
+    turnId
+  );
+  if (!row) throw new GoalCommandError('not_found', 'Turn not found.', 404);
+  return TurnSchema.parse({ ...row.record, items: items.filter((item) => item.turnId === turnId) });
+}
+/** Enumerates the selected Thread's native Turns in admitted order. */
+function nativeTurns(db: WorkspaceDb, threadId: string, items: readonly Item[] = []): Turn[] {
+  return (
+    db.sqlite
+      .prepare('SELECT id FROM control_turns WHERE thread_id=? ORDER BY rowid')
+      .all(threadId) as { id: string }[]
+  ).map(({ id }) => nativeTurn(db, id, items));
+}
+/** Rechecks current scoped audience facts; the admitted configuration is a distinct authority domain. */
+function nativeThreadVisible(
+  db: WorkspaceDb,
+  input: ControlGoalCommandInput,
+  threadId: string,
+  actor: Actor
+): boolean {
+  const owner = { kind: 'workspace', workspaceId: db.workspaceId } as const;
+  const thread = readProduct(db.sqlite, owner, 'thread', threadId);
+  const workspace = readProduct(db.sqlite, owner, 'workspace', db.workspaceId);
+  if (!thread || !workspace) return false;
+  const administrator = input.administrator?.userId === actor.userId;
+  if (
+    !administrator &&
+    workspace.record.kind === 'personal' &&
+    db.workspaceId !== quickChatWorkspaceIdForUser(actor.userId)
+  )
+    return false;
+  if (
+    thread.record.visibility === 'private' &&
+    !administrator &&
+    thread.record.privateOwnerUserId !== actor.userId
+  )
+    return false;
+  return (
+    evaluateWorkspaceResourceAccess({
+      workspaceId: db.workspaceId,
+      actor: { kind: 'user', userId: actor.userId },
+      eligible: true,
+      resource: { family: 'thread', id: threadId },
+      operation: 'thread.read',
+      policy:
+        thread.record.visibility === 'workspace' ? input.resourcePolicy : EMPTY_POLICY_DOCUMENT,
+    }).effect === 'allow'
+  );
+}
+/** Captures the Pending Request and its already-synchronized immutable Item in the same native tuple. */
 function raiseIntent(
-  store: FsStore,
   db: WorkspaceDb,
   goal: GoalRecord,
-  context: GoalOwnerContext,
+  input: ControlGoalCommandInput,
+  prepared: PreparedControlGoalCommand,
   exact: Readonly<Record<string, unknown>>,
   requestId: string,
-  title: string,
-  proposalTurn?: Turn
+  title: string
 ): void {
-  const coordinator = coordinatorTurn(context, store, goal) ?? proposalTurn;
-  const turn = coordinator;
-  if (!turn)
-    throw new GoalCommandError(
-      'recovery_required',
-      'The proposal request Turn was not admitted.',
-      409
-    );
+  const turn =
+    coordinatorTurn(input.context, db, goal) ??
+    (input.proposalTurnId ? nativeTurn(db, input.proposalTurnId) : null);
+  if (!turn || !input.pendingItem || prepared.entries.length !== 1)
+    throw new GoalCommandError('recovery_required', 'The proposal Item was not prepared.');
   const description =
     exact.operation === 'goal.plan.approve'
       ? 'Approve the exact Plan and typed Goal domain.'
       : 'Approve the exact captured commitment.';
-  const itemId = allocateEntityId('it');
-  raiseRecordedPendingRequest(store, db.sqlite, {
-    requestId,
-    workspaceId: goal.workspaceId,
-    threadId: goal.threadId,
-    raisingTurnId: turn.id,
-    requestItemId: itemId,
-    kind: 'approval',
-    requesterKind: 'coordinator',
-    agentId: 'goal-coordinator',
-    responsibleUserId: goal.responsibleUserId,
-    governedIntent: exact,
-    approval: { kind: 'permission', title, description },
-    now: now(),
-  });
-  store.createItem({
-    id: itemId,
+  const at = input.receipt?.createdAt;
+  if (!at)
+    throw new GoalCommandError('invalid_request', 'A proposal requires its original receipt.');
+  const item = ItemSchema.parse({
+    id: input.pendingItem.id,
     owner: { kind: 'workspace', workspaceId: goal.workspaceId },
     threadId: goal.threadId,
     turnId: turn.id,
@@ -432,11 +791,158 @@ function raiseIntent(
     approvalRequestId: requestId,
     kind: 'permission',
     status: 'completed',
-    completedAt: now(),
+    completedAt: at,
     title,
     description,
-    createdAt: now(),
+    createdAt: at,
   });
+  const bytes = JSON.stringify(writeRetainedV1(item));
+  if (
+    input.pendingItem.entry.content.reference.contentDigest !==
+      `sha256:${createHash('sha256').update(bytes).digest('hex')}` ||
+    prepared.entries[0]?.id !== item.id ||
+    !isDeepStrictEqual(prepared.entries[0].input, input.pendingItem.entry)
+  )
+    throw new GoalCommandError('recovery_required', 'The exact proposal Item is unavailable.');
+  raisePendingRequest(db.sqlite, {
+    requestId,
+    workspaceId: goal.workspaceId,
+    threadId: goal.threadId,
+    raisingTurnId: turn.id,
+    requestItemId: item.id,
+    kind: 'approval',
+    requesterKind: 'coordinator',
+    agentId: 'goal-coordinator',
+    responsibleUserId: goal.responsibleUserId,
+    governedIntent: exact,
+    approval: { kind: 'permission', title, description },
+    now: at,
+  });
+  const last = db.sqlite
+    .prepare(
+      "SELECT max(sequence) AS sequence FROM control_product_entries WHERE kind='item' AND turn_id=?"
+    )
+    .get(turn.id) as { sequence: number | null };
+  applyControlProducts(
+    db.sqlite,
+    { kind: 'workspace', workspaceId: goal.workspaceId },
+    [],
+    [
+      {
+        ...prepared.entries[0]!,
+        input: {
+          ...input.pendingItem.entry,
+          sequence: (last.sequence ?? 0) + 1,
+          expectedRevision: 0,
+        },
+      },
+    ]
+  );
+}
+/** Resolves the existing Workspace content owner; it never creates a Knowledge Base or a second ledger. */
+function goalContentMount(db: WorkspaceDb): ControlProductContentMount {
+  return {
+    root: join(db.dataRoot, 'workspaces', db.workspaceId, 'content'),
+    knowledgeBaseId: readDefaultKnowledgeBaseId({
+      dataRoot: db.dataRoot,
+      scope: { kind: 'workspace', workspaceId: db.workspaceId },
+    }),
+    mount: 'private',
+  };
+}
+/** Requires the actual Storage success branch before admitting a reference to native SQL. */
+function goalStorageValue<T>(result: StorageResult<T>): T {
+  if (result.status !== 'ok')
+    throw new GoalCommandError('recovery_required', 'Goal immutable Item publication failed.');
+  return result.value;
+}
+/** Publishes the exact pending Item through the existing staged Storage handoff before SQL admission. */
+async function publishGoalPendingItem(
+  db: WorkspaceDb,
+  id: Exclude<GoalOperationId, 'goal.read'>,
+  input: GoalArguments,
+  context: GoalOwnerContext,
+  goal: GoalRecord,
+  receipt: IdempotentCommandReceipt,
+  proposalTurnId: string | null
+): Promise<NonNullable<ControlGoalCommandInput['pendingItem']>> {
+  const turnId = context.coordinatorTurnId ?? proposalTurnId;
+  if (!turnId)
+    throw new GoalCommandError('coordinator_required', 'A Coordinator captures completion.', 403);
+  const mount = goalContentMount(db);
+  const owner = { kind: 'workspace', workspaceId: goal.workspaceId } as const;
+  const item = ItemSchema.parse({
+    id: allocateEntityId('it'),
+    owner,
+    threadId: goal.threadId,
+    turnId,
+    type: 'approval-request',
+    approvalRequestId: `ap_${input.requestId}`,
+    kind: 'permission',
+    status: 'completed',
+    completedAt: receipt.createdAt,
+    title: id === 'goal.plan.propose' ? 'Approve Goal Plan' : 'Accept exact Goal completion',
+    description:
+      id === 'goal.plan.propose'
+        ? 'Approve the exact Plan and typed Goal domain.'
+        : 'Approve the exact captured commitment.',
+    createdAt: receipt.createdAt,
+  });
+  const bytes = Buffer.from(JSON.stringify(writeRetainedV1(item)));
+  const stagingRoot = join(db.dataRoot, 'workspaces', db.workspaceId, 'runtime', 'staging');
+  await ensureCanonicalDirectoryAsync(mount.root);
+  await ensureCanonicalDirectoryAsync(stagingRoot);
+  const storage = new LocalStorage({
+    mounts: [
+      {
+        knowledgeBaseId: mount.knowledgeBaseId,
+        ownerScope: owner,
+        name: mount.mount,
+        root: mount.root,
+      },
+    ],
+    stagingRoot,
+  });
+  const access: StorageAccess = {
+    basis: 'lease',
+    grantId: allocateEntityId('grant'),
+    knowledgeBaseId: mount.knowledgeBaseId,
+    ownerScope: owner,
+    mount: mount.mount,
+    pathPrefix: 'entries',
+    mode: 'staged-write',
+    expiresAt: new Date(Date.now() + 60000).toISOString(),
+    revoked: false,
+  };
+  try {
+    const { handle } = goalStorageValue(
+      await storage.beginStage({
+        access,
+        locator: { ownerScope: owner, mount: mount.mount, path: 'entries/staged.json' },
+        maxByteLength: bytes.length,
+      })
+    );
+    try {
+      goalStorageValue(
+        await storage.writeStage({ access, handle, data: bytes.toString('base64') })
+      );
+      const stage = goalStorageValue(await storage.finishStage({ access, handle }));
+      const content = await publishImmutableContent({
+        storage,
+        access,
+        stage,
+        mountRoot: mount.root,
+      });
+      return {
+        id: item.id,
+        entry: { kind: 'item', turnId, sequence: 1, expectedRevision: 0, content },
+      };
+    } finally {
+      goalStorageValue(await storage.discardStage({ access, handle }));
+    }
+  } finally {
+    await storage.close();
+  }
 }
 /** Pins the typed proposal to native Plan lineage before the human sees either effect. */
 function captureGoalDomain(
@@ -467,13 +973,25 @@ function captureGoalDomain(
 
 /** Re-evaluates exact authority synchronously before CAS, with no Task effect. */
 function consumeGrant(
-  store: FsStore,
   db: WorkspaceDb,
   goal: GoalRecord,
   request: PendingRequestRecord,
-  services: GoalOwnerServices
+  input: ControlGoalCommandInput,
+  prepared: PreparedControlGoalCommand
 ): GoalRecord {
   let reason: string | null = goal.disposition ? 'The Goal was cancelled or accepted.' : null;
+  if (
+    validateCanonicalLoad(
+      request,
+      nativeTurns(
+        db,
+        goal.threadId,
+        prepared.items.map((row) => row.item)
+      ),
+      readCommandRequestRecordsFromSqlite(db.sqlite)
+    )
+  )
+    reason ??= 'The pending request is contradictory.';
   if (
     request.state !== 'resolved' ||
     request.resolution !== 'granted' ||
@@ -483,15 +1001,12 @@ function consumeGrant(
   )
     reason ??= 'The grant is no longer eligible.';
   if (
-    (services.grantAuthority && !services.grantAuthority(request)) ||
-    (services.coreDb &&
-      (!request.decidingActorContext ||
-        !authorizeWorkspace(services.coreDb, request.decidingActorContext, goal.workspaceId, {
-          policyOperation: 'workspace.write',
-          mutating: true,
-        })))
+    !input.grantAdmission ||
+    input.grantAdmission.requestId !== request.requestId ||
+    input.grantAdmission.sourceHash !== commandInputHash(request)
   )
-    reason ??= 'The deciding actor is no longer authorized.';
+    reason ??= 'The exact deciding credential was not admitted.';
+  else reason ??= input.grantAdmission.failure;
   const exact = request.governedIntent;
   let version: GoalPlanVersion | null = null;
   if (exact?.operation === 'goal.plan.approve') {
@@ -534,58 +1049,44 @@ function consumeGrant(
     )
       reason ??= 'The completion candidate no longer matches current intent and Plan.';
     for (const evidence of candidate.evidence) {
-      let current: unknown;
-      let sourceWorkspaceId: string | undefined;
-      try {
-        current =
-          evidence.kind === 'artifact'
-            ? store.getArtifact(goal.workspaceId, evidence.id)
-            : evidence.kind === 'capability-call'
-              ? listWorkspaceCapabilityCalls(db, goal.workspaceId).find(
-                  (row) => row.id === evidence.id
-                )
-              : evidence.kind === 'evidence-bundle'
-                ? listWorkspaceEvidenceBundles(db, goal.workspaceId).find(
-                    (row) => row.id === evidence.id
-                  )
-                : evidence.kind === 'knowledge-source'
-                  ? store
-                      .listKnowledgeSources(goal.workspaceId)
-                      .find((row) => row.id === evidence.id)
-                  : store
-                      .listThreads(goal.workspaceId)
-                      .flatMap((thread) => store.listThreadItems(goal.workspaceId, thread.id))
-                      .find((item) => item.id === evidence.id);
-        if (current)
-          sourceWorkspaceId =
-            evidence.kind === 'item' || evidence.kind === 'capability-call'
-              ? workspaceIdForOwner((current as Item | CapabilityCall).owner)
-              : (current as { workspaceId: string }).workspaceId;
-      } catch {
-        current = undefined;
-      }
-      const source = current as { threadId?: string } | undefined;
+      const external =
+        evidence.kind === 'artifact' || evidence.kind === 'knowledge-source'
+          ? input.externalEvidence.find(
+              (row) => row.kind === evidence.kind && row.id === evidence.id
+            )
+          : undefined;
+      const current =
+        evidence.kind === 'capability-call'
+          ? listWorkspaceCapabilityCalls(db, goal.workspaceId).find((row) => row.id === evidence.id)
+          : evidence.kind === 'evidence-bundle'
+            ? listWorkspaceEvidenceBundles(db, goal.workspaceId).find(
+                (row) => row.id === evidence.id
+              )
+            : evidence.kind === 'item'
+              ? prepared.items.find((row) => row.item.id === evidence.id)?.item
+              : undefined;
+      const sourceWorkspaceId =
+        external?.workspaceId ??
+        (current &&
+          ('owner' in current
+            ? workspaceIdForOwner((current as Item | CapabilityCall).owner)
+            : current.workspaceId));
+      const threadId = external?.threadId ?? current?.threadId;
+      const digest = external?.digest ?? (current ? commandInputHash(current) : null);
       const actor = request.decidingActorContext;
       if (
-        !source ||
+        (!external && !current) ||
         sourceWorkspaceId !== goal.workspaceId ||
-        (source.threadId &&
-          (!actor ||
-            !isThreadIdVisible(
-              store,
-              goal.workspaceId,
-              source.threadId,
-              actor.userId,
-              Boolean(services.coreDb && isCurrentDeploymentAdministrator(services.coreDb, actor))
-            ))) ||
-        commandInputHash(current) !== evidence.digest
+        (threadId && (!actor || !nativeThreadVisible(db, input, threadId, actor))) ||
+        digest !== evidence.digest
       )
         reason ??= 'The named evidence is unavailable, unauthorized or changed.';
     }
   } else reason ??= 'The captured Goal operation is unavailable.';
   if (reason) {
-    refuseCommandIntentGrant(db.sqlite, request.requestId, reason, now());
-    // Return the refusal outside the transaction so its non-execution remains durable.
+    if (refuseCommandIntentGrant(db.sqlite, request.requestId, reason, now()))
+      advanceGoalRevision(db, goal.goalId);
+    // The native caller returns the refusal after commit, without a success receipt.
     throw new GoalCommandError('grant_conflict', reason);
   }
   if (!claimCommandIntentGrant(db.sqlite, request.requestId, now()))
@@ -621,7 +1122,528 @@ function consumeGrant(
   saveGoal(db, next);
   return next;
 }
-/** Executes the sole ten-operation family with owning receipts and same-commit wake revisions. */
+/** Applies Goal-owned mutations only after the original receipt and current native lineage are checked. */
+function applyNativeGoalMutation(
+  db: WorkspaceDb,
+  nativeInput: ControlGoalCommandInput,
+  prepared: PreparedControlGoalCommand
+): GoalView {
+  const id = nativeInput.command.operation;
+  const input = nativeInput.command.arguments as GoalArguments;
+  const context = nativeInput.context;
+  const commandInput = input as GoalArguments & { requestId: string };
+  const goalId = typeof input.goalId === 'string' ? input.goalId : `g_${commandInput.requestId}`;
+  const owner = { kind: 'workspace', workspaceId: input.workspaceId } as const;
+  let goal: GoalRecord | null = readRecord(db, 'goals', 'goal_id', goalId, StoredGoalV1Schema);
+  if (id === 'goal.plan.propose' && !context.coordinatorTurnId) {
+    goal = requireOpen(goal);
+    checkRevision(goal.changeRevision, input.expectedRevision);
+    if (
+      !nativeInput.proposalTurnId ||
+      nativeTurns(db, goal.threadId).some((turn) => !isSealedTurnTerminal(turn.status))
+    )
+      throw new GoalCommandError('thread_busy', 'The Goal Thread already has a Turn in flight.');
+    // C2-B2: ordinary native admission must include frozen-outcome publication before this dependency guard can be removed; never admit a partial Turn tuple.
+    if (
+      listThreadPendingRequests(db.sqlite, goal.workspaceId, goal.threadId).some(
+        (request) => request.requesterKind === 'coordinator' && isReadyOutcome(request)
+      )
+    )
+      throw new GoalCommandError(
+        'recovery_required',
+        'The Coordinator Turn requires complete native pending-outcome admission.'
+      );
+    applyControlProducts(
+      db.sqlite,
+      owner,
+      [
+        {
+          kind: 'turn',
+          expectedRevision: 0,
+          record: writeRetainedV1({
+            id: nativeInput.proposalTurnId,
+            owner,
+            threadId: goal.threadId,
+            triggerActor: { kind: 'user', id: context.actor.userId },
+            triggerSource: { kind: 'user-input', summary: 'Propose a Goal Plan' },
+            agentSessionId: null,
+            agentId: 'goal-coordinator',
+            error: null,
+            configVersion: null,
+            startedAt: now(),
+            completedAt: null,
+            durationMs: null,
+            status: 'running',
+          }),
+        },
+      ],
+      []
+    );
+  }
+  if (id === 'goal.create' && 'intent' in input) {
+    if (goal) throw new GoalCommandError('revision_conflict', 'Goal already exists.');
+    const origin = 'originThreadId' in input ? input.originThreadId : undefined;
+    if (origin && !nativeThreadVisible(db, nativeInput, origin, context.actor))
+      throw new GoalCommandError('not_found', 'Origin Thread not found.', 404);
+    const thread = ThreadSchema.parse({
+      id: deriveEntityId('th', ['goal', commandInput.requestId]),
+      owner: { kind: 'workspace', workspaceId: input.workspaceId },
+      name: input.intent.slice(0, 100),
+      preview: input.intent.slice(0, 100),
+      status: 'active',
+      entryPath: 'conversation',
+      threadSource: 'conversation',
+      visibility: 'workspace',
+      ...(context.assistantHandoff?.originThreadId || origin
+        ? { parentThreadId: context.assistantHandoff?.originThreadId ?? origin }
+        : {}),
+      createdAt: now(),
+      updatedAt: now(),
+    });
+    const workspace = readProduct(db.sqlite, owner, 'workspace', input.workspaceId);
+    if (!workspace) throw new GoalCommandError('not_found', 'Workspace not found.', 404);
+    applyControlProducts(
+      db.sqlite,
+      owner,
+      [
+        {
+          kind: 'workspace',
+          expectedRevision: workspace.revision,
+          record: { ...workspace.record, updatedAt: thread.createdAt },
+        },
+        { kind: 'thread', expectedRevision: 0, record: writeRetainedV1(thread) },
+      ],
+      []
+    );
+    const at = now();
+    goal = {
+      goalId,
+      workspaceId: input.workspaceId,
+      threadId: thread.id,
+      responsibleUserId: context.actor.userId,
+      responsibleActorContext: context.actor,
+      intent: input.intent,
+      intentRevision: 0,
+      intentHistory: [{ revision: 0, intent: input.intent, actorId: context.actor.userId, at }],
+      proposedPlanVersionId: null,
+      activePlanVersionId: null,
+      disposition: null,
+      changeRevision: 0,
+      consideredRevision: 0,
+      createdAt: at,
+      updatedAt: at,
+    };
+    saveGoal(db, goal);
+  } else if (
+    context.coordinatorTurnId &&
+    (id === 'goal.plan.approve' || id === 'goal.completion.accept') &&
+    input.pendingRequestId
+  ) {
+    const request = readPendingRequest(db.sqlite, input.pendingRequestId);
+    if (!request || !goal)
+      throw new GoalCommandError('not_found', 'Exact Goal request not found.', 404);
+    if (
+      request.governedIntent?.operation !== id ||
+      request.governedIntent.goalId !== goal.goalId ||
+      request.workspaceId !== goal.workspaceId ||
+      request.threadId !== goal.threadId ||
+      request.responsibleUserId !== goal.responsibleUserId
+    )
+      throw new GoalCommandError(
+        'approval_conflict',
+        'The request does not capture this exact Goal operation.'
+      );
+    if (request.state === 'pending')
+      throw new GoalCommandError(
+        'coordinator_self_approval_denied',
+        'The Coordinator cannot resolve its own approval.',
+        403
+      );
+    // A new explicit publication attempt uses the committed outcome without consuming the grant again or restoring an obsolete Plan pointer.
+    if (
+      id === 'goal.plan.approve' &&
+      !goal.disposition &&
+      goal.activePlanVersionId === request.governedIntent.planVersionId &&
+      request.state === 'resolved' &&
+      request.resolution === 'granted' &&
+      request.claim === 'finished' &&
+      request.disposition === 'approved-executed'
+    )
+      return readNativeGoalView(db, goalId);
+    goal = consumeGrant(db, goal, request, nativeInput, prepared);
+  } else {
+    goal = requireOpen(readRecord(db, 'goals', 'goal_id', goalId, StoredGoalV1Schema));
+    if (id === 'goal.intent.revise' && 'intent' in input && 'expectedRevision' in input) {
+      checkRevision(goal.intentRevision, input.expectedRevision);
+      const at = now();
+      goal = {
+        ...goal,
+        intent: input.intent,
+        intentRevision: goal.intentRevision + 1,
+        intentHistory: [
+          ...goal.intentHistory,
+          {
+            revision: goal.intentRevision + 1,
+            intent: input.intent,
+            actorId: context.actor.userId,
+            at,
+          },
+        ],
+      };
+      saveGoal(db, goal);
+    } else if (id === 'goal.card.create' && 'description' in input && 'priority' in input) {
+      const card: GoalCard = {
+        cardId: `gc_${commandInput.requestId}`,
+        goalId,
+        description: input.description,
+        priority: input.priority,
+        revision: 0,
+        cancelled: false,
+        cancellationReason: null,
+        createdAt: now(),
+        updatedAt: now(),
+      };
+      db.sqlite
+        .prepare(
+          'INSERT INTO goal_cards (card_id,goal_id,payload_json,schema_version) VALUES (?,?,?,?)'
+        )
+        .run(
+          card.cardId,
+          goalId,
+          JSON.stringify(StoredGoalCardV1Schema.parse(card)),
+          writeRetainedV1({}).schemaVersion
+        );
+    } else if ((id === 'goal.card.edit' || id === 'goal.card.cancel') && 'cardId' in input) {
+      const card = readRecord(db, 'goal_cards', 'card_id', input.cardId, StoredGoalCardV1Schema);
+      if (!card || card.goalId !== goalId)
+        throw new GoalCommandError('not_found', 'Card not found.', 404);
+      checkRevision(card.revision, input.expectedRevision);
+      if (card.cancelled) throw new GoalCommandError('card_cancelled', 'Card has been cancelled.');
+      const next =
+        id === 'goal.card.cancel'
+          ? {
+              ...card,
+              cancelled: true,
+              cancellationReason: input.reason,
+              revision: card.revision + 1,
+              updatedAt: now(),
+            }
+          : {
+              ...card,
+              description: input.description,
+              priority: input.priority,
+              revision: card.revision + 1,
+              updatedAt: now(),
+            };
+      db.sqlite
+        .prepare('UPDATE goal_cards SET payload_json=?,schema_version=? WHERE card_id=?')
+        .run(
+          JSON.stringify(StoredGoalCardV1Schema.parse(next)),
+          writeRetainedV1({}).schemaVersion,
+          card.cardId
+        );
+    } else if (id === 'goal.plan.propose' && 'commitment' in input) {
+      checkRevision(goal.changeRevision, input.expectedRevision);
+      const commitment = StoredGoalCommitmentV1Schema.parse(input.commitment);
+      const versions = readNativeGoalView(db, goalId).versions;
+      const bytes = JSON.stringify(commitment);
+      const version: GoalPlanVersion = {
+        planVersionId: `gp_${commandInput.requestId}`,
+        goalId,
+        sequence: (versions.at(-1)?.sequence ?? 0) + 1,
+        bytes,
+        digest: goalPlanDigest(bytes),
+        commitment,
+        pendingRequestId: `ap_${commandInput.requestId}`,
+        createdAt: now(),
+      };
+      const goalDomain = captureGoalDomain(input.goalDomain, goal, version, context);
+      invalidateGoalPendingRequests(
+        db.sqlite,
+        goalId,
+        'Superseded by a newer Plan proposal.',
+        { kind: 'user', id: context.actor.userId },
+        now(),
+        true
+      );
+      db.sqlite
+        .prepare(
+          'INSERT INTO goal_plan_versions (plan_version_id,goal_id,payload_json,schema_version) VALUES (?,?,?,?)'
+        )
+        .run(
+          version.planVersionId,
+          goalId,
+          JSON.stringify(StoredGoalPlanVersionV1Schema.parse(version)),
+          writeRetainedV1({}).schemaVersion
+        );
+      saveGoal(db, { ...goal, proposedPlanVersionId: version.planVersionId });
+      raiseIntent(
+        db,
+        goal,
+        nativeInput,
+        prepared,
+        {
+          operation: 'goal.plan.approve',
+          goalId,
+          planVersionId: version.planVersionId,
+          digest: version.digest,
+          bytes,
+          goalDomain,
+        },
+        version.pendingRequestId,
+        'Approve Goal Plan'
+      );
+    } else if (id === 'goal.cancel' && 'reason' in input) {
+      checkRevision(goal.changeRevision, input.expectedRevision);
+      saveGoal(db, {
+        ...goal,
+        disposition: {
+          kind: 'cancelled',
+          reason: input.reason,
+          actorId: context.actor.userId,
+          at: now(),
+        },
+      });
+      invalidateGoalPendingRequests(
+        db.sqlite,
+        goalId,
+        'The Goal was cancelled.',
+        { kind: 'user', id: context.actor.userId },
+        now()
+      );
+    } else if (id === 'goal.completion.accept' && 'candidate' in input && input.candidate) {
+      if (!coordinatorTurn(context, db, goal))
+        throw new GoalCommandError(
+          'coordinator_required',
+          'A Coordinator captures completion; a person resolves its exact request.',
+          403
+        );
+      raiseIntent(
+        db,
+        goal,
+        nativeInput,
+        prepared,
+        {
+          operation: 'goal.completion.accept',
+          goalId,
+          candidate: StoredGoalCompletionCandidateV1Schema.parse(input.candidate),
+        },
+        `ap_${commandInput.requestId}`,
+        'Accept exact Goal completion'
+      );
+    } else if (
+      (id === 'goal.plan.approve' || id === 'goal.completion.accept') &&
+      'pendingRequestId' in input &&
+      input.pendingRequestId &&
+      input.decision
+    ) {
+      if (context.coordinatorTurnId)
+        throw new GoalCommandError(
+          'coordinator_self_approval_denied',
+          'The Coordinator cannot resolve its own approval.',
+          403
+        );
+      const request = readPendingRequest(db.sqlite, input.pendingRequestId);
+      if (
+        !request ||
+        request.governedIntent?.goalId !== goalId ||
+        request.governedIntent.operation !== id
+      )
+        throw new GoalCommandError('not_found', 'Exact Goal request not found.', 404);
+      resolveNativeGoalApproval(db, nativeInput, prepared, request, input.decision);
+    } else
+      throw new GoalCommandError(
+        'invalid_request',
+        'The operation arguments do not select one valid effect.',
+        400
+      );
+  }
+  advanceGoalRevision(db, goalId);
+  return readNativeGoalView(db, goalId);
+}
+
+/** Rechecks the Pending Request's current SQL identity and admitted immutable source Items before granting. */
+function resolveNativeGoalApproval(
+  db: WorkspaceDb,
+  input: ControlGoalCommandInput,
+  prepared: PreparedControlGoalCommand,
+  request: PendingRequestRecord,
+  decision: 'granted' | 'denied'
+): void {
+  const actor = input.context.actor;
+  const turns = nativeTurns(
+    db,
+    request.threadId,
+    prepared.items.map((row) => row.item)
+  );
+  if (
+    !isCommandIntentApproval(request) ||
+    validateCanonicalLoad(request, turns, readCommandRequestRecordsFromSqlite(db.sqlite))
+  )
+    throw new GoalCommandError('recovery_required', 'The pending request is contradictory.');
+  if (actor.userId !== request.responsibleUserId && input.administrator?.userId !== actor.userId)
+    throw new GoalCommandError('workspace_access_denied', 'Workspace access denied.', 403);
+  if (request.state !== 'pending')
+    throw new GoalCommandError('request_not_pending', 'The request is no longer pending.');
+  if (decision === 'granted') {
+    if (
+      !nativeThreadVisible(db, input, request.threadId, actor) ||
+      !request.governedIntent ||
+      Buffer.byteLength(JSON.stringify(request.governedIntent)) > 524288
+    )
+      throw new GoalCommandError(
+        'approval_preview_unavailable',
+        'Exact effect unavailable; approval disabled'
+      );
+    checkGoalCommandIntent(db.sqlite, request);
+  }
+  const decider = { kind: 'user' as const, id: actor.userId };
+  const result =
+    decision === 'granted'
+      ? grantCommandIntentRequest(db.sqlite, request.requestId, decider, now(), actor)
+      : denyPendingRequest(db.sqlite, request.requestId, decider, now(), actor);
+  if (!result)
+    throw new GoalCommandError('request_not_pending', 'The request is no longer pending.');
+}
+
+/**
+ * Applies the complete deciding Goal body on the caller's ONE native WorkspaceDb and active savepoint.
+ *
+ * The worker must call prepareControlGoalCommand before SQL and pass its result for commands that read or create Items. This function performs no file I/O, opens no sibling handle, never commits, and returns only materialized facts. Outer FULL COMMIT acknowledgement remains with the worker.
+ */
+export function applyControlGoalCommand(
+  db: WorkspaceDb,
+  value: ControlGoalCommandInput,
+  prepared: PreparedControlGoalCommand = { entries: [], items: [] }
+): ControlGoalCommandResult {
+  assertControlProductWriter(db.sqlite);
+  const input = ControlGoalCommandInputSchema.parse(value);
+  const args = input.command.arguments;
+  const goalId = 'goalId' in args ? args.goalId : `g_${args.requestId}`;
+  if (db.workspaceId !== args.workspaceId)
+    throw new GoalCommandError(
+      'invalid_request',
+      'Goal command belongs to another Workspace.',
+      400
+    );
+  if (
+    input.context.coordinatorTurnId &&
+    (input.command.operation === 'goal.create' || input.command.operation === 'goal.cancel')
+  )
+    throw new GoalCommandError(
+      'coordinator_authority_denied',
+      'Only a person may create or cancel a Goal.',
+      403
+    );
+  const currentGoal = readRecord(db, 'goals', 'goal_id', goalId, StoredGoalV1Schema);
+  if (
+    currentGoal &&
+    (currentGoal.workspaceId !== args.workspaceId ||
+      ('threadId' in args && currentGoal.threadId !== args.threadId))
+  )
+    throw new GoalCommandError('not_found', 'Goal not found.', 404);
+  if (currentGoal) coordinatorTurn(input.context, db, currentGoal);
+  const receipt = input.receipt;
+  if (receipt && input.context.assistantHandoff)
+    throw new GoalCommandError(
+      'invalid_request',
+      'The Assistant handoff cannot introduce another receipt.',
+      400
+    );
+  if (receipt) {
+    const expectedScope = {
+      workspaceId: args.workspaceId,
+      actorId: input.context.actor.userId,
+      ...('threadId' in args ? { threadId: args.threadId } : {}),
+    };
+    if (
+      receipt.command !== input.command.operation ||
+      receipt.requestId !== args.requestId ||
+      receipt.inputHash !== commandInputHash(args) ||
+      !isDeepStrictEqual(receipt.scope, expectedScope) ||
+      receipt.key !== commandRequestKey(receipt.command, receipt.requestId, receipt.scope) ||
+      receipt.expiresAt <= receipt.createdAt
+    )
+      throw new GoalCommandError(
+        'invalid_request',
+        'Original Goal receipt facts are contradictory.',
+        400
+      );
+    const row = db.sqlite
+      .prepare(
+        'SELECT schema_version AS schemaVersion,request_key AS key,command_name AS command,request_id AS requestId,scope_json AS scopeJson,input_hash AS inputHash,response_kind AS responseKind,response_id AS responseId,response_json AS responseJson,created_at AS createdAt,expires_at AS expiresAt FROM idempotency_requests WHERE request_key=?'
+      )
+      .get(receipt.key) as Parameters<typeof mapCommandRequestRow>[0] | undefined;
+    if (row && row.expiresAt > receipt.createdAt) {
+      const prior = mapCommandRequestRow(row);
+      if (
+        prior.inputHash !== receipt.inputHash ||
+        prior.command !== receipt.command ||
+        !isDeepStrictEqual(prior.scope, receipt.scope)
+      )
+        throw new IdempotencyKeyConflictError();
+      if (prior.response.kind !== 'goal' || prior.response.id !== goalId)
+        throw new GoalCommandError('recovery_required', 'Goal receipt response is contradictory.');
+      return { view: readNativeGoalView(db, goalId), replayed: true, refusal: null };
+    }
+  } else if (input.command.operation !== 'goal.create' || !input.context.assistantHandoff) {
+    throw new GoalCommandError(
+      'invalid_request',
+      'Only the admitted Assistant handoff is receipt-free.',
+      400
+    );
+  }
+  if (input.context.assistantHandoff) {
+    const source = nativeTurn(db, input.context.assistantHandoff.originTurnId);
+    if (
+      input.command.operation !== 'goal.create' ||
+      source.threadId !== input.context.assistantHandoff.originThreadId ||
+      source.agentSessionId ||
+      source.agentId !== 'quick-chat' ||
+      source.triggerActor.id !== input.context.actor.userId ||
+      !input.context.assistantHandoff.sourceHash
+    )
+      throw new GoalCommandError(
+        'origin_authority_denied',
+        'The Assistant handoff source is unavailable.',
+        403
+      );
+  }
+  for (const source of prepared.items) {
+    const current = db.sqlite
+      .prepare(
+        "SELECT revision,content_json FROM control_product_entries WHERE kind='item' AND id=? ORDER BY revision DESC LIMIT 1"
+      )
+      .get(source.item.id) as { revision: number; content_json: string } | undefined;
+    if (
+      !current ||
+      current.revision !== source.revision ||
+      current.content_json !== source.contentJson
+    )
+      throw new GoalCommandError(
+        'revision_conflict',
+        'The Goal source Item changed before the native decision.'
+      );
+  }
+  let view: GoalView;
+  try {
+    view = applyNativeGoalMutation(db, input, prepared);
+  } catch (error) {
+    if (!(error instanceof GoalCommandError) || error.code !== 'grant_conflict') throw error;
+    return {
+      view: readNativeGoalView(db, goalId),
+      replayed: false,
+      refusal: { code: error.code, message: error.message, status: error.status },
+    };
+  }
+  if (receipt) {
+    const { responseKind, ...facts } = receipt;
+    recordCommandRequestRecordInDb(db, { ...facts, response: { kind: responseKind, id: goalId } });
+  }
+  return { view, replayed: false, refusal: null };
+}
+
+/** Executes the public Goal family, admitting external authority before one native Workspace tuple. */
 export async function executeGoalOperation<K extends GoalOperationId>(
   id: K,
   value: OperationInput<K>,
@@ -637,14 +1659,14 @@ export async function executeGoalOperation<K extends GoalOperationId>(
       : id === 'goal.read'
         ? (listGoalsForThread(db, input.threadId)[0]?.goalId ?? 'absent')
         : `g_${input.requestId}`;
-  let goal: GoalRecord | null = readRecord(db, 'goals', 'goal_id', goalId, StoredGoalV1Schema);
+  const goal = readRecord(db, 'goals', 'goal_id', goalId, StoredGoalV1Schema);
   if (
     goal &&
-    (('threadId' in input && goal.threadId !== input.threadId) ||
-      goal.workspaceId !== input.workspaceId)
+    (goal.workspaceId !== input.workspaceId ||
+      ('threadId' in input && goal.threadId !== input.threadId))
   )
     throw new GoalCommandError('not_found', 'Goal not found.', 404);
-  if (id === 'goal.read') return readGoalView(store, db, goalId);
+  if (id === 'goal.read') return readNativeGoalView(db, goalId);
   if (
     services.coreDb &&
     !authorizeWorkspace(services.coreDb, context.actor, input.workspaceId, {
@@ -663,407 +1685,157 @@ export async function executeGoalOperation<K extends GoalOperationId>(
       'Only a person may create or cancel a Goal.',
       403
     );
-  if (goal) coordinatorTurn(context, store, goal);
-  const commandInput = input as Exclude<typeof input, { requestId?: never }> & {
-    requestId: string;
-  };
-  let proposalTurn: Turn | undefined;
-  if (
-    id === 'goal.plan.propose' &&
-    !context.coordinatorTurnId &&
-    goal &&
-    !store.getCommandRequest(
-      'goal.plan.propose',
-      commandInput.requestId,
-      {
-        workspaceId: goal.workspaceId,
-        threadId: goal.threadId,
-        actorId: context.actor.userId,
-      },
-      db
-    )
-  ) {
-    requireOpen(goal);
-    checkRevision(goal.changeRevision, input.expectedRevision);
-    if (
-      store
-        .listThreadTurns(goal.workspaceId, goal.threadId)
-        .some((turn) => !isSealedTurnTerminal(turn.status))
-    )
-      throw new GoalCommandError('thread_busy', 'The Goal Thread already has a Turn in flight.');
-    // Ordinary admission can freeze ready outcomes through its own SQL connection; admit before the Goal transaction.
-    proposalTurn = await store.createTurn(
-      goal.workspaceId,
-      goal.threadId,
-      'Propose a Goal Plan',
-      { kind: 'user', id: context.actor.userId },
-      undefined,
-      { executorKind: 'coordinator', agentId: 'goal-coordinator' }
-    );
-  }
-  let result: GoalView;
-  try {
-    const runCommand = async (
-      options: Parameters<typeof runIdempotentCommand<GoalView>>[0]
-    ): Promise<GoalView> => {
-      if (!context.assistantHandoff) return runIdempotentCommand(options);
-      if (id !== 'goal.create' || !options.workspaceTransaction)
-        throw new GoalCommandError(
-          'invalid_request',
-          'Only Goal creation accepts an Assistant handoff.',
-          400
-        );
-      const source = store.getTurnById(context.assistantHandoff.originTurnId);
+  if (goal) coordinatorTurn(context, db, goal);
+  const commandInput = input as GoalArguments & { requestId: string };
+  const client = getControlStoreWorkerClient();
+  const database = `workspace:${input.workspaceId}`;
+  await client.open({
+    database,
+    path: workspaceDbPath(db.dataRoot, input.workspaceId),
+    create: false,
+    initialize: 'workspace',
+    productOwner: { kind: 'workspace', workspaceId: input.workspaceId },
+  });
+  const invoke = async (receipt: IdempotentCommandReceipt | null): Promise<GoalView> => {
+    const request = input.pendingRequestId
+      ? readPendingRequest(db.sqlite, input.pendingRequestId)
+      : null;
+    let administrator: ControlGoalCommandInput['administrator'] = null;
+    const authorityActor =
+      context.coordinatorTurnId && request?.decidingActorContext
+        ? request.decidingActorContext
+        : context.actor;
+    if (services.coreDb && isCurrentDeploymentAdministrator(services.coreDb, authorityActor))
+      administrator = requireCurrentDeploymentAdmin(services.coreDb, authorityActor);
+    let grantAdmission: ControlGoalCommandInput['grantAdmission'] = null;
+    const externalEvidence: ControlGoalCommandInput['externalEvidence'] = [];
+    if (request && context.coordinatorTurnId) {
+      let failure: string | null = null;
       if (
-        source.threadId !== context.assistantHandoff.originThreadId ||
-        source.agentSessionId ||
-        source.agentId !== 'quick-chat' ||
-        source.triggerActor.id !== context.actor.userId ||
-        !context.assistantHandoff.sourceHash
+        (services.grantAuthority && !services.grantAuthority(request)) ||
+        (services.coreDb &&
+          (!request.decidingActorContext ||
+            !authorizeWorkspace(services.coreDb, request.decidingActorContext, input.workspaceId, {
+              policyOperation: 'workspace.write',
+              mutating: true,
+            })))
+      )
+        failure = 'The deciding actor is no longer authorized.';
+      grantAdmission = {
+        requestId: request.requestId,
+        sourceHash: commandInputHash(request),
+        failure,
+      };
+      if (request.governedIntent?.operation === 'goal.completion.accept')
+        for (const evidence of StoredGoalCompletionCandidateV1Schema.parse(
+          request.governedIntent.candidate
+        ).evidence) {
+          if (evidence.kind !== 'artifact' && evidence.kind !== 'knowledge-source') continue;
+          try {
+            const record =
+              evidence.kind === 'artifact'
+                ? store.getArtifact(input.workspaceId, evidence.id)
+                : store
+                    .listKnowledgeSources(input.workspaceId)
+                    .find((row) => row.id === evidence.id);
+            if (record)
+              externalEvidence.push({
+                kind: evidence.kind,
+                id: evidence.id,
+                workspaceId: record.workspaceId,
+                threadId: 'threadId' in record ? record.threadId : null,
+                digest: commandInputHash(record),
+              });
+          } catch {
+            /* Missing external evidence remains a native grant conflict. */
+          }
+        }
+    } else if (request && input.decision) {
+      if (
+        services.coreDb &&
+        !authorizeWorkspace(services.coreDb, context.actor, input.workspaceId, {
+          policyOperation: 'approval.respond',
+          mutating: true,
+        }) &&
+        !administrator
+      )
+        throw new GoalCommandError('workspace_access_denied', 'Workspace access denied.', 403);
+      if (
+        input.decision === 'granted' &&
+        projectApprovalEffect({
+          record: request,
+          store,
+          coreDb: services.coreDb,
+          actor: context.actor,
+        }).status !== 'available'
       )
         throw new GoalCommandError(
-          'origin_authority_denied',
-          'The Assistant handoff source is unavailable.',
-          403
+          'approval_preview_unavailable',
+          'Exact effect unavailable; approval disabled'
         );
-      return db.sqlite.transaction(options.execute)();
-    };
-    result = await runCommand({
-      store,
-      inflightCommands: services.inflightCommands ?? inflight,
-      command: id as Exclude<GoalOperationId, 'goal.read'>,
-      requestId: commandInput.requestId,
-      scope: {
-        workspaceId: input.workspaceId,
-        actorId: context.actor.userId,
-        ...(goal && id !== 'goal.create' ? { threadId: goal.threadId } : {}),
-      },
-      input,
-      responseKind: 'goal',
-      responseId: () => goalId,
-      workspaceDb: db,
-      workspaceTransaction: true,
-      execute: () => {
-        if (id === 'goal.create' && 'intent' in input) {
-          if (goal) throw new GoalCommandError('revision_conflict', 'Goal already exists.');
-          const origin = 'originThreadId' in input ? input.originThreadId : undefined;
-          if (
-            origin &&
-            !isThreadIdVisible(
-              store,
-              input.workspaceId,
-              origin,
-              context.actor.userId,
-              Boolean(
-                services.coreDb && isCurrentDeploymentAdministrator(services.coreDb, context.actor)
-              )
-            )
-          )
-            throw new GoalCommandError('not_found', 'Origin Thread not found.', 404);
-          const thread = store.createThread(
-            input.workspaceId,
-            input.intent.slice(0, 100),
-            deriveEntityId('th', ['goal', commandInput.requestId]),
-            'conversation',
-            {
-              visibility: 'workspace',
-              threadSource: 'conversation',
-              ...(context.assistantHandoff?.originThreadId || origin
-                ? { parentThreadId: (context.assistantHandoff?.originThreadId ?? origin)! }
-                : {}),
-            }
-          );
-          const at = now();
-          goal = {
-            goalId,
-            workspaceId: input.workspaceId,
-            threadId: thread.id,
-            responsibleUserId: context.actor.userId,
-            responsibleActorContext: context.actor,
-            intent: input.intent,
-            intentRevision: 0,
-            intentHistory: [
-              { revision: 0, intent: input.intent, actorId: context.actor.userId, at },
-            ],
-            proposedPlanVersionId: null,
-            activePlanVersionId: null,
-            disposition: null,
-            changeRevision: 0,
-            consideredRevision: 0,
-            createdAt: at,
-            updatedAt: at,
-          };
-          saveGoal(db, goal);
-        } else if (
-          context.coordinatorTurnId &&
-          (id === 'goal.plan.approve' || id === 'goal.completion.accept') &&
-          input.pendingRequestId
-        ) {
-          const request = readPendingRequest(db.sqlite, input.pendingRequestId);
-          if (!request || !goal)
-            throw new GoalCommandError('not_found', 'Exact Goal request not found.', 404);
-          if (
-            request.governedIntent?.operation !== id ||
-            request.governedIntent.goalId !== goal.goalId ||
-            request.workspaceId !== goal.workspaceId ||
-            request.threadId !== goal.threadId ||
-            request.responsibleUserId !== goal.responsibleUserId
-          )
-            throw new GoalCommandError(
-              'approval_conflict',
-              'The request does not capture this exact Goal operation.'
-            );
-          if (request.state === 'pending')
-            throw new GoalCommandError(
-              'coordinator_self_approval_denied',
-              'The Coordinator cannot resolve its own approval.',
-              403
-            );
-          // A new explicit publication attempt uses the committed outcome without consuming the grant again or restoring an obsolete Plan pointer.
-          if (
-            services.goalDomain &&
-            id === 'goal.plan.approve' &&
-            !goal.disposition &&
-            goal.activePlanVersionId === request.governedIntent.planVersionId &&
-            request.state === 'resolved' &&
-            request.resolution === 'granted' &&
-            request.claim === 'finished' &&
-            request.disposition === 'approved-executed'
-          )
-            return readGoalView(store, db, goalId);
-          goal = consumeGrant(store, db, goal, request, services);
-        } else {
-          goal = requireOpen(readRecord(db, 'goals', 'goal_id', goalId, StoredGoalV1Schema));
-          if (id === 'goal.intent.revise' && 'intent' in input && 'expectedRevision' in input) {
-            checkRevision(goal.intentRevision, input.expectedRevision);
-            const at = now();
-            goal = {
-              ...goal,
-              intent: input.intent,
-              intentRevision: goal.intentRevision + 1,
-              intentHistory: [
-                ...goal.intentHistory,
-                {
-                  revision: goal.intentRevision + 1,
-                  intent: input.intent,
-                  actorId: context.actor.userId,
-                  at,
-                },
-              ],
-            };
-            saveGoal(db, goal);
-          } else if (id === 'goal.card.create' && 'description' in input && 'priority' in input) {
-            const card: GoalCard = {
-              cardId: `gc_${commandInput.requestId}`,
-              goalId,
-              description: input.description,
-              priority: input.priority,
-              revision: 0,
-              cancelled: false,
-              cancellationReason: null,
-              createdAt: now(),
-              updatedAt: now(),
-            };
-            db.sqlite
-              .prepare(
-                'INSERT INTO goal_cards (card_id,goal_id,payload_json,schema_version) VALUES (?,?,?,?)'
-              )
-              .run(
-                card.cardId,
-                goalId,
-                JSON.stringify(StoredGoalCardV1Schema.parse(card)),
-                writeRetainedV1({}).schemaVersion
-              );
-          } else if ((id === 'goal.card.edit' || id === 'goal.card.cancel') && 'cardId' in input) {
-            const card = readRecord(
-              db,
-              'goal_cards',
-              'card_id',
-              input.cardId,
-              StoredGoalCardV1Schema
-            );
-            if (!card || card.goalId !== goalId)
-              throw new GoalCommandError('not_found', 'Card not found.', 404);
-            checkRevision(card.revision, input.expectedRevision);
-            if (card.cancelled)
-              throw new GoalCommandError('card_cancelled', 'Card has been cancelled.');
-            const next =
-              id === 'goal.card.cancel'
-                ? {
-                    ...card,
-                    cancelled: true,
-                    cancellationReason: input.reason,
-                    revision: card.revision + 1,
-                    updatedAt: now(),
-                  }
-                : {
-                    ...card,
-                    description: input.description,
-                    priority: input.priority,
-                    revision: card.revision + 1,
-                    updatedAt: now(),
-                  };
-            db.sqlite
-              .prepare('UPDATE goal_cards SET payload_json=?,schema_version=? WHERE card_id=?')
-              .run(
-                JSON.stringify(StoredGoalCardV1Schema.parse(next)),
-                writeRetainedV1({}).schemaVersion,
-                card.cardId
-              );
-          } else if (id === 'goal.plan.propose' && 'commitment' in input) {
-            checkRevision(goal.changeRevision, input.expectedRevision);
-            const commitment = StoredGoalCommitmentV1Schema.parse(input.commitment);
-            const versions = readGoalView(store, db, goalId).versions;
-            const bytes = JSON.stringify(commitment);
-            const version: GoalPlanVersion = {
-              planVersionId: `gp_${commandInput.requestId}`,
-              goalId,
-              sequence: (versions.at(-1)?.sequence ?? 0) + 1,
-              bytes,
-              digest: goalPlanDigest(bytes),
-              commitment,
-              pendingRequestId: `ap_${commandInput.requestId}`,
-              createdAt: now(),
-            };
-            const goalDomain = captureGoalDomain(input.goalDomain, goal, version, context);
-            invalidateGoalPendingRequests(
-              db.sqlite,
-              goalId,
-              'Superseded by a newer Plan proposal.',
-              { kind: 'user', id: context.actor.userId },
-              now(),
-              true
-            );
-            db.sqlite
-              .prepare(
-                'INSERT INTO goal_plan_versions (plan_version_id,goal_id,payload_json,schema_version) VALUES (?,?,?,?)'
-              )
-              .run(
-                version.planVersionId,
-                goalId,
-                JSON.stringify(StoredGoalPlanVersionV1Schema.parse(version)),
-                writeRetainedV1({}).schemaVersion
-              );
-            saveGoal(db, { ...goal, proposedPlanVersionId: version.planVersionId });
-            raiseIntent(
-              store,
-              db,
-              goal,
-              context,
-              {
-                operation: 'goal.plan.approve',
-                goalId,
-                planVersionId: version.planVersionId,
-                digest: version.digest,
-                bytes,
-                goalDomain,
-              },
-              version.pendingRequestId,
-              'Approve Goal Plan',
-              proposalTurn
-            );
-          } else if (id === 'goal.cancel' && 'reason' in input) {
-            checkRevision(goal.changeRevision, input.expectedRevision);
-            saveGoal(db, {
-              ...goal,
-              disposition: {
-                kind: 'cancelled',
-                reason: input.reason,
-                actorId: context.actor.userId,
-                at: now(),
-              },
-            });
-            invalidateGoalPendingRequests(
-              db.sqlite,
-              goalId,
-              'The Goal was cancelled.',
-              { kind: 'user', id: context.actor.userId },
-              now()
-            );
-          } else if (id === 'goal.completion.accept' && 'candidate' in input && input.candidate) {
-            if (!coordinatorTurn(context, store, goal))
-              throw new GoalCommandError(
-                'coordinator_required',
-                'A Coordinator captures completion; a person resolves its exact request.',
-                403
-              );
-            raiseIntent(
-              store,
-              db,
-              goal,
-              context,
-              {
-                operation: 'goal.completion.accept',
-                goalId,
-                candidate: StoredGoalCompletionCandidateV1Schema.parse(input.candidate),
-              },
-              `ap_${commandInput.requestId}`,
-              'Accept exact Goal completion'
-            );
-          } else if (
-            (id === 'goal.plan.approve' || id === 'goal.completion.accept') &&
-            'pendingRequestId' in input &&
-            input.pendingRequestId &&
-            input.decision
-          ) {
-            if (context.coordinatorTurnId)
-              throw new GoalCommandError(
-                'coordinator_self_approval_denied',
-                'The Coordinator cannot resolve its own approval.',
-                403
-              );
-            const request = readPendingRequest(db.sqlite, input.pendingRequestId);
-            if (
-              !request ||
-              request.governedIntent?.goalId !== goalId ||
-              request.governedIntent.operation !== id
-            )
-              throw new GoalCommandError('not_found', 'Exact Goal request not found.', 404);
-            resolveCommandIntentApproval({
-              store,
-              sqlite: db.sqlite,
-              record: request,
-              decision: input.decision,
-              actor: context.actor,
-              coreDb: services.coreDb,
-              checkCommandIntent: checkGoalCommandIntent,
-            });
-          } else
-            throw new GoalCommandError(
-              'invalid_request',
-              'The operation arguments do not select one valid effect.',
-              400
-            );
-        }
-        advanceGoalRevision(db, goalId);
-        return readGoalView(store, db, goalId);
-      },
-      replay: () => readGoalView(store, db, goalId),
+    }
+    const proposalTurnId =
+      id === 'goal.plan.propose' && !context.coordinatorTurnId ? allocateEntityId('tu') : null;
+    const pendingItem =
+      goal &&
+      receipt &&
+      (id === 'goal.plan.propose' ||
+        (id === 'goal.completion.accept' && input.candidate && !input.pendingRequestId))
+        ? await publishGoalPendingItem(db, id, input, context, goal, receipt, proposalTurnId)
+        : null;
+    const nativeInput = ControlGoalCommandInputSchema.parse({
+      command: { operation: id, arguments: input },
+      context,
+      receipt,
+      administrator,
+      resourcePolicy: store.getWorkspaceResourceAccess(input.workspaceId),
+      grantAdmission,
+      externalEvidence,
+      proposalTurnId,
+      pendingItem,
     });
-  } catch (error) {
-    if (
-      context.coordinatorTurnId &&
-      input.pendingRequestId &&
-      error instanceof GoalCommandError &&
-      error.code === 'grant_conflict'
-    )
-      db.sqlite.transaction(() => {
-        if (refuseCommandIntentGrant(db.sqlite, input.pendingRequestId, error.message, now()))
-          advanceGoalRevision(db, goalId);
-      })();
-    if (proposalTurn)
-      await store.updateTurn(proposalTurn.id, {
-        status: 'failed',
-        completedAt: now(),
-        error: {
-          code: 'goal_plan_refused',
-          message: error instanceof Error ? error.message : 'Plan proposal failed.',
+    const outcome: ControlGoalCommandResult = await client.goal(database, nativeInput);
+    if (outcome.refusal)
+      throw new GoalCommandError(
+        outcome.refusal.code,
+        outcome.refusal.message,
+        outcome.refusal.status
+      );
+    for (const pending of outcome.view.requests) {
+      const record = readPendingRequest(db.sqlite, pending.requestId);
+      const approval = record ? projectApprovalRequest(record) : null;
+      if (approval) {
+        try {
+          store.getApproval(approval.id);
+          store.updateApproval(approval.id, approval);
+        } catch {
+          store.createApproval(approval);
+        }
+      }
+    }
+    if (proposalTurnId && !outcome.replayed)
+      await store.updateTurn(proposalTurnId, { status: 'completed', completedAt: now() });
+    return outcome.view;
+  };
+  const result = context.assistantHandoff
+    ? await invoke(null)
+    : await runIdempotentCommand<GoalView>({
+        store,
+        inflightCommands: services.inflightCommands ?? inflight,
+        command: id as Exclude<GoalOperationId, 'goal.read'>,
+        requestId: commandInput.requestId,
+        scope: {
+          workspaceId: input.workspaceId,
+          actorId: context.actor.userId,
+          ...(goal && id !== 'goal.create' ? { threadId: goal.threadId } : {}),
         },
+        input,
+        responseKind: 'goal',
+        responseId: () => goalId,
+        workspaceDb: db,
+        execute: invoke,
+        replay: () => readNativeGoalView(db, goalId),
       });
-    throw error;
-  }
-  if (proposalTurn)
-    await store.updateTurn(proposalTurn.id, { status: 'completed', completedAt: now() });
   if (id === 'goal.create' && input.originThreadId && result.goal) {
     // The committed Goal is authority; publish its replayable origin snapshot outside SQL admission.
     const origin = input.originThreadId;
