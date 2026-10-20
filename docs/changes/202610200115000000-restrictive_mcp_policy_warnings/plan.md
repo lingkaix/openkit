@@ -16,7 +16,7 @@ The engineer approved one optional warnings array in the retained Policy candida
 
 [Policy Enforcement Mapping](../../specs/20260703-policy_enforcement_mapping.md) owns the restrictive subset and exact matching. [Worker MCP Tool Supply](../../specs/20260704-worker_mcp_tool_supply.md#policy-binding) owns exposure and dispatch. [Chat Mode](../../specs/20260704-chat_mode_assistant.md#administration-entry-path) owns the candidate and confirmation boundary.
 
-The change is limited to Policy preparation, the existing candidate schema/producer, fixed Tool failure guidance, their tests and documentation. No discovery command, receipt registry, store, storage, DDL, runtime, shim or Web change is included. Existing Policy approval, revisions, author checks and effect gates remain binding.
+The change is limited to Policy preparation, the existing candidate schema/producer, fixed Tool failure guidance, their tests and documentation. No discovery command, receipt registry, store, storage, DDL, runtime or shim change is included; the Web review only renders the retained warnings. Existing Policy approval, revisions, author checks and effect gates remain binding.
 
 ## Regression And Implementation
 
@@ -28,7 +28,7 @@ Tests verify the candidate digest, exact warning content, proposal-input exclusi
 
 ## Human Review Boundary
 
-No frontend file is edited. The confirmation view is AdministrationConfigurationReview in the Web settings screen. It currently shows before/after JSON and the confirmation digest, not the complete candidate or its warnings. The coordinator owns adding warning rendering before live human-confirmation acceptance; backend qualification does not prove that view is ready.
+The confirmation view is AdministrationConfigurationReview in the Web settings screen. It shows before/after JSON and the confirmation digest, and now lists retained Policy candidate warnings in the candidate facts and the Apply dialog. A Web test failed before that rendering and passes with it.
 
 ## Checkpoint
 

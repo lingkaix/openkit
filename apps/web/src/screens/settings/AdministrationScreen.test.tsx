@@ -1169,6 +1169,59 @@ describe('Administration', () => {
     expect(screen.queryByText('Gateway server')).not.toBeInTheDocument();
   });
 
+  it('shows retained Policy candidate warnings in the Apply dialog', async () => {
+    const user = userEvent.setup();
+    const warning = {
+      code: 'mcp_tool_unobserved' as const,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      serverId: 'school-sis',
+      toolName: 'delete_record',
+      message:
+        'MCP Tool school-sis/delete_record has not been observed in Workspace ws_00000000-0000-7000-8000-000000000001; the statement applies when a Tool with this exact name is exposed.',
+    };
+    const policyPayload = {
+      kind: 'administration-configuration-candidate',
+      targetFamily: 'policy' as const,
+      targetId: 'server',
+      expectedRevision: CONFIG_REVISION,
+      changes: {
+        proposed: { schemaVersion: 1, statements: [] },
+        rationale: 'Prohibit one future tool.',
+      },
+      before: { schemaVersion: 1, statements: [] },
+      after: { schemaVersion: 1, statements: [] },
+      restartRequired: false,
+      command: 'administration.configuration.apply',
+      operation: 'update',
+      policyProposal: {
+        schemaVersion: 1,
+        proposer: { kind: 'human', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        rationale: 'Prohibit one future tool.',
+        baseRevision: CONFIG_REVISION,
+        proposed: { schemaVersion: 1, statements: [] },
+        validation: 'valid' as const,
+      },
+      warnings: [warning],
+    };
+    const client = makeClient(
+      {},
+      {
+        'artifact.read': vi.fn().mockResolvedValue({
+          ...CONFIG_ARTIFACT,
+          content: { format: 'json' as const, body: JSON.stringify(policyPayload) },
+        }),
+        'thread.items': vi.fn().mockResolvedValue({ items: [CONFIG_ITEM] }),
+        'thread.list': vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
+      }
+    );
+    renderScreen(client);
+
+    await user.click(await screen.findByRole('button', { name: 'Review configuration' }));
+    const dialog = screen.getByRole('dialog', { name: 'Apply configuration?' });
+    const warnings = within(dialog).getByRole('region', { name: 'Candidate warnings' });
+    expect(within(warnings).getByText(warning.message)).toBeInTheDocument();
+  });
+
   it('applies the exact private Thread candidate after human review', async () => {
     const user = userEvent.setup();
     const applyAdministrationConfiguration = vi.fn().mockResolvedValue(CONFIG_OUTCOME);
