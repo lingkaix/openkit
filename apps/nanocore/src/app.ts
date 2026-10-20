@@ -64,7 +64,10 @@ import {
   requireCurrentDeploymentAdmin,
 } from './auth/operation-authorizer.js';
 import { isCanonicalUserActive } from './auth/user-lifecycle.js';
-import { createBootReadinessSnapshot } from './bootstrap/readiness.js';
+import {
+  createBootReadinessSnapshot,
+  restoreWorkspaceRetirementAdmission,
+} from './bootstrap/readiness.js';
 import { composeWorkspaceMcpCatalog } from './catalog/resource-catalog.js';
 
 import {
@@ -698,8 +701,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   const mode = options.mode ?? 'local';
   const auth = options.auth;
   const dataRoot = options.dataRoot ?? null;
-  const sharedStore =
-    options.store ?? new FsStore(options.dataRoot ? { dataRoot: options.dataRoot } : {});
   const workspaceMutationAdmission =
     options.workspaceMutationAdmission ??
     options.automationStore?.mutationAdmission ??
@@ -719,6 +720,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       ...(options.coreDb ? { coreDb: options.coreDb } : {}),
     });
   }
+  const sharedStore =
+    options.store ?? new FsStore(options.dataRoot ? { dataRoot: options.dataRoot } : {});
   let localUserId: string | undefined;
   if (mode === 'local') {
     localUserId = options.coreDb ? ensureLocalUser(options.coreDb) : options.localUserId;
@@ -2645,13 +2648,17 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   return app;
 }
 
-/** Rebuilds deletion fences from durable requests before any process-owned mutation recovery. */
+/** Rebuilds retirement exclusion and deletion fences before content loading or process-owned mutation recovery. */
 export function restoreWorkspaceDeletionMutationAdmission(input: {
   coreDb?: CoreDb;
   dataRoot: string;
   workspaceMutationAdmission: WorkspaceMutationAdmission;
 }): void {
   if (input.coreDb) {
+    restoreWorkspaceRetirementAdmission({
+      coreDb: input.coreDb,
+      workspaceMutationAdmission: input.workspaceMutationAdmission,
+    });
     const lifecycleRows = input.coreDb.sqlite
       .prepare(
         `SELECT workspace_id AS workspaceId

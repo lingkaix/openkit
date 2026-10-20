@@ -232,8 +232,41 @@ export const RecoverWorkspaceAccessRequestSchema = z
 /** Request that disables one exact canonical user. */
 export const DisableUserRequestSchema = z.object({ requestId: RequestIdSchema }).strict();
 
-/** Registry lifecycle state exposed by Workspace deletion. */
-export const WorkspaceRegistryStatusSchema = z.enum(['active', 'deleting', 'deleted']);
+/** Registry lifecycle, distinct from the Workspace content record's product status. */
+export const WorkspaceRegistryStatusSchema = z.enum(['active', 'deleting', 'deleted', 'retired']);
+
+/** Administrator command that retains quarantined data without reclaiming storage. */
+export const RetireQuarantinedWorkspaceRequestSchema = z
+  .object({
+    workspaceId: WorkspaceIdSchema,
+    requestId: RequestIdSchema,
+    expectedRegistryRevision: WorkspaceRevisionSchema,
+    confirmation: z.string(),
+  })
+  .strict();
+
+/** Retained retirement is neither deletion, physical cleanup nor a recovery export. */
+export const WorkspaceRetirementResponseSchema = z
+  .object({
+    retirement: z
+      .object({
+        workspaceId: WorkspaceIdSchema,
+        ownerUserId: UserIdSchema,
+        registryRevision: WorkspaceRevisionSchema,
+        status: z.literal('retired'),
+        dataRetained: z.literal(true),
+        storageReclaimed: z.literal(false),
+      })
+      .strict(),
+  })
+  .strict();
+
+/** Exact native retained-retirement input. */
+export type RetireQuarantinedWorkspaceRequest = z.infer<
+  typeof RetireQuarantinedWorkspaceRequestSchema
+>;
+/** Safe retirement result, without content or physical-cleanup inference. */
+export type WorkspaceRetirementResponse = z.infer<typeof WorkspaceRetirementResponseSchema>;
 
 /** Durable phase of one Workspace deletion request. */
 export const WorkspaceDeletionPhaseSchema = z.enum([
