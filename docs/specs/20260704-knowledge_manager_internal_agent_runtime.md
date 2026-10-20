@@ -71,7 +71,7 @@ Knowledge Manager is the existing Internal Core Role listed in [Core Architectur
 - Integration, organization and generated Memory/Knowledge writes go through Knowledge Manager and the existing fixed-base notebook publisher. Users supply intent, information and approval; simple direct edits remain available.
 - Current scoped maintenance delegation permits ordinary publication. Otherwise the exact candidate requires proposal approval; critical content and sensitive effects retain their owning decisions.
 - Knowledge Manager uses OpenKit compaction only inside a bounded run near its configured model threshold. Cross-run memory is the notebook and commit history. [Context Compaction](20260902-agent_runtime_context_compaction.md) owns the mechanism.
-- Every internal role uses configurable role profiles. Knowledge Manager selects its logical model through the existing resolver, without a separate model selector.
+- Every internal role uses configurable role profiles. Knowledge Manager selects its logical model through the existing resolver, without a separate model selector. Its selected profile's optional `reasoningEffort` follows the [shared internal-role contract](20260813-internal_agent_runtime.md#internal-role-execution-profile), including unchanged Provider defaults when omitted.
 
 ## Contract / Expected Behavior
 
