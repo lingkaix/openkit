@@ -32,6 +32,8 @@ This specification owns the role-agnostic bounded runtime used by every NanoCore
 
 ## Summary
 
+The [neutrality decision](../decisions/20261020-compute_and_harness_neutrality.md) separates Core-owned loops from Worker execution and external loops, independently of tool-execution placement.
+
 NanoCore uses one small bounded loop for internal roles instead of separate role runtimes. Core Assistant, Workflow Coordinator, Knowledge Manager and every later admitted model-using internal role assemble different role inputs over this same loop; each role uses its owned context policy and never receives a separate direct Provider runtime. Core Assistant and Goal/Workflow Coordinator default to rolling context. Knowledge Manager uses compaction within bounded fresh-context runs. A future Evaluator may use compaction only after its role is admitted.
 
 The caller assembles all role and product meaning before invocation, and the loop only performs model calls, consumes admitted context, validates and executes supplied Tools, appends bounded feedback, observes cancellation and emergency fuses, and returns one typed runtime outcome.
@@ -213,6 +215,12 @@ The generic Tool interface MUST NOT duplicate role, owner, effect class, budget 
 Tool creation and update occur in trusted server assembly, and a run receives a temporary immutable array. Tool termination is the end of that array's run; replacement occurs only on a newly admitted run. No between-roundtrip replacement inside a run is allowed. Missing Tools fail exact lookup, stale or unauthorized operations fail through their current owner, and restart reconstructs the array rather than reviving it.
 
 Acceptance requires provider serialization to contain no field beyond the three eligible fields and requires every execution to use the supplied server closure rather than a model-selected implementation path.
+
+An in-process execution target, including the existing virtual shell or a future isolate, is a degenerate placement with no provider allocation. Such placement MUST NOT create Worker state or synthetic receipts. External effects retain their existing evidence requirements.
+
+Shell and file Tools MUST expose the same admitted scratch view for every exposed path. Canonical files remain in OpenKit storage under their existing owners; targets are ephemeral and scratch edits remain candidates until Core accepts them.
+
+Core-loop execution targets MUST contain no credentials, including scoped tokens; transport credentials stay outside the target. Secret injection MUST occur only after authorization at the Core Gateway/egress boundary under [Unified Mediation And Policy](20261018-nanocore_interception_and_information_consolidation.md#unified-mediation-and-policy). Egress MUST be denied by default per target, including host bindings; only admitted Gateway/egress calls may leave it.
 
 ## Model-Visible Results And Errors
 
