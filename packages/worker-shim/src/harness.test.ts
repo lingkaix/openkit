@@ -1438,7 +1438,7 @@ describe('Worker Harness loop', () => {
   it.each([
     'poll',
     'result',
-  ] as const)('collects a slow %s body beyond one second when headers arrive in time', async (phase) => {
+  ] as const)('collects a slow %s body beyond one second within the original allowance', async (phase) => {
     const clock = controlSchedulingTime();
     const controller = new AbortController();
     const bodyEntered = observation();
@@ -1484,9 +1484,10 @@ describe('Worker Harness loop', () => {
     try {
       await bodyEntered.promise;
       await clock.advance(1_250);
-      expect(bodySignal?.aborted, 'timely headers must release the one-second header bound').toBe(
-        false
-      );
+      expect(
+        bodySignal?.aborted,
+        'body collection must retain the original request allowance'
+      ).toBe(false);
       releaseBody.resolve();
       expect(await run).toBeInstanceOf(Error);
       expect(handle).toHaveBeenCalledTimes(1);
