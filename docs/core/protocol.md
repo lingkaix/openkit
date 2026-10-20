@@ -295,6 +295,8 @@ Thread is not AgentSession and must not be coupled to exactly one runtime handle
 
 A Turn executed by a worker or other schedulable Agent is assigned internally to exactly one AgentSession before dispatch. A queued worker Turn MAY remain `pending` with `agentSessionId=null` until dispatch and gains no execution authority from queueing ([decision](../decisions/20261006-execution_backend_port_in_nanocore.md)). A Core-local service Turn may execute with `agentSessionId=null` only when its owning accepted workflow contract forbids worker, scheduler, Sandbox, and AgentSession effects and names the app-local service and durable result owners; a provider capability call alone does not create an AgentSession.
 
+This Core-local exception is scoped to its currently admitted workflows. A future sessionless Core-command workflow requires explicit owner admission and its own consumer contract at the [Execution Backend Port](../decisions/20261006-execution_backend_port_in_nanocore.md). A nullable AgentSession binding grants no dispatch authority and MUST NOT be replaced by a fabricated Worker binding.
+
 A turn can be triggered by user input, system input, automation, retry, handoff, approval resolution, or running-work steering. Approval resolution and user input also start the Turn that delivers resolved pending requests, as defined in Pending Request Semantics; neither resumes an earlier Turn.
 
 The complete Turn terminal-state set is, as recorded in [Turns Have Four Terminal States](../decisions/20260921-four_turn_terminal_states.md):
