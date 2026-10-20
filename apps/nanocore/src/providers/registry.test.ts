@@ -1,10 +1,12 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { parseJsoncObject } from '../config/jsonc.js';
 import { loadProviderProfiles, type ProviderProfile } from '../config/providers-loader.js';
+import { createRuntimeConfigManager } from '../config/runtime-config.js';
+import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import { ensureLayout } from '../storage/fs-layout.js';
 import { resolveProviderProfileToLLMConfig } from './llm-config.js';
 import { ProviderRegistry } from './registry.js';
@@ -165,6 +167,67 @@ describe('ProviderRegistry', () => {
 });
 
 describe('Provider.kind vocabulary V5 through native profiles and the registry', () => {
+  // V5 canonical-only writes: the retained-file alias must not authorize new create/update input.
+  it.each([
+    'create',
+    'update',
+  ] as const)('refuses historical gateway on Provider %s and persists only the canonical gateway kind', (operation) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-provider-kind-write-v5-'));
+    try {
+      const providersRoot = join(dataRoot, 'config', 'providers');
+      mkdirSync(providersRoot, { recursive: true });
+      const manager = createRuntimeConfigManager({ dataRoot });
+      const files = new RuntimeConfigFileService({
+        dataRoot,
+        workspaceIds: [],
+        userId: 'usr_0190f4c8-0000-7000-8000-000000000001',
+        runtimeConfigManager: manager,
+        readRuntimeConfigStatus: () => manager.status(),
+      });
+      const id = 'providers/new-profile.provider.jsonc';
+      const path = join(dataRoot, 'config', id);
+      const profile = {
+        schemaVersion: 1,
+        id: 'new-profile',
+        displayName: 'New Provider',
+        kind: 'direct',
+        models: ['fixture-model'],
+      };
+      const original = `${JSON.stringify(profile, null, 2)}\n`;
+      if (operation === 'update') writeFileSync(path, original);
+      const revision = operation === 'update' ? files.readFile(id).file.revision : null;
+      const write = (kind: string) => {
+        const input = {
+          id,
+          kind: 'provider' as const,
+          content: `${JSON.stringify({ ...profile, kind }, null, 2)}\n`,
+          expectedRevision: revision,
+        };
+        return operation === 'create' ? files.createFile(input) : files.updateFile(input);
+      };
+      let refusal: unknown = null;
+      try {
+        write('gateway');
+      } catch (error) {
+        refusal = error;
+      }
+      expect(refusal !== null).toBe(true);
+      expect(refusal).toMatchObject({ code: 'config_file_invalid', status: 400 });
+      if (operation === 'create') expect(existsSync(path)).toBe(false);
+      else expect(readFileSync(path, 'utf8')).toBe(original);
+      expect(write('llm-gateway').file.id).toBe(id);
+      expect(parseJsoncObject(readFileSync(path, 'utf8'), path)).toEqual({
+        ...profile,
+        kind: 'llm-gateway',
+      });
+      const loaded = loadProviderProfiles(dataRoot);
+      expect(loaded.diagnostics).toEqual([]);
+      expect(loaded.profiles[0]?.kind).toBe('llm-gateway');
+    } finally {
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   // V5 preserves the LLM-gateway class, including credentials, adapter, and endpoint capabilities.
   it('keeps llm-gateway credential requirements and LLM dispatch projection', () => {
     const profile: ProviderProfile = {
