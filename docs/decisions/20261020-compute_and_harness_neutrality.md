@@ -11,7 +11,11 @@ NanoCore is neutral to compute substrate and agent-harness location. NanoCore in
 
 OpenKit retains the authority, Knowledge, BWM, MCP, and Skills plane. Governance applies at each integration boundary. Each integration declares its actual capabilities and limitations. Policy uses those declarations to select permitted platforms for a Workspace and refuses placement when required constraints cannot be met.
 
+An external platform may not admit OpenKit's in-loop Policy control or return all run data. This compromise is accepted when the integration declares each gap and the system records capture gaps, preserves truthful unknown outcomes, and refuses placement with unsupported required constraints. OpenKit must never claim coverage it lacks.
+
 The first integration targets are the OpenAI Agents API, E2B, and Cloudflare Agents. The OpenAI Agents API target includes both the hosted platform and use of that standard API by self-hosted equivalents.
+
+OpenKit borrows the resource structure and naming of external standards, including E2B-style placement and Agents-API-style sessions. OpenKit's specifications define record meanings, what receipts prove, and sufficient cleanup evidence; external standards do not define these semantics. Adapters stay thin and replaceable. Compatibility is a pinned, tested subset, not a promise to follow an external API's evolution.
 
 Design and neutrality validation precede the v0.1.0 freeze. Platform integrations follow the freeze. Current retained records keep their NanoHost meanings, including existing image identity and native-reference meanings. External forms come later as additive representations; this decision does not reinterpret existing data or introduce schema or code changes.
 
