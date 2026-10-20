@@ -122,14 +122,14 @@ export function createInternalAgentGatewayProvider(
     try {
       call = context
         ? workspaceDb.scope === 'core' && 'owner' in context
-          ? startCapabilityCall({
+          ? await startCapabilityCall({
               ...context,
               ...lineage,
               workspaceDb,
               ...(options.auditLineage ? { auditLineage: options.auditLineage } : {}),
             })
           : workspaceDb.scope === 'workspace' && !('owner' in context)
-            ? startCapabilityCall({
+            ? await startCapabilityCall({
                 ...context,
                 ...lineage,
                 workspaceDb,
@@ -295,7 +295,7 @@ export function createInternalAgentGatewayProvider(
           const message = fromResponses(response, aliasToCanonical, canonicalToAlias);
           if (call)
             execution.addUsageRecordIds(
-              recordInternalLlmGatewayUsage({
+              await recordInternalLlmGatewayUsage({
                 workspaceDb,
                 call,
                 ...(options.auditLineage ? { auditLineage: options.auditLineage } : {}),
@@ -311,7 +311,7 @@ export function createInternalAgentGatewayProvider(
       });
       callFinished = true;
       if (call)
-        finishCapabilityCall({
+        await finishCapabilityCall({
           workspaceDb,
           callId: call.id,
           status: 'succeeded',
@@ -327,7 +327,7 @@ export function createInternalAgentGatewayProvider(
     } catch (error) {
       callFinished = true;
       if (call)
-        finishCapabilityCall({
+        await finishCapabilityCall({
           workspaceDb,
           callId: call.id,
           status: 'failed',

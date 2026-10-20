@@ -461,7 +461,7 @@ export async function executeCapturedPendingCall(input: {
     return outcome;
   };
   if (!record.serverId || !record.toolName || !record.canonicalArgumentsJson || !input.catalog) {
-    recordCapturedExecution(
+    await recordCapturedExecution(
       input.executionCall,
       input.workspaceDb,
       'failed',
@@ -478,7 +478,7 @@ export async function executeCapturedPendingCall(input: {
   try {
     resolved = resolveWorkspaceMcpServer({ catalog: input.catalog, serverId: record.serverId });
   } catch {
-    recordCapturedExecution(
+    await recordCapturedExecution(
       input.executionCall,
       input.workspaceDb,
       'failed',
@@ -495,7 +495,7 @@ export async function executeCapturedPendingCall(input: {
   try {
     const parsed = JSON.parse(record.canonicalArgumentsJson) as unknown;
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      recordCapturedExecution(
+      await recordCapturedExecution(
         input.executionCall,
         input.workspaceDb,
         'failed',
@@ -510,7 +510,7 @@ export async function executeCapturedPendingCall(input: {
     }
     args = parsed as Record<string, unknown>;
   } catch {
-    recordCapturedExecution(
+    await recordCapturedExecution(
       input.executionCall,
       input.workspaceDb,
       'failed',
@@ -539,7 +539,7 @@ export async function executeCapturedPendingCall(input: {
         }
       }))
   ) {
-    recordCapturedExecution(
+    await recordCapturedExecution(
       input.executionCall,
       input.workspaceDb,
       'failed',
@@ -564,12 +564,12 @@ export async function executeCapturedPendingCall(input: {
     });
     if (input.coreDb && input.prepared?.injections)
       completeMcpVaultInjections(input.coreDb, input.executionCall, input.prepared.injections);
-    recordCapturedExecution(input.executionCall, input.workspaceDb, 'succeeded', null, true);
+    await recordCapturedExecution(input.executionCall, input.workspaceDb, 'succeeded', null, true);
     outcome = { disposition: 'approved-executed', reason: null, result };
   } catch (error) {
     const known = error instanceof WorkerMcpGatewayCallError && error.upstreamEffect !== 'unknown';
     if (input.executionCall)
-      recordCapturedExecution(
+      await recordCapturedExecution(
         input.executionCall,
         input.workspaceDb,
         known ? 'failed' : 'unknown',

@@ -119,7 +119,7 @@ export interface RecordWorkerBackendTeardownEvidenceInput {
  * @returns Stored runtime evidence record.
  */
 export function recordWorkerRuntimeProvenanceEvidence(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
   input: RecordWorkerRuntimeProvenanceEvidenceInput
 ): RuntimeEvidenceRecord {
   const record = RuntimeEvidenceRecordSchema.parse({
@@ -172,7 +172,7 @@ export function recordWorkerRuntimeProvenanceEvidence(
  * @returns Stored runtime evidence record.
  */
 export function recordWorkerBackendTeardownEvidence(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
   input: RecordWorkerBackendTeardownEvidenceInput
 ): RuntimeEvidenceRecord {
   const checkpointLineage = workspaceDb.sqlite
@@ -248,7 +248,7 @@ export function recordWorkerBackendTeardownEvidence(
  * @returns Stored runtime evidence record.
  */
 export function recordWorkerCheckpointRuntimeEvidence(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
   checkpoint: WorkerCheckpointRecord
 ): RuntimeEvidenceRecord {
   const record = RuntimeEvidenceRecordSchema.parse({
@@ -304,7 +304,7 @@ export function recordWorkerCheckpointRuntimeEvidence(
  * @returns Stored runtime evidence record.
  */
 export function recordMaterializationRuntimeEvidence(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
   record: WorkspaceMaterializationRecord
 ): RuntimeEvidenceRecord {
   const runtimeEvidence = RuntimeEvidenceRecordSchema.parse({
@@ -358,7 +358,7 @@ export function recordMaterializationRuntimeEvidence(
  * @returns Runtime evidence rows.
  */
 export function listWorkspaceRuntimeEvidence(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
   workspaceId: string
 ): RuntimeEvidenceRecord[] {
   return (
@@ -380,7 +380,7 @@ export function listWorkspaceRuntimeEvidence(
  * @param records Runtime evidence rows to import.
  */
 export function importWorkspaceRuntimeEvidence(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
   records: readonly RuntimeEvidenceRecord[]
 ): void {
   for (const record of records) {
@@ -515,8 +515,9 @@ function runtimeEvidenceFromRow(row: RuntimeEvidenceRow): RuntimeEvidenceRecord 
   });
 }
 
+/** Keeps the immutable replay comparison and insertion on the same supplied owning SQLite handle. */
 function insertRuntimeEvidence(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
   input: RuntimeEvidenceRecord
 ): RuntimeEvidenceRecord {
   const record = StoredRuntimeEvidenceV1Schema.parse(input);

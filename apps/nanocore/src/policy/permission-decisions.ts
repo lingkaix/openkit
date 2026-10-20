@@ -638,7 +638,7 @@ export function recordProductPermissionDecision(input: RecordProductPermissionDe
 
 /** Counts exact statement consumption from immutable final allows in this Workspace owner. */
 export function readPolicyStatementUseCount(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite' | 'workspaceId'>,
   reference: PolicyDecisionV1['consumedStatements'][number]
 ): number {
   const statement = PolicyStatementReferenceV1Schema.parse(reference);
@@ -668,7 +668,7 @@ export interface PolicyUseDecision {
 
 /** Checks this effect's own atomic consumption without granting another use or changing records. */
 export function policyStatementUsedByDecision(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite' | 'workspaceId'>,
   reference: PolicyDecisionV1['consumedStatements'][number],
   expected: PolicyUseDecision
 ): boolean {

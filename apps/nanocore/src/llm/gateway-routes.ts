@@ -1451,7 +1451,7 @@ function normalizeGatewayTerminalStream(
         await reader.cancel(reason);
       } finally {
         try {
-          finishDurableLlmGatewayStreamCall(
+          await finishDurableLlmGatewayStreamCall(
             options.durableCall ?? null,
             terminalFailureCode ? 'failed' : 'aborted',
             terminalFailureCode ?? options.cancellationCode ?? 'llm_gateway_cancelled'
@@ -1487,7 +1487,7 @@ function normalizeGatewayTerminalStream(
         const envelopeFailureCode = options.failureCode ?? 'llm_gateway_stream_failed';
         if (!cancelled && terminalFailureCode === undefined) options.onFailure?.(error);
         try {
-          finishDurableLlmGatewayStreamCall(
+          await finishDurableLlmGatewayStreamCall(
             options.durableCall ?? null,
             terminalFailureCode
               ? 'failed'
@@ -1534,7 +1534,7 @@ function normalizeGatewayTerminalStream(
       if (result.done) {
         terminal = true;
         try {
-          finishDurableLlmGatewayStreamCall(
+          await finishDurableLlmGatewayStreamCall(
             options.durableCall ?? null,
             terminalFailureCode ? 'failed' : 'succeeded',
             terminalFailureCode
@@ -2345,7 +2345,7 @@ export function registerWorkerInferenceRoutes({
             }
           },
         });
-        if (!input.stream) finishDurableLlmGatewayCall(durableCall, 'succeeded');
+        if (!input.stream) await finishDurableLlmGatewayCall(durableCall, 'succeeded');
         return result;
       } catch (error) {
         // The native stop signal can wrap the private authority failure as cancellation.
@@ -3112,7 +3112,7 @@ export function registerLlmGatewayRoutes({
         }),
       };
 
-      const durableCall = startPublicLlmGatewayCall({
+      const durableCall = await startPublicLlmGatewayCall({
         ...(coreDb ? { coreDb } : {}),
         authorityActor,
         authentication: auditAuthenticationFromActor(c.get('actor')),
@@ -3220,7 +3220,7 @@ export function registerLlmGatewayRoutes({
             return c.json({ ...completion, model: logicalModel.id });
           },
         });
-        if (!input.stream) finishDurableLlmGatewayCall(durableCall, 'succeeded');
+        if (!input.stream) await finishDurableLlmGatewayCall(durableCall, 'succeeded');
         return result;
       } catch (error) {
         const cancelled = finishDurableLlmGatewayFailure(
@@ -3281,7 +3281,7 @@ export function registerLlmGatewayRoutes({
         stream: input.stream ?? false,
       };
 
-      const durableCall = startPublicLlmGatewayCall({
+      const durableCall = await startPublicLlmGatewayCall({
         ...(coreDb ? { coreDb } : {}),
         authorityActor,
         authentication: auditAuthenticationFromActor(c.get('actor')),
@@ -3391,7 +3391,7 @@ export function registerLlmGatewayRoutes({
             return c.json({ ...response, model: logicalModel.id });
           },
         });
-        if (!input.stream) finishDurableLlmGatewayCall(durableCall, 'succeeded');
+        if (!input.stream) await finishDurableLlmGatewayCall(durableCall, 'succeeded');
         return result;
       } catch (error) {
         const cancelled = finishDurableLlmGatewayFailure(

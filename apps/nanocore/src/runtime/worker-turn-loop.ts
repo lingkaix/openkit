@@ -374,7 +374,7 @@ export async function runWorkerTurnLoop(
       artifactIds: [...(worker.artifactIds ?? [])],
     };
 
-    updateWorkerCheckpoint(input.workspaceDb, {
+    await updateWorkerCheckpoint(input.workspaceDb, {
       authorityActor: input.triggerActor,
       workspaceId: input.workspaceId,
       threadId: input.threadId,
@@ -430,7 +430,7 @@ export async function runWorkerTurnLoop(
     ) {
       throw error;
     }
-    updateWorkerCheckpoint(input.workspaceDb, {
+    await updateWorkerCheckpoint(input.workspaceDb, {
       authorityActor: input.triggerActor,
       workspaceId: input.workspaceId,
       threadId: input.threadId,
