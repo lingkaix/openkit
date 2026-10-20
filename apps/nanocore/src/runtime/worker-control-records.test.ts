@@ -18,6 +18,14 @@ import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-e
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { markSchedulerExecutionAttemptClosing } from './execution-attempt-records.js';
+import {
+  allocateNanoHostRuntimeTargetConnectionGeneration,
+  upsertNanoHostRuntimeTarget,
+} from './nanohost-runtime-target.js';
+import {
+  getWorkerBackendSession,
+  recordWorkerBackendSessionMaterializing,
+} from './worker-backend-sessions.js';
 import { WorkerControlGateway } from './worker-control-gateway.js';
 import {
   canonicalStopReasonForAcceptedWorkerFinalStatus,
@@ -644,7 +652,12 @@ function nativeReceiver(captureValue: 'on' | 'off' = 'on', bound: number | null 
   applyScopedMigrations(db);
   recordAgentEnvironmentPackageSnapshot(db, { environmentPackage: pkg, createdAt: pkg.createdAt });
   const owner = { threadId: turn.threadId, turnId: turn.id };
-  const auth = `Bearer ${'A'.repeat(43)}`;
+  let activePackage = pkg;
+  let activeTokens = {
+    workerControlToken: 'A'.repeat(43),
+    workerInferenceToken: 'B'.repeat(43),
+    workerCapabilityToken: 'C'.repeat(43),
+  };
   const selectedLineage = {
     ...owner,
     workspaceId: pkg.scope.workspaceId,
@@ -652,18 +665,12 @@ function nativeReceiver(captureValue: 'on' | 'off' = 'on', bound: number | null 
     requestId: 'req_ret2',
     packageSnapshotId: pkg.snapshotId,
   };
-  const register = (gateway: WorkerControlGateway, selected = pkg) =>
-    gateway.registerSession(selected, {
-      workerControlToken: 'A'.repeat(43),
-      workerInferenceToken: 'B'.repeat(43),
-      workerCapabilityToken: 'C'.repeat(43),
-    });
   const makeGateway = () => {
     const gateway = new WorkerControlGateway({
       sequenceRecorder: createWorkerControlSequenceRecorder(coreDb),
       acceptedRecordRecorder: createWorkerControlAcceptedRecordRecorder(coreDb),
     });
-    register(gateway);
+    gateway.registerSession(activePackage, activeTokens);
     return gateway;
   };
   let gateway = makeGateway();
@@ -682,7 +689,7 @@ function nativeReceiver(captureValue: 'on' | 'off' = 'on', bound: number | null 
     try {
       return {
         accepted: gateway.appendEvent({
-          authorization: options.authorization ?? auth,
+          authorization: options.authorization ?? `Bearer ${activeTokens.workerControlToken}`,
           lineage: selectedLineage,
           record: {
             schemaVersion: 1,
@@ -701,6 +708,9 @@ function nativeReceiver(captureValue: 'on' | 'off' = 'on', bound: number | null 
   // This accepted control proves registration, database, binding and transport setup on the RED base.
   expect(send(0, 'worker.heartbeat', { status: 'running' }).accepted).toBe(true);
   return {
+    get coreDb() {
+      return coreDb;
+    },
     db,
     root,
     pkg,
@@ -725,7 +735,15 @@ function nativeReceiver(captureValue: 'on' | 'off' = 'on', bound: number | null 
         createdAt: second.createdAt,
       });
       selectedLineage.packageSnapshotId = second.snapshotId;
-      register(gateway, second);
+      activePackage = second;
+      activeTokens = {
+        workerControlToken: 'E'.repeat(43),
+        workerInferenceToken: 'F'.repeat(43),
+        workerCapabilityToken: 'G'.repeat(43),
+      };
+      gateway.registerSession(activePackage, activeTokens);
+      // Authenticate the second package before a quota refusal can count as evidence.
+      expect(send(0, 'worker.heartbeat', { status: 'running' }).accepted).toBe(true);
     },
   };
 }
@@ -809,6 +827,240 @@ function nativeBodies(f: ReturnType<typeof nativeReceiver>) {
       return { ref, bytes: bytes === null ? null : Buffer.from(bytes) };
     });
 }
+
+/** Records an image through the existing trusted backend owner, without a Worker-supplied grant. */
+function nativeImageBinding(
+  f: ReturnType<typeof nativeReceiver>,
+  imageRef: string,
+  bindingLineage = f.lineage
+) {
+  const { coreDb } = f;
+  const now = () => f.pkg.createdAt;
+  ensureLocalUser(coreDb);
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    workspaceId: bindingLineage.workspaceId,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+  });
+  const entry = createSchedulerAdmissionEntry(coreDb, {
+    backendId: 'nanohost',
+    queueEntryId: 'queue_ret2_image',
+    requestId: bindingLineage.requestId,
+    workspaceId: bindingLineage.workspaceId,
+    threadId: bindingLineage.threadId,
+    turnId: bindingLineage.turnId,
+    turnInput: 'Retain the exact backend image binding',
+    requestedAgentId: f.pkg.agent.agentId,
+    triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+    now,
+  });
+  const attemptId = testEntityId('attempt', 'ret2-image');
+  recordTestExecutionAttempt(coreDb, {
+    entry,
+    attemptId,
+    agentSessionId: bindingLineage.agentSessionId,
+    inputRef: bindingLineage.packageSnapshotId,
+    bindingRef: 'lease-binding:ret2-image',
+    sessionCompatibilityKey: 'ret2-image',
+    now,
+  });
+  const target = allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+    deploymentId: 'deployment-ret2-image',
+    identityId: 'nanohost-ret2-image',
+    observedAt: now(),
+    targetId: 'runtime-target-ret2-image',
+  });
+  upsertNanoHostRuntimeTarget(coreDb, {
+    ...target,
+    freshEmpty: true,
+    observedAt: now(),
+    physicalEpoch: 'a'.repeat(64),
+    predecessorFenced: true,
+    ready: true,
+  });
+  const recorded = recordWorkerBackendSessionMaterializing(coreDb, {
+    backendLineage: { kind: 'reference', imageRef },
+    backendVersion: '0.0.99',
+    identity: {
+      agentSessionId: bindingLineage.agentSessionId,
+      backendKind: f.pkg.backend.preferred,
+      backendSessionId: 'nh-ret2-image',
+      deploymentId: target.deploymentId,
+      packageSnapshotId: bindingLineage.packageSnapshotId,
+      runtimeTargetId: target.targetId,
+      stagingDirectoryRef: `server/runtime/worker-backend-sessions/${bindingLineage.packageSnapshotId}`,
+      transientProviderInstanceId: null,
+    },
+    lineage: bindingLineage,
+    now,
+    sandboxBindingRef: 'lease-binding:ret2-image',
+  });
+  expect(getWorkerBackendSession(coreDb, attemptId)).toEqual(recorded);
+  expect(recorded).toMatchObject({
+    workspaceId: bindingLineage.workspaceId,
+    threadId: bindingLineage.threadId,
+    turnId: bindingLineage.turnId,
+    agentSessionId: bindingLineage.agentSessionId,
+    packageSnapshotId: bindingLineage.packageSnapshotId,
+    backendLineage: { imageRef },
+  });
+  return recorded;
+}
+
+// WCP §Authentication: each registered package must prove its own token and exact lineage.
+it('RET-2 authenticates the second package with its own token before and after reopen', () => {
+  const f = nativeReceiver();
+  f.secondPackage();
+  expect(
+    f.send(
+      1,
+      'worker.heartbeat',
+      { status: 'running' },
+      {
+        authorization: `Bearer ${'A'.repeat(43)}`,
+      }
+    ).accepted
+  ).toBe(false);
+  expect(f.send(1, 'worker.heartbeat', { status: 'running' }).accepted).toBe(true);
+  f.restart();
+  expect(f.send(1, 'worker.heartbeat', { status: 'running' }).accepted).toBe(true);
+});
+
+// RET §Native Transcripts And Runtime Logs: admitted image identity belongs to the backend owner.
+it('RET-2 retains the exact trusted backend image binding independently of native metadata', () => {
+  const f = nativeReceiver();
+  const binding = nativeImageBinding(f, `registry.test/worker@sha256:${'a'.repeat(64)}`);
+  f.restart();
+  expect(getWorkerBackendSession(f.coreDb, binding.attemptId)).toEqual(binding);
+  expect(f.send(1, 'worker.heartbeat', { status: 'running' }).accepted).toBe(true);
+});
+
+// RET §Native Transcripts And Runtime Logs: only the exact trusted binding can verify an image claim.
+it('RET-2 accepts a trusted image match and unknown identity but refuses a fresh-source wrong digest', () => {
+  const f = nativeReceiver();
+  const trustedDigest = `sha256:${'a'.repeat(64)}`;
+  nativeImageBinding(f, `registry.test/worker@${trustedDigest}`);
+  const match = nativeMetadata(f, 'trusted-match', Buffer.from('x'));
+  const matched = {
+    ...match,
+    fact: { ...match.fact, native: { ...match.fact.native, imageDigest: trustedDigest } },
+  };
+  expect(f.send(1, 'observation.recorded', matched).accepted).toBe(true);
+  expect(f.rows()[0]!.payload).toEqual(matched);
+  const before = f.receipts();
+  // Both source identity and event sequence are fresh: no earlier source claim can reject this.
+  const wrong = nativeMetadata(f, 'wrong-image-fresh-source', Buffer.from('y'));
+  expect(
+    f.send(2, 'observation.recorded', {
+      ...wrong,
+      fact: {
+        ...wrong.fact,
+        native: { ...wrong.fact.native, imageDigest: `sha256:${'b'.repeat(64)}` },
+      },
+    }).accepted
+  ).toBe(false);
+  expect(f.receipts()).toEqual(before);
+  expect(f.rows()).toHaveLength(1);
+  const unknown = nativeMetadata(f, 'unknown-image', Buffer.from('z'));
+  expect(f.send(3, 'observation.recorded', unknown).accepted).toBe(true);
+  expect(f.rows()[1]!.payload).toEqual(unknown);
+});
+
+// WCP native provenance: an unbound Worker-reported digest stays descriptive, never capture authority.
+it.each([
+  'missing',
+  'foreign-package',
+  'foreign-session',
+  'non-digest',
+] as const)('RET-2 a %s trusted image binding cannot verify or authorize a Worker image claim', (binding) => {
+  const f = nativeReceiver();
+  if (binding !== 'missing') {
+    nativeImageBinding(
+      f,
+      binding === 'non-digest'
+        ? 'registry.test/worker:authored-label'
+        : `registry.test/worker@sha256:${'a'.repeat(64)}`,
+      {
+        ...f.lineage,
+        ...(binding === 'foreign-package' ? { packageSnapshotId: 'aep_foreign_image' } : {}),
+        ...(binding === 'foreign-session'
+          ? { agentSessionId: testEntityId('as', 'foreign-image') }
+          : {}),
+      }
+    );
+  }
+  const first = nativeMetadata(f, 'unverified-image', Buffer.from('x'));
+  const claimed = {
+    ...first,
+    fact: {
+      ...first.fact,
+      native: { ...first.fact.native, imageDigest: `sha256:${'b'.repeat(64)}` },
+    },
+  };
+  expect(f.send(1, 'observation.recorded', claimed).accepted).toBe(true);
+  expect(f.rows()[0]!.payload).toEqual(claimed);
+  expect(f.rows()[0]!.obs).toBe('worker-shim');
+  // An earlier unverified claim cannot become authority for the next native source range.
+  const next = nativeMetadata(f, 'another-unverified-image', Buffer.from('y'), {
+    sourceRef: first.sourceRef,
+    sourceSequence: 1,
+    start: 33,
+  });
+  const changedClaim = {
+    ...next,
+    fact: {
+      ...next.fact,
+      native: { ...next.fact.native, imageDigest: `sha256:${'c'.repeat(64)}` },
+    },
+  };
+  expect(f.send(2, 'observation.recorded', changedClaim).accepted).toBe(true);
+  expect(f.rows()[1]!.payload).toEqual(changedClaim);
+  const before = f.receipts();
+  const overCap = nativeMetadata(f, 'image-cannot-grant-budget', Buffer.alloc(9));
+  expect(
+    f.send(3, 'observation.recorded', {
+      ...overCap,
+      fact: {
+        ...overCap.fact,
+        native: { ...overCap.fact.native, imageDigest: claimed.fact.native.imageDigest },
+      },
+    }).accepted
+  ).toBe(false);
+  expect(f.receipts()).toEqual(before);
+  expect(f.rows()).toHaveLength(2);
+});
+
+// Web §Runtime Activity In The Thread Timeline: unsupported/unavailable collectors map to unavailable.
+it.each([
+  'off',
+  'unavailable',
+] as const)('RET-2 a sole native %s observation cannot project collecting, partial or progress', (state) => {
+  const f = nativeReceiver(state === 'off' ? 'off' : 'on');
+  const value = nativeMetadata(f, 'sole-source', Buffer.alloc(0));
+  const observation = {
+    ...value,
+    fact: {
+      ...value.fact,
+      coverage: state,
+      ...(state === 'unavailable' ? { reason: 'source-missing' } : {}),
+      native: { ...value.fact.native, range: null, observedBytes: null },
+    },
+    content: state === 'off' ? { state: 'off' } : { state: 'unavailable', reason: 'unsupported' },
+  };
+  expect(f.send(1, 'observation.recorded', observation).accepted).toBe(true);
+  expect(f.rows()).toHaveLength(1);
+  expect(f.rows()[0]!.payload).toEqual(observation);
+  const activity = readThreadRuntimeActivity(f.db, {
+    threadId: f.owner.threadId,
+    turnIds: [f.owner.turnId],
+  });
+  expect(activity).toHaveLength(1);
+  expect(activity[0]!.coverage).toBe('unavailable');
+  expect(activity[0]!.contentCapture).toBe(state === 'off' ? 'off' : 'on');
+  expect(activity[0]!.entries).toEqual([]);
+  expect(nativeBodies(f)).toEqual([]);
+  expect(f.store.getTurnById(f.owner.turnId).items).toEqual([]);
+});
 
 // RET §§Native Transcripts And Runtime Logs, Capture Safety And Restricted Access; WCP incremental observations.
 it.each([
@@ -969,11 +1221,7 @@ it('RET-2 rejects foreign scope/package/source, forged publication and divergent
   const before = f.receipts();
   // A rejected durable event can retain its fingerprint; later events use fresh sequence numbers.
   let sequence = 2;
-  for (const change of [
-    { harness: 'other-harness' },
-    { authoredVersion: 'other-version' },
-    { imageDigest: `sha256:${'b'.repeat(64)}` },
-  ]) {
+  for (const change of [{ harness: 'other-harness' }, { authoredVersion: 'other-version' }]) {
     expect(
       f.send(sequence++, 'observation.recorded', {
         ...metadata,
