@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   cpSync,
@@ -11,8 +12,9 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { WorkspaceConfigSchema } from '@openkit/config-schema';
 import { KnowledgeBaseIdSchema } from '@openkit/protocol';
@@ -179,6 +181,7 @@ function createMigrationFixture(): MigrationFixture {
   const sqlite = new Database(join(dataRoot, 'server', 'db', 'core.sqlite'));
   const coreDb: CoreDb = {
     scope: 'core',
+    canInitializeLocalUser: false,
     sqlite,
     db: drizzle(sqlite, { schema }),
     dataRoot,
@@ -542,6 +545,88 @@ describe('workspace storage migration', () => {
     expect(
       JSON.parse(readFileSync(join(fixture.dataRoot, 'server', 'layout.json'), 'utf8'))
     ).toMatchObject({ layoutVersion: 1 });
+  });
+
+  it('closes a failed Core inspection and removes its private SQLite copy', () => {
+    const fixture = createMigrationFixture();
+    const backupParent = mkdtempSync(join(tmpdir(), 'openkit-workspace-storage-corrupt-core-'));
+    const backupRoot = join(backupParent, 'backup');
+    const corePath = join(fixture.dataRoot, 'server', 'db', 'core.sqlite');
+    fixture.coreDb.sqlite.close();
+    const bytes = readFileSync(corePath);
+    // Keep SQLite's file header valid but corrupt page one's b-tree type, so quick-check fails after open.
+    bytes[100] = 0;
+    writeFileSync(corePath, bytes);
+    const predecessorInventory = inventoryRegularFiles(fixture.dataRoot);
+    const prepared = vi.spyOn(Database.prototype, 'prepare');
+    let inspection: Database.Database | undefined;
+    try {
+      expect(() =>
+        migrateWorkspaceStorage({ backupRoot, dataRoot: fixture.dataRoot, now: () => timestamp })
+      ).toThrow();
+      const index = prepared.mock.calls.findIndex(([sql]) => sql === 'PRAGMA quick_check');
+      inspection = prepared.mock.contexts[index] as Database.Database | undefined;
+      if (!inspection) throw new Error('Expected a native Core integrity inspection.');
+      expect(inspection.open).toBe(false);
+      expect(existsSync(dirname(inspection.name))).toBe(false);
+      expect(inventoryRegularFiles(fixture.dataRoot)).toEqual(predecessorInventory);
+      expect(existsSync(backupRoot)).toBe(false);
+    } finally {
+      if (inspection?.open) inspection.close();
+      prepared.mockRestore();
+      rmSync(fixture.dataRoot, { recursive: true, force: true });
+      rmSync(backupParent, { recursive: true, force: true });
+    }
+  });
+
+  it('reads retained Core WAL authority during preflight without changing predecessor bytes', () => {
+    const fixture = createMigrationFixture();
+    const backupParent = mkdtempSync(join(tmpdir(), 'openkit-workspace-storage-retained-wal-'));
+    const backupRoot = join(backupParent, 'backup');
+    try {
+      const corePath = join(fixture.dataRoot, 'server', 'db', 'core.sqlite');
+      fixture.coreDb.sqlite.close();
+      const exited = spawnSync(
+        process.execPath,
+        [
+          '--input-type=commonjs',
+          '-e',
+          `const Database = require(process.argv[1]);
+const sqlite = new Database(process.argv[2], { fileMustExist: true });
+sqlite.pragma('journal_mode = WAL');
+sqlite.pragma('synchronous = FULL');
+sqlite.pragma('wal_autocheckpoint = 0');
+sqlite.prepare(\`INSERT INTO workspace_members (
+  workspace_id, user_id, status, invitation_id, joined_at, removed_at, revision, created_at, updated_at
+) VALUES (?, 'usr_00000000-0000-73d4-904a-d4c4b905df7c', 'active', NULL, ?, NULL, 1, ?, ?)\`)
+  .run(process.argv[3], process.argv[4], process.argv[4], process.argv[4]);
+sqlite.prepare('UPDATE workspace_registry SET owner_user_id = ? WHERE workspace_id = ?')
+  .run('usr_00000000-0000-73d4-904a-d4c4b905df7c', process.argv[3]);
+process.kill(process.pid, 'SIGKILL');`,
+          createRequire(import.meta.url).resolve('better-sqlite3'),
+          corePath,
+          fixture.workspaceId,
+          timestamp,
+        ],
+        { encoding: 'utf8', timeout: 15_000 }
+      );
+      expect(exited.error).toBeUndefined();
+      expect(exited.stderr).toBe('');
+      expect(exited.signal).toBe('SIGKILL');
+      expect(readFileSync(`${corePath}-wal`).length).toBeGreaterThan(32);
+      const predecessorInventory = inventoryRegularFiles(fixture.dataRoot);
+
+      expect(() =>
+        migrateWorkspaceStorage({ backupRoot, dataRoot: fixture.dataRoot, now: () => timestamp })
+      ).toThrow(/preflight.*workspace_owner_mismatch/);
+      expect(inventoryRegularFiles(fixture.dataRoot)).toEqual(predecessorInventory);
+      expect(existsSync(backupRoot)).toBe(false);
+      expect(existsSync(join(fixture.dataRoot, 'workspaces'))).toBe(false);
+    } finally {
+      if (fixture.coreDb.sqlite.open) fixture.coreDb.sqlite.close();
+      rmSync(fixture.dataRoot, { recursive: true, force: true });
+      rmSync(backupParent, { recursive: true, force: true });
+    }
   });
 
   it('refuses invalid existing Workspace configuration before publication or source removal', () => {
