@@ -16,7 +16,7 @@ const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
 const producer = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
 
 /** Real Git, existing Workspace Audit and existing receipts; current authorization stays a native caller duty. */
-function fixture() {
+function fixture(initialFiles: Readonly<Record<string, string>> = {}) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'notebook-publisher-'));
   const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
   applyScopedMigrations(workspaceDb);
@@ -24,6 +24,7 @@ function fixture() {
   const repositoryPath = join(dataRoot, 'notebook.git');
   const notebook = new KnowledgeNotebook({ repositoryPath });
   const initial = notebook.initialize({
+    files: initialFiles,
     metadata: {
       summary: 'Create notebook',
       changeRequest: { requestId: randomUUID(), inputDigest: commandInputHash('initialize') },
@@ -68,6 +69,33 @@ function fixture() {
 }
 
 describe('Notebook publication through existing Audit and command receipts', () => {
+  it('edits an existing curated Page below the sources bundle directory', async () => {
+    const path = 'sources/notes.md';
+    const original = serializeKnowledgePageFixture(
+      {
+        title: 'Captured research notes',
+        content: 'Existing curated interpretation.',
+        createdAt: '2026-10-20T00:00:00.000Z',
+        updatedAt: '2026-10-20T00:00:00.000Z',
+      },
+      { kind: 'workspace', workspaceId }
+    );
+    const corrected = original.replace(
+      'Existing curated interpretation.',
+      'Corrected curated interpretation.'
+    );
+    const f = fixture({ [path]: original });
+    expect(f.notebook.readRevision(f.initial).files[path]).toBe(original);
+    expect(f.notebook.readSourcePointers(f.initial)).toEqual({});
+    const result = await f.publish({
+      ...f.request,
+      changes: [{ path, content: corrected }],
+    });
+    expect(f.notebook.readRevision(result.notebookRevision).files[path]).toBe(corrected);
+    expect(f.notebook.readSourcePointers(result.notebookRevision)).toEqual({});
+    expect(f.notebook.readRevision(f.initial).files[path]).toBe(original);
+  });
+
   it('replays completed bytes after a page becomes protected and refuses a fresh unreviewed change', async () => {
     const f = fixture();
     const published = await f.publish();

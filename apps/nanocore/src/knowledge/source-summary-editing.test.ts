@@ -134,6 +134,44 @@ async function fixture() {
 }
 
 describe('ordinary SourceSummary editing through native owners', () => {
+  it('retains both a curated Page and a native Source with the same relative spelling in complete content', async () => {
+    const f = await fixture();
+    const page = serializeKnowledgePageFixture(
+      {
+        title: 'Separate curated interpretation',
+        content: 'This Page is distinct from its similarly named Source.',
+        createdAt: '2026-10-20T00:00:00.000Z',
+        updatedAt: '2026-10-20T00:00:00.000Z',
+      },
+      f.owner.ownerScope
+    );
+    const notebook = new KnowledgeNotebook({
+      repositoryPath: join(f.dataRoot, 'nested-page-notebook.git'),
+    });
+    const original = f.notebook.readRevision(f.baseRevision);
+    const baseRevision = notebook.initialize({
+      files: { ...original.files, [f.path]: page },
+      sourcePointers: f.notebook.readSourcePointers(f.baseRevision),
+      metadata: original.metadata,
+    });
+    const candidateRevision = notebook.prepare({
+      baseRevision,
+      changes: { 'index.md': '---\nokf_version: "0.2"\n---\n# Separate updated overview\n' },
+      metadata: {
+        ...original.metadata,
+        changeRequest: { requestId: randomUUID(), inputDigest: `sha256:${'c'.repeat(64)}` },
+      },
+    });
+    for (const revision of [baseRevision, candidateRevision]) {
+      expect(notebook.readRevision(revision).files[f.path]).toBe(page);
+      expect(notebook.readSourcePointers(revision)[f.source.id]).toBe(f.pointer);
+      // The complete inventory must retain both canonical members, regardless of its key encoding.
+      expect(Object.values(notebook.readContent(revision))).toEqual(
+        expect.arrayContaining([page, f.pointer])
+      );
+    }
+  });
+
   it('publishes descriptive bytes, reopens metadata, replays exactly and preserves fixed-base history and originals', async () => {
     const f = await fixture();
     const input = {
@@ -264,11 +302,36 @@ describe('ordinary SourceSummary editing through native owners', () => {
   it.each([
     'ordinary',
     'required Review',
+    'ordinary with linked Source',
+    'required Review with linked Source',
     'unselected',
     'private',
     'revoked',
   ])('uses the real Workspace KM editor and publisher under %s admission', async (mode) => {
     const f = await fixture();
+    const requiresReview = mode.startsWith('required Review');
+    const linkedSource = mode.endsWith('with linked Source');
+    const selectedSources = [f.source.id];
+    let summaryBody = 'The captured material describes the release facts.\n';
+    if (linkedSource) {
+      const captured = await f.call('knowledge.source.register', {
+        requestId: randomUUID(),
+        kind: 'document',
+        title: 'Related release evidence',
+        content: 'Independent related evidence.',
+        originatingThreadId: f.origin.id,
+      });
+      expect(captured.status, JSON.stringify(captured.body)).toBe(200);
+      selectedSources.push(captured.body.source.id);
+      f.baseRevision = f.notebook.publishedRevision();
+      summaryBody += `[Related evidence](${captured.body.source.id}.md)\n`;
+      f.corrected = updateOkfFrontmatter({
+        path: f.path,
+        content: f.corrected,
+        updates: {},
+        body: summaryBody,
+      });
+    }
     const providerRegistry = new ProviderRegistry([
       {
         id: 'fixture',
@@ -311,7 +374,7 @@ describe('ordinary SourceSummary editing through native owners', () => {
             workspace: {
               name: f.workspace.name,
               knowledgeMaintenance: {
-                enabled: mode !== 'required Review',
+                enabled: !requiresReview,
                 reviewRequiredPageIds: [],
               },
             },
@@ -412,7 +475,7 @@ describe('ordinary SourceSummary editing through native owners', () => {
           script: `cat > /notebook/${f.path} <<'SOURCE'\n${f.corrected}SOURCE\n`,
         });
         inspections.push(edited);
-        if (mode === 'required Review') {
+        if (requiresReview) {
           forgedReviewRefused = await execute('knowledge.notebook.update', {
             summary: 'Claim human acceptance',
             decision: 'accepted',
@@ -467,7 +530,7 @@ describe('ordinary SourceSummary editing through native owners', () => {
         currentAdmission,
         trigger: 'request',
         instructions: 'Correct the selected Source title, description, tags and summary.',
-        sources: mode === 'unselected' ? [] : [f.source.id],
+        sources: mode === 'unselected' ? [] : selectedSources,
         signal: new AbortController().signal,
       }
     );
@@ -493,7 +556,7 @@ describe('ordinary SourceSummary editing through native owners', () => {
       const result = await prepared.execute();
       expect(runs).toBe(1);
       expect(reviewToolExposed).toBe(false);
-      if (mode === 'required Review') expect(forgedReviewRefused).toBe(true);
+      if (requiresReview) expect(forgedReviewRefused).toBe(true);
       expect(inspections).toHaveLength(2);
       expect(inspections[0]).toMatchObject({ exitCode: 0, stdout: f.pointer });
       expect(inspections[1]!.exitCode).toBe(0);
@@ -502,7 +565,7 @@ describe('ordinary SourceSummary editing through native owners', () => {
         content: f.corrected,
         updates: { review_state: 'delegated' },
       });
-      if (mode === 'ordinary') {
+      if (!requiresReview) {
         expect(result.outcome).toBe('published');
         const after = f.notebook.readSourcePointers(f.notebook.publishedRevision())[f.source.id]!;
         expect(after).toBe(expectedCandidate);
@@ -518,12 +581,10 @@ describe('ordinary SourceSummary editing through native owners', () => {
           tags: ['onboarding', 'release'],
           review_state: 'delegated',
         });
-        expect(parseOkfDocument({ path: f.path, content: after }).document?.body).toBe(
-          'The captured material describes the release facts.\n'
-        );
+        expect(parseOkfDocument({ path: f.path, content: after }).document?.body).toBe(summaryBody);
         expect(f.store.listKnowledgeProposals(f.workspace.id)).toEqual([]);
       } else {
-        expect(result.outcome).toBe('review-required');
+        expect(result.outcome, JSON.stringify(result)).toBe('review-required');
         expect(f.notebook.publishedRevision()).toBe(f.baseRevision);
         const proposal = f.store.listKnowledgeProposals(f.workspace.id)[0]!;
         const tuple = {
