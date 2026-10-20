@@ -28,6 +28,10 @@ import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import * as policyConfiguration from '../policy/configuration.js';
 import { readAdmittedPolicyDocument } from '../policy/configuration.js';
+import {
+  applyMcpToolProhibitions,
+  selectMcpToolPermissions,
+} from '../policy/mcp-tool-permissions.js';
 import { listServerPermissionDecisions } from '../policy/permission-decisions.js';
 import { evaluateAdministratorWorkspaceAccess } from '../policy/server-access.js';
 import { policyDigest } from '../policy/statements.js';
@@ -193,7 +197,7 @@ function fixture(withWorkspaceSchemas = false) {
 }
 
 /** Composes retained catalog supply, the real AEP producer, and current schema observations. */
-function mcpPolicyFixture() {
+function mcpPolicyFixture(observed = true) {
   const f = fixture(true);
   const owner = { kind: 'workspace' as const, workspaceId: f.workspaceId };
   const created = createMcpConfig({
@@ -241,8 +245,11 @@ function mcpPolicyFixture() {
       workspaceDb: f.repositoryWorkspaceDb(),
       workspaceId: f.workspaceId,
     });
-  observe([{ name: 'read', inputSchema: { type: 'object' } }]);
-  const policyRequest = (toolName = 'read') => ({
+  if (observed) observe([{ name: 'read', inputSchema: { type: 'object' } }]);
+  const policyRequest = (
+    toolName = 'read',
+    effect: 'prohibit' | 'require_approval' = 'require_approval'
+  ) => ({
     targetFamily: 'policy' as const,
     targetId: 'server',
     expectedRevision: f.files.readFile('server.jsonc').file.revision!,
@@ -254,7 +261,7 @@ function mcpPolicyFixture() {
           {
             id: 'human-tool-condition',
             kind: 'permission',
-            effect: 'require_approval',
+            effect,
             grant: { kind: 'ordinary' },
             author: { kind: 'human', id: f.actor.userId },
             authority: { kind: 'human', userId: f.actor.userId },
@@ -595,40 +602,141 @@ describe('administration catalog configuration', () => {
     expect(f.reload).toHaveBeenCalledTimes(1);
   });
 
-  it('refuses an unobserved Tool name after a valid full Policy candidate', () => {
-    const f = mcpPolicyFixture();
-    expect(f.service.propose(f.policyRequest(), f.home)).toHaveProperty('candidate');
+  it.each([
+    'prohibit',
+    'require_approval',
+  ] as const)('prepares and applies unobserved %s with a digest-bound warning and later exact-name enforcement', async (effect) => {
+    const f = mcpPolicyFixture(false);
+    const validate = vi.spyOn(f.files, 'validate');
+    const proposal = f.service.propose(f.policyRequest('future-tool', effect), f.home);
+    const artifact = f.store.getArtifact(f.workspaceId, proposal.candidate.artifactId);
+    if (artifact.content.format !== 'json') throw new Error('Expected candidate JSON.');
+    const body = JSON.parse(artifact.content.body);
+    const message = `MCP Tool issues/future-tool has not been observed in Workspace ${f.workspaceId}; the statement applies when a Tool with this exact name is exposed.`;
+    expect(body.warnings).toEqual([
+      {
+        code: 'mcp_tool_unobserved',
+        workspaceId: f.workspaceId,
+        serverId: 'issues',
+        toolName: 'future-tool',
+        message,
+      },
+    ]);
+    expect(body.policyProposal).not.toHaveProperty('warnings');
+    expect(artifact.contentDigest).toBe(
+      `sha256:${createHash('sha256').update(artifact.content.body).digest('hex')}`
+    );
+    expect(proposal.confirmation.contentDigest).toBe(artifact.contentDigest);
+    expect(validate.mock.results.at(-1)?.value.plan.warnings).toContainEqual({
+      code: 'mcp_tool_unobserved',
+      message,
+    });
+    const confirmed = f.confirm(proposal);
+    expect(await f.service.apply(confirmed)).toMatchObject({ persisted: true, reload: 'applied' });
     const serverPath = join(f.dataRoot, 'config/server.jsonc');
-    const original = readFileSync(serverPath, 'utf8');
-    expect(() =>
-      f.service.propose(f.policyRequest('missing'), { ...f.home, requestId: randomUUID() })
-    ).toThrow(
-      expect.objectContaining({
-        code: 'policy_mcp_tool_unobserved',
-      } satisfies Partial<RuntimeConfigFileServiceError>)
+    const admittedBytes = readFileSync(serverPath, 'utf8');
+    const document = readAdmittedPolicyDocument(
+      f.coreDb,
+      f.manager.current().openKitConfig.policy?.mediation
     );
-    f.observe([]);
-    expect(() =>
-      f.service.propose(f.policyRequest(), { ...f.home, requestId: randomUUID() })
-    ).toThrow(
-      expect.objectContaining({
-        code: 'policy_mcp_tool_unobserved',
-      } satisfies Partial<RuntimeConfigFileServiceError>)
-    );
-    expect(readFileSync(serverPath, 'utf8')).toBe(original);
+    f.observe([{ name: 'future-tool', inputSchema: { type: 'object' } }]);
+    const select = (toolName: string) =>
+      selectMcpToolPermissions({
+        document,
+        proposal: {
+          workspaceId: f.workspaceId,
+          serverId: 'issues',
+          toolName,
+          subject: {
+            principal: { kind: 'human', id: f.actor.userId },
+            onBehalfOf: null,
+            actor: { kind: 'user', id: f.actor.userId },
+            process: null,
+            credentialKind: 'token',
+            responsibleHumanId: f.actor.userId,
+          },
+        },
+        authorCurrent: (id) => policyConfiguration.isCurrentServerPolicyAuthor(f.coreDb, id),
+      });
+    expect(select('future-tool')).toMatchObject([{ id: 'human-tool-condition', effect }]);
+    expect(select('future-tool-typo')).toEqual([]);
+    if (effect === 'prohibit')
+      expect(
+        applyMcpToolProhibitions(
+          {
+            effect: 'allow',
+            reasons: [],
+            trace: {
+              requiredAccessRights: ['use'],
+              userClosure: [],
+              targetClosure: [],
+              policyClasses: [],
+              matchedAssociations: [],
+              matchedProhibitions: [],
+            },
+          },
+          select('future-tool')
+        ).effect
+      ).toBe('deny');
+    expect(readFileSync(serverPath, 'utf8')).toBe(admittedBytes);
+    expect(f.reload).toHaveBeenCalledTimes(1);
+    expect(await f.service.apply(confirmed)).toMatchObject({ persisted: true });
+    expect(f.reload).toHaveBeenCalledTimes(1);
   });
 
-  it('rechecks current Tool names when the human confirms an existing Policy candidate', async () => {
+  it.each(['prohibit', 'require_approval'] as const)('does not warn for observed %s', (effect) => {
+    const f = mcpPolicyFixture();
+    const proposal = f.service.propose(f.policyRequest('read', effect), f.home);
+    expect(('warnings' in proposal.preview ? proposal.preview.warnings : undefined) ?? []).toEqual(
+      []
+    );
+  });
+
+  it('applies the confirmed warning unchanged when the Tool becomes observed', async () => {
+    const f = mcpPolicyFixture(false);
+    const proposal = f.service.propose(f.policyRequest('future-tool'), f.home);
+    const before = f.store.getArtifact(f.workspaceId, proposal.candidate.artifactId);
+    if (before.content.format !== 'json') throw new Error('Expected candidate JSON.');
+    expect(JSON.parse(before.content.body).warnings).toHaveLength(1);
+    f.observe([{ name: 'future-tool', inputSchema: { type: 'object' } }]);
+    expect(await f.service.apply(f.confirm(proposal))).toMatchObject({
+      persisted: true,
+      reload: 'applied',
+    });
+    expect(f.store.getArtifact(f.workspaceId, proposal.candidate.artifactId)).toEqual(before);
+  });
+
+  it('does not turn an observation loss into rejection of a confirmed restriction', async () => {
     const f = mcpPolicyFixture();
     const proposal = f.service.propose(f.policyRequest(), f.home);
-    const serverPath = join(f.dataRoot, 'config/server.jsonc');
-    const original = readFileSync(serverPath, 'utf8');
     f.observe([{ name: 'renamed', inputSchema: { type: 'object' } }]);
-    await expect(f.service.apply(f.confirm(proposal))).rejects.toMatchObject({
-      code: 'policy_mcp_tool_unobserved',
+    expect(await f.service.apply(f.confirm(proposal))).toMatchObject({
+      persisted: true,
+      reload: 'applied',
     });
-    expect(readFileSync(serverPath, 'utf8')).toBe(original);
-    expect(f.reload).not.toHaveBeenCalled();
+  });
+
+  it('keeps active ordinary allow outside the admitted subset even for an unobserved Tool', () => {
+    const f = mcpPolicyFixture(false);
+    const request = f.policyRequest('missing');
+    const proposed = {
+      ...request,
+      changes: {
+        ...request.changes,
+        proposed: {
+          ...request.changes.proposed,
+          statements: request.changes.proposed.statements.map((statement) => ({
+            ...statement,
+            effect: 'allow',
+          })),
+        },
+      },
+    };
+    const before = readFileSync(join(f.dataRoot, 'config/server.jsonc'), 'utf8');
+    expect(() => f.service.propose(proposed, f.home)).toThrow(
+      'Human Tool conditions require exact Workspace Tool scope without finite uses.'
+    );
+    expect(readFileSync(join(f.dataRoot, 'config/server.jsonc'), 'utf8')).toBe(before);
   });
 
   it('retains inactive Policy forms through the exact human candidate and records actual activation', async () => {
