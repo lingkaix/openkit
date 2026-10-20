@@ -352,7 +352,6 @@ describe('local telemetry through the production SDK lifecycle', () => {
   it.each([
     'bytes',
     'inodes',
-    'unreported-inodes',
     'unknown',
   ] as const)('drops below-cap batches when filesystem headroom is unsafe: %s', async (failure) => {
     start();
@@ -371,8 +370,6 @@ describe('local telemetry through the production SDK lifecycle', () => {
         const result = await finiteFilesystemStats(...args);
         const zero = typeof result.bavail === 'bigint' ? 0n : 0;
         if (failure === 'bytes') return Object.assign(result, { bavail: zero, bfree: zero });
-        if (failure === 'unreported-inodes')
-          return Object.assign(result, { files: zero, ffree: zero });
         // A positive finite total distinguishes exhaustion from absent inode accounting.
         return Object.assign(result, { ffree: zero });
       });
@@ -385,6 +382,31 @@ describe('local telemetry through the production SDK lifecycle', () => {
     ).toHaveBeenCalled();
     const requests = await readRequests(await segmentFiles());
     expect(requestSpans(requests).some((span) => span.name === 'http.server.request')).toBe(false);
+  });
+
+  it('applies only the byte reserve when the filesystem reports no inode limit', async () => {
+    const checked = vi.mocked(fs.statfs).mockImplementation(async (...args) => {
+      const result = await finiteFilesystemStats(...args);
+      const zero = typeof result.bavail === 'bigint' ? 0n : 0;
+      return Object.assign(result, { files: zero, ffree: zero });
+    });
+    start();
+    expect((await productApp().request('/items/one', { method: 'POST' })).status).toBe(201);
+    await shutdownTelemetry();
+    expect(checked).toHaveBeenCalled();
+    const requests = await readRequests(await segmentFiles());
+    expect(requestSpans(requests).some((span) => span.name === 'http.server.request')).toBe(true);
+    checked.mockImplementation(async (...args) => {
+      const result = await finiteFilesystemStats(...args);
+      const zero = typeof result.bavail === 'bigint' ? 0n : 0;
+      return Object.assign(result, { files: zero, ffree: zero, bavail: zero, bfree: zero });
+    });
+    start();
+    withTurnDispatchTelemetry('turn-unreported-inodes-no-bytes', () => {});
+    await shutdownTelemetry();
+    expect(JSON.stringify(await readRequests(await segmentFiles()))).not.toContain(
+      'turn-unreported-inodes-no-bytes'
+    );
   });
 
   it('reads the existing reserve and drops on low or unknown allowance', async () => {
@@ -465,7 +487,7 @@ describe('local telemetry through the production SDK lifecycle', () => {
 
 /**
  * Supplies explicit finite capacity, not a claim about the fixture's backing filesystem.
- * Btrfs can report files=ffree=0; treating that as healthy would decide an unaccepted policy.
+ * Btrfs reports files=ffree=0 (no inode limit); that case has its own byte-only regression.
  * Only statfs capacity is doubled. Paths, permissions, appends, pruning and reads stay real.
  */
 async function finiteFilesystemStats(...args: Parameters<typeof fs.statfs>) {

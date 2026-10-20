@@ -209,10 +209,11 @@ class LocalTraceExporter implements SpanExporter {
       const reserve = this.options.readReserveBytes();
       if (!Number.isSafeInteger(reserve) || reserve < 0) return false;
       const state = await fs.statfs(this.directory, { bigint: true });
+      // A zero inode total means no inode limit is reported (Btrfs); only bytes then apply.
       return (
         state.bsize > 0n &&
         state.bavail >= 0n &&
-        state.ffree > 0n &&
+        (state.files === 0n || state.ffree > 0n) &&
         state.bavail * state.bsize - BigInt(bytes) >= BigInt(reserve)
       );
     } catch {
