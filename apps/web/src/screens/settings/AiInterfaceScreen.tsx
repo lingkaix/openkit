@@ -61,7 +61,7 @@ const OAUTH_VENDORS: Record<SubscriptionProviderId, string> = {
   xai: 'xai',
 };
 
-const PROVIDER_KINDS = ['direct', 'gateway', 'local', 'oauth', 'custom'] as const;
+const PROVIDER_KINDS = ['direct', 'llm-gateway', 'local', 'oauth', 'custom'] as const;
 const STATUS_POLL_MS = 2_000;
 
 /** Checks whether a failed list read is a typed access denial. */
@@ -1563,7 +1563,7 @@ function ProviderProfileForm({
       } else {
         if (vendor.trim()) profile.vendor = vendor.trim();
         if (baseUrl.trim()) profile.baseUrl = baseUrl.trim();
-        if (kind === 'direct' || kind === 'gateway' || kind === 'custom') {
+        if (kind === 'direct' || kind === 'llm-gateway' || kind === 'custom') {
           if (vaultCandidate.current?.providerId !== providerId)
             vaultCandidate.current = { providerId, referenceId: allocateEntityId('vault') };
           profile.secretRef = `vault://${vaultCandidate.current.referenceId}`;
