@@ -1,4 +1,5 @@
 import { assertOperationNames, operationToolName } from '@openkit/app-api-schemas';
+import type { ReasoningEffort } from '@openkit/protocol';
 
 import {
   type CapabilityAuditLineage,
@@ -50,6 +51,8 @@ export interface InternalAgentGatewayProviderOptions {
   readonly capture: Omit<ModelCaptureContext, 'corr'>;
   /** Entry-admitted model retained for pinned identity, capabilities and known physical limits. */
   readonly logicalModel: ResolvedLogicalModel;
+  /** Selected internal-role profile effort, pinned for ordinary and compaction requests. */
+  readonly reasoningEffort?: ReasoningEffort;
   /** Resolves the pinned ID from the current snapshot and live availability at each Provider call. */
   readonly resolveLogicalModel: (logicalModelId: string) => ResolvedLogicalModel | null;
   /** Entry-owned attribution for each logical model invocation; Turn and database come from admitted capture. */
@@ -140,6 +143,9 @@ export function createInternalAgentGatewayProvider(
         ...(call ? { ledger: { workspaceDb, call } } : {}),
         logicalModel,
         requiredCapabilities: request.model.capabilities,
+        ...(options.reasoningEffort === undefined
+          ? {}
+          : { reasoningEffort: { requested: options.reasoningEffort } }),
         ...(options.logicalModel.contract ? { pinnedLimits: options.logicalModel.contract } : {}),
         signal: request.signal,
         onAttemptStart: (correlation) => {
@@ -159,6 +165,7 @@ export function createInternalAgentGatewayProvider(
           corr,
           attempt,
           execution,
+          effectiveEffort,
         }) => {
           const limits = resolveEffectiveModelMetadata(
             {
@@ -193,6 +200,9 @@ export function createInternalAgentGatewayProvider(
                 input: providerInput,
                 parallel_tool_calls: false,
                 tools: providerTools,
+                ...(effectiveEffort === undefined
+                  ? {}
+                  : { reasoning: { effort: effectiveEffort } }),
                 ...(maxOutputTokens === undefined ? {} : { max_output_tokens: maxOutputTokens }),
               },
               {

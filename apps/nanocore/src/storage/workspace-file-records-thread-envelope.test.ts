@@ -1,11 +1,19 @@
 // openkit-test-platform: posix
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
 import { parseRecordEnvelope } from '@openkit/config-schema';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
+import { scopeAdmissionFailures } from '../bootstrap/readiness.js';
 import { FsStore } from '../lib/store.js';
 import {
   ensureLocalUser,
@@ -33,6 +41,67 @@ function threadRecord(dataRoot: string, workspaceId: string, threadId: string) {
     path,
     value: JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>,
   };
+}
+
+/**
+ * Validates one retained fault in a fresh admission lifetime without resetting process state.
+ *
+ * Copies exact authority, seeds an independent healthy sibling, and checks refusal and preservation.
+ * Each copy has a new root identity, so later faults cannot reuse an earlier refusal.
+ *
+ * @param dataRoot Source fixture containing the injected fault.
+ * @param workspaceId Owning Workspace that must be quarantined.
+ * @returns Reopened Store and isolated root for additional native readback checks.
+ */
+function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
+  const restartRoot = mkdtempSync(join(tmpdir(), 'openkit-local-refusal-'));
+  onTestFinished(() => rmSync(restartRoot, { recursive: true, force: true }));
+  const seed = new FsStore({ dataRoot: restartRoot });
+  const sibling = seed.createWorkspace('Healthy refusal control');
+  const siblingThread = seed.createThread(sibling.id, 'Retained sibling thread');
+  const siblingBefore = seed.getWorkspace(sibling.id);
+  cpSync(dataRoot, restartRoot, { recursive: true, verbatimSymlinks: true });
+
+  /** Records every directory, link target and file byte, including the absence of deleted entries. */
+  function snapshot(root: string): Record<string, Buffer | string> {
+    const entries: Record<string, Buffer | string> = {};
+    const visit = (directory: string, prefix = '') => {
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        const key = join(prefix, entry.name);
+        const path = join(directory, entry.name);
+        if (entry.isDirectory()) {
+          entries[key] = 'directory';
+          visit(path, key);
+        } else {
+          entries[key] = entry.isSymbolicLink() ? `link:${readlinkSync(path)}` : readFileSync(path);
+        }
+      }
+    };
+    visit(root);
+    return entries;
+  }
+
+  const refusedRoot = join(restartRoot, 'workspaces', workspaceId);
+  const before = snapshot(refusedRoot);
+  const reopened = new FsStore({ dataRoot: restartRoot });
+  expect(scopeAdmissionFailures(restartRoot)).toContainEqual(
+    expect.objectContaining({ scope: 'workspace', id: workspaceId })
+  );
+  expect(() => reopened.getWorkspace(workspaceId)).toThrow(
+    expect.objectContaining({ code: 'recovery_required' })
+  );
+  expect(() => reopened.createThread(workspaceId, 'Must remain refused')).toThrow(
+    expect.objectContaining({ code: 'recovery_required' })
+  );
+  expect(reopened.getWorkspace(sibling.id)).toEqual(siblingBefore);
+  expect(reopened.getThread(sibling.id, siblingThread.id)).toEqual(siblingThread);
+  const progress = reopened.createThread(sibling.id, 'Healthy sibling progress');
+  expect(new FsStore({ dataRoot: restartRoot }).getThread(sibling.id, progress.id)).toEqual(
+    progress
+  );
+  expect(snapshot(refusedRoot)).toEqual(before);
+  expect(snapshot(join(dataRoot, 'workspaces', workspaceId))).toEqual(before);
+  return { store: reopened, dataRoot: restartRoot };
 }
 
 describe('Thread canonical record envelope', () => {
@@ -73,9 +142,7 @@ describe('Thread canonical record envelope', () => {
         requiredFeatures: ['openkit.thread-entry.v1', 'workspace.mount.fuse'],
       })}\n`
     );
-    expect(() => new FsStore({ dataRoot })).toThrow(
-      'Unsupported required feature: workspace.mount.fuse'
-    );
+    expectLocalWorkspaceRefusal(dataRoot, workspace.id);
   });
 
   it('refuses a pre-envelope Thread without rewriting its bytes after the reset boundary', () => {
@@ -107,7 +174,7 @@ describe('Thread canonical record envelope', () => {
     writeFileSync(persisted.path, `${JSON.stringify(legacy)}\n`);
 
     const bytes = readFileSync(persisted.path, 'utf8');
-    expect(() => new FsStore({ dataRoot })).toThrow();
+    expectLocalWorkspaceRefusal(dataRoot, workspace.id);
     expect(readFileSync(persisted.path, 'utf8')).toBe(bytes);
   });
 });
@@ -152,7 +219,7 @@ it('refuses predecessor envelopes for both formal and conversation history witho
     const persisted = threadRecord(dataRoot, workspace.id, thread.id);
     writeFileSync(persisted.path, JSON.stringify(predecessorRecord(persisted.value)));
     const bytes = readFileSync(persisted.path, 'utf8');
-    expect(() => new FsStore({ dataRoot })).toThrow(/required features/);
+    expectLocalWorkspaceRefusal(dataRoot, workspace.id);
     expect(readFileSync(persisted.path, 'utf8')).toBe(bytes);
   }
 });
@@ -178,7 +245,7 @@ it('rejects damaged current visibility instead of reclassifying it at restart', 
     );
     const persisted = threadRecord(dataRoot, workspace.id, thread.id);
     writeFileSync(persisted.path, JSON.stringify({ ...persisted.value, ...damage }));
-    expect(() => new FsStore({ dataRoot })).toThrow();
+    expectLocalWorkspaceRefusal(dataRoot, workspace.id);
   }
 });
 
@@ -210,7 +277,7 @@ it('does not infer shared inception when formal and conversation Turns have tied
   writeFileSync(conversationPath, JSON.stringify({ ...rawTurn, startedAt: formal.startedAt }));
   const persisted = threadRecord(dataRoot, workspace.id, thread.id);
   writeFileSync(persisted.path, JSON.stringify(predecessorRecord(persisted.value)));
-  expect(() => new FsStore({ dataRoot })).toThrow(/required features/);
+  expectLocalWorkspaceRefusal(dataRoot, workspace.id);
 });
 
 it.each([
@@ -244,13 +311,7 @@ it.each([
     const bytes = `${JSON.stringify(predecessor)}\n`;
     writeFileSync(persisted.path, bytes);
 
-    expect(() => new FsStore({ dataRoot })).toThrowError(
-      field === 'id'
-        ? /invalid ownership, lineage or required features/
-        : expect.objectContaining({
-            issues: expect.arrayContaining([expect.objectContaining({ path: [field] })]),
-          })
-    );
+    expectLocalWorkspaceRefusal(dataRoot, workspace.id);
     expect(readFileSync(persisted.path, 'utf8')).toBe(bytes);
   } finally {
     rmSync(dataRoot, { recursive: true, force: true });
@@ -283,9 +344,7 @@ it('preserves current administration entry and validates its envelope without re
     ]) {
       const bytes = `${JSON.stringify({ ...predecessor, ...damage })}\n`;
       writeFileSync(persisted.path, bytes);
-      expect(() => new FsStore({ dataRoot })).toThrow(
-        /content digest does not match|invalid ownership, lineage or required features/
-      );
+      expectLocalWorkspaceRefusal(dataRoot, workspace.id);
       expect(readFileSync(persisted.path, 'utf8')).toBe(bytes);
     }
     writeFileSync(persisted.path, `${JSON.stringify(predecessor)}\n`);

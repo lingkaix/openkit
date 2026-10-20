@@ -87,6 +87,7 @@ test('old producers seed a nonempty B01 file corpus that old readers reopen exac
 test('file reader fails on retained history corruption instead of accepting a boot-only result', async (t) => {
   const input = await fixture(t);
   const selectors = await seedFileCorpus(input);
+  const before = await readFileCorpus({ ...input, selectors });
   const path = join(
     input.dataRoot,
     'workspaces',
@@ -101,7 +102,30 @@ test('file reader fails on retained history corruption instead of accepting a bo
   writeFileSync(path, '{"invalid":"retained-history"}\n');
   await assert.rejects(readFileCorpus({ ...input, selectors }));
   writeFileSync(path, bytes);
-  assert.ok((await readFileCorpus({ ...input, selectors }))['Item revision log'].values.length);
+  assert.deepEqual(readFileSync(path), bytes);
+  await assert.rejects(readFileCorpus({ ...input, selectors }), { code: 'recovery_required' });
+
+  // Restoring bytes does not clear process-local refusal; a new process revalidates the same root.
+  const { spawnSync } = await import('node:child_process');
+  const child = spawnSync(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      `import { readFileSync } from 'node:fs';
+const { readFileCorpus } = await import(process.argv[1]);
+const input = JSON.parse(readFileSync(0, 'utf8'));
+process.stdout.write(JSON.stringify(await readFileCorpus(input)));`,
+      new URL('../scripts/upgrade-from-previous-corpus.mjs', import.meta.url).href,
+    ],
+    { encoding: 'utf8', input: JSON.stringify({ ...input, selectors }) }
+  );
+  assert.equal(child.error, undefined);
+  assert.equal(child.status, 0, child.stderr);
+  const recovered = JSON.parse(child.stdout);
+  assert.deepEqual(Object.keys(recovered).sort(), [...FILE_CORPUS_FAMILIES].sort());
+  assert.deepEqual(recovered, before);
+  assert.ok(recovered['Item revision log'].values.length);
 });
 
 test('seeding refuses a second corpus instead of changing an existing baseline', async (t) => {

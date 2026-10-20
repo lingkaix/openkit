@@ -307,6 +307,9 @@ async function executeKnowledgeManagerAgent(
         const ordinary = createInternalAgentGatewayProvider({
           capture,
           logicalModel,
+          ...(selection.profile?.reasoningEffort === undefined
+            ? {}
+            : { reasoningEffort: selection.profile.reasoningEffort }),
           resolveLogicalModel: (id) => {
             const current = dependencies.runtimeConfig();
             return resolveLogicalModel(

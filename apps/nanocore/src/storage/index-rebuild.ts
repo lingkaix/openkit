@@ -15,6 +15,7 @@ import {
   parseReferenceScope,
   type RetrievalTraceReference,
 } from '@openkit/protocol';
+import { assertScopeAdmitted, isScopeAdmitted, refuseScope } from '../bootstrap/readiness.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { unresolvedNotebookSubjects } from '../knowledge/conflicts.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
@@ -312,6 +313,7 @@ export interface RebuildExistingWorkspaceDerivedIndexesOptions {
 export function rebuildWorkspaceDerivedIndexes(
   input: RebuildWorkspaceDerivedIndexesInput
 ): RebuildWorkspaceDerivedIndexesResult {
+  assertScopeAdmitted(input.dataRoot, 'workspace', input.workspaceId);
   const workspaceRoot = resolveDataRootPath(input.dataRoot, 'workspaces', input.workspaceId);
   const retiredWorkspacePath = join(workspaceRoot, 'workspace.json');
   const workspacePath = join(workspaceRoot, 'workspace-record.json');
@@ -433,6 +435,7 @@ function listCanonicalWorkspaces(dataRoot: string): CanonicalWorkspaceDirectory[
   const workspaces: CanonicalWorkspaceDirectory[] = [];
 
   for (const workspaceId of listDirectories(workspacesRoot)) {
+    if (!isScopeAdmitted(dataRoot, 'workspace', workspaceId)) continue;
     const workspaceRoot = join(workspacesRoot, workspaceId);
 
     if (existsSync(join(workspaceRoot, 'workspace.json'))) {
@@ -543,17 +546,18 @@ export function rebuildInvalidExistingWorkspaceDerivedIndexes(
   const results: RebuildWorkspaceDerivedIndexesResult[] = [];
 
   for (const workspace of listCanonicalWorkspaces(dataRoot)) {
-    if (!derivedIndexSetNeedsRebuild(workspace.workspaceRoot, workspace.workspaceId)) {
-      continue;
+    try {
+      if (!derivedIndexSetNeedsRebuild(workspace.workspaceRoot, workspace.workspaceId)) continue;
+      results.push(
+        rebuildWorkspaceDerivedIndexes({
+          dataRoot,
+          workspaceId: workspace.workspaceId,
+          ...(options.now ? { now: options.now } : {}),
+        })
+      );
+    } catch {
+      refuseScope(dataRoot, { scope: 'workspace', id: workspace.workspaceId, check: 'index' });
     }
-
-    results.push(
-      rebuildWorkspaceDerivedIndexes({
-        dataRoot,
-        workspaceId: workspace.workspaceId,
-        ...(options.now ? { now: options.now } : {}),
-      })
-    );
   }
 
   return results;

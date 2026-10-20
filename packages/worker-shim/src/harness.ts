@@ -853,41 +853,25 @@ async function requestWithOutageBudget(
   let failure: unknown = new Error('Harness request outage budget expired.');
   for (;;) {
     signal?.throwIfAborted();
-    const remaining = deadline.remainingMs(LIFECYCLE_DEFAULTS.harnessRequestMs);
+    const remaining = deadline.remainingMs();
     if (remaining <= 0) throw failure;
     const timeout = new AbortController();
-    let timer = setTimeout(
-      () => timeout.abort(new Error('Harness response headers timed out.')),
+    // A committed command may still be awaiting headers. Keep its carriage alive, but never
+    // renew the enclosing allowance across headers, body collection or immutable retries.
+    const timer = setTimeout(
+      () => timeout.abort(new Error('Harness request outage budget expired.')),
       remaining
     );
-    /** Body collection shares the original outage deadline instead of the header ceiling. */
-    const headersReceived = () => {
-      clearTimeout(timer);
-      const bodyRemaining = deadline.remainingMs();
-      if (bodyRemaining <= 0) {
-        timeout.abort(failure);
-        return;
-      }
-      timer = setTimeout(
-        () => timeout.abort(new Error('Harness response body timed out.')),
-        bodyRemaining
-      );
-    };
     const requestSignal = signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal;
     try {
-      const response = await integration.harnessControlFetch(
-        path,
-        {
-          body,
-          headers: { 'content-type': 'application/json' },
-          method: 'POST',
-          signal: requestSignal,
-        },
-        headersReceived
-      );
+      const response = await integration.harnessControlFetch(path, {
+        body,
+        headers: { 'content-type': 'application/json' },
+        method: 'POST',
+        signal: requestSignal,
+      });
       // Collection may resolve despite an abort. Do not inspect an abandoned body.
       requestSignal.throwIfAborted();
-      headersReceived();
       const text = await response.text();
       requestSignal.throwIfAborted();
       if (!isRetryableHttpStatus(response.status)) {

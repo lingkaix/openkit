@@ -10,6 +10,8 @@ import {
 import { googleProvider } from '@earendil-works/pi-ai/providers/google';
 import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
+import { xaiProvider } from '@earendil-works/pi-ai/providers/xai';
+import { InternalRoleExecutionProfileSchema } from '@openkit/config-schema';
 import { workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -67,6 +69,7 @@ import type {
   ProviderSubscriptionAccountManager,
   ProviderSubscriptionPairHandle,
 } from '../llm/provider-subscription-accounts.js';
+import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { createInternalAgentGatewayProvider } from './gateway-provider.js';
 import { type InternalAgentProviderRequest, runInternalAgentLoop } from './internal-agent-loop.js';
 import { internalContextFailure } from './rolling-context.js';
@@ -110,6 +113,111 @@ function request(input = 'Read status.') {
 }
 
 describe('internal Agent Gateway provider', () => {
+  it.each(
+    ['knowledge-manager', 'assistant', 'goal-orchestrator', 'custom-role'].flatMap((roleId) =>
+      [undefined, 'low' as const].map((reasoningEffort) => ({ roleId, reasoningEffort }))
+    )
+  )('serializes profile effort $reasoningEffort for $roleId without affecting other calls', async ({
+    roleId,
+    reasoningEffort,
+  }) => {
+    const profile = InternalRoleExecutionProfileSchema.parse({
+      id: 'selected-profile',
+      roleId,
+      ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+    });
+    const models = createModels();
+    models.setProvider(xaiProvider());
+    const client = new PiAiGatewayClient({ models });
+    const dispatcher = new LLMGatewayProviderDispatcher({ piAiClient: client });
+    const config: ResolvedLLMProviderConfig = {
+      id: 'provider',
+      displayName: 'Synthetic xAI',
+      vendor: 'xai',
+      adapterId: 'xai',
+      apiKey: 'synthetic-secret',
+      baseUrl: null,
+      models: ['grok-4.6'],
+      requiresApiKey: true,
+      gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
+      modelMetadata: {
+        'grok-4.6': {
+          reasoning: true,
+          reasoning_options: [{ type: 'effort', values: ['low', 'high'] }],
+          limit: { context: 64_000, output: 8_000 },
+        },
+      },
+    };
+    const model: ResolvedLogicalModel = {
+      ...logicalModel,
+      modelFamilyId: 'grok',
+      routes: [{ ...logicalModel.routes[0]!, providerModel: 'grok-4.6' }],
+    };
+    const payloads: Record<string, unknown>[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
+      const httpRequest = new Request(url, init);
+      expect(httpRequest.url).toBe('https://api.x.ai/v1/responses');
+      payloads.push(JSON.parse(await httpRequest.text()));
+      const item = {
+        id: 'msg_synthetic',
+        type: 'message',
+        role: 'assistant',
+        status: 'completed',
+        content: [{ type: 'output_text', text: 'Ready.', annotations: [] }],
+      };
+      const events = [
+        { type: 'response.output_item.added', output_index: 0, item: { ...item, content: [] } },
+        {
+          type: 'response.content_part.added',
+          output_index: 0,
+          content_index: 0,
+          part: { ...item.content[0], text: '' },
+        },
+        {
+          type: 'response.output_text.delta',
+          output_index: 0,
+          content_index: 0,
+          delta: 'Ready.',
+        },
+        { type: 'response.output_item.done', output_index: 0, item },
+        {
+          type: 'response.completed',
+          response: {
+            id: 'resp_synthetic',
+            object: 'response',
+            status: 'completed',
+            output: [item],
+            usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+          },
+        },
+      ];
+      return new Response(
+        events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(''),
+        { headers: { 'content-type': 'text/event-stream' } }
+      );
+    });
+    const provider = createInternalAgentGatewayProvider({
+      capture: captureBinding(),
+      logicalModel: model,
+      reasoningEffort: profile.reasoningEffort,
+      resolveLogicalModel: () => model,
+      dispatcher,
+      resolveGatewayProvider: () => config,
+      promptCacheScope: { sessionId: 'internal' },
+      usageEndpoint: 'responses',
+    });
+    await expect(provider({ ...request(), tools: [] })).resolves.toHaveProperty('message.content', [
+      { type: 'text', text: 'Ready.' },
+    ]);
+    if (reasoningEffort === undefined) expect(payloads[0]).not.toHaveProperty('reasoning');
+    else expect(payloads[0]).toHaveProperty('reasoning.effort', reasoningEffort);
+
+    // Reuse the real dispatcher after the internal call to detect leaked model/options state.
+    await dispatcher.createResponses(config, { model: 'grok-4.6', input: 'Unbound call.' });
+    expect(payloads).toHaveLength(2);
+    expect(payloads[1]).not.toHaveProperty('reasoning');
+  });
+
   it('logs undeclared Tool output from the real adapter as output-projection', async () => {
     const capture = captureBinding();
     const faux = fauxProvider({

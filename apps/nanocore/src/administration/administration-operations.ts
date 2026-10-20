@@ -355,6 +355,9 @@ export function createAdministrationOperationImplementations(input: Administrati
                   const provider = createInternalAgentGatewayProvider({
                     capture,
                     logicalModel: selection.logicalModel,
+                    ...(selection.profile?.reasoningEffort === undefined
+                      ? {}
+                      : { reasoningEffort: selection.profile.reasoningEffort }),
                     resolveLogicalModel: (logicalModelId) => {
                       const snapshot = input.runtimeConfig();
                       return resolveLogicalModel(

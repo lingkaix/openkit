@@ -11,16 +11,19 @@ import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createHash } from 'node:crypto';
 import {
   appendFileSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
+  readlinkSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import {
   ItemSchema,
   PROTOCOL_VERSION,
@@ -31,6 +34,7 @@ import {
 } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
+import { ensureLayout } from '../storage/fs-layout.js';
 import { discardAbandonedWorkspaceStaging } from '../storage/workspace-file-records.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { knowledgePageFixture } from '../test-support/knowledge-page.js';
@@ -164,6 +168,62 @@ function workspaceImportPayload(
     agentSessions: [],
     turnEvents: [],
   };
+}
+
+/** Captures entries and exact bytes without following symbolic links or hiding missing files. */
+function retainedTree(root: string): Record<string, Buffer | string> {
+  return Object.fromEntries(
+    readdirSync(root, { recursive: true, withFileTypes: true }).map((entry) => {
+      const path = join(entry.parentPath, entry.name);
+      return [
+        relative(root, path),
+        entry.isSymbolicLink()
+          ? `symlink:${readlinkSync(path)}`
+          : entry.isDirectory()
+            ? 'directory'
+            : readFileSync(path),
+      ];
+    })
+  );
+}
+
+/**
+ * Reopens each damaged variant under a fresh root so process-local quarantine cannot mask the next fault.
+ * A separately published healthy Workspace proves that refusal does not hide all records or stop writes.
+ */
+function expectScopedReloadRefusal(dataRoot: string, workspaceIds: string[]): void {
+  const restartRoot = mkdtempSync(join(tmpdir(), 'openkit-scoped-reload-'));
+  const healthyRoot = mkdtempSync(join(tmpdir(), 'openkit-reload-control-'));
+  onTestFinished(() => {
+    rmSync(restartRoot, { recursive: true, force: true });
+    rmSync(healthyRoot, { recursive: true, force: true });
+  });
+  cpSync(dataRoot, restartRoot, { recursive: true, verbatimSymlinks: true });
+  const control = new FsStore({ dataRoot: healthyRoot });
+  const healthy = control.createWorkspace('Healthy reload sibling');
+  const thread = control.createThread(healthy.id, 'Retained sibling history');
+  cpSync(join(healthyRoot, 'workspaces', healthy.id), join(restartRoot, 'workspaces', healthy.id), {
+    recursive: true,
+  });
+  const before = retainedTree(join(restartRoot, 'workspaces'));
+  const restarted = new FsStore({ dataRoot: restartRoot });
+  for (const workspaceId of workspaceIds) {
+    const refusal = expect.objectContaining({ code: 'recovery_required' });
+    expect(() => restarted.getWorkspace(workspaceId)).toThrow(refusal);
+    expect(() => restarted.listThreads(workspaceId)).toThrow(refusal);
+    expect(() => restarted.createThread(workspaceId, 'Must not publish')).toThrow(refusal);
+    expect(restarted.listWorkspaces().map(({ id }) => id)).not.toContain(workspaceId);
+  }
+  expect(restarted.getWorkspace(healthy.id)).toEqual(control.getWorkspace(healthy.id));
+  expect(restarted.getThread(healthy.id, thread.id)).toEqual(thread);
+  expect(retainedTree(join(restartRoot, 'workspaces'))).toEqual(before);
+  const added = restarted.createThread(healthy.id, 'New sibling history');
+  expect(new FsStore({ dataRoot: restartRoot }).getThread(healthy.id, added.id)).toEqual(added);
+  for (const workspaceId of workspaceIds) {
+    expect(retainedTree(join(restartRoot, 'workspaces', workspaceId))).toEqual(
+      retainedTree(join(dataRoot, 'workspaces', workspaceId))
+    );
+  }
 }
 
 describe('FsStore canonical reload', () => {
@@ -784,7 +844,10 @@ describe('FsStore canonical reload', () => {
     writeFileSync(outsidePath, 'Outside canonical content.');
     rmSync(artifactBodyPath);
     symlinkSync(outsidePath, artifactBodyPath);
-    expect(() => new FsStore({ dataRoot })).toThrow(/symbolic link|regular file/);
+    expect(() => ensureLayout(dataRoot)).toThrow(/symbolic link|regular file/);
+    expectScopedReloadRefusal(dataRoot, [workspace.id]);
+    expect(readlinkSync(artifactBodyPath)).toBe(outsidePath);
+    expect(readFileSync(outsidePath, 'utf8')).toBe('Outside canonical content.');
 
     rmSync(artifactBodyPath);
     writeFileSync(artifactBodyPath, artifact.content.body);
@@ -1069,10 +1132,10 @@ describe('FsStore canonical reload', () => {
       itemsPath,
       `${validLog}{"id":"broken"\n${JSON.stringify(writeRetainedV1(item))}\n`
     );
-    expect(() => new FsStore({ dataRoot })).toThrow();
+    expectScopedReloadRefusal(dataRoot, [workspace.id]);
 
     writeFileSync(itemsPath, `${validLog}not-json`);
-    expect(() => new FsStore({ dataRoot })).toThrow();
+    expectScopedReloadRefusal(dataRoot, [workspace.id]);
   });
 
   it('normalizes a valid final item revision before future appends', () => {
@@ -1246,7 +1309,7 @@ describe('FsStore canonical reload', () => {
       itemsPath,
       `${JSON.stringify(writeRetainedV1({ ...item, type: 'user-message', actor: localActor }))}\n`
     );
-    expect(() => new FsStore({ dataRoot })).toThrow(/immutable identity/);
+    expectScopedReloadRefusal(dataRoot, [workspace.id]);
   });
 
   it('rejects embedded canonical bodies that duplicate append logs or artifact files', () => {
@@ -1303,7 +1366,7 @@ describe('FsStore canonical reload', () => {
     >;
 
     writeFileSync(turnPath, `${JSON.stringify({ ...turnMetadata, items: [item] }, null, 2)}\n`);
-    expect(() => new FsStore({ dataRoot })).toThrow(/must not embed items/);
+    expectScopedReloadRefusal(dataRoot, [workspace.id]);
 
     writeFileSync(turnPath, `${JSON.stringify(turnMetadata, null, 2)}\n`);
     writeFileSync(
@@ -1314,7 +1377,7 @@ describe('FsStore canonical reload', () => {
         2
       )}\n`
     );
-    expect(() => new FsStore({ dataRoot })).toThrow(/must not embed content body/);
+    expectScopedReloadRefusal(dataRoot, [workspace.id]);
   });
 
   it('rejects turn events whose nested payload crosses canonical lineage', () => {
@@ -1351,7 +1414,7 @@ describe('FsStore canonical reload', () => {
       eventPath,
       `${JSON.stringify(writeRetainedV1({ ...event, data: { ...event.data, turnId: 'tu_00000000-0000-7bf1-990f-799cdaa2a481' } }))}\n`
     );
-    expect(() => new FsStore({ dataRoot })).toThrow(/nested payload lineage/);
+    expectScopedReloadRefusal(dataRoot, [workspace.id]);
   });
 
   it('rejects global ids claimed by records in two workspaces', () => {
@@ -1396,9 +1459,7 @@ describe('FsStore canonical reload', () => {
       )}\n`
     );
 
-    expect(() => new FsStore({ dataRoot })).toThrow(
-      `Duplicate global thread id: ${firstThread.id}`
-    );
+    expectScopedReloadRefusal(dataRoot, [firstWorkspace.id, secondWorkspace.id]);
   });
 
   it('rejects duplicate-current AgentSessions during canonical reload', () => {
@@ -1436,10 +1497,17 @@ describe('FsStore canonical reload', () => {
       `${JSON.stringify(writeRetainedV1(duplicate), null, 2)}\n`
     );
 
-    expect(() => new FsStore({ dataRoot })).toThrow();
+    expectScopedReloadRefusal(dataRoot, [workspace.id]);
   });
 
-  it('rejects canonical record directories missing required records', () => {
+  it.each([
+    'Workspace',
+    'Thread',
+    'Turn',
+    'Items',
+    'Artifact',
+    'AgentSession',
+  ] as const)('rejects canonical record directories missing required records (%s)', (missingRecord) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-missing-identity-'));
     const store = new FsStore({ dataRoot });
     const workspace = store.createWorkspace('Missing identity workspace');
@@ -1477,22 +1545,21 @@ describe('FsStore canonical reload', () => {
       updatedAt: turn.startedAt ?? timestamp,
     });
     const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
-    const paths = [
-      join(workspaceRoot, 'workspace-record.json'),
-      join(workspaceRoot, 'threads', thread.id, 'thread.json'),
-      join(workspaceRoot, 'threads', thread.id, 'turns', turn.id, 'turn.json'),
-      join(workspaceRoot, 'threads', thread.id, 'turns', turn.id, 'items.jsonl'),
-      join(workspaceRoot, 'artifacts', artifact.id, 'artifact.json'),
-      join(workspaceRoot, 'runtime', 'agent-sessions', session.id, 'session.json'),
-    ];
+    const paths = {
+      Workspace: join(workspaceRoot, 'workspace-record.json'),
+      Thread: join(workspaceRoot, 'threads', thread.id, 'thread.json'),
+      Turn: join(workspaceRoot, 'threads', thread.id, 'turns', turn.id, 'turn.json'),
+      Items: join(workspaceRoot, 'threads', thread.id, 'turns', turn.id, 'items.jsonl'),
+      Artifact: join(workspaceRoot, 'artifacts', artifact.id, 'artifact.json'),
+      AgentSession: join(workspaceRoot, 'runtime', 'agent-sessions', session.id, 'session.json'),
+    };
+    const path = paths[missingRecord];
+    const content = readFileSync(path);
 
-    for (const path of paths) {
-      const content = readFileSync(path);
-
-      rmSync(path);
-      expect(() => new FsStore({ dataRoot })).toThrow(/missing .+\.jsonl?/i);
-      writeFileSync(path, content);
-    }
+    rmSync(path);
+    expectScopedReloadRefusal(dataRoot, [workspace.id]);
+    expect(existsSync(path)).toBe(false);
+    writeFileSync(path, content);
   });
 
   it.each([
@@ -1629,7 +1696,7 @@ describe('FsStore canonical reload', () => {
       );
     }
 
-    expect(() => new FsStore({ dataRoot })).toThrow();
+    expectScopedReloadRefusal(dataRoot, [workspaceId]);
   });
 
   it.each([
@@ -1950,6 +2017,6 @@ describe('FsStore canonical reload', () => {
     delete event.protocolVersion;
     writeFileSync(eventLogPath, `${JSON.stringify(event)}\n`);
 
-    expect(() => new FsStore({ dataRoot })).toThrow(/protocolVersion/);
+    expectScopedReloadRefusal(dataRoot, [workspace.id]);
   });
 });

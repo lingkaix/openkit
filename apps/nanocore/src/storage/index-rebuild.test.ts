@@ -3,10 +3,12 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -1818,11 +1820,17 @@ describe('workspace derived index rebuild', () => {
     const outside = mutate(badIndexes);
 
     if (throws) {
-      expect(() =>
+      expect(
         rebuildInvalidExistingWorkspaceDerivedIndexes(dataRoot, {
           now: () => '2026-07-06T00:00:00.000Z',
         })
-      ).toThrow(/symbolic link/);
+      ).toEqual([]);
+      // Scope isolation must not turn an unsafe index into a successful rebuild.
+      expect(() => rebuildWorkspaceDerivedIndexes({ dataRoot, workspaceId: badId })).toThrow(
+        /symbolic link/
+      );
+      expect(lstatSync(join(badIndexes, 'knowledge-links.json')).isSymbolicLink()).toBe(true);
+      expect(readlinkSync(join(badIndexes, 'knowledge-links.json'))).toBe(outside);
       expect(outside ? readFileSync(outside, 'utf8') : null).toBe('outside sentinel\n');
     } else {
       expect(
@@ -1891,13 +1899,13 @@ describe('workspace derived index rebuild', () => {
   });
 });
 
-/** One invalid boot-scan fixture and whether the existing rebuild guard must throw. */
+/** One invalid boot-scan fixture and whether its scope-local rebuild must refuse. */
 interface InvalidDerivedIndexCase {
   /** Case name interpolated into the test title. */
   name: string;
   /** Mutates a current index directory. Returns an outside sentinel path when one exists. */
   mutate: (indexesRoot: string) => string | undefined;
-  /** Whether the scan must throw instead of publishing the bad set. */
+  /** Whether direct rebuilding must throw while the outer scan contains the failure. */
   throws?: boolean;
 }
 

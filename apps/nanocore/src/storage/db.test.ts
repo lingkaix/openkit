@@ -24,7 +24,9 @@ import {
   openCoreDbWithIntegrityCheck,
   openUserDb,
   openWorkspaceDb,
+  type UserDb,
   verifyAndMigrateExistingScopedDatabases,
+  type WorkspaceDb,
 } from './db.js';
 import { coreDbPath, ensureLayout, userDbPath, workspaceDbPath } from './fs-layout.js';
 import {
@@ -40,6 +42,23 @@ import {
  */
 function createDataRoot(): string {
   return mkdtempSync(join(tmpdir(), 'openkit-scoped-db-'));
+}
+
+/**
+ * Writes a valid SQLite database without applying any of the boot scan's migrations.
+ *
+ * VACUUM creates the database header and pages without adding a table or migration ledger.
+ * A zero-byte file would instead represent missing established Workspace authority.
+ *
+ * @param scopedDb Fresh User or Workspace database to initialize.
+ */
+function initializeUnmigratedScopedDb(scopedDb: UserDb | WorkspaceDb): void {
+  const { scope, sqlite } = scopedDb;
+  sqlite.exec('VACUUM');
+  expect(statSync(sqlite.name).size).toBeGreaterThan(0);
+  expect(sqlite.prepare('PRAGMA quick_check').pluck().get()).toBe('ok');
+  expect(listTables(sqlite)).toEqual([]);
+  expect(listMigrationIds(sqlite, scope)).toEqual([]);
 }
 
 describe('scoped storage databases', () => {
@@ -283,9 +302,13 @@ describe('scoped storage databases', () => {
     expect(readdirSync(workspaceRoot)).toEqual([]);
   });
 
-  it('fails boot closed without recreating a registered Workspace database that was lost', () => {
+  it.each([
+    'missing',
+    'corrupt',
+  ] as const)('contains a %s registered Workspace database without replacing authority or blocking its sibling', (fault) => {
     const dataRoot = createDataRoot();
     const workspaceId = 'ws_00000000-0000-7490-845b-dcfa3ee49925';
+    const siblingId = 'ws_00000000-0000-7a13-853c-5d52c0c5884f';
     const coreDb = openCoreDb(dataRoot);
     try {
       applyMigrations(coreDb);
@@ -294,17 +317,40 @@ describe('scoped storage databases', () => {
       applyScopedMigrations(workspaceDb);
       workspaceDb.sqlite.close();
       recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId });
+      const sibling = openWorkspaceDb(dataRoot, siblingId);
+      initializeUnmigratedScopedDb(sibling);
+      sibling.sqlite.close();
+      recordWorkspaceOwnerMembership({ coreDb, workspaceId: siblingId, ownerUserId });
+      const registrations = coreDb.sqlite
+        .prepare('SELECT * FROM workspace_registry ORDER BY workspace_id')
+        .all();
       const databasePath = workspaceDbPath(dataRoot, workspaceId);
       const retainedPath = join(dataRoot, 'workspaces', workspaceId, 'retained-evidence.txt');
       const retained = Buffer.from('Keep the existing Workspace evidence.');
       writeFileSync(retainedPath, retained);
-      rmSync(databasePath);
+      const corruptBytes = Buffer.from('Not a SQLite database; preserve the damaged authority.');
+      if (fault === 'missing') rmSync(databasePath);
+      else writeFileSync(databasePath, corruptBytes);
 
-      expect(() => verifyAndMigrateExistingScopedDatabases(dataRoot)).toThrow(
-        `Workspace database is missing: ${workspaceId}`
-      );
-      expect(existsSync(databasePath)).toBe(false);
-      expect(readdirSync(dirname(databasePath))).toEqual([]);
+      // A local integrity failure must not abort verification of a healthy sibling.
+      expect(() => verifyAndMigrateExistingScopedDatabases(dataRoot)).not.toThrow();
+      if (fault === 'missing') {
+        expect(existsSync(databasePath)).toBe(false);
+        expect(readdirSync(dirname(databasePath))).toEqual([]);
+      } else {
+        expect(readFileSync(databasePath)).toEqual(corruptBytes);
+        expect(readdirSync(dirname(databasePath))).toEqual([basename(databasePath)]);
+      }
+      const reopened = openBootVerifiedWorkspaceDb(dataRoot, siblingId);
+      try {
+        expect(listTables(reopened.sqlite)).toContain('idempotency_requests');
+        expect(reopened.sqlite.prepare('PRAGMA quick_check').pluck().get()).toBe('ok');
+      } finally {
+        reopened.sqlite.close();
+      }
+      expect(
+        coreDb.sqlite.prepare('SELECT * FROM workspace_registry ORDER BY workspace_id').all()
+      ).toEqual(registrations);
       expect(readFileSync(retainedPath)).toEqual(retained);
       expect(
         coreDb.sqlite
@@ -321,6 +367,7 @@ describe('scoped storage databases', () => {
   it('migrates real scoped databases without treating Workspace staging as a scope', () => {
     const dataRoot = createDataRoot();
     const created = openWorkspaceDb(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201');
+    initializeUnmigratedScopedDb(created);
     created.sqlite.close();
     const stagingRoot = join(dataRoot, 'workspaces', '.staging');
     const stagedChild = join(stagingRoot, 'ws_00000000-0000-7a13-853c-5d52c0c5884f');
@@ -329,6 +376,7 @@ describe('scoped storage databases', () => {
     writeFileSync(join(stagedChild, 'sentinel'), sentinel);
     // The reserved container name applies only to Workspace discovery.
     const userDb = openUserDb(dataRoot, '.staging');
+    initializeUnmigratedScopedDb(userDb);
     userDb.sqlite.close();
 
     verifyAndMigrateExistingScopedDatabases(dataRoot);
@@ -589,22 +637,43 @@ describe('scoped storage databases', () => {
         join(dataRoot, 'users', 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b', 'quarantine'),
       verify: (dataRoot: string) => verifyAndMigrateExistingScopedDatabases(dataRoot),
     },
-    {
-      scope: 'Workspace',
-      path: (dataRoot: string) =>
-        workspaceDbPath(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201'),
-      quarantine: (dataRoot: string) =>
-        join(dataRoot, 'workspaces', 'ws_00000000-0000-73c3-900f-8d310e4ba201', 'quarantine'),
-      verify: (dataRoot: string) => verifyAndMigrateExistingScopedDatabases(dataRoot),
-    },
-  ])('fails boot closed when the $scope database is corrupt', ({ path, quarantine, verify }) => {
+  ])('keeps corrupt $scope authority closed at its owning scope', ({
+    scope,
+    path,
+    quarantine,
+    verify,
+  }) => {
     const dataRoot = createDataRoot();
     const dbPath = path(dataRoot);
     const originalBytes = Buffer.from(`not sqlite: ${dbPath}`);
     mkdirSync(dirname(dbPath), { recursive: true });
     writeFileSync(dbPath, originalBytes);
 
-    expect(() => verify(dataRoot)).toThrow(/SQLite integrity check failed/);
+    if (scope === 'Core') {
+      expect(() => verify(dataRoot)).toThrow(/SQLite integrity check failed/);
+    } else {
+      const siblingId = 'usr_00000000-0000-7000-8000-000000000002';
+      const workspaceId = 'ws_00000000-0000-73c3-900f-8d310e4ba201';
+      const sibling = openUserDb(dataRoot, siblingId);
+      initializeUnmigratedScopedDb(sibling);
+      sibling.sqlite.close();
+      const workspace = openWorkspaceDb(dataRoot, workspaceId);
+      initializeUnmigratedScopedDb(workspace);
+      workspace.sqlite.close();
+      expect(() => verify(dataRoot)).not.toThrow();
+      expect(() =>
+        openUserDb(dataRoot, 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b').sqlite.close()
+      ).toThrow();
+      const healthyUser = openUserDb(dataRoot, siblingId);
+      const healthyWorkspace = openBootVerifiedWorkspaceDb(dataRoot, workspaceId);
+      try {
+        expect(listTables(healthyUser.sqlite)).toContain('idempotency_requests');
+        expect(listTables(healthyWorkspace.sqlite)).toContain('idempotency_requests');
+      } finally {
+        healthyUser.sqlite.close();
+        healthyWorkspace.sqlite.close();
+      }
+    }
     expect(readFileSync(dbPath)).toEqual(originalBytes);
     expect(readdirSync(dirname(dbPath))).toEqual([basename(dbPath)]);
     expect(existsSync(quarantine(dataRoot))).toBe(false);
@@ -650,10 +719,11 @@ process.kill(process.pid, 'SIGKILL');`,
 
   it('migrates healthy existing scoped databases during boot scan', () => {
     const dataRoot = createDataRoot();
-    mkdirSync(join(dataRoot, 'users', 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b', 'db'), {
-      recursive: true,
-    });
+    const initialUserDb = openUserDb(dataRoot, 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b');
+    initializeUnmigratedScopedDb(initialUserDb);
+    initialUserDb.sqlite.close();
     const initialWorkspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201');
+    initializeUnmigratedScopedDb(initialWorkspaceDb);
     initialWorkspaceDb.sqlite.close();
 
     verifyAndMigrateExistingScopedDatabases(dataRoot);

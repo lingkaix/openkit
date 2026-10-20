@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { createServer as createHttpServer } from 'node:http';
 import {
   createServer as createHttp2Server,
@@ -33,7 +33,12 @@ import {
 import { acquireDataRootLock, type DataRootLock } from './bootstrap/lock.js';
 import { formatBootFailureMessage, runBootPhases } from './bootstrap/phases.js';
 import { loadBootPolicyKernel } from './bootstrap/policy.js';
-import { createBootId, createShutdownReadinessSnapshot } from './bootstrap/readiness.js';
+import {
+  createBootId,
+  createShutdownReadinessSnapshot,
+  refuseScope,
+  withScopeAdmissionReadiness,
+} from './bootstrap/readiness.js';
 import { closeWithDeadline } from './bootstrap/shutdown.js';
 import { checkBootVaultBackend } from './bootstrap/vault.js';
 import { recoverRunningCapabilityCalls } from './capability/usage-ledger.js';
@@ -114,6 +119,7 @@ import {
   ensureLayout,
   readDataRootLayoutMarker,
   resolveDataRootPath,
+  workspaceDbPath,
 } from './storage/fs-layout.js';
 import { rebuildInvalidExistingWorkspaceDerivedIndexes } from './storage/index-rebuild.js';
 import { applyMigrations, listAppliedMigrationIds } from './storage/migrate.js';
@@ -252,7 +258,21 @@ const bootResult = await runBootPhases({
         });
         applyMigrations(coreDb);
         recoverRunningCapabilityCalls({ workspaceDb: coreDb });
-        verifyAndMigrateExistingScopedDatabases(dataRoot);
+        // Only active server registry facts establish an expected Workspace; deletion may remove roots.
+        for (const { workspaceId } of coreDb.sqlite
+          .prepare(
+            "SELECT workspace_id AS workspaceId FROM workspace_registry WHERE status = 'active'"
+          )
+          .all() as Array<{ workspaceId: string }>) {
+          if (!existsSync(workspaceDbPath(dataRoot, workspaceId))) {
+            refuseScope(dataRoot, { scope: 'workspace', id: workspaceId, check: 'database' });
+          }
+        }
+        verifyAndMigrateExistingScopedDatabases(dataRoot, () => {
+          // File validation cannot query projections that still need their scoped migrations.
+          FsStore.validateFileAuthority(dataRoot);
+        });
+        sharedStore ??= new FsStore({ dataRoot });
         const indexRebuildEvents = rebuildInvalidExistingWorkspaceDerivedIndexes(dataRoot);
         recordBootStartAudit({
           coreDb,
@@ -470,7 +490,13 @@ let bootReadiness = bootResult.readiness;
 
 if (coreDb) {
   try {
-    recordBootAuditEvent({ coreDb, result: bootResult });
+    recordBootAuditEvent({
+      coreDb,
+      result: {
+        ...bootResult,
+        readiness: withScopeAdmissionReadiness(bootResult.readiness, dataRoot),
+      },
+    });
   } catch (error) {
     console.warn(
       `Failed to record boot audit event: ${error instanceof Error ? error.message : String(error)}`
@@ -585,10 +611,10 @@ const app = createApp({
   automationStore,
   fileAdmission,
   ...(auth ? { auth } : {}),
-  bootReadiness,
+  bootReadiness: withScopeAdmissionReadiness(bootReadiness, dataRoot),
   coreDb,
   dataRoot,
-  getBootReadiness: () => bootReadiness,
+  getBootReadiness: () => withScopeAdmissionReadiness(bootReadiness, dataRoot),
   mode,
   nanoHostSessionDispatch,
   nanohostTransportSessionAuthority,
