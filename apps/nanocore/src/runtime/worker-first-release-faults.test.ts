@@ -329,12 +329,7 @@ async function faultFixture() {
   const client = connect(`http://127.0.0.1:${address.port}`);
 
   /** Posts on the real authenticated native H2 route; a reset without headers is the injected lost response. */
-  const post = async (
-    path: string,
-    body: unknown,
-    signal?: AbortSignal,
-    headersReceived?: () => void
-  ) => {
+  const post = async (path: string, body: unknown, signal?: AbortSignal) => {
     const integration = coreDb.sqlite
       .prepare('SELECT sandbox_integration_binding_ref AS ref FROM sandbox_runtime_records')
       .get() as { ref: string } | undefined;
@@ -352,7 +347,6 @@ async function faultFixture() {
     let status: number | undefined;
     stream.on('response', (headers) => {
       status = Number(headers[':status']);
-      headersReceived?.();
     });
     stream.end(JSON.stringify(body));
     const chunks: Buffer[] = [];
@@ -612,12 +606,12 @@ describe('first-release worker faults (real Core crossings)', () => {
     harnessLoop.client = {
       ready: Promise.resolve(),
       close: async () => undefined,
-      harnessControlFetch: async (path, init, headersReceived) => {
+      harnessControlFetch: async (path, init) => {
         if (path.endsWith('/poll')) {
           if (++pollCount > 1) return { ok: false, status: 404, text: async () => '' };
           signals.push(init.signal!);
         } else results.push(init.body);
-        const response = await f.post(path, JSON.parse(init.body), init.signal, headersReceived);
+        const response = await f.post(path, JSON.parse(init.body), init.signal);
         return {
           ok: response.status === 200 || response.status === 204,
           status: response.status!,
