@@ -1,7 +1,7 @@
 import { WorkspaceIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import { KnowledgeManagerDraftedProposalSchema } from './knowledge-manager.js';
-import { KnowledgeNotebookPathSchema } from './knowledge-notebook.js';
+import { KnowledgeNotebookEditPathSchema } from './knowledge-notebook.js';
 
 /** Maximum exact UTF-16 text per version in one Proposal preview response. */
 export const KNOWLEDGE_PROPOSAL_PREVIEW_CHUNK_UNITS = 4096;
@@ -13,7 +13,7 @@ export const ReadKnowledgeProposalRequestSchema = z
   .object({
     workspaceId: WorkspaceIdSchema,
     proposalId: KnowledgeManagerDraftedProposalSchema.shape.id,
-    path: KnowledgeNotebookPathSchema.optional(),
+    path: KnowledgeNotebookEditPathSchema.optional(),
     offset: z.number().int().nonnegative().safe().default(0),
   })
   .strict()
@@ -26,8 +26,8 @@ export const ReadKnowledgeProposalResponseSchema = z
     proposalDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
     baseRevision: z.string().min(1),
     candidateRevision: z.string().min(1),
-    paths: z.array(KnowledgeNotebookPathSchema).min(1).max(256),
-    path: KnowledgeNotebookPathSchema.optional(),
+    paths: z.array(KnowledgeNotebookEditPathSchema).min(1).max(256),
+    path: KnowledgeNotebookEditPathSchema.optional(),
     before: z.string().max(KNOWLEDGE_PROPOSAL_PREVIEW_CHUNK_UNITS).nullable().optional(),
     after: z.string().max(KNOWLEDGE_PROPOSAL_PREVIEW_CHUNK_UNITS).nullable().optional(),
     nextOffset: z.number().int().positive().safe().nullable().optional(),

@@ -219,6 +219,7 @@ This table names prefixes for independent generation paths. Workspace, Thread, a
 | Light App field | `fld` |
 | Generative presentation | `pres` |
 | Workspace export | `wsexp` |
+| Workspace backup | `wsbak` |
 | Data-root backup | `drb` |
 
 ### Derived Entity Kinds And Namespaces

@@ -14,11 +14,13 @@ import { OperationError } from '../operation-error.js';
 import {
   type KnowledgeRetrievalAccess,
   knowledgeSourceAudienceReadable,
+  knowledgeSourceLineageReadable,
   readAuthorizedWorkspaceNotebookPages,
 } from '../retrieval-knowledge-adapter.js';
 import { KnowledgeNotebook, NotebookError } from './notebook.js';
 import { humanPageBytes, publishWorkspaceNotebook } from './notebook-publication.js';
 import { readWorkspaceNotebookAdmission } from './notebook-workspace-admission.js';
+import { parseSourcePointer } from './source-pointers.js';
 
 /** Existing native authority and publication dependencies; no history-owned state is retained. */
 type Dependencies = Pick<
@@ -95,22 +97,57 @@ export class AuthorizedHistory {
       workspaceId: this.workspaceId,
       access: this.access,
       notebookRevision: revision,
-      pageIds: paths.map((path) => path.slice(0, -3)),
+      pageIds: paths
+        .filter((path) => !path.startsWith('@sources/'))
+        .map((path) => path.slice(0, -3)),
     });
+    const files = new Map(result.pages.map(({ path, content }) => [path, content]));
+    for (const path of paths.filter((path) => path.startsWith('@sources/'))) {
+      const id = path.slice('@sources/'.length, -3);
+      if (
+        !knowledgeSourceAudienceReadable({ workspaceId: this.workspaceId, access: this.access }, id)
+      )
+        throw new OperationError(
+          'workspace_access_denied',
+          'Notebook Source history is unavailable.',
+          403
+        );
+      const content = this.notebook.readContent(revision, [path])[path]!;
+      const pointer = parseSourcePointer(
+        {
+          dataRoot: this.dataRoot,
+          ownerScope: { kind: 'workspace', workspaceId: this.workspaceId },
+        },
+        id,
+        content
+      );
+      if (
+        !knowledgeSourceLineageReadable(
+          { workspaceId: this.workspaceId, access: this.access },
+          pointer.source
+        )
+      )
+        throw new OperationError(
+          'workspace_access_denied',
+          'Notebook Source history is unavailable.',
+          403
+        );
+      files.set(path, content);
+    }
     if (
-      result.pages.reduce((size, page) => size + Buffer.byteLength(page.content), 0) >
+      [...files.values()].reduce((size, content) => size + Buffer.byteLength(content), 0) >
       32 * 1024 * 1024
     )
       throw new NotebookError('invalid_request');
-    return new Map(result.pages.map(({ path, content }) => [path, content]));
+    return files;
   }
 
   /** Compare published ancestry only; an unpublished Proposal commit is never a history target. */
   diff(input: Selection, forRestore = false): Change[] {
     this.notebook.history({ revision: input.baseRevision, limit: 1 });
     this.notebook.history({ revision: input.fromRevision, limit: 1 });
-    const base = this.notebook.inspectRevision(input.baseRevision).entries;
-    const target = this.notebook.inspectRevision(input.fromRevision).entries;
+    const base = this.notebook.readContent(input.baseRevision);
+    const target = this.notebook.readContent(input.fromRevision);
     const paths =
       input.pageIds?.map((id) => `${id}.md`) ??
       [...new Set([...Object.keys(base), ...Object.keys(target)])]
@@ -161,29 +198,8 @@ export class AuthorizedHistory {
             fromRevision: revision.revision,
           }).map(({ path }) => path);
         } else {
-          changedPaths = Object.keys(
-            this.notebook.inspectRevision(revision.revision).entries
-          ).sort();
+          changedPaths = Object.keys(this.notebook.readContent(revision.revision)).sort();
           this.read(revision.revision, changedPaths);
-        }
-        const sources = this.notebook.readSourcePointers(revision.revision);
-        const previousSources = revision.parentRevision
-          ? this.notebook.readSourcePointers(revision.parentRevision)
-          : {};
-        for (const id of new Set([...Object.keys(sources), ...Object.keys(previousSources)])) {
-          if (sources[id] === previousSources[id]) continue;
-          if (
-            !knowledgeSourceAudienceReadable(
-              { workspaceId: this.workspaceId, access: this.access },
-              id
-            )
-          )
-            throw new OperationError(
-              'workspace_access_denied',
-              'Notebook Source history is unavailable.',
-              403
-            );
-          changedPaths.push(`sources/${id}.md`);
         }
         changedPaths.sort();
         return {
