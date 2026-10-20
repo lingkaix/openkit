@@ -9,6 +9,8 @@ import { buildWorkerCanonicalTerminalEventRecord } from '@openkit/worker-protoco
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WorkerControlClient } from '../../../../packages/worker-shim/src/control-client.js';
+import { runWorkerHarness, WorkerHarness } from '../../../../packages/worker-shim/src/harness.js';
+import type { SandboxIntegrationClient } from '../../../../packages/worker-shim/src/integration-client.js';
 import { createDefaultWorkerControlGateway } from '../app.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import {
@@ -55,6 +57,18 @@ import { runSchedulerDispatchLoop } from './scheduler-dispatch-loop.js';
 import { createConfiguredWorkerLifecycleRuntime } from './turn-executor-factory.js';
 import { registerWorkerControlRoutes } from './worker-control-routes.js';
 
+const harnessLoop = vi.hoisted(() => ({ client: null as SandboxIntegrationClient | null }));
+
+vi.mock('../../../../packages/worker-shim/src/integration-client.js', async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import('../../../../packages/worker-shim/src/integration-client.js')
+  >()),
+  openSandboxIntegration: async () => {
+    if (!harnessLoop.client) throw new Error('Harness carriage fixture is unavailable.');
+    return harnessLoop.client;
+  },
+}));
+
 // Route final-status polling uses timers/promises; bind that delay to the same fake clock as Harness deadlines.
 vi.mock('node:timers/promises', async (importOriginal) => ({
   ...(await importOriginal<typeof import('node:timers/promises')>()),
@@ -66,6 +80,7 @@ vi.mock('node:timers/promises', async (importOriginal) => ({
 
 // A fixture can time out before it returns its close handle; do not carry its spy into the next case.
 afterEach(() => {
+  harnessLoop.client = null;
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
@@ -236,6 +251,7 @@ async function faultFixture() {
   let peerClosed: Promise<void> | undefined;
   let droppedCommand: NanoHostHarnessCommand | null = null;
   let droppedWire = '';
+  let heldPoll: { entered: () => void; release: Promise<void> } | undefined;
   const listener = getRequestListener(app.fetch);
   const server = createServer((request, response) => {
     if (!admitted) {
@@ -245,6 +261,29 @@ async function faultFixture() {
         physicalConnection: readNanoHostPhysicalConnectionContext(request)!,
       });
       admitted = true;
+    }
+    if (heldPoll && request.url === '/worker-control/harness/poll') {
+      const hold = heldPoll;
+      heldPoll = undefined;
+      const writeHead = response.writeHead.bind(response);
+      const end = response.end.bind(response);
+      let head: Parameters<typeof response.writeHead>;
+      response.writeHead = ((...args: Parameters<typeof response.writeHead>) => {
+        head = args;
+        return response;
+      }) as typeof response.writeHead;
+      response.end = ((body: string) => {
+        expect(response.statusCode).toBe(200);
+        expect(JSON.parse(body).operation).toBe('session.open');
+        hold.entered();
+        void hold.release.then(() => {
+          if (!request.stream.destroyed) {
+            writeHead(...head);
+            end(body);
+          }
+        });
+        return response;
+      }) as typeof response.end;
     }
     if (dropNextPoll && request.url === '/worker-control/harness/poll') {
       dropNextPoll = false;
@@ -290,7 +329,12 @@ async function faultFixture() {
   const client = connect(`http://127.0.0.1:${address.port}`);
 
   /** Posts on the real authenticated native H2 route; a reset without headers is the injected lost response. */
-  const post = async (path: string, body: unknown) => {
+  const post = async (
+    path: string,
+    body: unknown,
+    signal?: AbortSignal,
+    headersReceived?: () => void
+  ) => {
     const integration = coreDb.sqlite
       .prepare('SELECT sandbox_integration_binding_ref AS ref FROM sandbox_runtime_records')
       .get() as { ref: string } | undefined;
@@ -302,14 +346,23 @@ async function faultFixture() {
       ...(integration ? { 'x-openkit-integration-binding': integration.ref } : {}),
     });
     if (resetFinishedResponse) finishedResetStream = stream;
+    const abort = () => stream.close(constants.NGHTTP2_CANCEL);
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort();
     let status: number | undefined;
     stream.on('response', (headers) => {
       status = Number(headers[':status']);
+      headersReceived?.();
     });
     stream.end(JSON.stringify(body));
     const chunks: Buffer[] = [];
-    for await (const chunk of stream) {
-      if (!resetFinishedResponse) chunks.push(Buffer.from(chunk));
+    try {
+      for await (const chunk of stream) {
+        if (!resetFinishedResponse) chunks.push(Buffer.from(chunk));
+      }
+      signal?.throwIfAborted();
+    } finally {
+      signal?.removeEventListener('abort', abort);
     }
     if (resetFinishedResponse) {
       await peerClosed;
@@ -484,6 +537,10 @@ async function faultFixture() {
     result,
     poll,
     controlClient,
+    post,
+    holdNextPoll: (entered: () => void, release: Promise<void>) => {
+      heldPoll = { entered, release };
+    },
     close,
     isSettled: () => settled,
     loseNextPoll: (reset = false, finished = false) => {
@@ -520,6 +577,136 @@ async function faultFixture() {
 const ready = { nativeHandleDigest: DIGEST, nativeHandleState: 'ready' };
 
 describe('first-release worker faults (real Core crossings)', () => {
+  it.each([
+    'delayed',
+    'cancelled',
+    'expired',
+  ] as const)('bounds committed session.open carriage by its existing parent allowance (%s)', async (mode) => {
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'performance'] });
+    vi.setSystemTime(new Date(NOW));
+    const f = await faultFixture();
+    const controller = new AbortController();
+    let release!: () => void;
+    let entered!: () => void;
+    const responseEntered = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const responseRelease = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    f.holdNextPoll(entered, responseRelease);
+    const signals: AbortSignal[] = [];
+    let pollCount = 0;
+    const results: string[] = [];
+    // Native execution is outside this crossing. Only a received command may reach this double.
+    const handle = vi
+      .spyOn(WorkerHarness.prototype, 'handle')
+      .mockImplementation(async (command) => ({
+        schemaVersion: 2,
+        harnessInstanceId: command.harnessInstanceId,
+        operationId: command.operationId,
+        sequence: command.sequence,
+        disposition: 'succeeded',
+        body: { ...ready, state: 'open', maxActiveTurns: command.body.maxActiveTurns },
+      }));
+    harnessLoop.client = {
+      ready: Promise.resolve(),
+      close: async () => undefined,
+      harnessControlFetch: async (path, init, headersReceived) => {
+        if (path.endsWith('/poll')) {
+          if (++pollCount > 1) return { ok: false, status: 404, text: async () => '' };
+          signals.push(init.signal!);
+        } else results.push(init.body);
+        const response = await f.post(path, JSON.parse(init.body), init.signal, headersReceived);
+        return {
+          ok: response.status === 200 || response.status === 204,
+          status: response.status!,
+          text: async () => response.body,
+        };
+      },
+    } as SandboxIntegrationClient;
+    await f.waitQueued('session.open');
+    const loop = runWorkerHarness({ signal: controller.signal }).catch((error: unknown) => error);
+    try {
+      await responseEntered;
+      await vi.advanceTimersByTimeAsync(1_250);
+      if (mode === 'delayed') {
+        if (signals[0]?.aborted) {
+          // Record the baseline Core failure before the survival oracle reports RED.
+          release();
+          await loop;
+          await vi.advanceTimersByTimeAsync(250);
+          await expect(f.running).rejects.toThrow(
+            'NanoHost Harness session.open delivery incomplete: outcome unknown.'
+          );
+        }
+        expect(
+          signals[0]?.aborted,
+          'an admitted response must survive the fresh one-second header ceiling'
+        ).toBe(false);
+        expect(f.isSettled()).toBe(false);
+        expect(handle).not.toHaveBeenCalled();
+        release();
+        expect(await loop).toMatchObject({ message: 'Harness poll failed with HTTP 404.' });
+        expect(handle).toHaveBeenCalledOnce();
+        expect(pollCount).toBe(2);
+        expect(results).toHaveLength(1);
+        const opened = JSON.parse(results[0]!) as { operationId: string; sequence: number };
+        expect(f.dispatchedCommands).toEqual([
+          expect.objectContaining({
+            operation: 'session.open',
+            operationId: opened.operationId,
+            sequence: opened.sequence,
+          }),
+        ]);
+        // The exact receipt unlocks the next operation, without executing or dispatching open twice.
+        const start = await f.dispatch('turn.start');
+        expect(start.sequence).toBe(opened.sequence + 1);
+        await f.result(start, { ...ready, state: 'started' });
+        const control = f.controlClient(start);
+        await control.recordHeartbeat({ status: 'starting' });
+        await control.recordHeartbeat({ status: 'running' });
+        f.sealTranscript(start);
+        await control.recordFinalStatus({
+          sequence: 1,
+          status: 'completed',
+          stopReason: 'completed',
+        });
+        await vi.advanceTimersByTimeAsync(100);
+        await f.result(await f.dispatch('session.inspect'), {
+          ...ready,
+          state: 'open',
+          childState: 'running',
+          cleanupState: 'clean',
+        });
+        await f.running;
+        expect(f.store.getTurnById(testEntityId('tu', 'fault-turn')).status).toBe('completed');
+      } else {
+        if (mode === 'cancelled') controller.abort(new Error('genuine Harness cancellation'));
+        else await vi.advanceTimersByTimeAsync(300_000 - 1_250);
+        expect(await loop).toBeInstanceOf(Error);
+        expect(signals[0]?.aborted).toBe(true);
+        release();
+        await vi.advanceTimersByTimeAsync(250);
+        await expect(f.running).rejects.toThrow(
+          mode === 'cancelled'
+            ? 'NanoHost Harness session.open delivery incomplete: outcome unknown.'
+            : /session.open.*(?:budget expired|outcome unknown)/u
+        );
+        expect(handle).not.toHaveBeenCalled();
+        expect(results).toEqual([]);
+        expect(f.store.getTurnById(testEntityId('tu', 'fault-turn')).status).toBe('failed');
+      }
+    } finally {
+      controller.abort(new Error('fixture-complete'));
+      release();
+      await loop;
+      await vi.advanceTimersByTimeAsync(300_000);
+      await f.running.catch(() => undefined);
+      await f.close();
+    }
+  }, 60_000);
+
   it('keeps the Native attempt live across multiple heartbeat deadlines while a Pending Request is unanswered', async () => {
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
     vi.setSystemTime(new Date(NOW));
