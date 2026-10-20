@@ -1161,7 +1161,9 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       },
       ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
-    await store.emitTurnEvent(
+    // Preserve Main's synchronous terminal-notification tail; awaiting this event changes which closeout producer runs first.
+    // Revisit this boundary only with C2-B2 S's complete native terminal handoff, not neutral preparation.
+    store.emitTurnEvent(
       turnId,
       {
         event: 'turn.completed',
