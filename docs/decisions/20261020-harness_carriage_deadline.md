@@ -11,7 +11,7 @@ Private Harness poll and result response headers and bodies share the existing m
 
 ## Reason
 
-Source: the engineer's 2026-10-20 Lane L-RT takeover request for B01. The requested outcome is reliable delivery of an admitted `session.open` response that takes more than one second but remains inside its existing allowance. A short header cutoff can reset a response after Core has committed dispatch and turn an otherwise admissible delivery into an unknown outcome. The real Core H2 regression establishes that path; native execution is outside that regression's effect domain.
+Source: the engineer's 2026-10-20 request to fix dropped `session.open` responses. The requested outcome is reliable delivery of an admitted `session.open` response that takes more than one second but remains inside its existing allowance. A short header cutoff can reset a response after Core has committed dispatch and turn an otherwise admissible delivery into an unknown outcome. The real Core H2 regression establishes that path; native execution is outside that regression's effect domain.
 
 ## Rejected Alternatives
 
