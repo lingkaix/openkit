@@ -785,6 +785,7 @@ describe('database setup', () => {
         'workspace_0009_review_selection_judgements',
         'workspace_0010_product_control',
         'workspace_0011_workspace_capture_protection',
+        'workspace_0012_execution_journal',
       ]);
       expect(listTableNames(workspaceDb)).toEqual(WORKSPACE_TABLES);
       const idempotencyRequestColumns = [
@@ -1176,6 +1177,7 @@ describe('native Drizzle migrate', () => {
         'workspace_0009_review_selection_judgements',
         'workspace_0010_product_control',
         'workspace_0011_workspace_capture_protection',
+        'workspace_0012_execution_journal',
       ]);
     } finally {
       db.sqlite.close();
