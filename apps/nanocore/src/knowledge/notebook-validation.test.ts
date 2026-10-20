@@ -112,6 +112,45 @@ describe('Notebook final immutable tree validation', () => {
     expect(proposed).toEqual({ 'group/a.md': a, 'b.md': b });
   });
 
+  it('Final-Tree Validation: identifies every authored bad target per referrer before normalization', () => {
+    const first = page(
+      'group/a',
+      [
+        '[First](../missing.md?draft=1#one)',
+        '[Second](../missing.md#two)',
+        '[Reference][lost]',
+        '',
+        '[lost]: /notebook/missing.md',
+      ].join('\n')
+    );
+    const second = page('group/b', '[Raw](/sources/original.md)');
+    expect(validate({}, { 'group/b.md': second, 'group/a.md': first }).errors).toEqual([
+      {
+        code: 'notebook.unresolved_page_link',
+        pageId: 'group/a',
+        target: '../missing.md?draft=1#one',
+      },
+      { code: 'notebook.unresolved_page_link', pageId: 'group/a', target: '../missing.md#two' },
+      { code: 'notebook.unresolved_page_link', pageId: 'group/a', target: '/notebook/missing.md' },
+      { code: 'notebook.unresolved_page_link', pageId: 'group/b', target: '/sources/original.md' },
+    ]);
+  });
+
+  it('Current link rules: resolves decoded relative and root Page paths, not editor or raw-byte paths', () => {
+    const referrer = page(
+      'group/a',
+      [
+        '[Relative](../tar%67et.md?draft=1#heading)',
+        '[Root](/target.md#heading)',
+        '`[Example](/notebook/target.md)`',
+        '[External](https://example.test/missing.md)',
+      ].join('\n')
+    );
+    expect(validate({}, { 'group/a.md': referrer, 'target.md': page('target') }).errors).toEqual(
+      []
+    );
+  });
+
   it('rejects removed targets referenced by an unchanged page', () => {
     const referrer = page('a', '[Keep the target](/b.md)');
     expect(validate({ 'a.md': referrer, 'b.md': page('b') }, { 'a.md': referrer })).toMatchObject({
@@ -139,7 +178,7 @@ describe('Notebook final immutable tree validation', () => {
     ).toEqual(
       expect.arrayContaining([
         { pageId: 'a', code: 'notebook.page_identity_mismatch' },
-        { pageId: 'a', code: 'notebook.unresolved_page_link' },
+        { pageId: 'a', code: 'notebook.unresolved_page_link', target: '../../outside.md' },
       ])
     );
   });

@@ -3,12 +3,20 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { operationToolName } from '@openkit/app-api-schemas';
+import { WorkspaceConfigSchema } from '@openkit/config-schema';
 import { expect, it, onTestFinished, vi } from 'vitest';
+import { listWorkspaceAuditEvents } from '../audit-events.js';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
+import {
+  createInMemoryRuntimeConfigSnapshot,
+  createRuntimeConfigManager,
+} from '../config/runtime-config.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
+import { ProviderRegistry } from '../providers/registry.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { createTestGatewayConfig } from '../test-support/agent-environment.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { createKnowledgeAnswerApp } from '../test-support/knowledge-agent.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
@@ -19,19 +27,76 @@ import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook } from './notebook.js';
 import { updateOkfFrontmatter } from './okf.js';
 
 /** Real operation admission, notebooks and runtime; only Provider transport is replaced. */
-function fixture() {
+function fixture(enableMaintenance = false) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'km-result-api-'));
   const store = createDemoStore({ dataRoot });
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: DEMO_WORKSPACE_ID, ownerUserId: userId });
-  const result = createKnowledgeAnswerApp({ dataRoot, store, coreDb }, []);
+  const maintenanceGateway = createTestGatewayConfig();
+  // Match the real-KM transport fixture's compaction boundary when supplying native settings.
+  maintenanceGateway.logicalModels[0]!.contextManagement = [
+    { type: 'compaction', compactThreshold: 32_000 },
+  ];
+  const result = createKnowledgeAnswerApp(
+    {
+      dataRoot,
+      store,
+      coreDb,
+      ...(enableMaintenance
+        ? {
+            runtimeConfigManager: createRuntimeConfigManager({
+              dataRoot,
+              initialSnapshot: createInMemoryRuntimeConfigSnapshot({
+                dataRoot,
+                gatewayConfig: maintenanceGateway,
+                providerRegistry: new ProviderRegistry([
+                  {
+                    id: 'agent-openrouter',
+                    displayName: 'Test inference provider',
+                    kind: 'custom',
+                    baseUrl: 'https://provider.invalid/v1',
+                    models: ['openai/gpt-5.2'],
+                    modelMetadata: {
+                      'openai/gpt-5.2': {
+                        tool_call: true,
+                        limit: { context: 64_000, output: 2_000 },
+                      },
+                    },
+                  },
+                ]),
+                workspaceConfigs: [
+                  {
+                    workspaceId: DEMO_WORKSPACE_ID,
+                    path: join(
+                      dataRoot,
+                      'workspaces',
+                      DEMO_WORKSPACE_ID,
+                      'config',
+                      'workspace.jsonc'
+                    ),
+                    config: WorkspaceConfigSchema.parse({
+                      schemaVersion: 1,
+                      workspace: {
+                        name: 'Link repair fixture',
+                        knowledgeMaintenance: { enabled: true, reviewRequiredPageIds: [] },
+                      },
+                    }),
+                  },
+                ],
+              }),
+            }),
+          }
+        : {}),
+    },
+    []
+  );
   onTestFinished(() => {
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
   });
-  return { ...result, store, dataRoot, userId };
+  return { ...result, store, coreDb, dataRoot, userId };
 }
 
 /** Submits a real model-visible Tool call through the Gateway projection. */
@@ -508,6 +573,7 @@ it('makes the actual Claim confidence refusal actionable without publishing', as
   expect(response.status).toBe(200);
   expect(feedback).toContain('scope_schema.invalid_confidence');
   expect(feedback).toContain('finite number from zero through one');
+  expect(JSON.parse(feedback)).not.toHaveProperty('linkDiagnostics');
   expect(feedback).not.toContain('UNPUBLISHED-CLAIM-CONTENT');
   expect(notebook.publishedRevision()).toBe(before);
   expect(f.store.listKnowledgeProposals(DEMO_WORKSPACE_ID)).toEqual([]);
@@ -608,4 +674,195 @@ it('corrects Claim confidence before result submission through the real KM Tools
     turn.items.filter((item) => item.type === 'tool-call' && item.tool === 'knowledge.result')
   ).toHaveLength(1);
   expect(f.createResponses).toHaveBeenCalledTimes(2);
+}, 120_000);
+
+it('Final-Tree Validation: same-author bounded link feedback permits one repair and publication without omitted referrer disclosure', async () => {
+  const f = fixture(true);
+  const notebook = new KnowledgeNotebook({
+    repositoryPath: join(f.dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'knowledge', 'notebook.git'),
+  });
+  const page = (title: string, content: string) =>
+    serializeKnowledgePageFixture(
+      {
+        title,
+        content,
+        createdAt: '2026-10-20T00:00:00.000Z',
+        updatedAt: '2026-10-20T00:00:00.000Z',
+      },
+      { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID }
+    );
+  const victim = page('Selected target', 'Admitted target bytes.');
+  const omitted = page(
+    'PRIVATE-UNSELECTED-TITLE',
+    'PRIVATE-UNSELECTED-BODY [Keep](/victim.md?PRIVATE-UNSELECTED-TARGET#keep)'
+  );
+  const imported = notebook.publishedRevision();
+  const before = notebook.prepare({
+    baseRevision: imported,
+    changes: { 'victim.md': victim, 'a-unselected.md': omitted },
+    metadata: {
+      summary: 'Prepare selected and omitted link fixtures',
+      changeRequest: { requestId: randomUUID(), inputDigest: commandInputHash('link fixtures') },
+      producer: { kind: 'user', id: f.userId },
+      authority: { kind: 'direct', instructionReference: 'Prepare the link fixture.' },
+      sourceReferences: [],
+    },
+  });
+  notebook.publish({ baseRevision: imported, candidateRevision: before });
+  const targets = [
+    '../missing.md?draft=1#first',
+    `/${'x'.repeat(270)}.md`,
+    '/notebook/missing.md',
+    '../missing.md#second',
+    '/missing-five.md',
+    '/missing-six.md',
+    '/missing-seven.md',
+    '/missing-eight.md',
+    '/missing-nine.md',
+    '/missing-ten.md',
+  ];
+  const badPage = (id: string, links: string[]) =>
+    page(id, links.map((target, index) => `[Link ${index}](${target})`).join('\n'));
+  const firstScript = [
+    'rm victim.md',
+    'mkdir -p guide',
+    `cat > guide/b.md <<'PAGE'\n${badPage('B', targets.slice(5))}PAGE`,
+    `cat > guide/a.md <<'PAGE'\n${badPage('A', targets.slice(0, 5))}PAGE`,
+  ].join('\n');
+  const correctedA = page('A', '[Selected target](../victim.md#heading)');
+  const correctedB = page('B', '[Selected target](/victim.md)');
+  const repairScript = [
+    `cat > victim.md <<'PAGE'\n${victim}PAGE`,
+    `cat > guide/a.md <<'PAGE'\n${correctedA}PAGE`,
+    `cat > guide/b.md <<'PAGE'\n${correctedB}PAGE`,
+  ].join('\n');
+  const expectedLinks = targets.slice(0, 8).map((target, index) => ({
+    code: 'notebook.unresolved_page_link',
+    pageId: index < 5 ? 'guide/a' : 'guide/b',
+    target: target.slice(0, 256),
+  }));
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  onTestFinished(() => warn.mockRestore());
+  // A separate public caller receives the native refusal, without the KM-only feedback fields.
+  const publicRefusal = await f.app.request(
+    ...operationRequest(
+      'knowledge.notebook.update',
+      { workspaceId: DEMO_WORKSPACE_ID },
+      {
+        body: JSON.stringify({
+          requestId: randomUUID(),
+          baseRevision: before,
+          changes: [{ path: 'public-bad.md', content: badPage('Public refusal', [targets[0]!]) }],
+          summary: 'Check public refusal isolation.',
+        }),
+      }
+    )
+  );
+  const refusalBody = await publicRefusal.json();
+  expect(publicRefusal.status, JSON.stringify(refusalBody)).toBe(400);
+  expect(refusalBody).toMatchObject({ code: 'invalid_request' });
+  expect(JSON.stringify(refusalBody)).not.toContain('linkDiagnostics');
+  expect(JSON.stringify(refusalBody)).not.toContain(targets[0]!);
+  expect(notebook.publishedRevision()).toBe(before);
+  let feedback = '';
+  f.createResponses.mockImplementation(async () => {
+    if (f.createResponses.mock.calls.length === 1) {
+      return calls([
+        ['knowledge.notebook-workspace.update', { script: firstScript }],
+        ['knowledge.notebook.update', { summary: 'Submit links for validation.' }],
+      ]);
+    }
+    feedback = latestToolOutput(f);
+    const detail = JSON.parse(feedback) as { linkDiagnostics?: unknown };
+    // The model fixture can repair only after actual feedback identifies its authored bad links.
+    if (!Array.isArray(detail.linkDiagnostics)) throw new Error('Repair feedback is missing.');
+    expect(detail.linkDiagnostics).toEqual(expectedLinks);
+    expect(notebook.publishedRevision()).toBe(before);
+    return calls([
+      ['knowledge.notebook-workspace.update', { script: repairScript }],
+      ['knowledge.notebook.update', { summary: 'Submit corrected links.' }],
+      ['knowledge.result', { summary: 'Published the corrected links.' }],
+    ]);
+  });
+  const response = await f.app.request(
+    ...operationRequest(
+      'knowledge.maintain',
+      { workspaceId: DEMO_WORKSPACE_ID },
+      {
+        body: JSON.stringify({
+          requestId: randomUUID(),
+          instruction: 'Repair links in the admitted notebook selection.',
+          pageIds: ['index', 'victim'],
+        }),
+      }
+    )
+  );
+  expect(response.status).toBe(200);
+  const body = (await response.json()) as {
+    outcome: string;
+    turnId: string;
+    notebookRevision: string;
+  };
+  expect(
+    feedback,
+    JSON.stringify({
+      outcome: body.outcome,
+      error: f.store.getTurnById(body.turnId).error,
+      providerCalls: f.createResponses.mock.calls.length,
+    })
+  ).toContain('notebook.unresolved_page_link');
+  const detail = JSON.parse(feedback) as { diagnostics: string[]; linkDiagnostics?: unknown };
+  expect(detail.diagnostics).toContain('notebook.unresolved_page_link');
+  const delivered = f.createResponses.mock.calls
+    .map((call) => {
+      const [, request] = call as unknown as Parameters<
+        LLMGatewayProviderDispatcher['createResponses']
+      >;
+      return JSON.stringify(request.input);
+    })
+    .join('\n');
+  const auditDb = openWorkspaceDb(f.dataRoot, DEMO_WORKSPACE_ID);
+  let audit: string;
+  try {
+    audit = JSON.stringify(listWorkspaceAuditEvents(auditDb, DEMO_WORKSPACE_ID, f.coreDb));
+  } finally {
+    auditDb.sqlite.close();
+  }
+  const otherOutputs = [
+    JSON.stringify(body),
+    JSON.stringify(refusalBody),
+    JSON.stringify(warn.mock.calls),
+    audit,
+  ].join('\n');
+  expect(otherOutputs).not.toContain('linkDiagnostics');
+  for (const forbidden of ['PRIVATE-UNSELECTED', 'a-unselected', f.dataRoot]) {
+    expect(delivered).not.toContain(forbidden);
+    expect(otherOutputs).not.toContain(forbidden);
+  }
+  for (const target of targets) expect(otherOutputs).not.toContain(target);
+  expect(detail.linkDiagnostics).toEqual(expectedLinks);
+  expect(body.outcome).toBe('published');
+  expect(f.createResponses).toHaveBeenCalledTimes(2);
+  const after = notebook.readRevision(body.notebookRevision);
+  expect(after.parentRevision).toBe(before);
+  expect(notebook.publishedRevision()).toBe(after.revision);
+  expect(after.files['guide/a.md']).toContain('[Selected target](../victim.md#heading)');
+  expect(after.files['guide/b.md']).toContain('[Selected target](/victim.md)');
+  expect(after.files['victim.md']).toBe(victim);
+  expect(after.files['a-unselected.md']).toBe(omitted);
+  expect(f.store.listKnowledgeProposals(DEMO_WORKSPACE_ID)).toEqual([]);
+  const turn = f.store.getTurnById(body.turnId);
+  expect(turn.status).toBe('completed');
+  expect(turn.items.filter((item) => item.type === 'tool-call')).toEqual([
+    expect.objectContaining({ tool: 'knowledge.notebook-workspace.update', status: 'completed' }),
+    expect.objectContaining({ tool: 'knowledge.notebook.update', status: 'failed' }),
+    expect.objectContaining({ tool: 'knowledge.notebook-workspace.update', status: 'completed' }),
+    expect.objectContaining({ tool: 'knowledge.notebook.update', status: 'completed' }),
+    expect.objectContaining({ tool: 'knowledge.result', status: 'completed' }),
+  ]);
+  // Retained author Tool feedback is authorized; only the result to the requester is separate.
+  const result = turn.items.find(
+    (item) => item.type === 'tool-call' && item.tool === 'knowledge.result'
+  );
+  expect(JSON.stringify(result)).not.toContain('linkDiagnostics');
 }, 120_000);
