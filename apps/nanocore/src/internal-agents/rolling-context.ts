@@ -260,7 +260,7 @@ export async function prepareInternalAgentContext(
     currentTurn.internalExecution.profileId === undefined ||
     currentTurn.internalExecution.limits === undefined
   )
-    input.store.updateTurn(input.turn.id, { internalExecution: execution });
+    await input.store.updateTurn(input.turn.id, { internalExecution: execution });
   const environmentDigest = internalContextDigest({
     version: 1,
     strategy: 'rolling',
@@ -509,7 +509,7 @@ export async function prepareInternalAgentContext(
     if (Buffer.byteLength(JSON.stringify([internalContextSummaryMessage(next)])) >= beforeBytes)
       throw invalidSummary();
     assertCurrent();
-    const stored = input.store.createItem(next);
+    const stored = await input.store.createItem(next);
     if (stored.type !== 'context-summary') throw invalidSummary();
     summaries.set(stored.id, stored);
     summary = stored;
