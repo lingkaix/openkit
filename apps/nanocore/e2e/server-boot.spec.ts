@@ -146,6 +146,7 @@ describe('nanocore e2e server boot', () => {
     const { dataRoot, baseUrl } = harness;
     await harness.stop();
     const databasePath = join(dataRoot, 'server', 'db', 'core.sqlite');
+    expect(await readdir(dirname(databasePath))).toEqual([basename(databasePath)]);
     const corruptBytes = Buffer.from(
       'Damaged server authority: do not create a fresh identity store.'
     );

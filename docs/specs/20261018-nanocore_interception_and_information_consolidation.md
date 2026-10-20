@@ -56,6 +56,8 @@ A point is an operation at a stage, written `<operation>@<stage>`. Stages are pr
 
 Only crossings Core can hold before release are enforceable. Worker-internal shell, files and network remain outside this mechanism's coverage. Sandbox containment still applies; a harness hook alone cannot supply Core enforcement. Returning content enters its own ingress and disclosure checks. A result gate cannot undo an effect that already ran.
 
+Core MUST validate, bound, redact or reject tool output through the relevant ingress/disclosure operation before returning it to the model. Admission uses `propose` and `decide`; `commit` releases admitted output, and `completed` records the observation. This uses the existing stages and adds no stage.
+
 Before v0.1.0 the modes are observe, advise, gate and transform. Execution follows the Policy owner's transform -> advise -> gate -> final mandatory Kernel pipeline. Advice contributes proposal attributes, not authority. Commit obligations run only after final allow. Credential injection is a Core-only obligation bound to the approved target, account and action, not a pre-authorization participant transform. Mandatory schema, authentication, confidentiality, containment and transaction constraints remain.
 
 The later react mode changes Policy after successful access under the binding author's authority, as an NGAC obligation. It is deferred to [issue #375](https://github.com/lingkaix/openkit/issues/375). Deterministic commit obligations do not activate react. No active react mode or implementation is claimed.

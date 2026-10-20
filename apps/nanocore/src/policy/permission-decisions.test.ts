@@ -999,6 +999,7 @@ describe('permission decision recorder', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       };
 
+      // Same-millisecond records tie-break by decision ID, so fixture IDs ascend in recording order.
       recordProductPermissionDecision({
         ...base,
         decisionId: 'pd_00000000-0000-7d59-952b-a37801be80df',
@@ -1007,7 +1008,7 @@ describe('permission decision recorder', () => {
       });
       recordProductPermissionDecision({
         ...base,
-        decisionId: 'pd_00000000-0000-7cda-9251-4f38c967a8d3',
+        decisionId: 'pd_00000000-0000-7e1a-9251-4f38c967a8d3',
         reasonCode: 'repo_push_approved',
         result: 'allow',
       });
@@ -1030,7 +1031,7 @@ describe('permission decision recorder', () => {
         }))
       ).toEqual([
         { decisionId: 'pd_00000000-0000-7d59-952b-a37801be80df', result: 'require_approval' },
-        { decisionId: 'pd_00000000-0000-7cda-9251-4f38c967a8d3', result: 'allow' },
+        { decisionId: 'pd_00000000-0000-7e1a-9251-4f38c967a8d3', result: 'allow' },
       ]);
       expect(
         workspaceDb.sqlite

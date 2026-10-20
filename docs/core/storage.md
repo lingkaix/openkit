@@ -102,6 +102,10 @@ Workspace-local control authority MUST NOT depend on a server-global database to
 
 The scope control store owns mutable Workspace, Thread, Turn, AgentSession, Item revision, catalog, configuration-head and execution records. Existing domain owners keep their meanings and retention rules. Immutable content and authored revision bytes retain their original identities and content owners; database heads select the admitted revision. Authored server configuration stays server-scoped, and Workspace executions retain its admitted revision/digest as provenance rather than server authority.
 
+Required user work data produced or used on any placement MUST return to OpenKit storage under its existing owners before work counts as complete or its only copy is removed. This includes files, results, retrievable conversations and Items, usage needed for accounting, and Knowledge candidates.
+
+OpenKit storage MAY use admitted remote backends; residence in a user's cloud account alone does not satisfy this obligation. The [neutrality decision](../decisions/20261020-compute_and_harness_neutrality.md) permits unavailable provider-internal execution details, but required user data MUST NOT be relabelled as internal.
+
 Reuse the shared Storage Service for byte locations and immutable handoff; it does not decide publication or access. Knowledge keeps its content/history semantics while its mutable heads obey the same commit rule. Application-owned business stores and opaque process data are not additional control stores: their writers and snapshot boundaries must be explicit, and cross-store operations are effects. No unclassified mutable authority may be silently omitted from a Workspace backup.
 
 Secret values are not stored in normal Workspace files or protocol records. Workspace storage may keep secret references, grants, injection rules, and audit metadata, while secret material belongs behind Vault. Derived projections rebuild only from intact canonical control records and content, never the reverse.
