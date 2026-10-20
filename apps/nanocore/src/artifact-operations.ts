@@ -682,7 +682,7 @@ export function createArtifactOperationImplementations(
                 workspaceDb
               );
               const workerRequestId = deriveArtifactReviewWorkerRequestId(input.requestId);
-              upsertWorkerCheckpoint(workspaceDb, {
+              await upsertWorkerCheckpoint(workspaceDb, {
                 workspaceId,
                 threadId: review.sourceThreadId,
                 turnId: followUpTurnId,

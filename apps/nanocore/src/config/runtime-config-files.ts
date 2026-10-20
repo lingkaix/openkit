@@ -41,6 +41,7 @@ import {
   InternalRoleProfilesConfigSchema,
   ModelCatalogSchema,
   OpenKitConfigSchema,
+  ProviderKindSchema,
   parseResourceCatalogDocument,
   parseWorkspaceDataSourceCatalog,
   requireCredentialFreeHttpsGitLocator,
@@ -954,6 +955,14 @@ export class RuntimeConfigFileService {
    * @param content Source content to write.
    */
   private writeFileAtomically(spec: RuntimeConfigFileSpec, content: string): void {
+    // Historical kind normalization belongs to retained reads, never new writes.
+    if (spec.kind === 'provider' && !ProviderKindSchema.safeParse(parse(content).kind).success) {
+      throw new RuntimeConfigFileServiceError(
+        'config_file_invalid',
+        'Provider kind must use a current supported value.',
+        400
+      );
+    }
     ensureCanonicalDirectory(dirname(spec.absolutePath), 0o777);
     if (isWorkspaceScopedKind(spec.kind)) {
       this.assertInsideWorkspaceConfigRoot(

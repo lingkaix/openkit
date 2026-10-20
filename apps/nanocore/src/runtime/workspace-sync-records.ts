@@ -348,7 +348,7 @@ function workspaceReviewAuditSummary(changeSet: WorkspaceChangeSet): string {
  * @returns Stored input snapshots.
  */
 export function recordWorkspaceInputSnapshots(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
   snapshots: readonly WorkspaceInputSnapshot[]
 ): WorkspaceInputSnapshot[] {
   return snapshots.map((snapshot) => recordWorkspaceInputSnapshot(workspaceDb, snapshot));
@@ -404,7 +404,7 @@ export function recordWorkspaceBackendHandoff(
  * @returns Stored workspace review items in stable newest-first order.
  */
 export function listWorkspaceSyncReviews(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
   workspaceId: string
 ): WorkspaceSyncReviewItem[] {
   return (
@@ -440,7 +440,7 @@ export function listWorkspaceSyncReviews(
  * @returns Stored workspace review item, or null.
  */
 export function getWorkspaceSyncReview(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
   workspaceId: string,
   reviewId: string
 ): WorkspaceSyncReviewItem | null {
@@ -543,7 +543,7 @@ export function updateWorkspaceSyncReviewDecision(
  * @returns Stored input snapshots in newest-first order.
  */
 export function listWorkspaceInputSnapshots(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
   workspaceId: string
 ): WorkspaceInputSnapshot[] {
   return listPayloadRows(
@@ -562,7 +562,7 @@ export function listWorkspaceInputSnapshots(
  * @returns Stored materialization records in newest-first order.
  */
 export function listWorkspaceMaterializationRecords(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
   workspaceId: string
 ): WorkspaceMaterializationRecord[] {
   return listPayloadRows(
@@ -581,7 +581,7 @@ export function listWorkspaceMaterializationRecords(
  * @returns Stored change sets in newest-first order.
  */
 export function listWorkspaceChangeSets(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
   workspaceId: string
 ): WorkspaceChangeSet[] {
   return listPayloadRows(
@@ -600,7 +600,7 @@ export function listWorkspaceChangeSets(
  * @returns Stored output manifests in newest-first order.
  */
 export function listWorkerOutputManifests(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
   workspaceId: string
 ): WorkerOutputManifest[] {
   return listPayloadRows(
@@ -619,7 +619,7 @@ export function listWorkerOutputManifests(
  * @returns Exportable workspace sync row bundle.
  */
 export function listExportableWorkspaceSyncRecords(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
   workspaceId: string
 ): ExportableWorkspaceSyncRecords {
   return {
@@ -741,7 +741,7 @@ export function importWorkspaceSyncRecords(
  * @param snapshot Input snapshot to persist.
  */
 function recordWorkspaceInputSnapshot(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
   snapshot: WorkspaceInputSnapshot
 ): WorkspaceInputSnapshot {
   const parsed = WorkspaceInputSnapshotSchema.parse(snapshot);
@@ -885,7 +885,7 @@ function recordWorkspaceMaterializationRecord(
  * @returns Stored backend handles in newest-first order.
  */
 export function listBackendWorkspaceHandles(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
   workspaceId: string
 ): BackendWorkspaceHandle[] {
   return listPayloadRows(
@@ -1077,7 +1077,7 @@ export function requireCompleteBackendWorkspaceHandleHandoff(
  * @returns Updated backend handles in stable order.
  */
 export function updateBackendWorkspaceHandleCleanupStatus(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
   workspaceId: string,
   packageSnapshotId: string,
   cleanupStatus: BackendWorkspaceHandle['cleanupStatus'],
@@ -1148,7 +1148,7 @@ export function updateBackendWorkspaceHandleCleanupStatus(
  * @param preserveCleanupProgress Whether an exact materialization replay may retain mutable cleanup state.
  */
 function recordBackendWorkspaceHandle(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
   handle: BackendWorkspaceHandle,
   preserveCleanupProgress = false
 ): void {
@@ -1210,7 +1210,7 @@ function recordBackendWorkspaceHandle(
  * @param manifest Worker output manifest to persist.
  */
 export function recordWorkerOutputManifest(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
   manifest: WorkerOutputManifest
 ): void {
   const parsed = WorkerOutputManifestSchema.parse(manifest);
@@ -1295,7 +1295,7 @@ function inferBackendWorkspaceHandle(
  * @returns Product-safe worker output manifest.
  */
 function inferWorkerOutputManifest(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
   changeSet: WorkspaceChangeSet
 ): WorkerOutputManifest {
   const materialization = getWorkspaceMaterializationRecord(
@@ -1331,7 +1331,7 @@ function inferWorkerOutputManifest(
  * @returns Stored input snapshot, or null.
  */
 function getWorkspaceInputSnapshot(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
   workspaceId: string,
   inputSnapshotId: string
 ): WorkspaceInputSnapshot | null {
@@ -1361,7 +1361,7 @@ function getWorkspaceInputSnapshot(
  * @returns Stored materialization record, or null.
  */
 function getWorkspaceMaterializationRecord(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
   workspaceId: string,
   materializationRecordId: string
 ): WorkspaceMaterializationRecord | null {
@@ -1388,7 +1388,10 @@ function getWorkspaceMaterializationRecord(
  * @param workspaceDb Open workspace-scope database handle.
  * @param changeSet Change set to persist.
  */
-function recordWorkspaceChangeSet(workspaceDb: WorkspaceDb, changeSet: WorkspaceChangeSet): void {
+function recordWorkspaceChangeSet(
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
+  changeSet: WorkspaceChangeSet
+): void {
   const payloadJson = JSON.stringify(WorkspaceChangeSetSchema.parse(changeSet));
   const existing = workspaceDb.sqlite
     .prepare(
@@ -1448,7 +1451,7 @@ function recordWorkspaceChangeSet(workspaceDb: WorkspaceDb, changeSet: Workspace
  * @returns Change set with source lineage when available.
  */
 function withMaterializationSourceId(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
   changeSet: WorkspaceChangeSet
 ): WorkspaceChangeSet {
   if (changeSet.sourceId) {
@@ -1488,7 +1491,7 @@ function withMaterializationSourceId(
  * @throws Error when the review does not exist.
  */
 function requireWorkspaceSyncReview(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
   workspaceId: string,
   reviewId: string
 ): WorkspaceSyncReviewItem {
@@ -1511,7 +1514,7 @@ function requireWorkspaceSyncReview(
  * @returns Public joined review item.
  */
 function mapWorkspaceReviewRow(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
   row: StagedWorkspaceReviewRow
 ): WorkspaceSyncReviewItem {
   const review = StagedWorkspaceReviewReaderSchema.parse(
@@ -1543,7 +1546,7 @@ function mapWorkspaceReviewRow(
  * @throws Error when the change set does not exist.
  */
 function requireWorkspaceChangeSet(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
   workspaceId: string,
   changeSetId: string
 ): WorkspaceChangeSet {
@@ -1586,7 +1589,7 @@ function requireWorkspaceChangeSet(
  * @returns Parsed payloads in newest-first order.
  */
 function listPayloadRows<T>(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
   tableName:
     | 'workspace_input_snapshots'
     | 'workspace_materialization_records'

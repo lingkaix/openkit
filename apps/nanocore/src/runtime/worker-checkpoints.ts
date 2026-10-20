@@ -444,7 +444,7 @@ export function updateWorkerCheckpoint(
  * @returns Worker checkpoint record, or null.
  */
 export function getWorkerCheckpoint(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
   workspaceId: string,
   threadId: string,
   turnId: string
@@ -468,7 +468,7 @@ export function getWorkerCheckpoint(
  * @returns Unordered recorded checkpoints without inspecting another Thread.
  */
 export function listThreadWorkerCheckpoints(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
   workspaceId: string,
   threadId: string
 ): WorkerCheckpointRecord[] {
@@ -488,7 +488,7 @@ export function listThreadWorkerCheckpoints(
  * @returns True when a checkpoint row was deleted.
  */
 export function clearWorkerCheckpoint(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
   workspaceId: string,
   threadId: string,
   turnId: string
@@ -507,7 +507,7 @@ export function clearWorkerCheckpoint(
  * @returns Recoverable worker checkpoints in deterministic order.
  */
 export function listRecoverableWorkerCheckpoints(
-  workspaceDb: WorkspaceDb
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>
 ): WorkerCheckpointRecord[] {
   return (
     workspaceDb.sqlite
@@ -529,7 +529,7 @@ export function listRecoverableWorkerCheckpoints(
  * @returns Worker checkpoint rows in oldest-first order.
  */
 export function listExportableWorkerCheckpoints(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
   workspaceId: string
 ): WorkerCheckpointRecord[] {
   return (
@@ -550,7 +550,7 @@ export function listExportableWorkerCheckpoints(
  * @param checkpoints Worker checkpoint rows to replay.
  */
 export function importWorkerCheckpoints(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: Pick<WorkspaceDb, 'sqlite'>,
   checkpoints: readonly WorkerCheckpointRecord[]
 ): void {
   for (const checkpoint of checkpoints) {

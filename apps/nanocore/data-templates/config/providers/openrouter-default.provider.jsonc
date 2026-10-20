@@ -5,7 +5,7 @@
   "schemaVersion": 1,
   "id": "openrouter",
   "displayName": "OpenRouter",
-  "kind": "gateway",
+  "kind": "llm-gateway",
   "baseUrl": "https://openrouter.ai/api/v1",
   "models": [
     "poolside/laguna-s-2.1:free",

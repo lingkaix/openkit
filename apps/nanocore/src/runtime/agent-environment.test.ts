@@ -909,7 +909,7 @@ describe('agent environment package resolver', () => {
           defaultModel: 'openai/gpt-5.1',
           displayName: 'Agent OpenRouter',
           id: 'agent-openrouter',
-          kind: 'gateway',
+          kind: 'llm-gateway',
           models: ['openai/gpt-5.1'],
           vendor: 'openrouter',
         },
@@ -2507,7 +2507,7 @@ describe('public network AEP admission', () => {
           {
             id: 'agent-openrouter',
             vendor: 'openrouter',
-            kind: 'gateway',
+            kind: 'llm-gateway',
             displayName: 'Gateway',
             baseUrl: 'https://provider.example.com/v1',
             models: ['openai/gpt-5.1'],
@@ -2612,7 +2612,7 @@ describe('public network AEP admission', () => {
     const provider = {
       id: 'agent-openrouter',
       vendor: 'openrouter',
-      kind: 'gateway' as const,
+      kind: 'llm-gateway' as const,
       displayName: 'Gateway',
       baseUrl: 'https://provider.example.com/v1',
       models: ['openai/gpt-5.1'],
@@ -2777,7 +2777,7 @@ describe('public network AEP admission', () => {
         {
           id: 'agent-openrouter',
           vendor: 'openrouter',
-          kind: 'gateway',
+          kind: 'llm-gateway',
           displayName: 'Gateway',
           baseUrl: 'https://provider.example.com/v1',
           models: ['openai/gpt-5.1'],
@@ -2896,7 +2896,7 @@ describe('public network AEP admission', () => {
         {
           id: 'agent-openrouter',
           vendor: 'openrouter',
-          kind: 'gateway',
+          kind: 'llm-gateway',
           displayName: 'Gateway',
           baseUrl: 'https://search.example.com/llm',
           models: ['openai/gpt-5.1'],
@@ -2907,7 +2907,7 @@ describe('public network AEP admission', () => {
         {
           id: 'agent-openrouter',
           vendor: 'openrouter',
-          kind: 'gateway',
+          kind: 'llm-gateway',
           displayName: 'Gateway',
           baseUrl: 'https://provider.example.com/v1',
           models: ['openai/gpt-5.1'],

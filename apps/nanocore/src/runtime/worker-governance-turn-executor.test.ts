@@ -5800,7 +5800,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
           defaultModel: 'openai/gpt-5.2',
           displayName: 'Agent OpenRouter',
           id: 'agent-openrouter',
-          kind: 'gateway',
+          kind: 'llm-gateway',
           models: ['openai/gpt-5.2'],
           secretRef: 'test:provenance-api-key',
           vendor: 'openrouter',

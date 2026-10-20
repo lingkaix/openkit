@@ -103,7 +103,7 @@ function createOllamaProviderOptions() {
       defaultModel: 'openai/gpt-5.1',
       displayName: 'OpenRouter',
       id: 'openrouter-test',
-      kind: 'gateway',
+      kind: 'llm-gateway',
       models: ['openai/gpt-5.1'],
       secretRef: 'env:OPENROUTER_API_KEY',
       vendor: 'openrouter',

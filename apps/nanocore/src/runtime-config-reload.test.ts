@@ -430,7 +430,7 @@ describe('runtime config reload API', () => {
           defaultModel: 'openai/gpt-5.1',
           displayName: 'Agent OpenRouter',
           id: 'agent-openrouter',
-          kind: 'gateway',
+          kind: 'llm-gateway',
           models: ['openai/gpt-5.1'],
           vendor: 'openrouter',
           secretRef: 'env:OPENKIT_RELOAD_FIXTURE_KEY',

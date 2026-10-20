@@ -383,7 +383,7 @@ export function createMemoryOperationImplementations(
           if (!dependencies.repositoryWorkspaceDb)
             throw new OperationError('memory_unavailable', 'Memory delivery is unavailable.', 503);
           const db = dependencies.repositoryWorkspaceDb(input.workspaceId);
-          const call = startCapabilityCall({
+          const call = await startCapabilityCall({
             workspaceDb: db,
             workspaceId: input.workspaceId,
             authorityActor: context.actorRef,
@@ -408,7 +408,7 @@ export function createMemoryOperationImplementations(
               signal: context.signal ?? new AbortController().signal,
               capabilityCallId: call.id,
             });
-            finishCapabilityCall({
+            await finishCapabilityCall({
               workspaceDb: db,
               callId: call.id,
               status: 'succeeded',
@@ -416,7 +416,7 @@ export function createMemoryOperationImplementations(
             });
             return result;
           } catch (error) {
-            finishCapabilityCall({
+            await finishCapabilityCall({
               workspaceDb: db,
               callId: call.id,
               status: 'failed',

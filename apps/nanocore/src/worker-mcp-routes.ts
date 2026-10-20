@@ -270,7 +270,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
       });
       workspaceDb = openWorkspaceDb(input.coreDb.dataRoot, environmentPackage.scope.workspaceId);
       applyScopedMigrations(workspaceDb);
-      call = startCapabilityCall({
+      call = await startCapabilityCall({
         agentId: environmentPackage.agent.agentId,
         agentSessionId: environmentPackage.scope.agentSessionId,
         authorityActor: environmentPackage.scope.triggerActor,
@@ -346,7 +346,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
         };
       });
       const result = { servers };
-      finishCapabilityCall({ callId: call.id, status: 'succeeded', workspaceDb });
+      await finishCapabilityCall({ callId: call.id, status: 'succeeded', workspaceDb });
       return context.json(result);
     } catch (error) {
       const normalized =
@@ -631,7 +631,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                   } catch {
                     // Withhold content after authority changes; the completed effect stays completed.
                   }
-                  finishCapabilityCall({
+                  await finishCapabilityCall({
                     callId: call.id,
                     status: 'succeeded',
                     workspaceDb: activeWorkspaceDb,
@@ -665,7 +665,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                   request.params.name,
                   (request.params.arguments ?? {}) as Record<string, unknown>
                 );
-                finishCapabilityCall({
+                await finishCapabilityCall({
                   callId: call.id,
                   status: 'succeeded',
                   workspaceDb: activeWorkspaceDb,
@@ -786,7 +786,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
               workspaceDb: activeWorkspaceDb,
             });
             if (current) {
-              stampCapabilityCallSchemaSnapshot({
+              await stampCapabilityCallSchemaSnapshot({
                 callId: call.id,
                 schemaSnapshotId: current.schemaSnapshotId,
                 workspaceDb: activeWorkspaceDb,
@@ -803,7 +803,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                     ).some((rule) => rule.effect === 'prohibit')
                 ),
               };
-              finishCapabilityCall({
+              await finishCapabilityCall({
                 callId: call.id,
                 status: 'succeeded',
                 workspaceDb: activeWorkspaceDb,
@@ -849,7 +849,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                   ).some((rule) => rule.effect === 'prohibit')
               ),
             };
-            finishCapabilityCall({
+            await finishCapabilityCall({
               callId: call.id,
               status: 'succeeded',
               workspaceDb: activeWorkspaceDb,
@@ -1585,7 +1585,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
           409
         );
       assertValidMcpToolArguments(snapshot.tools, input.toolName, input.arguments);
-      stampCapabilityCallSchemaSnapshot({
+      await stampCapabilityCallSchemaSnapshot({
         callId: call.id,
         schemaSnapshotId: snapshot.schemaSnapshotId,
         workspaceDb: input.workspaceDb,
@@ -1614,7 +1614,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
         duplicate ??
         raiseRecordedPendingRequest(input.input.store, input.workspaceDb.sqlite, capture);
       if (!input.input.store.listAllItems().some((item) => item.id === raised.requestItemId))
-        input.input.store.createItem({
+        await input.input.store.createItem({
           id: raised.requestItemId,
           owner: { kind: 'workspace', workspaceId: raised.workspaceId },
           threadId: raised.threadId,
@@ -1629,7 +1629,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
           kind: 'permission',
         });
       publishTerminalItem = false;
-      finishCapabilityCall({
+      await finishCapabilityCall({
         callId: call.id,
         errorCode:
           policyDecision.result === 'require_approval'
@@ -1732,7 +1732,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
       throw error;
     }
     try {
-      finishCapabilityCall({
+      await finishCapabilityCall({
         callId: call.id,
         status: 'succeeded',
         workspaceDb: input.workspaceDb,
@@ -1845,7 +1845,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
           )
           .run(call.id);
       }
-      finishCapabilityCall({
+      await finishCapabilityCall({
         callId: call.id,
         errorCode: normalized.code,
         status: terminalStatus,
@@ -1923,7 +1923,7 @@ async function currentMcpEscalationSnapshot(input: WorkerMcpToolCallInput) {
       });
     if (!hasCurrentMcpWorkspaceAuthority(input.input.coreDb!, input.environmentPackage, true))
       throw mcpDeniedError();
-    finishCapabilityCall({
+    await finishCapabilityCall({
       callId: discovery.id,
       status: 'succeeded',
       workspaceDb: input.workspaceDb,
@@ -2652,7 +2652,7 @@ async function observeWorkerMcpTools(input: {
       409
     );
   }
-  stampCapabilityCallSchemaSnapshot({
+  await stampCapabilityCallSchemaSnapshot({
     callId: input.call.id,
     schemaSnapshotId: snapshotId,
     workspaceDb: input.workspaceDb,
