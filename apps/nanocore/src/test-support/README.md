@@ -28,6 +28,8 @@ This directory owns explicit reusable NanoCore test fixtures and no production b
 
 Its CA-as-leaf mode reproduces a server certificate that Rustls rejects although some other TLS clients accept it. A bounded pipe query observes HTTP requests, Token presentation and durable target absence after certificate rejection. These observations remain fixture-local and supply no runtime authority.
 
+`nanohost-epoch-outage-peer.ts` supplies a migrated temporary Core database and native H2 listener for the NanoHost Epoch outage tests. It uses production Token admission, generation allocation, readiness, effect polling and private Harness routing. An idle synthetic Harness binding is declared through its production record owner; no Sandbox, Worker or effect is launched. The parent can stop and resume only this listener, and outage acknowledgement waits for actual physical-session close observers. The captured startup pipe carries one synthetic Token, never test logs. Run the focused `epoch_outage_tests` Cargo cases from `apps/nanohost`; the caller owns all temporary files, sockets and processes.
+
 Run the tests that consume the changed fixture and the NanoCore package test suite.
 
 See [NanoCore README](../../README.md) for the package test model.

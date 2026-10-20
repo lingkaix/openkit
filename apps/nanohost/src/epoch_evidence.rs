@@ -357,6 +357,15 @@ pub fn observe_recovery(state_root: &Path) -> io::Result<RecoveryObservation> {
     observe_recovery_at(state_root, Path::new(REBUILD_FENCE_STARTED_PATH))
 }
 
+/// Observes production recovery state without touching the installed service marker.
+#[cfg(test)]
+pub(crate) fn fixture_observe_recovery(
+    state_root: &Path,
+    fence_path: &Path,
+) -> io::Result<RecoveryObservation> {
+    observe_recovery_at(state_root, fence_path)
+}
+
 /// Observes recovery roots against one explicit first-fence marker path.
 fn observe_recovery_at(state_root: &Path, fence_path: &Path) -> io::Result<RecoveryObservation> {
     let fence_started = read_fence_started(fence_path)?;
@@ -434,12 +443,53 @@ pub(crate) fn record_fence_started_at(path: &Path, fence_started: SystemTime) ->
     file.sync_all()
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Redirects only marker consumption on the current fixture runtime thread.
+    static FIXTURE_FENCE_CLEAR_PATH: std::cell::RefCell<Option<PathBuf>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+/// Restores the prior test-only path on the same thread, including during unwinding.
+#[cfg(test)]
+pub(crate) struct FixtureFenceClearPath {
+    previous: Option<PathBuf>,
+    thread_bound: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+#[cfg(test)]
+impl Drop for FixtureFenceClearPath {
+    fn drop(&mut self) {
+        FIXTURE_FENCE_CLEAR_PATH.with(|path| {
+            path.replace(self.previous.take());
+        });
+    }
+}
+
+/// Contains even an erroneous readiness acknowledgement within a current-thread fixture.
+///
+/// The override changes only the clear destination, never the clock or readiness gate.
+#[cfg(test)]
+pub(crate) fn fixture_fence_clear_path(path: PathBuf) -> FixtureFenceClearPath {
+    assert!(path.is_absolute(), "fixture marker path must be absolute");
+    assert_ne!(path, Path::new(REBUILD_FENCE_STARTED_PATH));
+    FixtureFenceClearPath {
+        previous: FIXTURE_FENCE_CLEAR_PATH.with(|slot| slot.replace(Some(path))),
+        thread_bound: std::marker::PhantomData,
+    }
+}
+
 /// Removes the consumed temporary fence timestamp after readiness is proved.
 ///
 /// # Errors
 ///
 /// Returns an I/O error when an existing marker cannot be removed.
 pub fn clear_fence_started() -> io::Result<()> {
+    #[cfg(test)]
+    if let Some(path) = FIXTURE_FENCE_CLEAR_PATH.with(|path| path.borrow().clone()) {
+        return clear_fence_started_at(&path);
+    }
     clear_fence_started_at(Path::new(REBUILD_FENCE_STARTED_PATH))
 }
 

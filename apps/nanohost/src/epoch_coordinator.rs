@@ -1,5 +1,9 @@
 //! Closed Docker Runtime Epoch process coordination.
 
+#[cfg(test)]
+#[path = "epoch_outage_tests.rs"]
+mod epoch_outage_tests;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::CString;
 use std::fs::{self, DirBuilder, File, OpenOptions};

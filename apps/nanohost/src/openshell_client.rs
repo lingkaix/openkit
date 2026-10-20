@@ -1186,6 +1186,23 @@ where
 
 #[cfg(test)]
 impl WorkerBootstrapMonitor {
+    /// Runs the unchanged SDK response producer with fixture-owned event transport.
+    pub(crate) async fn from_test_events<S>(
+        events: S,
+        bridge_route: AbortHandle,
+    ) -> Result<Self, EpochFault>
+    where
+        S: Stream<Item = Result<ExecSandboxEvent, tonic::Status>> + Unpin + Send + 'static,
+    {
+        let (marker_ready, marker_received) = oneshot::channel();
+        let response = tokio::spawn(monitor_worker_bootstrap(events, marker_ready));
+        if marker_received.await.is_err() || response.is_finished() {
+            response.abort();
+            return Err(EpochFault::MemberExited(None));
+        }
+        Ok(Self::from_test_task(response, bridge_route))
+    }
+
     /// Creates a real response-task monitor for coordinator lifecycle regressions.
     pub(crate) fn from_test_task(
         response: JoinHandle<Result<WorkerBootstrapCompletion, EpochFault>>,
