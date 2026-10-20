@@ -55,17 +55,28 @@ function entrypointMigrationPhase(rebuild: () => unknown[]): BootPhase {
     'readDataRootLayoutMarker',
     'requireBootValue',
     'listAppliedMigrationIds',
-    `let coreDb; const dataRoot = '/fixture'; const dataRootLock = {}; const freshCoreInitialization = false;\n${javascript}\nreturn phase;`
+    'FsStore',
+    'existsSync',
+    'workspaceDbPath',
+    'refuseScope',
+    `let coreDb; let sharedStore; const dataRoot = '/fixture'; const dataRootLock = {}; const freshCoreInitialization = false;\n${javascript}\nreturn phase;`
   )(
-    vi.fn(() => ({})),
+    vi.fn(() => ({ sqlite: { prepare: vi.fn(() => ({ all: vi.fn(() => []) })) } })),
     vi.fn(),
     vi.fn(),
-    vi.fn(),
+    vi.fn((_dataRoot: string, validateFileAuthority?: () => void) => validateFileAuthority?.()),
     rebuild,
     vi.fn(),
     vi.fn(() => ({ layoutVersion: 1 })),
     vi.fn(() => ({ acquisition: 'fixture' })),
-    vi.fn(() => [])
+    vi.fn(() => []),
+    Object.assign(vi.fn(), { validateFileAuthority: vi.fn() }),
+    vi.fn(() => true),
+    vi.fn(
+      (dataRoot: string, workspaceId: string) =>
+        `${dataRoot}/workspaces/${workspaceId}/db/workspace.sqlite`
+    ),
+    vi.fn()
   ) as BootPhase;
 }
 

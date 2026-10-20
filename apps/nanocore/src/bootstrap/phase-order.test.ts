@@ -157,7 +157,7 @@ describe('NanoCore boot phase order', () => {
       migrationsPhase
     );
     const scopedIntegrityCheck = source.indexOf(
-      'verifyAndMigrateExistingScopedDatabases(dataRoot)',
+      'verifyAndMigrateExistingScopedDatabases(dataRoot, () => {',
       coreIntegrityCheck
     );
     const criticalFailureGate = source.indexOf(

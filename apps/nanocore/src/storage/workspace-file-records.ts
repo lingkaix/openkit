@@ -54,6 +54,7 @@ import {
 } from '@openkit/worker-protocol';
 import { applyEdits, modify } from 'jsonc-parser';
 import { z } from 'zod';
+import { isScopeAdmitted, refuseScope } from '../bootstrap/readiness.js';
 import { parseJsoncObject } from '../config/jsonc.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import {
@@ -76,7 +77,12 @@ import {
 import { artifactFilePayloadPath } from './artifacts/file-records.js';
 import { CanonicalPublicationError } from './canonical-publication-error.js';
 import { reserveCanonicalFileWrite } from './canonical-write-capacity.js';
-import { ensureLayoutDirectories, ensureWorkspaceLayoutRoot } from './fs-layout.js';
+import {
+  assertWorkspaceWorkOwner,
+  ensureLayoutDirectories,
+  ensureWorkspaceLayoutRoot,
+  WorkOwnershipViolationError,
+} from './fs-layout.js';
 import {
   StoredArtifactSnapshotV1Schema,
   StoredEventPayloadV1Schema,
@@ -965,54 +971,71 @@ export function readPublishedAgentSessionIds(
 }
 
 /**
- * Loads every published workspace from canonical file records.
+ * Loads admitted published Workspaces from canonical file records, refusing invalid scopes in place.
  *
  * @param dataRoot Data root that owns the Workspace tree.
- * @returns Canonical workspace records in workspace-directory order.
- * @throws Error when record lineage is invalid or a global id collides.
+ * @returns Valid records in directory order; disputed global identities exclude both owners.
+ * @throws When the shared container or a Workspace identity is unsafe rather than an attributable record failure.
  */
 export function loadWorkspaceFileRecords(dataRoot: string): WorkspaceFileRecords[] {
   const workspacesRoot = ensureLayoutDirectories(dataRoot).workspaces;
   assertCanonicalDirectory(workspacesRoot);
-  const records = listDirectoryNames(workspacesRoot)
-    .filter((name) => name !== '.staging')
-    .map((workspaceId) => {
-      assertSafeWorkspacePathSegment(workspaceId, 'Workspace id');
-      return loadWorkspace(join(workspacesRoot, workspaceId), workspaceId);
-    });
-  const threadIds = new Set<string>();
-  const turnIds = new Set<string>();
-  const itemIds = new Set<string>();
-  const artifactIds = new Set<string>();
-  const proposalIds = new Set<string>();
-  const sourceIds = new Set<string>();
-  const agentSessionIds = new Set<string>();
-
-  for (const workspaceRecords of records) {
-    for (const thread of workspaceRecords.threads) {
-      claimGlobalId(threadIds, thread.id, 'thread');
-    }
-    for (const turn of workspaceRecords.turns) {
-      claimGlobalId(turnIds, turn.id, 'turn');
-      for (const item of turn.items) {
-        claimGlobalId(itemIds, item.id, 'item');
-      }
-    }
-    for (const artifact of workspaceRecords.artifacts) {
-      claimGlobalId(artifactIds, artifact.id, 'artifact');
-    }
-    for (const proposal of workspaceRecords.knowledgeProposals) {
-      claimGlobalId(proposalIds, proposal.id, 'knowledge proposal');
-    }
-    for (const source of workspaceRecords.knowledgeSources) {
-      claimGlobalId(sourceIds, source.id, 'knowledge source');
-    }
-    for (const session of workspaceRecords.agentSessions) {
-      claimGlobalId(agentSessionIds, session.id, 'AgentSession');
+  const records: WorkspaceFileRecords[] = [];
+  for (const workspaceId of listDirectoryNames(workspacesRoot).filter(
+    (name) => name !== '.staging'
+  )) {
+    assertSafeWorkspacePathSegment(workspaceId, 'Workspace id');
+    if (!isScopeAdmitted(dataRoot, 'workspace', workspaceId)) continue;
+    try {
+      records.push(loadWorkspace(join(workspacesRoot, workspaceId), workspaceId));
+    } catch (error) {
+      if (error instanceof WorkOwnershipViolationError) throw error;
+      refuseScope(dataRoot, { scope: 'workspace', id: workspaceId, check: 'records' });
     }
   }
 
-  return records;
+  // A collision disputes both owners, not whichever one happened to load second.
+  const owners = new Map<string, string>();
+  for (const record of records) {
+    const workspaceId = record.workspace.id;
+    const identities = [
+      ...record.threads.map(({ id }) => `thread:${id}`),
+      ...record.turns.flatMap((turn) => [
+        `turn:${turn.id}`,
+        ...turn.items.map(({ id }) => `item:${id}`),
+      ]),
+      ...record.artifacts.map(({ id }) => `artifact:${id}`),
+      ...record.knowledgeProposals.map(({ id }) => `proposal:${id}`),
+      ...record.knowledgeSources.map(({ id }) => `source:${id}`),
+      ...record.agentSessions.map(({ id }) => `session:${id}`),
+    ];
+    for (const identity of identities) {
+      const previous = owners.get(identity);
+      if (previous !== undefined) {
+        refuseScope(dataRoot, { scope: 'workspace', id: previous, check: 'records' });
+        refuseScope(dataRoot, { scope: 'workspace', id: workspaceId, check: 'records' });
+      } else owners.set(identity, workspaceId);
+    }
+  }
+  return records.filter((record) => isScopeAdmitted(dataRoot, 'workspace', record.workspace.id));
+}
+
+/**
+ * Applies existing append-tail recovery only after the complete Workspace file and SQL admission.
+ * Validation reads remain non-mutating, including when a later record refuses the Workspace.
+ * @param workspaceRoot Admitted canonical Workspace root.
+ * @param records Fully validated history belonging to this Workspace.
+ * @throws When an admitted append boundary cannot be normalized.
+ */
+export function normalizeAdmittedWorkspaceLogTails(
+  workspaceRoot: string,
+  records: WorkspaceFileRecords
+): void {
+  for (const turn of records.turns) {
+    const root = join(workspaceRoot, 'threads', turn.threadId, 'turns', turn.id);
+    normalizeAppendBoundary(join(root, 'items.jsonl'));
+    normalizeAppendBoundary(join(root, 'runtime', 'events.jsonl'));
+  }
 }
 
 /** Discards abandoned private staging at Store startup, before any live admission. Read-only canonical inspection must never delete a concurrent capture. */
@@ -1206,6 +1229,7 @@ function loadWorkspace(workspaceRoot: string, workspaceId: string): WorkspaceFil
         readJson(turnPath),
         (record) => record as Record<string, unknown>
       );
+      assertWorkspaceWorkOwner(rawTurn, workspaceId);
       if (
         rawTurn.items !== undefined &&
         (!Array.isArray(rawTurn.items) || rawTurn.items.length > 0)
@@ -1415,8 +1439,9 @@ function loadItemRevisions(
   const items = new Map<string, Item>();
   const revisions: Item[] = [];
 
-  for (const value of readCanonicalJsonLines(path, true)) {
+  for (const value of readDurableCanonicalJsonLines(path)) {
     const item = readRetainedV1(value, ItemReaderSchema.parse);
+    assertWorkspaceWorkOwner(item, workspaceId);
     const previous = items.get(item.id);
 
     if (
@@ -1459,9 +1484,10 @@ function loadTurnEvents(
   turnId: string,
   itemIds: ReadonlySet<string>
 ): SseEventEnvelope[] {
-  const events = readCanonicalJsonLines(path, true).map((value) =>
-    readRetainedV1(value, SseEventReaderSchema.parse)
-  );
+  const rows = lstatSync(path, { throwIfNoEntry: false })
+    ? readDurableCanonicalJsonLines(path)
+    : [];
+  const events = rows.map((value) => readRetainedV1(value, SseEventReaderSchema.parse));
 
   for (const [index, event] of events.entries()) {
     if (
@@ -2108,6 +2134,7 @@ function assertExistingWorkspaceDirectoryParents(workspaceRoot: string): void {
 /** Validates the reset-cohort Thread envelope without converting or rewriting predecessors. */
 function parseCanonicalThreadRecord(input: unknown, workspaceId: string, threadId: string): Thread {
   const envelope = parseRecordEnvelope(input, { supportedFeatures: THREAD_REQUIRED_FEATURES });
+  assertWorkspaceWorkOwner(input, workspaceId);
   if (
     envelope.schemaVersion !== 1 ||
     envelope.recordType !== 'thread' ||

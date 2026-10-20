@@ -9,6 +9,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
@@ -134,6 +135,51 @@ if (process.platform === 'linux') {
 }
 
 if (process.platform === 'linux') {
+  test('NanoHost installer retains the stock stepped restart policy without service effects', () => {
+    const fixture = makeBundle();
+    try {
+      const stage = join(fixture.root, 'backoff-stage');
+      const marker = join(fixture.root, 'systemctl-called');
+      const result = runInstaller(fixture.bundle, stage, marker);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(existsSync(marker), false);
+      const installed = readFileSync(
+        join(stage, 'etc/systemd/system/openkit-nanohost.service'),
+        'utf8'
+      );
+      const assignments = [];
+      let section;
+      for (const raw of installed.split('\n')) {
+        const line = raw.trim();
+        if (line.startsWith('[')) section = line;
+        if (!line || line.startsWith('#') || !line.includes('=')) continue;
+        const separator = line.indexOf('=');
+        assignments.push({
+          section,
+          key: line.slice(0, separator).trim(),
+          value: line.slice(separator + 1).trim(),
+        });
+      }
+      for (const [key, value] of Object.entries({
+        ExecStart: '/usr/lib/openkit/nanohost',
+        Restart: 'always',
+        RestartSec: '5s',
+        RestartSteps: '5',
+        RestartMaxDelaySec: '5min',
+        RestartPreventExitStatus: '78',
+        KillMode: 'control-group',
+      })) {
+        assert.deepEqual(
+          assignments.filter((row) => row.key === key),
+          [{ section: '[Service]', key, value }],
+          key
+        );
+      }
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   test('NanoHost installer stages the x86-64 payload without host or service effects', () => {
     const fixture = makeBundle({ architecture: 'amd64' });
     const stage = join(fixture.root, 'amd64-stage');
@@ -150,6 +196,7 @@ if (process.platform === 'linux') {
   });
 }
 
+/** Builds a checksum-attributed installer fixture with the stock unit and harmless ELF payloads. */
 function makeBundle(options = {}) {
   const root = mkdtempSync(join(tmpdir(), 'openkit-nanohost-installer-'));
   const bundle = join(root, 'bundle');
@@ -162,9 +209,9 @@ function makeBundle(options = {}) {
   chmodSync(join(bundle, 'install.sh'), 0o755);
   writeElf(join(bundle, 'nanohost'), options);
   writeElf(join(bundle, 'openshell-gateway'), { architecture: options.architecture });
-  writeFileSync(
-    join(bundle, 'openkit-nanohost.service'),
-    '[Service]\nExecStart=/usr/lib/openkit/nanohost\n'
+  copyFileSync(
+    join(process.cwd(), 'apps/nanohost/deploy/openkit-nanohost.service'),
+    join(bundle, 'openkit-nanohost.service')
   );
   writeFileSync(join(bundle, 'licenses', 'openkit-LICENSE'), 'OpenKit license fixture\n');
   writeFileSync(join(bundle, 'licenses', 'openshell-LICENSE'), 'OpenShell license fixture\n');

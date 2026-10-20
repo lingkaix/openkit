@@ -17,9 +17,38 @@ import {
   type RequiredFeatureId,
 } from '@openkit/config-schema';
 
-import { allocateEntityId, isEntityId } from '@openkit/protocol';
+import { allocateEntityId, isEntityId, readRetainedV1, WorkOwnerSchema } from '@openkit/protocol';
 
+import { assertScopeAdmitted, isScopeAdmitted, refuseScope } from '../bootstrap/readiness.js';
 import { ensureEncryptedFileVaultStoreDirectory } from '../vault/vault-store-directory.js';
+
+/** A supported foreign record owner violates the shared boundary, not only local record semantics. */
+export class WorkOwnershipViolationError extends Error {
+  /** Creates the strict cross-owner refusal without exposing record content. */
+  constructor(recordHome: string) {
+    super(`DATA_ROOT record ownership violation in ${recordHome}.`);
+    this.name = 'WorkOwnershipViolationError';
+  }
+}
+
+/**
+ * Rejects supported work ownership that crosses its physical Workspace home.
+ * Missing or unsupported owner shapes remain the local record reader's responsibility.
+ * @param record Canonical Thread or Turn after envelope support validation.
+ * @param workspaceId Workspace selected by the canonical path, not by record content.
+ * @throws WorkOwnershipViolationError for a valid Server or different Workspace owner.
+ */
+export function assertWorkspaceWorkOwner(record: unknown, workspaceId: string): void {
+  const parsed = WorkOwnerSchema.safeParse(
+    typeof record === 'object' && record !== null && 'owner' in record ? record.owner : undefined
+  );
+  if (
+    parsed.success &&
+    (parsed.data.kind !== 'workspace' || parsed.data.workspaceId !== workspaceId)
+  ) {
+    throw new WorkOwnershipViolationError(`Workspace ${workspaceId}`);
+  }
+}
 
 const CONFIG_TEMPLATE_SUFFIXES = {
   providers: '.provider.jsonc',
@@ -335,6 +364,7 @@ export function recordDataRootDeploymentMove(
  * @returns Paths created for the user subtree.
  */
 export function ensureUserLayout(root: string, userId: string): UserLayoutPaths {
+  assertScopeAdmitted(root, 'user', userId);
   const userRoot = resolveDataRootPath(root, 'users', userId);
   const paths: UserLayoutPaths = {
     root: userRoot,
@@ -362,6 +392,7 @@ export function ensureUserLayout(root: string, userId: string): UserLayoutPaths 
  * @returns Paths created for the workspace subtree.
  */
 export function ensureWorkspaceLayout(root: string, workspaceId: string): WorkspaceLayoutPaths {
+  assertScopeAdmitted(root, 'workspace', workspaceId);
   ensureLayoutDirectory(root, true);
   ensureLayoutDirectory(resolveDataRootPath(root, 'workspaces'));
   return ensureWorkspaceLayoutRoot(resolveDataRootPath(root, 'workspaces', workspaceId));
@@ -617,25 +648,42 @@ function verifyCanonicalRecordEnvelopeSupport(root: string): void {
     }
 
     const record = readJsonRecord(path);
-    if (!isRecordEnvelopeCandidate(record)) {
+    const turnHome = /^workspaces\/([^/]+)\/threads\/[^/]+\/turns\/[^/]+\/turn\.json$/.exec(
+      reportPath
+    );
+    if (!turnHome && !isRecordEnvelopeCandidate(record)) {
       continue;
     }
 
-    let envelope: ReturnType<typeof parseRecordEnvelope>;
     try {
-      envelope = parseRecordEnvelope(record, {
+      if (turnHome) {
+        const turn = readRetainedV1(record, (value) => value);
+        assertWorkspaceWorkOwner(turn, turnHome[1]!);
+        continue;
+      }
+      const envelope = parseRecordEnvelope(record, {
         supportedFeatures: Object.keys(REQUIRED_FEATURE_REGISTRY) as RequiredFeatureId[],
       });
+      if (!DATA_ROOT_SUPPORTED_CANONICAL_RECORD_TYPES.has(envelope.recordType)) {
+        throw new Error(`Unsupported canonical record family: ${envelope.recordType}`);
+      }
+      const threadHome = /^workspaces\/([^/]+)\/threads\/[^/]+\/thread\.json$/.exec(reportPath);
+      if (envelope.recordType === 'thread' && threadHome) {
+        assertWorkspaceWorkOwner(record, threadHome[1]!);
+      }
     } catch (error) {
-      throw new Error(
-        `DATA_ROOT unsupported requiredFeatures in ${reportPath}: ${errorMessage(error)}`
-      );
-    }
-
-    if (!DATA_ROOT_SUPPORTED_CANONICAL_RECORD_TYPES.has(envelope.recordType)) {
-      throw new Error(
-        `DATA_ROOT unsupported canonical record family in ${reportPath}: ${envelope.recordType}`
-      );
+      if (error instanceof WorkOwnershipViolationError) throw error;
+      const owner = /^(workspaces|users)\/([^/]+)\//.exec(reportPath);
+      if (!owner) {
+        throw new Error(
+          `DATA_ROOT unsupported requiredFeatures or canonical record family in ${reportPath}: ${errorMessage(error)}`
+        );
+      }
+      refuseScope(root, {
+        scope: owner[1] === 'workspaces' ? 'workspace' : 'user',
+        id: owner[2]!,
+        check: 'layout',
+      });
     }
   }
 }
@@ -771,7 +819,7 @@ function listChildDirectories(path: string): string[] {
  * @param path Root path to scan.
  * @returns Descendant file paths.
  */
-function listDescendantFiles(path: string): string[] {
+function listDescendantFiles(path: string, dataRoot: string = path): string[] {
   const files: string[] = [];
 
   for (const entry of readLayoutDirectory(path).sort((left, right) =>
@@ -783,7 +831,18 @@ function listDescendantFiles(path: string): string[] {
       throw new Error(`DATA_ROOT layout must not contain a symbolic link: ${childPath}`);
     }
     if (entry.isDirectory()) {
-      files.push(...listDescendantFiles(childPath));
+      const owner = /^(workspaces|users)\/([^/]+)$/.exec(toDataRootReportPath(dataRoot, childPath));
+      const scope = owner?.[1] === 'workspaces' ? 'workspace' : 'user';
+      if (owner && !isScopeAdmitted(dataRoot, scope, owner[2]!)) continue;
+      try {
+        files.push(...listDescendantFiles(childPath, dataRoot));
+      } catch (error) {
+        // Known-scope I/O loss is local. Unsafe topology and cross-owner violations still escape.
+        const code = (error as NodeJS.ErrnoException).code;
+        if (!owner || !['EACCES', 'EPERM', 'EIO', 'ENOENT', 'ENOTDIR'].includes(code ?? ''))
+          throw error;
+        refuseScope(dataRoot, { scope, id: owner[2]!, check: 'layout' });
+      }
       continue;
     }
     if (entry.isFile()) {

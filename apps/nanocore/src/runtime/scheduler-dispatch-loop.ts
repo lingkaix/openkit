@@ -21,6 +21,7 @@ import {
 } from '../agents/setup-resolver.js';
 import { deriveArtifactReviewWorkerRequestId } from '../artifact-reviews.js';
 import { currentSchedulerAdmissionWorkspaceAuthority } from '../auth/operation-authorizer.js';
+import { isScopeAdmitted } from '../bootstrap/readiness.js';
 import { readAssistantTaskHandoffSource } from '../internal-agents/assistant-handoff-source.js';
 import { type FsStore, StoreRecordNotFoundError } from '../lib/store.js';
 import type { ProviderRegistry } from '../providers/registry.js';
@@ -178,6 +179,13 @@ export async function runSchedulerDispatchLoop(
                 : 'no-queued-entry',
         },
       };
+    if (!isScopeAdmitted(input.coreDb.dataRoot, 'workspace', entry.workspaceId)) {
+      // Retain the admission and all exclusion; only this process-local selection is skipped.
+      unpublishedQueueEntryIds.add(entry.queueEntryId);
+      sourceRecoveryRequired = true;
+      count--;
+      continue;
+    }
     if (claims.has(entry.queueEntryId))
       return { startedTurns, terminalResult: { status: 'queued', reason: 'thread-busy' } };
     if (!currentSchedulerAdmissionWorkspaceAuthority(input.coreDb, entry, 'runtime.launch', true))

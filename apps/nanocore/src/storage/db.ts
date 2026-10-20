@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
+import { assertScopeAdmitted, isScopeAdmitted, refuseScope } from '../bootstrap/readiness.js';
 import { recoverRunningCapabilityCalls } from '../capability/usage-ledger.js';
 import { resolveDataRoot } from '../config/data-root.js';
 import {
@@ -100,7 +101,7 @@ export function openCoreDb(
  * @param dataRoot Data root that will contain server/db/core.sqlite.
  * @param options Fresh-scope admission captured before boot writes layout metadata.
  * @returns Open Core database.
- * @throws When the existing authoritative database fails SQLite integrity validation.
+ * @throws When expected authority is missing or the existing database fails SQLite integrity validation.
  */
 export function openCoreDbWithIntegrityCheck(
   dataRoot: string,
@@ -108,8 +109,13 @@ export function openCoreDbWithIntegrityCheck(
 ): CoreDb {
   const freshInitialization =
     options.freshInitialization ?? isFreshCoreInitializationScope(dataRoot);
+  const path = coreDbPath(dataRoot);
+  // SQLite accepts a zero-byte file as new; an established deployment has no such initialization proof.
+  if (!freshInitialization && (!existsSync(path) || statSync(path).size === 0)) {
+    throw new Error('Core database is missing from an existing deployment.');
+  }
   ensureLayout(dataRoot);
-  assertSqliteIntegrity(coreDbPath(dataRoot));
+  assertSqliteIntegrity(path);
   return openCoreDb(dataRoot, { freshInitialization });
 }
 
@@ -139,24 +145,45 @@ export function openExistingCoreDbWithIntegrityCheck(dataRoot: string): CoreDb {
  * Validates and migrates existing user- and workspace-scope databases at boot.
  *
  * @param dataRoot Data root to scan.
- * @throws When a Workspace database is missing or any existing authoritative database fails integrity validation.
+ * SQLite keeps its existing journal recovery; migrations and domain recovery wait for file admission.
+ * @param validateFileAuthority Boot's file-history barrier, after integrity checks and before domain mutations.
+ * Isolated failures refuse only their owning scope; shared layout failures still throw.
  */
-export function verifyAndMigrateExistingScopedDatabases(dataRoot: string): void {
+export function verifyAndMigrateExistingScopedDatabases(
+  dataRoot: string,
+  validateFileAuthority?: () => void
+): void {
   ensureLayout(dataRoot);
-
-  const usersRoot = join(dataRoot, 'users');
-
-  for (const userId of listChildDirectories(usersRoot)) {
-    verifyAndMigrateUserDatabase(dataRoot, userId);
+  const scopes = [
+    ...listChildDirectories(join(dataRoot, 'users')).map((id) => ({ scope: 'user' as const, id })),
+    ...listWorkspaceDirectories(dataRoot).map((id) => ({ scope: 'workspace' as const, id })),
+  ];
+  for (const { scope, id } of scopes) {
+    if (!isScopeAdmitted(dataRoot, scope, id)) continue;
+    try {
+      const path = scope === 'workspace' ? workspaceDbPath(dataRoot, id) : userDbPath(dataRoot, id);
+      if (scope === 'workspace' && (!existsSync(path) || statSync(path).size === 0))
+        throw new Error('Expected Workspace database is missing or uninitialized.');
+      assertSqliteIntegrity(path);
+    } catch {
+      refuseScope(dataRoot, { scope, id, check: 'database' });
+    }
   }
-
-  for (const workspaceId of listWorkspaceDirectories(dataRoot)) {
-    verifyAndMigrateWorkspaceDatabase(dataRoot, workspaceId);
+  // Boot must not migrate or recover a scope whose canonical file authority is unreadable.
+  validateFileAuthority?.();
+  for (const { scope, id } of scopes) {
+    if (!isScopeAdmitted(dataRoot, scope, id)) continue;
+    try {
+      if (scope === 'workspace') migrateWorkspaceDatabase(dataRoot, id);
+      else migrateUserDatabase(dataRoot, id);
+    } catch {
+      refuseScope(dataRoot, { scope, id, check: 'database' });
+    }
   }
 }
 
 /**
- * Lists existing workspace database scopes without re-running boot verification, excluding the reserved staging container.
+ * Lists admitted existing Workspace scopes for ordinary scans, excluding staging and boot quarantine.
  *
  * @param dataRoot Data root whose existing workspace directories should be scanned.
  * @returns Workspace ids for every existing workspace scope.
@@ -166,7 +193,9 @@ export function listExistingWorkspaceDatabaseScopes(
   dataRoot: string
 ): Array<{ readonly workspaceId: string }> {
   ensureLayoutDirectories(dataRoot);
-  return listWorkspaceDirectories(dataRoot).map((workspaceId) => ({ workspaceId }));
+  return listWorkspaceDirectories(dataRoot)
+    .filter((workspaceId) => isScopeAdmitted(dataRoot, 'workspace', workspaceId))
+    .map((workspaceId) => ({ workspaceId }));
 }
 
 /**
@@ -207,6 +236,7 @@ export function openWorkspaceDb(dataRoot: string, workspaceId: string): Workspac
 
 /** Opens an existing Workspace database after the current boot already verified its layout. */
 export function openBootVerifiedWorkspaceDb(dataRoot: string, workspaceId: string): WorkspaceDb {
+  assertScopeAdmitted(dataRoot, 'workspace', workspaceId);
   const sqlite = new Database(workspaceDbPath(dataRoot, workspaceId), { fileMustExist: true });
 
   return {
@@ -257,14 +287,13 @@ export function getCoreDb(env: NodeJS.ProcessEnv = process.env): CoreDb {
 }
 
 /**
- * Validates one user database and applies user-scope migrations.
+ * Applies user-scope migrations after integrity and boot file-authority admission.
  *
  * @param dataRoot Data root that owns the database.
  * @param userId User id that owns the database.
  * @throws When the existing authoritative database fails SQLite integrity validation.
  */
-function verifyAndMigrateUserDatabase(dataRoot: string, userId: string): void {
-  assertSqliteIntegrity(userDbPath(dataRoot, userId));
+function migrateUserDatabase(dataRoot: string, userId: string): void {
   const userDb = openUserDb(dataRoot, userId);
 
   try {
@@ -275,16 +304,13 @@ function verifyAndMigrateUserDatabase(dataRoot: string, userId: string): void {
 }
 
 /**
- * Validates one workspace database and applies workspace-scope migrations.
+ * Applies Workspace migrations and call-loss recovery only after both authority checks.
  *
  * @param dataRoot Data root that owns the database.
  * @param workspaceId Workspace id that owns the database.
  * @throws When the authoritative Workspace database is missing or fails SQLite integrity validation.
  */
-function verifyAndMigrateWorkspaceDatabase(dataRoot: string, workspaceId: string): void {
-  const path = workspaceDbPath(dataRoot, workspaceId);
-  if (!existsSync(path)) throw new Error(`Workspace database is missing: ${workspaceId}.`);
-  assertSqliteIntegrity(path);
+function migrateWorkspaceDatabase(dataRoot: string, workspaceId: string): void {
   const workspaceDb = openBootVerifiedWorkspaceDb(dataRoot, workspaceId);
 
   try {

@@ -54,6 +54,7 @@ import {
   workspaceIdForOwner,
 } from '@openkit/protocol';
 import { parse as parseJsonc } from 'jsonc-parser';
+import { assertScopeAdmitted, isScopeAdmitted, refuseScope } from '../bootstrap/readiness.js';
 import { resolveDataRoot } from '../config/data-root.js';
 import {
   initializeDefaultKnowledgeBaseId,
@@ -145,6 +146,7 @@ import {
   KnowledgeProposalRecordSchema,
   KnowledgeProposalReviewFileSchema,
   loadWorkspaceFileRecords,
+  normalizeAdmittedWorkspaceLogTails,
   parseCanonicalWorkspaceHistory,
   parseOwnedKnowledgePage,
   publishCanonicalPath,
@@ -1236,6 +1238,71 @@ export class FsStore {
   private terminalHookDepth = 0;
   private readonly dataRoot: string | null;
 
+  /** Validates only canonical files before scoped migrations, without SQL projections or published caches. */
+  public static validateFileAuthority(dataRoot: string): void {
+    const server = loadServerThreadRecords(dataRoot);
+    const serverIds = new Set([
+      ...server.threads.map(({ id }) => id),
+      ...server.turns.flatMap((turn) => [turn.id, ...turn.items.map(({ id }) => id)]),
+    ]);
+    for (const records of loadWorkspaceFileRecords(dataRoot)) {
+      try {
+        FsStore.readWorkspaceHistory(
+          records,
+          join(dataRoot, 'workspaces', records.workspace.id),
+          serverIds
+        );
+      } catch {
+        refuseScope(dataRoot, { scope: 'workspace', id: records.workspace.id, check: 'records' });
+      }
+    }
+  }
+
+  /** Uses the same file-only lineage and version checks for boot admission and cache restoration. */
+  private static readWorkspaceHistory(
+    records: WorkspaceFileRecords,
+    workspaceRoot: string,
+    serverIds: ReadonlySet<string>
+  ): Map<string, ArtifactVersionRecord[]> {
+    const versions = new Map<string, ArtifactVersionRecord[]>();
+    for (const thread of records.threads) {
+      if (serverIds.has(thread.id)) throw new Error('Conflicting Thread owner.');
+    }
+    const turns = new Map(records.turns.map((turn) => [turn.id, turn]));
+    for (const turn of records.turns) {
+      if (serverIds.has(turn.id)) throw new Error('Conflicting Turn owner.');
+      for (const item of turn.items) {
+        if (serverIds.has(item.id)) throw new Error('Conflicting Item owner.');
+        if (
+          item.type === 'user-input-request' &&
+          item.responsibleUserId !== responsibleUserIdForActor(turn.triggerActor)
+        ) {
+          throw new Error('Invalid responsible user.');
+        }
+        if (item.type === 'user-input-response') {
+          const request = turn.items.find(
+            (candidate) =>
+              candidate.type === 'user-input-request' &&
+              candidate.userInputRequestId === item.userInputRequestId
+          );
+          if (
+            request?.type === 'user-input-request' &&
+            request.responsibleUserId !== item.actor.id
+          ) {
+            throw new Error('Invalid response actor.');
+          }
+        }
+      }
+    }
+    for (const artifact of records.artifacts) {
+      versions.set(
+        artifact.id,
+        FsStore.loadArtifactVersions(workspaceRoot, artifact, turns, records.itemRevisions)
+      );
+    }
+    return versions;
+  }
+
   public constructor(options: FsStoreOptions = {}) {
     this.dataRoot =
       options.dataRoot ?? (process.env.OPENKIT_DATA_ROOT ? resolveDataRoot(process.env) : null);
@@ -1261,11 +1328,7 @@ export class FsStore {
       const workspaceRecords = loadWorkspaceFileRecords(this.dataRoot);
 
       if (workspaceRecords.length > 0) {
-        if (this.restoreWorkspaceFileRecords(workspaceRecords)) {
-          for (const workspaceId of this.workspaces.keys()) {
-            this.persist(workspaceId);
-          }
-        }
+        this.restoreWorkspaceFileRecords(workspaceRecords);
         return;
       }
     }
@@ -1275,50 +1338,39 @@ export class FsStore {
    * Restores in-memory indexes from canonical workspace file records.
    *
    * @param workspaceRecords Canonical records loaded for every published workspace.
-   * @returns True when an interrupted approval projection was repaired.
    */
-  private restoreWorkspaceFileRecords(workspaceRecords: readonly WorkspaceFileRecords[]): boolean {
+  private restoreWorkspaceFileRecords(workspaceRecords: readonly WorkspaceFileRecords[]): void {
+    const serverIds = new Set([
+      ...this.serverThreads.keys(),
+      ...this.serverTurns.keys(),
+      ...this.serverItems.keys(),
+    ]);
     for (const records of workspaceRecords) {
+      let versions: Map<string, ArtifactVersionRecord[]>;
+      try {
+        versions = FsStore.readWorkspaceHistory(
+          records,
+          this.workspaceRootPath(records.workspace.id),
+          serverIds
+        );
+      } catch (error) {
+        if (!this.dataRoot) throw error;
+        refuseScope(this.dataRoot, {
+          scope: 'workspace',
+          id: records.workspace.id,
+          check: 'records',
+        });
+        continue;
+      }
       this.workspaces.set(records.workspace.id, records.workspace);
       this.workspaceResources.set(
         records.workspace.id,
         createWorkspaceResources([...records.knowledge])
       );
-      for (const thread of records.threads) {
-        if (this.serverThreads.has(thread.id))
-          throw new Error(`Thread has conflicting owners: ${thread.id}`);
-        this.threads.set(thread.id, thread);
-      }
+      for (const thread of records.threads) this.threads.set(thread.id, thread);
       for (const turn of records.turns) {
-        for (const item of turn.items) {
-          if (
-            item.type === 'user-input-request' &&
-            item.responsibleUserId !== responsibleUserIdForActor(turn.triggerActor)
-          ) {
-            throw new Error(`User-input request has invalid responsible user: ${item.id}`);
-          }
-          if (item.type === 'user-input-response') {
-            const request = turn.items.find(
-              (candidate) =>
-                candidate.type === 'user-input-request' &&
-                candidate.userInputRequestId === item.userInputRequestId
-            );
-            if (
-              request?.type === 'user-input-request' &&
-              request.responsibleUserId !== item.actor.id
-            ) {
-              throw new Error(`User-input response has invalid responsible user: ${item.id}`);
-            }
-          }
-        }
-        if (this.serverTurns.has(turn.id))
-          throw new Error(`Turn has conflicting owners: ${turn.id}`);
         this.turns.set(turn.id, turn);
-        for (const item of turn.items) {
-          if (this.serverItems.has(item.id))
-            throw new Error(`Item has conflicting owners: ${item.id}`);
-          this.items.set(item.id, item);
-        }
+        for (const item of turn.items) this.items.set(item.id, item);
       }
       if (records.turnCaptureCoverage) {
         for (const [turnId, binding] of records.turnCaptureCoverage) {
@@ -1329,18 +1381,9 @@ export class FsStore {
       for (const session of records.agentSessions) {
         this.agentSessions.set(session.id, session);
       }
-      const artifactTurns = new Map(records.turns.map((turn) => [turn.id, turn]));
       for (const artifact of records.artifacts) {
         this.artifacts.set(artifact.id, artifact);
-        this.artifactVersions.set(
-          artifact.id,
-          this.loadArtifactVersions(
-            this.workspaceRootPath(artifact.workspaceId),
-            artifact,
-            artifactTurns,
-            records.itemRevisions
-          )
-        );
+        this.artifactVersions.set(artifact.id, versions.get(artifact.id)!);
       }
 
       for (const proposal of records.knowledgeProposals) {
@@ -1370,8 +1413,19 @@ export class FsStore {
       )) {
         this.approvals.set(approval.id, approval);
       }
+      for (const records of workspaceRecords) {
+        if (!isScopeAdmitted(this.dataRoot, 'workspace', records.workspace.id)) continue;
+        try {
+          normalizeAdmittedWorkspaceLogTails(this.workspaceRootPath(records.workspace.id), records);
+        } catch {
+          refuseScope(this.dataRoot, {
+            scope: 'workspace',
+            id: records.workspace.id,
+            check: 'records',
+          });
+        }
+      }
     }
-    return false;
   }
 
   /**
@@ -1473,7 +1527,7 @@ export class FsStore {
   }
 
   /** Loads exact retained history with the same lineage and Item proof before restart or import admission. */
-  private loadArtifactVersions(
+  private static loadArtifactVersions(
     workspaceRoot: string,
     artifact: Artifact,
     turns: ReadonlyMap<string, Turn>,
@@ -1542,6 +1596,7 @@ export class FsStore {
 
   /** Refuses stale Workspace state after a failed canonical directory commit; only reopen clears it. */
   private assertWorkspacePublicationAcknowledged(workspaceId: string): void {
+    if (this.dataRoot) assertScopeAdmitted(this.dataRoot, 'workspace', workspaceId);
     if (this.unacknowledgedWorkspaces.has(workspaceId)) {
       throw new CanonicalPublicationError(
         'FsStore: directory synchronization failed after rename during publication acknowledgement. Ordinary Store reopen is required.'
@@ -2301,7 +2356,9 @@ export class FsStore {
     for (const workspaceId of this.unacknowledgedWorkspaces) {
       this.assertWorkspacePublicationAcknowledged(workspaceId);
     }
-    return [...this.workspaces.values()];
+    return [...this.workspaces.values()].filter(
+      (workspace) => !this.dataRoot || isScopeAdmitted(this.dataRoot, 'workspace', workspace.id)
+    );
   }
 
   /**
@@ -2502,7 +2559,12 @@ export class FsStore {
         for (const artifact of history.artifacts) {
           importedArtifactVersions.set(
             artifact.id,
-            this.loadArtifactVersions(stage.workspaceRoot, artifact, turns, history.itemRevisions)
+            FsStore.loadArtifactVersions(
+              stage.workspaceRoot,
+              artifact,
+              turns,
+              history.itemRevisions
+            )
           );
         }
       },
@@ -3808,7 +3870,7 @@ export class FsStore {
   }
 
   /**
-   * Return all durable items across workspaces for app-local read models.
+   * Returns durable Items from currently admitted Workspaces for app-local read models.
    *
    * @returns Stored items.
    */
@@ -3816,7 +3878,11 @@ export class FsStore {
     for (const workspaceId of this.unacknowledgedWorkspaces) {
       this.assertWorkspacePublicationAcknowledged(workspaceId);
     }
-    return [...this.items.values()];
+    return [...this.items.values()].filter(
+      (item) =>
+        !this.dataRoot ||
+        isScopeAdmitted(this.dataRoot, 'workspace', workspaceIdForOwner(item.owner))
+    );
   }
 
   /**

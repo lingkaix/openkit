@@ -1020,6 +1020,10 @@ describe('database setup', () => {
       // Accepted host retirement follows the same named, populated one-way cutover boundary.
       .filter((path) => !path.endsWith(`storage${sep}host-repository-cutover.ts`))
       .filter((path) => !path.endsWith(`storage${sep}host-repository-cutover.test.ts`))
+      // These exact tests inject SQL faults into private databases; they own no production schema.
+      .filter((path) => !path.endsWith(`bootstrap${sep}scope-admission.test.ts`))
+      .filter((path) => !path.endsWith(`runtime${sep}pending-requests.scope-admission.test.ts`))
+      .filter((path) => !path.endsWith(`storage${sep}workspace-file-admission.test.ts`))
       .filter((path) => schemaMutationPattern.test(readFileSync(path, 'utf8')))
       .map((path) => relative(process.cwd(), path));
 
