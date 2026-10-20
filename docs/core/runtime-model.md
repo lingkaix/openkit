@@ -125,7 +125,9 @@ Runtime observes liveness, effective setup identity, placement, capabilities, sa
 
 Worker admission resolves the exact selected retained environment before placement. Runtime residency remains backend-private and replaceable; public environment identity is not a Harness, AgentSession, attempt or Epoch identity. Selection preserves the existing execution-backend port and independently admitted grants. [User-Selected Workspace-Shared Sandboxes](../decisions/20261008-user_selected_workspace_shared_sandboxes.md) records the resource-selection decision.
 
-Runtime placement decomposes into four distinct private projections:
+The in-Sandbox Harness topology below describes the NanoHost realization. An external harness may run its agent loop and retain native state separately from its executor Sandbox. [Architecture](architecture.md#compute-and-harness-neutrality) owns direct NanoCore integration and placement constraints; this topology does not require an external platform to run through NanoHost.
+
+NanoHost runtime placement decomposes into four distinct private projections:
 
 - a Sandbox runtime projection identifies one containment and aggregate-resource boundary whose conversation-context, Workspace-write, or security and adjudication isolation level remains owned by `sandbox.md`;
 - a Harness runtime projection identifies one declared native-runtime adapter, its liveness, supported AgentSession operations, and bounded open-session and active-Turn capacity inside that Sandbox;

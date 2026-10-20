@@ -8,6 +8,8 @@ updated: 2026-10-18
 
 ## Persistent Data Is Separate From Native Continuity
 
+The current physical bindings, locator/digest pairs, and retained-storage facts describe NanoHost continuity and retain those meanings. An external harness owns its native session state and transcripts independently of executor placement. Later external references are additive under the [neutrality decision](../decisions/20261020-compute_and_harness_neutrality.md); they do not reinterpret retained Sandbox data or relax current resume proofs.
+
 [Persistent Worker Volumes](20260910-persistent_worker_volumes.md) permits a freshly authorized successor to reattach its own group's complete retained volume after predecessor writers are fenced. This amends disposable-only successor/file fallback rules: unimported files and opaque retained native data remain available as data, without becoming exact-version input or generic continuation authority. The exact retained native resume reference is the native continuation authority for the successor. Exact handle, immutable mode, Thread identity and sequence checks are unchanged; no `--last`, latest-session discovery, generic restore, transcript replay, hidden process-state inheritance, or active-Turn replay is introduced. A successor receives fresh Turn authority and new session loopback credentials even when it sees the same retained files; their mint belongs to [Worker Agent Capability](20260703-worker_agent_capability.md). `session.open` carries `resume: { locator, digest } | null`. Core stores the locator and the digest; the raw reference stays in retained Sandbox storage.
 
 ## Owns
