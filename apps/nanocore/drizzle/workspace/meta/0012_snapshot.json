@@ -1,0 +1,69 @@
+{
+  "id": "c075d43a-3fe0-4da9-b3b9-d51647feb5c9",
+  "prevId": "38aec3a6-7812-41cd-97cb-e439feede680",
+  "version": "6",
+  "dialect": "sqlite",
+  "tables": {
+    "workspace_capture_records": {
+      "name": "workspace_capture_records",
+      "columns": {
+        "capture_id": {
+          "name": "capture_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "ended_at": {
+          "name": "ended_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "workspace_capture_records_state_check": {
+          "name": "workspace_capture_records_state_check",
+          "value": "\"workspace_capture_records\".\"state\" IN ('active', 'finished', 'abandoned')"
+        },
+        "workspace_capture_records_end_check": {
+          "name": "workspace_capture_records_end_check",
+          "value": "(\"workspace_capture_records\".\"state\" = 'active' AND \"workspace_capture_records\".\"ended_at\" IS NULL) OR (\"workspace_capture_records\".\"state\" IN ('finished', 'abandoned') AND \"workspace_capture_records\".\"ended_at\" IS NOT NULL)"
+        }
+      }
+    }
+  },
+  "views": {},
+  "enums": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}
