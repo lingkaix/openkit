@@ -586,7 +586,7 @@ describe('ordinary SourceSummary editing through native owners', () => {
           decision: 'accepted',
           actor: { kind: 'user', id: f.userId },
         });
-        expect(forged.status).toBe(400);
+        expect(forged.status, JSON.stringify(forged.body)).toBe(403);
         expect(f.store.getKnowledgeProposalReviewDecision(proposal.id)).toBeNull();
         expect(f.notebook.publishedRevision()).toBe(f.baseRevision);
         expect(readFileSync(f.rawPath)).toEqual(Buffer.from(f.original));
