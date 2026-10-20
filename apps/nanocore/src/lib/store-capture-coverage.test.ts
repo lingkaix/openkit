@@ -222,7 +222,7 @@ describe('Turn capture coverage binding', () => {
             id: 'blocked-observation',
             type: 'model.observed',
             ts: '2026-09-29T00:00:00.000Z',
-            obs: 'gateway',
+            obs: 'llm-gateway',
             payload: {
               attempt: 0,
               direction: 'response',
