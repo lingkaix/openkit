@@ -23,8 +23,8 @@ Focused checks follow the changed packages. Complete qualification uses the exac
 
 ## Current Checkpoint
 
-The accepted owner amendments are recorded. Independent regressions are in progress against unchanged production; implementation remains pending. The additive Core migration must retain existing records and all prior migration bytes. No live operation, deployment or Host action is part of this change.
+The accepted owner amendments preceded implementation. The independently authored two-file regression commit `c0506298a5fc31cb585e2ddc80195a1f45b33b49` was inspected and merged normally. It reached 25 behavioral failures and four passing controls against unchanged production; missing-route refusals are not accepted as completed retirement behavior. The implementation now reaches retained-byte, runtime-fence, transaction rollback, exact-replay, personal-identity and populated Core-upgrade assertions. A cleanup identity predicate must align with the existing `target` contract; actual process boot-order proof and exact-candidate CI remain open. Existing cleanup-source and migration-inventory fixtures also require independent alignment with the accepted new source and migration, without reducing any invariant or limit. No live operation, deployment or Host action is part of this change.
 
 ## Next Action
 
-Establish independent behavioral failure, then implement the smallest registry-only path and reconcile each affected projection. Report the actual changed-file boundary before expanding it, inspect the final artifact and named execution output, and retain unresolved findings explicitly.
+Complete independent oracle alignment and process boot-order proof, inspect the exact implementation and generated projections, then qualify the exact candidate through the required branch CI. Preserve the announced file boundary and shared write leases until explicit handback. Report exact check results and any remaining limitation; do not treat this implementation checkpoint as accepted or ready to land.
