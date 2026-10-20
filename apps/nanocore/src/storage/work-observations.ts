@@ -31,11 +31,7 @@ import {
 } from '@openkit/protocol';
 import { WorkerObservationDataSchema } from '@openkit/worker-protocol';
 import { z } from 'zod';
-import {
-  readWorkObservationBody,
-  retainWorkObservationBody,
-  workObservationBodyBundleId,
-} from '../evidence-bundles.js';
+import { retainWorkObservationBody, workObservationBodyBundleId } from '../evidence-bundles.js';
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
 import type { CoreDb, WorkspaceDb } from './db.js';
 import { StoredThreadSnapshotV1Schema } from './retained-work-events-v1.js';
@@ -48,6 +44,7 @@ import {
   CaptureCoverageBindingSchema,
   readCanonicalFile,
   readCanonicalTextFile,
+  readPublishedTurnFileRecords,
   syncCanonicalDirectory,
   TurnReaderSchema,
   writeFileAtomic,
@@ -759,7 +756,7 @@ function isSafeTimelineText(text: string): boolean {
   );
 }
 
-/** Projects admitted outward text and deterministic structural labels after current Thread authorization. */
+/** Projects structural observations and ordinary Item text after the caller checks current Thread authority. */
 export function readThreadRuntimeActivity(
   workspaceDb: WorkspaceDb,
   input: {
@@ -769,6 +766,8 @@ export function readThreadRuntimeActivity(
 ): readonly ThreadRuntimeActivity[] {
   return input.turnIds.map((turnId): ThreadRuntimeActivity => {
     let contentCapture: ThreadRuntimeActivity['contentCapture'] = 'unknown';
+    let coverage: ThreadRuntimeActivity['coverage'] = 'unavailable';
+    const entries: ThreadRuntimeActivity['entries'][number][] = [];
     try {
       const binding = readWorkObservationTurnBinding(workspaceDb, {
         threadId: input.threadId,
@@ -790,7 +789,6 @@ export function readThreadRuntimeActivity(
       }
       let partial = false;
       let unavailable = runtime.length === 0;
-      const entries: ThreadRuntimeActivity['entries'][number][] = [];
       const displayedChildren = new Set<string>();
       for (const row of runtime) {
         const { fact, content } = WorkerObservationDataSchema.parse(row.payload);
@@ -832,72 +830,57 @@ export function readThreadRuntimeActivity(
             : fact.kind === 'assistant'
               ? `${subject}: response ${phase}`
               : `${subject} ${phase}`;
-        let text: string | undefined;
-        if (
-          binding.coverage?.value === 'on' &&
-          fact.kind === 'assistant' &&
-          content.state === 'expected' &&
-          content.mediaType === 'text/plain' &&
-          publication
-        ) {
-          const descriptor = bodyDescriptorSchema.parse(
-            (publication.payload.bodies as unknown[])[0]
-          );
-          const ref = publication.refs?.find(
-            (candidate) =>
-              candidate.edge === 'publication' &&
-              candidate.locator === descriptor.bundleId &&
-              candidate.digest === descriptor.sha256 &&
-              candidate.scope.workspaceId === workspaceDb.workspaceId
-          );
-          if (
-            ref &&
-            descriptor.bytes === content.bytes &&
-            `sha256:${descriptor.sha256}` === content.sha256 &&
-            descriptor.mediaType === content.mediaType &&
-            descriptor.boundary === content.boundary
-          ) {
-            const bytes = readWorkObservationBody(workspaceDb, {
-              bundleId: descriptor.bundleId,
-              threadId: input.threadId,
-              turnId,
-              createdAt: row.ts,
-              sha256: descriptor.sha256,
-            });
-            if (bytes) {
-              const candidate = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-              if (isSafeTimelineText(candidate)) text = candidate;
-            } else partial = true;
-          }
-        }
         entries.push({
           sequence: row.seq,
           observedAt: row.ts,
           kind,
           label,
-          ...(text === undefined
-            ? {}
-            : { text: text.slice(0, THREAD_RUNTIME_ACTIVITY_MAX_TEXT_CHARACTERS) }),
-          textTruncated:
-            text !== undefined && text.length > THREAD_RUNTIME_ACTIVITY_MAX_TEXT_CHARACTERS,
+          textTruncated: false,
         });
       }
-      const limit = THREAD_RUNTIME_ACTIVITY_MAX_ENTRIES;
-      return {
-        turnId,
-        contentCapture,
-        coverage:
-          unavailable && entries.length === 0
-            ? 'unavailable'
-            : partial || unavailable
-              ? 'partial'
-              : 'collecting',
-        entries: entries.slice(-limit),
-        omittedEntryCount: Math.max(0, entries.length - limit),
-      };
+      // Ordinary Item availability must not improve collector coverage.
+      coverage =
+        unavailable && entries.length === 0
+          ? 'unavailable'
+          : partial || unavailable
+            ? 'partial'
+            : 'collecting';
     } catch {
-      // Projection failure is local to this Turn; strict storage reads still reject corrupt bytes.
-      return { turnId, contentCapture, coverage: 'unavailable', entries: [], omittedEntryCount: 0 };
+      // Observation failure stays local; the independent ordinary Item source can still be read.
+      entries.length = 0;
     }
+    try {
+      const published = readPublishedTurnFileRecords(
+        workspaceDb.dataRoot,
+        workspaceDb.workspaceId,
+        input.threadId,
+        turnId
+      );
+      const reply = published?.turn.items.findLast(
+        (item) =>
+          item.type === 'assistant-message' && item.text.length > 0 && isSafeTimelineText(item.text)
+      );
+      if (reply?.type === 'assistant-message') {
+        // This is a display ordinal, not a native message association or completion claim.
+        entries.push({
+          sequence: (entries.at(-1)?.sequence ?? 0) + 1,
+          observedAt: reply.createdAt,
+          kind: 'progress',
+          label: 'Turn reply',
+          text: reply.text.slice(0, THREAD_RUNTIME_ACTIVITY_MAX_TEXT_CHARACTERS),
+          textTruncated: reply.text.length > THREAD_RUNTIME_ACTIVITY_MAX_TEXT_CHARACTERS,
+        });
+      }
+    } catch {
+      // Unproved canonical Items omit the excerpt; restricted evidence is never a fallback.
+    }
+    const limit = THREAD_RUNTIME_ACTIVITY_MAX_ENTRIES;
+    return {
+      turnId,
+      contentCapture,
+      coverage,
+      entries: entries.slice(-limit),
+      omittedEntryCount: Math.max(0, entries.length - limit),
+    };
   });
 }
