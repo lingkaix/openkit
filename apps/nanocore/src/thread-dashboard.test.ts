@@ -57,7 +57,7 @@ function publishActivityBody(
       id: 'native-response',
       type: 'runtime.observed',
       ts: '2026-09-22T00:00:00.000Z',
-      obs: 'sidecar',
+      obs: 'worker-shim',
       payload: {
         observationId: 'native-response',
         sourceRef: 'native-source',
@@ -428,7 +428,7 @@ describe('thread dashboard app API', () => {
           id: 'obs_child',
           type: 'runtime.observed',
           ts: observedAt,
-          obs: 'sidecar',
+          obs: 'worker-shim',
           payload: {
             observationId: 'obs_child',
             sourceRef: 'source_child',

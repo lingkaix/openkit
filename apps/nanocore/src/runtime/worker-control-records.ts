@@ -267,7 +267,7 @@ function recordWorkerObservation(
         id,
         type: 'runtime.observed',
         ts: data.observedAt,
-        obs: 'sidecar',
+        obs: 'worker-shim',
         ...(parent ? { parent } : {}),
         ret: 'turn-evidence',
         refs: [

@@ -159,6 +159,11 @@ export const WORKSPACE_EXPORT_NON_PORTABLE_WORKSPACE_SQLITE_TABLES = [
       'accepted snapshot and capture cursor require the source storage attachment and private scan store',
   },
   {
+    table: 'workspace_capture_records',
+    reason:
+      'capture lifecycle belongs to Workspace backup coordination, not portable Workspace product history',
+  },
+  {
     table: 'control_workspaces',
     reason:
       'unactivated Workspace product table; portable Workspace metadata still comes from canonical files',

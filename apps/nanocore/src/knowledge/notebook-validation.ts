@@ -157,8 +157,11 @@ export function validateNotebookCandidate(input: {
           ? { resolvedReferences: input.resolvedReferences.get(pageId)! }
           : {}),
       });
-      if (report.conformance !== 'scope-schema-valid' || report.errors.length > 0)
+      if (report.conformance !== 'scope-schema-valid' || report.errors.length > 0) {
         fail(pageId, 'notebook.invalid_page');
+        // Keep native reason codes for bounded author feedback; omit messages and authored values.
+        for (const error of report.errors) fail(pageId, error.code);
+      }
       const declaredId = parsed.document.frontmatter.openkit_entry_id;
       if (!path.startsWith('@sources/') && declaredId !== undefined && declaredId !== pageId)
         fail(pageId, 'notebook.page_identity_mismatch');

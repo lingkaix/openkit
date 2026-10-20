@@ -94,7 +94,7 @@ function model(
     corr,
     ts,
     type: 'model.observed',
-    obs: 'gateway',
+    obs: 'llm-gateway',
     payload: {
       attempt: 0,
       runtimeOriginRef: null,
@@ -127,7 +127,7 @@ function tool(id: string, callRef: string, phase: string, toolName?: string): Wo
     id,
     ts: '2026-09-29T00:00:02.000Z',
     type: 'runtime.observed',
-    obs: 'sidecar',
+    obs: 'worker-shim',
     payload: {
       observationId: id,
       sourceRef: 'source_test',
@@ -168,7 +168,7 @@ describe('restart recovery observations', () => {
         type: 'turn.reap',
         turnId: f.owner.turnId,
         ts: completedAt,
-        obs: 'core',
+        obs: 'nanocore',
         ret: 'turn-evidence',
         payload: {
           reason: anchored ? 'anchored-cleanup' : 'pre-anchor',

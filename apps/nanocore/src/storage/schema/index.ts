@@ -105,6 +105,7 @@ export { workerTurnCheckpoints } from './worker-turn-checkpoints.js';
 export { workspaceApplyPlans } from './workspace-apply-plans.js';
 export type { WorkspaceApplyResultStatus } from './workspace-apply-results.js';
 export { workspaceApplyResults } from './workspace-apply-results.js';
+export { workspaceCaptureRecords } from './workspace-capture-protection.js';
 export { workspaceFilesystemStagingRoots } from './workspace-filesystem-staging.js';
 export type {
   ThreadMaterialBindingState,
