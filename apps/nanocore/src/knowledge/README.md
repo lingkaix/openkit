@@ -48,6 +48,16 @@ Workspace maintenance identifies the exact supplied tell Source in the run instr
 
 Reviewed Agent pages retain their exact candidate bytes and `delegated` review state. Retrieval checks the introducing commit in published ancestry, including a proposal commit published after native human Review. Retained unpublished candidates remain unavailable, even with an exact pin or delegated label.
 
+## Native Maintenance Admission
+
+`knowledge-agent-maintenance.ts` exports the closed `ControlMaintenanceAdmissionInputSchema` and `applyControlMaintenanceAdmission(CoreDb | WorkspaceDb, input)` for the existing database worker. The apply function selects the current maintenance Thread, checks its audience and active work, updates its preview, creates the Turn, and inserts the original same-scope command receipt in the caller's savepoint. It opens no database and performs no file effects or commits. Queries receive fresh work identities. A busy maintenance request creates a terminal skipped service Turn without changing the active run or its exclusion. Retained descriptive fields remain intact; unsupported required semantics refuse admission.
+
+Workspace products and receipts share Workspace SQLite. Server products and receipts share Core SQLite. User Memory has private work records in its personal Workspace, while its notebook and command receipt stay User-owned. Those commits are separate effect domains; a User receipt failure does not undo acknowledged Workspace work and does not trigger automatic repair. Immutable Source and Notebook publication keep their existing owners.
+
+The preparation helpers and daily scanner are asynchronous. Callers must await admission before using a prepared run, and must await failure publication before releasing their mutation admission or closing owned handles. Provider execution remains outside SQL. Physical database keys include the actual SQLite path and explicit data root; an existing worker binding is never upgraded with a different content mount.
+
+Run `pnpm --filter @openkit/nanocore exec vitest run src/knowledge/control-maintenance-admission.test.ts --maxWorkers=2` for direct native SQL admission, receipt-failure rollback in Workspace and Core, current-row selection, original receipt replay/conflict, descriptive extension retention, required-semantics refusal, User privacy and scope separation, fresh queries, and same-day scheduling. This focused worker harness does not prove the transport or full application integration.
+
 ## Verification
 
 `typed-rule-continuity.test.ts` composes native Source capture, maintenance editing, human Review, reopened history and fresh KM retrieval. Its scripted transport checks exact Rule meaning, descriptive origin notes, evidence, applicability, supersession and citations; it does not prove model comprehension or numerical application. `../retrieval-knowledge-governance.test.ts` separately checks that unpublished proposal ancestry cannot supply retrieval eligibility.

@@ -3,10 +3,16 @@ import { join } from 'node:path';
 import { KnowledgeMaintenanceResponseSchema } from '@openkit/app-api-schemas';
 import {
   type ActorRef,
+  ActorRefSchema,
   allocateEntityId,
   isSealedTurnTerminal,
+  KnowledgeOwnerScopeSchema,
+  RequestIdSchema,
   responsibleUserIdForActor,
+  ThreadIdSchema,
+  TurnIdSchema,
 } from '@openkit/protocol';
+import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
 import { isWorkspaceOperationAuthorized } from '../auth/operation-authorizer.js';
 import { findWorkspaceConfig, type RuntimeConfigManager } from '../config/runtime-config.js';
@@ -15,7 +21,12 @@ import type { AgentTool } from '../internal-agents/internal-agent-loop.js';
 import { readInternalContextEvidence } from '../internal-agents/internal-context-evidence.js';
 import type { KnowledgeManagerAgentRun } from '../internal-agents/knowledge-manager-agent.js';
 import { verifyKnowledgeProposalWorkHistory } from '../knowledge-source-authority.js';
-import type { FsStore, KnowledgeSourceRecord } from '../lib/store.js';
+import {
+  commandRequestKey,
+  type FsStore,
+  type KnowledgeSourceRecord,
+  quickChatWorkspaceIdForUser,
+} from '../lib/store.js';
 
 import {
   admitKnowledgeRetrieval,
@@ -23,7 +34,24 @@ import {
   readAuthorizedWorkspaceNotebookPages,
   threadReadable,
 } from '../retrieval-knowledge-adapter.js';
-import { commandInputHash, type InflightIdempotentCommand } from '../runtime/idempotent-command.js';
+import {
+  commandInputHash,
+  IdempotencyKeyConflictError,
+  type IdempotentCommandReceipt,
+  type InflightIdempotentCommand,
+} from '../runtime/idempotent-command.js';
+import {
+  getCommandRequestRecordFromDb,
+  normalizeCommandRequestResponse,
+} from '../storage/command-request-records.js';
+import {
+  applyControlProducts,
+  assertControlProductWriter,
+  type ControlProductMutation,
+  decode as decodeControlProduct,
+  readProduct,
+} from '../storage/control-store-products.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook, NotebookError } from './notebook.js';
@@ -49,6 +77,370 @@ import { readManagedSourceText } from './source-reading.js';
 
 type Turn = ReturnType<FsStore['getTurnById']>;
 
+/** Original request facts from runIdempotentCommand, not a second request or receipt owner. */
+const MaintenanceReceiptSchema = z
+  .object({
+    key: z.string().min(1),
+    command: z.enum([
+      'knowledge.maintain',
+      'knowledge.tell',
+      'knowledge.server.maintain',
+      'knowledge.server.tell',
+    ]),
+    requestId: RequestIdSchema,
+    scope: z.union([
+      z.object({ actorId: z.string().min(1), workspaceId: z.string().min(1) }).strict(),
+      z.object({ actorId: z.string().min(1), coreId: z.literal('server') }).strict(),
+    ]),
+    inputHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    responseKind: z.literal('turn'),
+    createdAt: z.string().datetime(),
+    expiresAt: z.string().datetime(),
+  })
+  .strict();
+
+/** Closed native admission; model content cannot select a database, execution callback, or immutable byte body. */
+export const ControlMaintenanceAdmissionInputSchema = z
+  .object({
+    purpose: z.enum(['maintenance', 'query']),
+    ownerScope: KnowledgeOwnerScopeSchema,
+    actor: ActorRefSchema,
+    requestId: RequestIdSchema,
+    threadId: ThreadIdSchema,
+    turnId: TurnIdSchema,
+    startedAt: z.string().datetime(),
+    trigger: z.enum(['request', 'schedule']),
+    instructions: z.string().max(64 * 1024),
+    captureCoverage: z
+      .object({ scope: z.enum(['server', 'workspace', 'task']), value: z.enum(['off', 'on']) })
+      .strict(),
+    outputThreadId: ThreadIdSchema.optional(),
+    receipt: MaintenanceReceiptSchema.optional(),
+  })
+  .strict();
+
+/** Structured-clone input to the existing control worker; authority is admitted before dispatch. */
+export type ControlMaintenanceAdmissionInput = z.infer<
+  typeof ControlMaintenanceAdmissionInputSchema
+>;
+
+/** Only acknowledged product identities leave SQL; busy admission has no permission to invoke a model. */
+export interface ControlMaintenanceAdmissionResult {
+  readonly threadId: string;
+  readonly turnId: string;
+  readonly busy: boolean;
+  readonly replayed: boolean;
+}
+
+/**
+ * Selects and admits complete Knowledge work against current native scope state in the caller's savepoint.
+ *
+ * Workspace/User maintenance serializes on its existing notebook Thread. Queries always create a fresh Thread. User Memory receipts remain in User SQLite and cannot join this Workspace transaction. No file effects, sibling connection, callback, or commit occurs here.
+ */
+export function applyControlMaintenanceAdmission(
+  db: CoreDb | WorkspaceDb,
+  value: ControlMaintenanceAdmissionInput
+): ControlMaintenanceAdmissionResult {
+  assertControlProductWriter(db.sqlite);
+  const input = ControlMaintenanceAdmissionInputSchema.parse(value);
+  const userId = responsibleUserIdForActor(input.actor);
+  if (!userId) throw new NotebookError('invalid_request');
+  const owner =
+    db.scope === 'core'
+      ? { kind: 'server' as const }
+      : { kind: 'workspace' as const, workspaceId: db.workspaceId };
+  if (
+    (input.ownerScope.kind === 'server') !== (db.scope === 'core') ||
+    (input.ownerScope.kind === 'workspace' &&
+      (db.scope !== 'workspace' || input.ownerScope.workspaceId !== db.workspaceId)) ||
+    (input.ownerScope.kind === 'user' &&
+      (input.ownerScope.userId !== userId ||
+        db.scope !== 'workspace' ||
+        (input.purpose === 'maintenance' &&
+          db.workspaceId !== quickChatWorkspaceIdForUser(userId)))) ||
+    (input.purpose === 'query' && (db.scope !== 'workspace' || input.trigger !== 'request')) ||
+    (input.purpose === 'maintenance' && input.outputThreadId !== undefined)
+  )
+    throw new NotebookError('invalid_request');
+  const receipt = input.receipt;
+  if (receipt) {
+    if (
+      input.purpose !== 'maintenance' ||
+      input.ownerScope.kind === 'user' ||
+      receipt.requestId !== input.requestId ||
+      receipt.scope.actorId !== input.actor.id ||
+      receipt.key !== commandRequestKey(receipt.command, receipt.requestId, receipt.scope) ||
+      receipt.expiresAt <= receipt.createdAt ||
+      (owner.kind === 'server'
+        ? !('coreId' in receipt.scope) ||
+          receipt.scope.coreId !== 'server' ||
+          !receipt.command.startsWith('knowledge.server.')
+        : !('workspaceId' in receipt.scope) ||
+          receipt.scope.workspaceId !== owner.workspaceId ||
+          receipt.command.startsWith('knowledge.server.'))
+    )
+      throw new NotebookError('invalid_request');
+    const prior = getCommandRequestRecordFromDb(db, receipt.key, receipt.createdAt);
+    if (prior) {
+      if (
+        prior.command !== receipt.command ||
+        prior.requestId !== receipt.requestId ||
+        commandRequestKey(prior.command, prior.requestId, prior.scope) !== receipt.key
+      )
+        throw new NotebookError('recovery_required');
+      if (prior.inputHash !== receipt.inputHash) throw new IdempotencyKeyConflictError();
+      const turn = readProduct(db.sqlite, owner, 'turn', prior.response.id);
+      if (!turn || prior.response.kind !== 'turn') throw new NotebookError('recovery_required');
+      return {
+        threadId: turn.record.threadId as string,
+        turnId: prior.response.id,
+        busy: false,
+        replayed: true,
+      };
+    }
+  }
+  const workspace =
+    owner.kind === 'workspace'
+      ? readProduct(db.sqlite, owner, 'workspace', owner.workspaceId)
+      : undefined;
+  if (
+    (owner.kind === 'workspace' && workspace?.record.status !== 'active') ||
+    (input.ownerScope.kind === 'user' &&
+      input.purpose === 'maintenance' &&
+      workspace?.record.kind !== 'personal')
+  )
+    throw new NotebookError('invalid_request');
+  // Decode every candidate through the retained owner. Unknown core semantics must not disappear from selection.
+  const threads =
+    input.purpose === 'query'
+      ? []
+      : (
+          db.sqlite.prepare('SELECT id FROM control_threads ORDER BY id').all() as { id: string }[]
+        ).map(({ id }) => readProduct(db.sqlite, owner, 'thread', id)!);
+  const turns =
+    input.purpose === 'query'
+      ? []
+      : (
+          db.sqlite.prepare('SELECT id FROM control_turns ORDER BY id').all() as { id: string }[]
+        ).map(({ id }) => readProduct(db.sqlite, owner, 'turn', id)!);
+  const summary =
+    input.purpose === 'query'
+      ? 'Knowledge question.'
+      : input.ownerScope.kind === 'user'
+        ? 'User Memory maintenance.'
+        : input.trigger === 'schedule'
+          ? 'Knowledge Manager scheduled maintenance.'
+          : 'Knowledge maintenance.';
+  const priorRuns =
+    input.purpose === 'query'
+      ? []
+      : turns.filter(({ record }) => {
+          const knowledge = (record.internalExecution as Turn['internalExecution'])?.knowledge;
+          if (knowledge?.purpose === 'maintenance') {
+            const scope = knowledge.ownerScope;
+            return (
+              scope.kind === input.ownerScope.kind &&
+              (scope.kind === 'workspace'
+                ? input.ownerScope.kind === 'workspace' &&
+                  scope.workspaceId === input.ownerScope.workspaceId
+                : scope.kind === 'user'
+                  ? input.ownerScope.kind === 'user' && scope.userId === input.ownerScope.userId
+                  : true)
+            );
+          }
+          const trigger = record.triggerSource as Turn['triggerSource'];
+          return (
+            record.agentId === 'knowledge-manager' &&
+            (input.ownerScope.kind === 'user'
+              ? trigger?.summary === 'User Memory maintenance.'
+              : trigger?.summary === 'Knowledge maintenance.' ||
+                trigger?.summary === 'Knowledge Manager scheduled maintenance.')
+          );
+        });
+  const ids = new Set(priorRuns.map(({ record }) => record.threadId as string));
+  if (input.ownerScope.kind === 'server' && input.purpose === 'maintenance')
+    for (const thread of threads)
+      if (thread.record.entryPath === 'knowledge-manager') ids.add(thread.record.id as string);
+  if (ids.size > 1) throw new NotebookError('recovery_required');
+  const existingId = [...ids][0];
+  const existing = existingId ? threads.find(({ record }) => record.id === existingId) : undefined;
+  if (existingId && !existing) throw new NotebookError('recovery_required');
+  let visibility: 'private' | 'workspace' | 'server' =
+    owner.kind === 'server' ? 'server' : 'workspace';
+  if (input.ownerScope.kind === 'user' || input.purpose === 'query') visibility = 'private';
+  if (input.outputThreadId) {
+    const parent = readProduct(db.sqlite, owner, 'thread', input.outputThreadId);
+    if (
+      !parent ||
+      (parent.record.visibility === 'private' && parent.record.privateOwnerUserId !== userId)
+    )
+      throw new NotebookError('invalid_request');
+    if (input.ownerScope.kind !== 'user' && parent.record.visibility === 'workspace')
+      visibility = 'workspace';
+  }
+  if (
+    existing &&
+    (existing.record.status !== 'active' ||
+      existing.record.entryPath !== 'knowledge-manager' ||
+      existing.record.visibility !== visibility ||
+      (visibility === 'private' && existing.record.privateOwnerUserId !== userId))
+  )
+    throw new NotebookError('recovery_required');
+  if (input.trigger === 'schedule') {
+    const scheduled = priorRuns.find(({ record }) => {
+      const trigger = record.triggerSource as Turn['triggerSource'];
+      return (
+        trigger?.kind === 'automation' &&
+        typeof record.startedAt === 'string' &&
+        record.startedAt.slice(0, 10) === input.startedAt.slice(0, 10)
+      );
+    });
+    if (scheduled)
+      return {
+        threadId: scheduled.record.threadId as string,
+        turnId: scheduled.record.id as string,
+        busy: false,
+        replayed: true,
+      };
+  }
+  const threadId = existingId ?? input.threadId;
+  const busy =
+    input.purpose === 'maintenance' &&
+    turns.some(
+      ({ record }) =>
+        record.threadId === threadId && (record.status === 'running' || record.status === 'pending')
+    );
+  const title =
+    input.purpose === 'query'
+      ? 'Knowledge question'
+      : input.ownerScope.kind === 'user'
+        ? 'Memory maintenance'
+        : owner.kind === 'server'
+          ? 'Server Knowledge maintenance'
+          : 'Knowledge maintenance';
+  const products: ControlProductMutation[] = [];
+  if (workspace)
+    products.push({
+      kind: 'workspace',
+      expectedRevision: workspace.revision,
+      record: { ...workspace.record, updatedAt: input.startedAt },
+    });
+  products.push({
+    kind: 'thread',
+    expectedRevision: existing?.revision ?? 0,
+    record: {
+      ...(existing?.record ?? {
+        schemaVersion: 1,
+        id: threadId,
+        owner,
+        name: title,
+        status: 'active',
+        entryPath: 'knowledge-manager',
+        threadSource: 'conversation',
+        visibility,
+        ...(visibility === 'private' ? { privateOwnerUserId: userId } : {}),
+        createdAt: input.startedAt,
+      }),
+      schemaVersion: 1,
+      preview: input.instructions,
+      updatedAt: input.startedAt,
+    },
+  });
+  products.push({
+    kind: 'turn',
+    expectedRevision: 0,
+    record: {
+      schemaVersion: 1,
+      id: input.turnId,
+      owner,
+      threadId,
+      triggerActor: input.actor,
+      status: 'running',
+      error: null,
+      configVersion: null,
+      startedAt: input.startedAt,
+      completedAt: null,
+      durationMs: null,
+      agentId: 'knowledge-manager',
+      triggerSource: {
+        kind: input.trigger === 'schedule' ? 'automation' : 'system-input',
+        summary,
+      },
+      captureCoverage: input.captureCoverage,
+    },
+  });
+  if (busy) {
+    // A skipped service Turn owns no execution or external effects. It must be born terminal so the existing single-flight index keeps the active run excluded.
+    const skipped = products.pop()!;
+    const record = {
+      ...skipped.record,
+      status: 'completed',
+      completedAt: input.startedAt,
+      durationMs: 0,
+    };
+    decodeControlProduct('turn', record, owner);
+    applyControlProducts(db.sqlite, owner, products, []);
+    db.sqlite
+      .prepare(
+        'INSERT INTO control_turns (id,schema_version,revision,record_json,thread_id,agent_session_id,status) VALUES (?,1,1,?,?,NULL,?)'
+      )
+      .run(input.turnId, JSON.stringify(record), threadId, 'completed');
+  } else {
+    applyControlProducts(db.sqlite, owner, products, []);
+  }
+  if (receipt) {
+    const response = normalizeCommandRequestResponse(receipt.command, {
+      kind: 'turn',
+      id: input.turnId,
+    });
+    // This operation partition alone belongs to this native tuple; a read never prunes another writer's rows.
+    db.sqlite
+      .prepare('DELETE FROM idempotency_requests WHERE request_key=? AND expires_at<=?')
+      .run(receipt.key, receipt.createdAt);
+    db.sqlite
+      .prepare(
+        'INSERT INTO idempotency_requests (schema_version,request_key,command_name,request_id,scope_json,input_hash,response_kind,response_id,response_json,created_at,expires_at) VALUES (1,?,?,?,?,?,?,?,?,?,?)'
+      )
+      .run(
+        receipt.key,
+        receipt.command,
+        receipt.requestId,
+        JSON.stringify(receipt.scope),
+        receipt.inputHash,
+        response.kind,
+        response.id,
+        null,
+        receipt.createdAt,
+        receipt.expiresAt
+      );
+  }
+  return { threadId, turnId: input.turnId, busy, replayed: false };
+}
+
+/** Opens the exact physical product owner and awaits its complete native admission; no binding is upgraded. */
+export async function admitControlMaintenance(
+  dataRoot: string,
+  workspaceId: string | undefined,
+  input: ControlMaintenanceAdmissionInput
+): Promise<ControlMaintenanceAdmissionResult> {
+  const path =
+    workspaceId === undefined
+      ? join(dataRoot, 'server', 'db', 'core.sqlite')
+      : join(dataRoot, 'workspaces', workspaceId, 'db', 'workspace.sqlite');
+  const database = workspaceId === undefined ? `core:${path}` : `workspace:${path}`;
+  const client = getControlStoreWorkerClient();
+  await client.open({
+    database,
+    path,
+    dataRoot,
+    create: false,
+    initialize: workspaceId === undefined ? 'core' : 'workspace',
+    productOwner:
+      workspaceId === undefined ? { kind: 'server' } : { kind: 'workspace', workspaceId },
+  });
+  return client.maintenance(database, input);
+}
+
 /** Trusted request admission supplies identity and the native authority closure, never model arguments. */
 export interface KnowledgeMaintenanceInput {
   readonly workspaceId: string;
@@ -64,6 +456,8 @@ export interface KnowledgeMaintenanceInput {
   readonly askingThreadId?: string;
   readonly askingTurnId?: string;
   readonly signal: AbortSignal;
+  /** Original command facts, supplied only by the existing command owner before native admission. */
+  readonly receipt?: IdempotentCommandReceipt;
   /** Required for native Worker/scheduler calls without a public request actor. */
   readonly currentAdmission?:
     | ((request: NotebookUpdate) => NotebookPublicationAdmission)
@@ -97,8 +491,8 @@ function excerpt(text: string, maxBytes: number) {
   };
 }
 
-/** Executes one fresh bounded Workspace run; only actual Tool outcomes can report publication. */
-export function prepareKnowledgeMaintenance(
+/** Awaits one complete native Workspace admission; only actual Tool outcomes can report publication. */
+export async function prepareKnowledgeMaintenance(
   dependencies: KnowledgeMaintenanceDependencies,
   input: KnowledgeMaintenanceInput
 ) {
@@ -141,9 +535,27 @@ export function prepareKnowledgeMaintenance(
     changes: [],
     summary: input.instructions,
   });
+  input.signal.throwIfAborted();
+  const admitted = await admitControlMaintenance(dependencies.coreDb.dataRoot, input.workspaceId, {
+    purpose: 'maintenance',
+    ownerScope: { kind: 'workspace', workspaceId: input.workspaceId },
+    actor: input.actor,
+    requestId: input.requestId,
+    threadId: allocateEntityId('th'),
+    turnId: allocateEntityId('tu'),
+    startedAt: input.startedAt ?? new Date().toISOString(),
+    trigger: input.trigger,
+    instructions: input.instructions,
+    captureCoverage: store.getLiveCaptureCoverage(),
+    ...(input.receipt ? { receipt: MaintenanceReceiptSchema.parse(input.receipt) } : {}),
+  });
+  if (admitted.replayed) throw new NotebookError('recovery_required');
+  const thread = store.getThread(input.workspaceId, admitted.threadId);
+  const turn = store.getTurnById(admitted.turnId);
   const all = store
     .listThreads(input.workspaceId)
-    .flatMap((thread) => store.listThreadTurns(input.workspaceId, thread.id));
+    .flatMap((thread) => store.listThreadTurns(input.workspaceId, thread.id))
+    .filter((prior) => prior.id !== turn.id);
   const maintenance = all.filter((turn) => {
     const knowledge = turn.internalExecution?.knowledge;
     return (
@@ -157,17 +569,6 @@ export function prepareKnowledgeMaintenance(
             turn.triggerSource.summary === 'Knowledge maintenance.')))
     );
   });
-  const threadIds = new Set(maintenance.map((turn) => turn.threadId));
-  if (threadIds.size > 1) throw new NotebookError('recovery_required');
-  const thread = maintenance[0]
-    ? store.getThread(input.workspaceId, maintenance[0].threadId)
-    : store.createThread(
-        input.workspaceId,
-        'Knowledge maintenance',
-        undefined,
-        'knowledge-manager',
-        { visibility: 'workspace' }
-      );
   const access = {
     store,
     coreDb: dependencies.coreDb,
@@ -183,28 +584,9 @@ export function prepareKnowledgeMaintenance(
   };
   admitKnowledgeRetrieval(target);
   const workspaceDb = dependencies.openWorkspace(input.workspaceId);
-  const turn = store.createTurn(
-    input.workspaceId,
-    thread.id,
-    input.instructions,
-    input.actor,
-    null,
-    {
-      ...(input.startedAt ? { startedAt: input.startedAt } : {}),
-      agentId: 'knowledge-manager',
-      executorKind: 'assistant',
-      triggerSource: {
-        kind: input.trigger === 'schedule' ? 'automation' : 'system-input',
-        summary:
-          input.trigger === 'schedule'
-            ? 'Knowledge Manager scheduled maintenance.'
-            : 'Knowledge maintenance.',
-      },
-    }
-  );
-  const status = (summary: string, failed = false, result?: ReturnType<typeof response>) => {
+  const status = async (summary: string, failed = false, result?: ReturnType<typeof response>) => {
     const timestamp = new Date().toISOString();
-    store.createItem({
+    await store.createItem({
       id: allocateEntityId('it'),
       owner: { kind: 'workspace', workspaceId: input.workspaceId },
       threadId: thread.id,
@@ -252,9 +634,9 @@ export function prepareKnowledgeMaintenance(
   };
   let outcome: ReturnType<typeof response> | undefined;
   let outcomeStatusRecorded = false;
-  const recordOutcome = () => {
+  const recordOutcome = async () => {
     if (outcome && !outcomeStatusRecorded) {
-      status(outcome.summary, false, outcome);
+      await status(outcome.summary, false, outcome);
       outcomeStatusRecorded = true;
     }
   };
@@ -265,24 +647,27 @@ export function prepareKnowledgeMaintenance(
       closed = true;
     }
   };
-  const fail = () => {
-    const current = store.getTurnById(turn.id);
-    const result =
-      outcome ??
-      response(
-        'failed',
-        current.error?.message ?? 'Knowledge maintenance failed. Inspect its retained Turn.'
-      );
-    if (!isSealedTurnTerminal(current.status)) {
-      if (!outcomeStatusRecorded) status(result.summary, true, result);
-      store.updateTurn(turn.id, {
-        status: input.signal.aborted ? 'cancelled' : 'failed',
-        completedAt: new Date().toISOString(),
-        error: { code: 'knowledge_maintenance_failed', message: result.summary },
-      });
+  const fail = async () => {
+    try {
+      const current = store.getTurnById(turn.id);
+      const result =
+        outcome ??
+        response(
+          'failed',
+          current.error?.message ?? 'Knowledge maintenance failed. Inspect its retained Turn.'
+        );
+      if (!isSealedTurnTerminal(current.status)) {
+        if (!outcomeStatusRecorded) await status(result.summary, true, result);
+        await store.updateTurn(turn.id, {
+          status: input.signal.aborted ? 'cancelled' : 'failed',
+          completedAt: new Date().toISOString(),
+          error: { code: 'knowledge_maintenance_failed', message: result.summary },
+        });
+      }
+      return result;
+    } finally {
+      close();
     }
-    close();
-    return result;
   };
   const settled = (result: ReturnType<typeof response>) => {
     close();
@@ -290,14 +675,13 @@ export function prepareKnowledgeMaintenance(
   };
   try {
     admission(empty);
-    if (maintenance.some((prior) => !isSealedTurnTerminal(prior.status))) {
+    if (admitted.busy) {
       const skipped = response('skipped', 'Another notebook maintenance Turn is still active.');
-      status(skipped.summary, false, skipped);
-      store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
+      await status(skipped.summary, false, skipped);
       return settled(skipped);
     }
   } catch {
-    return settled(fail());
+    return settled(await fail());
   }
   let started = false;
   return {
@@ -833,7 +1217,7 @@ export function prepareKnowledgeMaintenance(
             async (value) => {
               const result = await editor.notebookUpdate({ summary: value.summary! });
               if (result.outcome === 'no_change') outcome = response('no-change', value.summary!);
-              recordOutcome();
+              await recordOutcome();
               return result;
             }
           ),
@@ -954,15 +1338,15 @@ export function prepareKnowledgeMaintenance(
             if (!outcome)
               return 'Call knowledge.notebook.update({summary: ...}) first, including when no changes are needed. Then call knowledge.result.';
             history.assertCurrent();
-            recordOutcome();
           },
         };
         dependencies.pin(runInput);
         await dependencies.run(runInput);
+        await recordOutcome();
         if (!outcome) throw new NotebookError('invalid_request');
         return outcome;
       } catch {
-        return fail();
+        return await fail();
       } finally {
         close();
       }
@@ -970,10 +1354,10 @@ export function prepareKnowledgeMaintenance(
   };
 }
 
-/** Explicit requests use the same synchronous admission and detached execution boundary as schedules. */
+/** Explicit requests await the same native admission and detached execution boundary as schedules. */
 export async function maintainKnowledgeAgent(
   dependencies: KnowledgeMaintenanceDependencies,
   input: KnowledgeMaintenanceInput
 ) {
-  return prepareKnowledgeMaintenance(dependencies, input).execute();
+  return (await prepareKnowledgeMaintenance(dependencies, input)).execute();
 }
