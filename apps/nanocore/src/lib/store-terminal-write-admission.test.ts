@@ -525,6 +525,57 @@ describe('post-terminal write admission', () => {
     );
   });
 
+  it('admits turn-output Artifact reference on a terminal Turn only with configuration-apply admission', () => {
+    const store = createDemoStore();
+    const turn = seedTurn(store, 'completed');
+    const body = '{"configuration":"outcome"}';
+    const digest = `sha256:${createHash('sha256').update(body, 'utf8').digest('hex')}`;
+    const rejectedId = 'ar_00000000-0000-78c4-95cd-6093ab5a4c37';
+    const admittedId = 'ar_00000000-0000-78c4-95cd-6093ab5a4c38';
+    const artifactInput = {
+      id: rejectedId,
+      workspaceId: workspaceIdForOwner(turn.owner),
+      threadId: turn.threadId,
+      turnId: turn.id,
+      kind: 'report' as const,
+      title: 'Configuration outcome',
+      status: 'ready' as const,
+      summary: null,
+      version: 1 as const,
+      content: { format: 'json' as const, body },
+      contentDigest: digest,
+      lastMutationRequestId: 'req_configuration_outcome',
+      origin: {
+        kind: 'turn-output' as const,
+        requestId: 'req_configuration_outcome',
+        threadId: turn.threadId,
+        turnId: turn.id,
+      },
+      createdAt: COMPLETED_AT,
+      updatedAt: COMPLETED_AT,
+    };
+
+    expect(() => store.createArtifact(artifactInput)).toThrow(
+      `Turn ${turn.id} is terminal and does not admit this write.`
+    );
+    const artifact = store.createArtifact(
+      { ...artifactInput, id: admittedId },
+      undefined,
+      CONFIGURATION_APPLY_PENDING_DELAYED_USER_INPUT_ADMISSION
+    );
+    expect(artifact.contentDigest).toBe(digest);
+    expect(
+      store
+        .listAllItems()
+        .filter(
+          (item) =>
+            item.type === 'artifact-reference' &&
+            item.turnId === turn.id &&
+            item.artifactId === artifact.id
+        )
+    ).toHaveLength(1);
+  });
+
   it('admits the configuration-apply marker Item pending delayed user input', () => {
     const store = createDemoStore();
     const turn = seedTurn(store, 'completed');
