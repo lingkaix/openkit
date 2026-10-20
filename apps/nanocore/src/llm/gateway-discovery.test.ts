@@ -34,7 +34,7 @@ function fixture(primary: PrimarySupply, backup: boolean, autoFailover?: boolean
     profiles.push({
       id: 'primary',
       displayName: 'Primary',
-      kind: 'gateway',
+      kind: 'llm-gateway',
       vendor: 'openai',
       secretRef: 'test:primary',
       models: ['native-primary'],

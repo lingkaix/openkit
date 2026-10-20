@@ -4,7 +4,7 @@ This directory owns configured provider instances, provider profiles, credential
 
 ## Boundaries
 
-- The runtime provider registry is the single configured-instance owner; do not add a second static provider registry or parallel provider vocabulary.
+- The runtime provider registry is the single configured-instance owner; do not add a second static provider registry or parallel provider vocabulary. LLM Gateway profiles use `kind: "llm-gateway"` and retain the same credential requirement. The shared authored v1 schema projects historical `gateway` kinds on read without rewriting files; logical and runtime profiles accept only the current spelling.
 - `../llm/` owns request dispatch, adapter behavior, provider-native payloads, usage observation, and public Gateway behavior.
 - `vault-credential-resolver.ts` resolves explicit credential references through the Vault boundary; provider code must not inspect unrelated ambient credential keys.
 - Configured instance identity, endpoint, model catalog, and credential scope must survive projection into dispatch without falling back to a colliding adapter id.

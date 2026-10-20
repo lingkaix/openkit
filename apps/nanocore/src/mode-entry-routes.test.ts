@@ -3263,7 +3263,7 @@ describe('exact Task Agent selection', () => {
           {
             id: 'unavailable-provider',
             displayName: 'Missing-key Provider',
-            kind: 'gateway',
+            kind: 'llm-gateway',
             vendor: 'openai',
             baseUrl: 'https://inference.example.invalid/v1',
             models: [healthyModelId],
@@ -3343,7 +3343,7 @@ describe('exact Task Agent selection', () => {
           {
             id: 'unavailable-provider',
             displayName: 'Missing-key Provider',
-            kind: 'gateway',
+            kind: 'llm-gateway',
             vendor: 'openai',
             baseUrl: 'https://inference.example.invalid/v1',
             models: [healthyModelId],

@@ -13290,7 +13290,7 @@ describe('createConfiguredTurnExecutor', () => {
             {
               id: 'agent-openrouter',
               displayName: 'Pi fixture',
-              kind: 'gateway',
+              kind: 'llm-gateway',
               models: ['openai/gpt-5.2'],
               secretRef: 'env:OPENKIT_PI_ADMISSION_FIXTURE_KEY',
             },
@@ -13396,7 +13396,7 @@ describe('createConfiguredTurnExecutor', () => {
           {
             id: 'agent-openrouter',
             displayName: 'Pi fixture',
-            kind: 'gateway',
+            kind: 'llm-gateway',
             models: ['openai/gpt-5.2'],
           },
         ]);

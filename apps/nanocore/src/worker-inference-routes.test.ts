@@ -631,7 +631,7 @@ function createWorkerInferenceRouteFixture(
                       defaultModel: providerModel,
                       displayName: 'Agent OpenRouter',
                       id: providerProfileId,
-                      kind: 'gateway' as const,
+                      kind: 'llm-gateway' as const,
                       secretRef: 'test:worker-api-key',
                       models: [providerModel],
                       vendor: 'openrouter' as const,
@@ -812,7 +812,7 @@ describe('worker inference routes', () => {
       {
         id: 'agent-openrouter',
         displayName: 'Agent OpenRouter',
-        kind: 'gateway',
+        kind: 'llm-gateway',
         vendor: 'openrouter',
         secretRef: 'test:worker-api-key',
         models: [WORKER_PROVIDER_MODEL],
@@ -2968,7 +2968,7 @@ describe('slice 3c Worker native effort and immutable package', () => {
       {
         id: 'agent-openrouter',
         displayName: 'Synthetic reasoning',
-        kind: 'gateway',
+        kind: 'llm-gateway',
         vendor: 'openrouter',
         models: [WORKER_PROVIDER_MODEL],
         secretRef: 'test:worker-api-key',
@@ -3167,7 +3167,7 @@ describe('Worker Turn admitted limits', () => {
       ].map(({ id, context, output }) => ({
         id,
         displayName: id,
-        kind: 'gateway' as const,
+        kind: 'llm-gateway' as const,
         vendor: 'openrouter' as const,
         secretRef: 'test:worker-api-key',
         models: [WORKER_PROVIDER_MODEL],

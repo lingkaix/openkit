@@ -43,7 +43,7 @@ describe('loadProviderRegistryFromDataRoot', () => {
     expect(result.providerRegistry.get('core-openrouter')).toEqual(
       expect.objectContaining({
         id: 'core-openrouter',
-        kind: 'gateway',
+        kind: 'llm-gateway',
       })
     );
     expect(result.providerRegistry.get('openrouter')).toBeNull();

@@ -10,7 +10,7 @@ describe('resolveProviderProfileToLLMConfig', () => {
         defaultModel: 'openai/gpt-5',
         displayName: 'Core OpenRouter',
         id: 'core-openrouter',
-        kind: 'gateway',
+        kind: 'llm-gateway',
         models: ['openai/gpt-5'],
         secretRef: 'env:OPENROUTER_API_KEY',
         vendor: 'openrouter',

@@ -78,7 +78,7 @@ function fixture(supply: 'local' | 'api-key' | 'subscription' = 'local') {
           }
         : supply === 'api-key'
           ? {
-              kind: 'gateway' as const,
+              kind: 'llm-gateway' as const,
               vendor: 'openai',
               baseUrl: 'https://inference.example.invalid/v1',
               secretRef: 'vault://vault_00000000-0000-778d-b94a-e2ca3936439b',
