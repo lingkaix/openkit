@@ -84,6 +84,16 @@ OpenKit 的基本架构是 `App + Core + Agent`。
 
 产品应把复杂且 runtime-specific 的执行交给 specialized agents，同时为用户保持一致的 coordination 体验。持久的 Core-versus-runtime boundary 由 [Foundation](./core/foundation.md) 所有。
 
+### 4.4 计算资源与 Agent 平台中立
+
+OpenKit 对计算资源与 agent 平台保持中立，这是 OpenKit 中 "Open" 的一部分。Core 统一承担权限、Knowledge、Policy、Gateway、Audit 与 durable execution，为用户保持一致的工作体验；agent 实际在哪里运行，由用户与 Policy 选择。NanoHost 是第一方提供的资源平台之一，外部的商业或自部署平台（例如 OpenAI Agents API、E2B、Cloudflare Agents）与它平级接入。
+
+- 中立性在 Core 层成立：Core 直接对接各平台，不要求经过 NanoHost 中转，也不把任何一个平台的实现方式当作通用记录的必然含义。
+- 治理放在边界：不同平台能保证的边界能力不同，例如出口网络、凭据隔离、循环内可见性与清理证明。每种接入如实声明自己的能力与降级，Policy 据此决定一个 Workspace 可以使用哪些平台；无法满足的约束拒绝放置，而不是假装覆盖。
+- 外部平台为严肃工作与计算资源紧张的场景提供额外的稳定选择；平台的选择不改变 Knowledge、BWM、MCP、Skills 等已有的工作方式。
+- 两条不可让步的底线。第一，调度与管理权始终在平台：无论 agent 在哪个平台运行，何时启动、停止、取消，以何种预算与期限运行，都由 Core 决定；外部平台是受 Core 调度的执行方，而不是调度者。
+- 第二，也是更重要的：用户数据的所有权始终在平台。用户在任何平台上产生与使用的工作数据，包括文件、工作成果、可获取的对话与过程记录以及 Knowledge，都必须汇集到 OpenKit 的存储中，由 Core 作为权威来源进行检索、增减与管理；外部平台上的副本只是缓存或外部依赖。不能把所需数据交还给 OpenKit 的平台，不能用于需要这些数据的工作。数据的汇集、积累、管理与有价值信息的提取，是用户长期留在平台、平台价值持续增长的核心。
+
 ## 5. 用户体验
 
 ### 5.1 Conversation-First 界面
