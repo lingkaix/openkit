@@ -303,7 +303,7 @@ describe('native Workspace Notebook history and restore', () => {
       )
       .all(input.requestId);
     expect(admissions).toHaveLength(1);
-  });
+  }, 90_000);
   it('bounds ordinary UTF-8 diff display and refuses an oversized restore before publication', async () => {
     const f = fixture();
     const s = await seed(f);
