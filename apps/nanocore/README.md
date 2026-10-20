@@ -1,6 +1,6 @@
 # nanocore
 
-The Core execution journal now persists administrative image-acquisition intent and atomic image receipt/outcome transitions. Its [runtime guide](src/runtime/README.md) describes the Core-only scope, original expiry/refusal and immutable unknown/linked late evidence; general Workspace execution, native deadline carriage and export remain separate work.
+The Core execution journal now persists administrative image-acquisition intent and atomic image receipt/outcome transitions. Its [runtime guide](src/runtime/README.md) describes the Core-only scope, original expiry/refusal and immutable unknown/linked late evidence; general Workspace execution, native deadline carriage and export remain separate work. Workspace0012 now provides owner-qualified execution-journal storage, typed readers and transaction primitives. Its two control tables are excluded from analytical export and retained only within Workspace database bytes for operational backup/MOVE; ordinary Workspace producers remain inactive.
 
 C2-B2 preparation keeps canonical file records and current Main SQL writers authoritative. Existing asynchronous Thread and context producers await Store acknowledgements before validating or exposing their results. Audit value construction is separate from its unchanged Main insert, and Task/Goal SQL bodies accept only the supplied owning connection they use. Transaction and nested savepoint boundaries, receipts, pruning and terminal guards remain unchanged; this is not the native authority switch.
 
