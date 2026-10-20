@@ -4,12 +4,15 @@ import { connect as connectHttp2, createServer as createHttp2Server } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
+import { ensureLocalUser, getLocalUserId } from '../auth/identity.js';
 import {
   createNanoHostTransportSessionAuthority,
   readNanoHostPhysicalConnectionContext,
 } from '../auth/nanohost-transport-session.js';
+import { FsStore } from '../lib/store.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import type { ExecutionStepControl } from './execution-step-journal.js';
 import { commandInputHash } from './idempotent-command.js';
 import { allocateNanoHostRuntimeTargetConnectionGeneration } from './nanohost-runtime-target.js';
 import { createNanoHostSessionDispatch } from './nanohost-session-dispatch.js';
@@ -178,7 +181,26 @@ async function preparationFixture() {
 describe('ordinary preparation adapter controls before journal wiring', () => {
   it('commits intent before native image.acquire delivery and preserves receipt controls', async () => {
     const f = await preparationFixture();
+    // Bind real caller provenance through Server history without creating a Workspace database.
+    const actor: ExecutionStepControl['actor'] = { kind: 'user', id: ensureLocalUser(f.db) };
+    const store = new FsStore({ dataRoot: f.root });
+    const thread = store.createServerThread(
+      'Administrative image preparation',
+      undefined,
+      'conversation'
+    );
+    const publicationTurn = store.createServerTurn(thread.id, 'Prepare the authored image.', actor);
+    expect(getLocalUserId(f.db)).toBe(actor.id);
+    expect(
+      new FsStore({ dataRoot: f.root }).getServerTurn(thread.id, publicationTurn.id)
+    ).toMatchObject({
+      id: publicationTurn.id,
+      owner: { kind: 'server' },
+      triggerActor: actor,
+    });
     const input = {
+      actor,
+      workId: publicationTurn.id,
       authorize: () => true,
       candidate: {
         artifactId: identity.authoredArtifactId,
@@ -202,16 +224,38 @@ describe('ordinary preparation adapter controls before journal wiring', () => {
     // A soft assertion preserves the independent authorization, receipt and cold-reopen controls below.
     const intents = f.db.sqlite
       .prepare(
-        `SELECT s.schema_version AS schemaVersion, s.state, r.definition_version AS definitionVersion
+        `SELECT s.schema_version AS schemaVersion, s.state, r.definition_version AS definitionVersion,
+                json_extract(s.control_json, '$.actor') AS actor,
+                json_extract(s.control_json, '$.workId') AS workId, r.work_id AS rootWorkId
          FROM control_execution_steps s JOIN control_executions r ON r.id = s.execution_id
          WHERE json_extract(s.invocation_json, '$.carriage.operation') = 'image.acquire'
            AND json_extract(s.invocation_json, '$.carriage.requestId') = ?`
       )
-      .all(acquire.requestId);
+      .all(acquire.requestId) as Array<{
+      schemaVersion: number;
+      state: string;
+      definitionVersion: string;
+      actor: string;
+      workId: string;
+      rootWorkId: string;
+    }>;
     expect
-      .soft(intents, 'Native image.acquire delivery requires its committed journal intent.')
+      .soft(
+        intents.map(({ actor: recordedActor, ...row }) => ({
+          ...row,
+          actor: JSON.parse(recordedActor),
+        })),
+        'Native image.acquire delivery requires its committed journal intent.'
+      )
       .toStrictEqual([
-        { schemaVersion: 1, state: 'intent', definitionVersion: 'core-image-acquire/v1' },
+        {
+          schemaVersion: 1,
+          state: 'intent',
+          definitionVersion: 'core-image-acquire/v1',
+          actor,
+          workId: publicationTurn.id,
+          rootWorkId: publicationTurn.id,
+        },
       ]);
     const result = { requestId: acquire.requestId, digest: imageDigest };
     await f.dispatch.result(f.physical, 'image.acquire', result);
