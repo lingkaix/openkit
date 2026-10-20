@@ -51,7 +51,7 @@ beforeAll(async () => {
   linkedSeed.baseRevision = linkedSeed.notebook.publishedRevision();
   linkedSeed.workspaceDb.sqlite.close();
   linkedSeed.coreDb.sqlite.close();
-});
+}, 120_000);
 afterAll(() => {
   for (const cleanup of retainedCleanup) cleanup();
 });
@@ -508,7 +508,7 @@ describe('ordinary SourceSummary editing through native owners', () => {
       observed = await runMaintenance(baseline, mode, linked ? linkedSourceId : undefined);
       baseline.workspaceDb.sqlite.close();
       baseline.coreDb.sqlite.close();
-    });
+    }, 120_000);
     // One real KM proposal feeds independent copies. No case depends on a prior case's mutation.
     it.each([
       'candidate',

@@ -621,7 +621,14 @@ export function prepareKnowledgeMaintenance(
                 throw new NotebookError(
                   'invalid_request',
                   undefined,
-                  validation.errors.map(({ code }) => code)
+                  validation.errors.map(({ code }) => code),
+                  validation.errors.flatMap(({ code, pageId, target }) =>
+                    code === 'notebook.unresolved_page_link' &&
+                    target !== undefined &&
+                    edit.changes.some(({ path }) => path === `${pageId}.md`)
+                      ? [{ code, pageId, target }]
+                      : []
+                  )
                 );
               const setting = settings();
               if (
@@ -736,6 +743,12 @@ export function prepareKnowledgeMaintenance(
                 error instanceof NotebookError
                   ? [...new Set(error.diagnostics ?? [])].slice(0, 8)
                   : [];
+              if (
+                name === 'knowledge.notebook-workspace.update' &&
+                errorCode === 'invalid_request' &&
+                !diagnostics.length
+              )
+                diagnostics.push('notebook.script_failed');
               // Class labels are native constants; exception text and constructor names are untrusted.
               const exceptionClass =
                 error instanceof NotebookError
@@ -771,13 +784,18 @@ export function prepareKnowledgeMaintenance(
                     text: JSON.stringify({
                       code: errorCode,
                       ...(diagnostics.length ? { diagnostics } : {}),
+                      ...(error instanceof NotebookError && error.linkDiagnostics?.length
+                        ? { linkDiagnostics: error.linkDiagnostics }
+                        : {}),
                       message: diagnostics.includes('notebook.maintenance_change_limit')
                         ? `Maintenance permits at most ${NOTEBOOK_EDITING_LIMITS.changedFiles} changed files, including index.md. Reduce the temporary edits before resubmitting; call knowledge.result only after a successful notebook submission.`
                         : diagnostics.includes('scope_schema.invalid_confidence')
                           ? 'Claim requires confidence: a finite number from zero through one. Correct the temporary Claim frontmatter before resubmitting; call knowledge.result only after a successful notebook submission.'
-                          : errorCode === 'notebook_tool_failed'
-                            ? 'Notebook Tool failed unexpectedly. Publication is not confirmed; inspect the notebook before starting a new request.'
-                            : 'Notebook Tool refused the request. Check the admitted notebook constraints and native diagnostic codes; publication is not confirmed.',
+                          : diagnostics.includes('notebook.unresolved_page_link')
+                            ? 'Repair the reported local links in the temporary notebook, then resubmit. Page links resolve relative to the containing page against the complete resulting tree, not relative to the editor filesystem root. Call knowledge.result only after a successful notebook submission.'
+                            : errorCode === 'notebook_tool_failed'
+                              ? 'Notebook Tool failed unexpectedly. Publication is not confirmed; inspect the notebook before starting a new request.'
+                              : 'Notebook Tool refused the request. Check the admitted notebook constraints and native diagnostic codes; publication is not confirmed.',
                     }),
                   },
                 ],
