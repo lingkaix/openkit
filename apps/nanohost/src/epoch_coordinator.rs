@@ -6465,7 +6465,7 @@ mod tests {
             let line_start = coordinator[..fence]
                 .rfind('\n')
                 .map_or(0, |index| index + 1);
-            if coordinator[line_start..fence].contains("fn terminate_children") {
+            if coordinator[line_start..].starts_with("fn terminate_children(") {
                 continue;
             }
             let private_function = coordinator[..fence].rfind("\n    fn ");
