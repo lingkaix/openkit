@@ -482,6 +482,8 @@ export function createWorkerEnvironmentPreparation(
     let image: PreparedWorkerEnvironmentImage;
     try {
       image = await dependencies.runtimeEffects.prepareImage({
+        actor: { kind: 'user', id: context.actor.userId },
+        workId: publicationTurn.id,
         authorize: () => {
           try {
             dependencies.requireCurrentAdministrator(context.actor);

@@ -43,6 +43,8 @@ export type EndedExecutionStepState = 'completed' | 'failed' | 'unknown' | 'canc
 export interface ExecutionStepControl {
   readonly definitionVersion: string;
   readonly kind: ExecutionStepKind;
+  /** Existing selected placement for this step only; null for a local step, never execution-wide. */
+  readonly target: ExecutionStepTarget | null;
   readonly workId: string;
   readonly operationId: string | null;
   readonly attemptId: string | null;
@@ -57,6 +59,94 @@ export interface ExecutionStepControl {
   readonly retryPermitted: boolean;
   readonly deadlineUnixNano: bigint | null;
   readonly physicalFenceRefs: readonly string[];
+}
+
+/** Existing backend/target/allocation references; this value neither selects placement nor grants authority. */
+export interface ExecutionStepTarget {
+  readonly backendKind: string;
+  readonly targetId: string;
+  readonly allocationRef: string | null;
+}
+
+/** Persisted reference and original cap of the parent invocation; distinct executions link rather than reparent. */
+export interface ExecutionInvocationParent {
+  readonly ref: ExecutionStepRef;
+  readonly deadlineUnixNano: bigint | null;
+}
+
+/** Exact private carriage correlation; a repeatable request hash is not an invocation identity. */
+export interface ExecutionInvocationCarriage {
+  readonly operation: string;
+  readonly requestId: string;
+  readonly sequence: number | null;
+  readonly bindingRef: string | null;
+}
+
+/** Original local clock anchor; a missing process witness after restart cannot authorize a fresh allowance. */
+export interface ExecutionInvocationClock {
+  readonly processWitness: string;
+  readonly admittedUnixNano: bigint;
+  readonly admittedMonotonicNano: bigint;
+}
+
+/** Persisted invocation facts plus a narrowed read-time allowance; this view is not an execution grant. */
+export interface ExecutionInvocation {
+  readonly ref: ExecutionStepRef;
+  readonly state: 'intent' | EndedExecutionStepState;
+  readonly control: ExecutionStepControl;
+  readonly parent: ExecutionInvocationParent | null;
+  readonly carriage: ExecutionInvocationCarriage;
+  readonly clock: ExecutionInvocationClock;
+  /** Derived, never persisted or renewed; zero for ended, expired or unproved clock authority. */
+  readonly remainingMs: number;
+}
+
+/** Inspectable execution root; the current-step set permits fan-out without introducing a fan-out producer. */
+export interface ExecutionJournalExecution {
+  readonly ref: ExecutionJournalRef;
+  readonly definitionVersion: string;
+  readonly workId: string;
+  readonly fingerprint: string;
+  readonly phase: 'open' | 'closing' | 'closed';
+  readonly revision: number;
+  readonly terminalCause: string | null;
+  readonly exclusionRefs: readonly string[];
+  readonly span: ExecutionJournalSpan;
+  readonly openSteps: readonly ExecutionStepRef[];
+}
+
+/** Initial root facts for an existing work identity, not a new public Run or placement owner. */
+export interface ExecutionJournalAdmission {
+  readonly ref: ExecutionJournalRef;
+  readonly definitionVersion: string;
+  readonly workId: string;
+  readonly fingerprint: string;
+  readonly exclusionRefs: readonly string[];
+  readonly span: ExecutionJournalSpan & { readonly endTimeUnixNano: null };
+}
+
+/** Intent supplied before an effect; the owning journal captures its clock anchor, ordinal and revision. */
+export interface ExecutionJournalIntent {
+  readonly execution: ExecutionJournalAdmission;
+  readonly stepId: string;
+  readonly parentStepId: string | null;
+  readonly control: ExecutionStepControl;
+  readonly parent: ExecutionInvocationParent | null;
+  readonly carriage: ExecutionInvocationCarriage;
+  readonly inspectedStep: ExecutionStepRef | null;
+  readonly span: ExecutionJournalSpan & { readonly endTimeUnixNano: null };
+}
+
+/** Conditional end and next local transition; the existing receipt commits in the same owning transaction. */
+export interface ExecutionJournalSettlement {
+  readonly ref: ExecutionStepRef;
+  readonly expectedExecutionRevision: number;
+  readonly state: EndedExecutionStepState;
+  readonly outputRefs: readonly string[];
+  readonly span: ExecutionJournalSpan & { readonly endTimeUnixNano: bigint };
+  readonly nextPhase: 'open' | 'closing' | 'closed';
+  readonly terminalCause: string | null;
+  readonly exclusionRefs: readonly string[];
 }
 
 /**
@@ -173,6 +263,22 @@ export interface LinkedExecutionInspection {
  * Callers retain scope admission and disclosure checks; correlation IDs and diagnostic attributes grant neither.
  */
 export interface ExecutionStepJournalReader {
+  /**
+   * Reads the persisted root and all current open-step references without advancing work.
+   * @param executionRef Existing execution selected under current admission and authorization.
+   * @returns Stored root and open-step set; open spans remain inspectable and unexported.
+   * @throws When required authority is missing, unavailable, conflicting or unsupported.
+   */
+  readExecution(executionRef: ExecutionJournalRef): Promise<ExecutionJournalExecution>;
+
+  /**
+   * Reads exact invocation authority and conservatively narrowed original allowance, never a new budget.
+   * @param stepRef Exact invocation selected under current admission and authorization.
+   * @returns Stored facts and remainingMs; zero refuses execution but not eligible result-only evidence.
+   * @throws When required authority is missing, unavailable, conflicting or unsupported.
+   */
+  readInvocation(stepRef: ExecutionStepRef): Promise<ExecutionInvocation>;
+
   /**
    * Reads immutable ended steps for exactly one owner-qualified execution; never advances or replays it.
    * @param executionRef Existing execution selected under current admission and authorization.

@@ -66,6 +66,14 @@ This is unused preparation. No ordinary producer, factory, cache, transport erro
 
 B1 supports admission and non-terminal product metadata, not a partial terminal publication. Turn terminal states are refused until the complete native terminal tuple includes its Task/Goal and observation/reap dependencies under the [Worker-Turn transition contract](../../../../docs/specs/20261019-durable_execution_and_control_store.md#worker-turn-transitions). This restriction is removed with those handlers, not with a file fallback or a split commit. Public admission, ordinary-producer C3, native hot-path closure and mixed-load qualification remain later gates. No such qualification follows from these prepared APIs.
 
+## Prepared Core Execution Journal
+
+Core0014 adds `control_executions` and `control_execution_steps` under the accepted [DX journal owner](../../../../docs/specs/20261019-durable_execution_and_control_store.md#step-journal-and-span-model). Root identity has no placement field; each step retains its declared control/target plus original `{parent, carriage, clock}` invocation JSON. `remainingMs` is derived, never stored or renewed. JSON encodes bigint nanoseconds and typed int64 values as exact decimal strings; consumers decode them to bigint, not floating-point timestamps or untyped diagnostic attributes.
+
+Native keys preserve per-execution order and global invocation identity while permitting multiple open steps. A control parent is a prior step in the same execution, independent of the paired inspection reference. Parent/identity changes, ended-row updates and closed-root reopening refuse. An intent may settle once, adding output references and final span facts without changing original control inputs or clock authority. Settlement must preserve the retained control JSON, including unknown descriptive additions, while replacing only `outputRefs`; reconstructing it from a narrowed reader model can violate the native identity guard. Retention deletion and fence release retain their existing owners; the schema supplies neither an execution grant nor automatic cleanup.
+
+This cut creates schema only. It does not implement or activate a journal producer, reader, Worker command, timer, runtime placement choice or public admission path. Native migrated-table and constraint probes do not qualify production effect/replay behavior; the runtime owner and independent author must exercise those real paths after consuming the exact schema commit.
+
 ## File Record Rules
 
 - Writers store DATA_ROOT-relative path references. User and authored content may mention an absolute data root; layout verification does not scan text for that substring.

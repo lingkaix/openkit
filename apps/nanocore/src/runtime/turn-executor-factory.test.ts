@@ -3171,18 +3171,54 @@ describe('createConfiguredTurnExecutor', () => {
           throw new Error(`Unexpected preparation effect ${request.kind}`);
         }) as NanoHostSessionDispatch['effect'],
       });
+      const coreDb = openCoreDb(join(root, 'dispatch'));
+      pinCoreDb = coreDb;
+      applyMigrations(coreDb);
+      // Match the real preparation caller and the independent 3a provenance fixtures.
+      const actor = { kind: 'user' as const, id: ensureLocalUser(coreDb) };
+      const publicationStore = new FsStore({ dataRoot: coreDb.dataRoot });
+      const publicationThread = publicationStore.createServerThread(
+        'Host producer fixture preparation',
+        undefined,
+        'conversation'
+      );
+      const publicationTurn = publicationStore.createServerTurn(
+        publicationThread.id,
+        'Prepare the fixture images.',
+        actor
+      );
+      expect(
+        new FsStore({ dataRoot: coreDb.dataRoot }).getServerTurn(
+          publicationThread.id,
+          publicationTurn.id
+        )
+      ).toMatchObject({ id: publicationTurn.id, owner: { kind: 'server' }, triggerActor: actor });
       const candidate = {
         artifactId: testEntityId('ar', 'artifact_pin'),
         artifactVersion: 1,
         contentDigest: `sha256:${'c'.repeat(64)}`,
       };
       await preparation.prepareImage({
+        actor,
+        workId: publicationTurn.id,
         authorize: () => true,
         candidate,
         image: { kind: 'reference', pullPolicy: 'never', ref: `sha256:${'a'.repeat(64)}` },
       });
-      await preparation.prepareImage({ authorize: () => true, candidate, image: buildImage });
-      await preparation.prepareImage({ authorize: () => true, candidate, image: registryImage });
+      await preparation.prepareImage({
+        actor,
+        workId: publicationTurn.id,
+        authorize: () => true,
+        candidate,
+        image: buildImage,
+      });
+      await preparation.prepareImage({
+        actor,
+        workId: publicationTurn.id,
+        authorize: () => true,
+        candidate,
+        image: registryImage,
+      });
       await preparation.inspectImage({
         authorize: () => true,
         imageDigest: `sha256:${'a'.repeat(64)}`,
@@ -3204,9 +3240,6 @@ describe('createConfiguredTurnExecutor', () => {
       expect(new Set(captured.map(({ request }) => request.kind))).toEqual(
         new Set(NANO_HOST_EFFECT_OPERATIONS)
       );
-      const coreDb = openCoreDb(join(root, 'dispatch'));
-      pinCoreDb = coreDb;
-      applyMigrations(coreDb);
       const authority = createNanoHostTransportSessionAuthority();
       let admit!: (physical: object) => void;
       const ready = new Promise<object>((resolve) => {
