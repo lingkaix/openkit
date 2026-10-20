@@ -45,6 +45,42 @@ function fixture() {
 }
 
 describe('bounded notebook Agent editing', () => {
+  it.each([
+    [
+      'syntax',
+      'if true; then\nprintf "UNTRUSTED-SCRIPT /private/editor-canary"\n',
+      'notebook.script_syntax_error',
+    ],
+    [
+      'size limit',
+      `# UNTRUSTED-SCRIPT /private/editor-canary\n${' '.repeat(64 * 1024)}`,
+      'notebook.script_limit_exceeded',
+    ],
+  ])('One Editing Workspace: a real %s refusal has one closed category and no raw exception', async (_label, script, category) => {
+    const f = fixture();
+    const error = await f.editor
+      .workspaceUpdate({ script: script! })
+      .catch((error: unknown) => error);
+    expect(error).toMatchObject({
+      code: 'invalid_request',
+      diagnostics: [category],
+    });
+    const feedback = `${error instanceof Error ? error.message : ''}${JSON.stringify(error)}`;
+    for (const privateText of [
+      'UNTRUSTED-SCRIPT',
+      '/private/editor-canary',
+      'SyntaxError:',
+      'stack',
+    ]) {
+      expect(feedback).not.toContain(privateText);
+    }
+    expect(f.notebook.publishedRevision()).toBe(f.baseRevision);
+    expect(f.submit).not.toHaveBeenCalled();
+    expect((await f.editor.workspaceUpdate({ script: 'printf recovered' })).stdout).toBe(
+      'recovered'
+    );
+  });
+
   it('edits only admitted virtual data, retains failed-script edits and submits exact fixed-base changes once', async () => {
     const f = fixture();
     expect((await f.editor.workspaceUpdate({ script: 'cat /sources/admitted.txt' })).stdout).toBe(
