@@ -285,6 +285,9 @@ describe('bounded typed Knowledge authoring guidance', () => {
     expect(delivered).not.toContain('UNDISCLOSED-PRIVATE-FIXTURE');
     // Deciding RED: the native request currently contains no admitted active schema contract.
     expect(delivered).toContain(f.activeSchema);
+    expect(delivered).toContain('short syntheses');
+    expect(delivered).toContain('Keep originals in Sources');
+    expect(delivered).toContain('cite exact Source references');
     for (const field of [
       'type',
       'title',
