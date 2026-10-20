@@ -14,6 +14,7 @@ import { LIGHT_APP_KERNEL_FORMAT_VERSION } from '@openkit/app-api-schemas';
 import Database from 'better-sqlite3';
 
 import { KernelCommandError } from '../generative-kernel/errors.js';
+import { configureOwnedSqlite } from './control-store.js';
 import { resolveDataRootPath } from './fs-layout.js';
 import { applyAppMigrations } from './migrate.js';
 
@@ -194,9 +195,7 @@ function openSqlite(path: string, fileMustExist: boolean): Database.Database {
  * @param sqlite Open connection.
  */
 function applyAppPragmas(sqlite: Database.Database): void {
-  sqlite.pragma('journal_mode = WAL');
-  sqlite.pragma('synchronous = FULL');
-  sqlite.pragma('foreign_keys = ON');
+  configureOwnedSqlite(sqlite);
   sqlite.pragma(`busy_timeout = ${APP_BUSY_TIMEOUT_MS}`);
 }
 
@@ -262,6 +261,7 @@ function assertSqliteIntegrity(path: string): void {
   let sqlite: Database.Database | undefined;
   try {
     sqlite = new Database(path, { fileMustExist: true });
+    sqlite.pragma('secure_delete = ON');
     const result = sqlite.prepare('PRAGMA quick_check').pluck().get();
     if (result !== 'ok') {
       throw new KernelCommandError('unavailable', 'App database failed integrity check.');

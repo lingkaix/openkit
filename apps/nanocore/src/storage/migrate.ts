@@ -5,6 +5,7 @@ import type Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { BootConfigError } from '../config/mode.js';
+import { configureOwnedSqlite } from './control-store.js';
 import type { CoreDb, UserDb, WorkspaceDb } from './db.js';
 import { applyGoalCutover, removeGoalSandboxPin } from './goal-cutover.js';
 import { applyHostRepositoryCutover } from './host-repository-cutover.js';
@@ -96,6 +97,7 @@ export function applyNativeScopeMigrations(
   }
 
   try {
+    configureOwnedSqlite(sqlite);
     migrate(drizzle(sqlite), { migrationsFolder });
     if (scope === 'workspace') {
       applyGoalCutover(sqlite);
