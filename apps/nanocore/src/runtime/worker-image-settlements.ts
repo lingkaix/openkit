@@ -4,9 +4,11 @@ import {
   canonicalNativeEnvironment,
   NativeEnvironmentRecordSchema,
 } from '@openkit/worker-protocol';
+import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { z } from 'zod';
 import { controlStoreFor } from '../storage/control-store.js';
 import type { CoreDb } from '../storage/db.js';
+import * as schema from '../storage/schema/index.js';
 import {
   CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION,
   settleExecutionJournalStep,
@@ -91,38 +93,48 @@ export function readWorkerImageSettlement(
 export function writeWorkerImageSettlement(coreDb: CoreDb, input: WorkerImageSettlement): void {
   const value = WorkerImageSettlementSchema.parse(input);
   controlStoreFor(coreDb.sqlite).write((sqlite) => {
-    if (sqlite !== coreDb.sqlite)
-      throw new Error('Image settlement requires its owning connection.');
-    const existing = readWorkerImageSettlement(coreDb, value.requestId);
-    if (existing) {
-      if (JSON.stringify(existing) !== JSON.stringify(value))
-        throw new WorkerImageSettlementConflict();
-      return;
-    }
-    sqlite
-      .prepare(`INSERT INTO worker_image_settlements
+    // Recovery may hold another handle to the same file; bind the whole tuple to its writer.
+    const owningCoreDb =
+      sqlite === coreDb.sqlite ? coreDb : { ...coreDb, sqlite, db: drizzle(sqlite, { schema }) };
+    writeWorkerImageSettlementInTransaction(owningCoreDb, value, sqlite);
+  });
+}
+
+/** Keeps every receipt and journal statement on the supplied owning transaction, never a caller's sibling handle. */
+function writeWorkerImageSettlementInTransaction(
+  coreDb: CoreDb,
+  value: WorkerImageSettlement,
+  sqlite: CoreDb['sqlite']
+): void {
+  if (sqlite !== coreDb.sqlite || !sqlite.inTransaction)
+    throw new Error('Image settlement requires its owning connection.');
+  const existing = readWorkerImageSettlement(coreDb, value.requestId);
+  if (existing) {
+    if (JSON.stringify(existing) !== JSON.stringify(value))
+      throw new WorkerImageSettlementConflict();
+    return;
+  }
+  sqlite
+    .prepare(`INSERT INTO worker_image_settlements
       (request_id, operation, authored_artifact_id, authored_artifact_version, authored_content_digest,
        input_digest, outcome, image_digest, failure_code, created_at, schema_version)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(
-        value.requestId,
-        value.operation,
-        value.authoredArtifactId,
-        value.authoredArtifactVersion,
-        value.authoredContentDigest,
-        value.inputDigest,
-        value.outcome.kind,
-        value.outcome.kind === 'success' ? value.outcome.imageDigest : null,
-        value.outcome.kind === 'failure' ? value.outcome.failureCode : null,
-        new Date().toISOString(),
-        writeRetainedV1({}).schemaVersion
-      );
-    settleImageJournal(coreDb, value);
-    if (
-      JSON.stringify(readWorkerImageSettlement(coreDb, value.requestId)) !== JSON.stringify(value)
-    )
-      throw new WorkerImageSettlementConflict();
-  });
+    .run(
+      value.requestId,
+      value.operation,
+      value.authoredArtifactId,
+      value.authoredArtifactVersion,
+      value.authoredContentDigest,
+      value.inputDigest,
+      value.outcome.kind,
+      value.outcome.kind === 'success' ? value.outcome.imageDigest : null,
+      value.outcome.kind === 'failure' ? value.outcome.failureCode : null,
+      new Date().toISOString(),
+      writeRetainedV1({}).schemaVersion
+    );
+  settleImageJournal(coreDb, value);
+  if (JSON.stringify(readWorkerImageSettlement(coreDb, value.requestId)) !== JSON.stringify(value))
+    throw new WorkerImageSettlementConflict();
 }
 
 /** Advances only the selected acquisition; existing build receipts and retained unjournaled results remain data. */
