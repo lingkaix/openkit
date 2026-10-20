@@ -11,7 +11,7 @@ import {
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { isMainThread } from 'node:worker_threads';
-import { ContentReferenceSchema, readRetainedV1 } from '@openkit/protocol';
+import { ContentReferenceSchema, KnowledgeBaseIdSchema, readRetainedV1 } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { z } from 'zod';
 import { StoredServerEventV1Schema } from './retained-server-work-v1.js';
@@ -23,6 +23,8 @@ import {
   StoredWorkOwnerV1Schema,
   StoredWorkspaceV1Schema,
 } from './retained-work-metadata-v1.js';
+import { assertServerTurnEventLineage } from './server-thread-records.js';
+import { assertTurnEventPayloadLineage } from './workspace-file-records.js';
 
 /** Current finite metadata/page defaults; payloads use synchronized immutable Storage objects. */
 export const CONTROL_PRODUCT_LIMITS = {
@@ -31,6 +33,16 @@ export const CONTROL_PRODUCT_LIMITS = {
   pageRows: 128,
   payloadBytes: 1024 * 1024,
 } as const;
+
+/** Admitted transient Storage binding; reference parsing cannot select another Knowledge Base or mount. */
+export const ControlProductContentMountSchema = z
+  .object({
+    root: z.string().min(1),
+    knowledgeBaseId: KnowledgeBaseIdSchema,
+    mount: z.string().min(1),
+  })
+  .strict();
+export type ControlProductContentMount = z.infer<typeof ControlProductContentMountSchema>;
 
 /** Physical product kinds project existing retained families; they are not new product concepts. */
 export const ControlProductKindSchema = z.enum(['workspace', 'thread', 'agent-session', 'turn']);
@@ -68,6 +80,8 @@ export interface PreparedControlEntry {
   readonly input: ControlProductEntry;
   readonly id: string;
   readonly identityJson: string;
+  /** Bounded event dependencies checked against the completed native graph, without retaining payloads or file I/O in SQL. */
+  readonly referencedItemIds?: readonly string[];
 }
 /** A rejected tuple, including stale revision or missing native dependency; no caller-supplied diagnostics escape. */
 export class ControlProductPreconditionError extends Error {
@@ -178,6 +192,12 @@ function checkReplacement(
   if (kind === 'turn' && after.status !== 'pending' && after.status !== 'running')
     throw new ControlProductPreconditionError();
   if (!before) return;
+  if (
+    kind === 'agent-session' &&
+    (before.status === 'closed' || before.status === 'failed') &&
+    after.status !== before.status
+  )
+    throw new ControlProductPreconditionError();
   const fixed =
     kind === 'workspace'
       ? ['id', 'createdAt']
@@ -354,23 +374,42 @@ export function applyControlProducts(
         entry.identityJson
       );
   }
+  // Cross-kind input order is not authority: all referenced Items must exist in the completed local tuple.
+  for (const entry of entries) {
+    const ids = entry.referencedItemIds ?? [];
+    // A bounded snapshot can name many Items; one set predicate avoids one statement per Item.
+    if (
+      ids.length > 0 &&
+      sqlite
+        .prepare(
+          "SELECT 1 FROM json_each(?) AS wanted WHERE NOT EXISTS (SELECT 1 FROM control_product_entries WHERE kind='item' AND turn_id=? AND id=wanted.value) LIMIT 1"
+        )
+        .get(JSON.stringify(ids), entry.input.turnId)
+    )
+      throw new ControlProductPreconditionError();
+  }
 }
 
 /** Verifies and synchronizes actual immutable bytes BEFORE SQL; no boolean durability claim is accepted. */
 export function prepareControlEntries(
   owner: ControlProductOwner,
-  contentRoot: string | undefined,
+  contentMount: ControlProductContentMount | undefined,
   entries: readonly ControlProductEntry[]
 ): PreparedControlEntry[] {
   if (isMainThread) throw new ControlProductPreconditionError();
   return entries.map((input) => {
-    if (!contentRoot || input.content.byteLength > CONTROL_PRODUCT_LIMITS.payloadBytes)
+    if (!contentMount || input.content.byteLength > CONTROL_PRODUCT_LIMITS.payloadBytes)
       throw new ControlProductPreconditionError();
     const reference = input.content.reference;
     assertControlProductOwner(owner, reference.locator.ownerScope);
-    if (reference.range !== null || reference.availability !== 'available')
+    if (
+      reference.range !== null ||
+      reference.availability !== 'available' ||
+      reference.knowledgeBaseId !== contentMount.knowledgeBaseId ||
+      reference.locator.mount !== contentMount.mount
+    )
       throw new ControlProductPreconditionError();
-    const root = realpathSync(contentRoot);
+    const root = realpathSync(contentMount.root);
     const path = resolve(root, reference.locator.path);
     const rel = relative(root, path);
     if (rel.startsWith('..') || isAbsolute(rel) || realpathSync(dirname(path)) !== dirname(path))
@@ -421,16 +460,57 @@ export function prepareControlEntries(
     );
     if (
       event.turnId !== input.turnId ||
+      event.sequence !== input.sequence ||
       event.event !== event.data.type.replaceAll('-', '.') ||
       (owner.kind === 'workspace' &&
         (!('workspaceId' in event) || event.workspaceId !== owner.workspaceId))
     )
       throw new ControlProductPreconditionError();
-    if (input.expectedRevision !== 0) throw new ControlProductPreconditionError();
+    if (input.expectedRevision !== 0 || !event.threadId)
+      throw new ControlProductPreconditionError();
+    const data = event.data;
+    if (
+      data.type === 'turn-completed' ||
+      ('turn' in data && data.turn.status !== 'pending' && data.turn.status !== 'running') ||
+      (data.type === 'turn-started' && data.status !== 'pending' && data.status !== 'running')
+    )
+      throw new ControlProductPreconditionError();
+    const referencedItemIds = new Set<string>();
+    if ('item' in data) referencedItemIds.add(data.item.id);
+    if ('itemId' in data) referencedItemIds.add(data.itemId);
+    if ('turn' in data)
+      for (const item of data.turn.items) {
+        assertControlProductOwner(owner, item.owner);
+        if (item.threadId !== event.threadId || item.turnId !== input.turnId)
+          throw new ControlProductPreconditionError();
+        referencedItemIds.add(item.id);
+      }
+    // Reuse the existing pure predicates on retained identity fields, not current wire parsers.
+    // This envelope projection checks nested lineage only; actual Turn/Item existence is checked in SQL.
+    if (owner.kind === 'server') {
+      assertServerTurnEventLineage(
+        event as Parameters<typeof assertServerTurnEventLineage>[0],
+        {
+          id: input.turnId,
+          threadId: event.threadId,
+          owner,
+          items: [...referencedItemIds].map((id) => ({ id })),
+        } as unknown as Parameters<typeof assertServerTurnEventLineage>[1]
+      );
+    } else {
+      assertTurnEventPayloadLineage(
+        event as Parameters<typeof assertTurnEventPayloadLineage>[0],
+        owner.workspaceId,
+        event.threadId,
+        input.turnId,
+        referencedItemIds
+      );
+    }
     return {
       input,
       id: `${input.turnId}:${event.sequence}`,
       identityJson: JSON.stringify({ threadId: event.threadId, turnId: input.turnId }),
+      referencedItemIds: [...referencedItemIds],
     };
   });
 }

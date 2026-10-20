@@ -26,6 +26,9 @@ CREATE TABLE `control_agent_sessions` (
   `record_json` text NOT NULL CHECK (json_valid(`record_json`))
 );
 --> statement-breakpoint
+-- Current selection is independent of active-Turn single flight; terminal predecessors remain historical.
+CREATE UNIQUE INDEX `control_agent_sessions_current_thread_idx` ON `control_agent_sessions` (`thread_id`) WHERE `thread_id` IS NOT NULL AND `status` NOT IN ('closed', 'failed');
+--> statement-breakpoint
 CREATE TABLE `control_turns` (
   `id` text PRIMARY KEY NOT NULL,
   `thread_id` text NOT NULL REFERENCES `control_threads` (`id`),

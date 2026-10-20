@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 import { ControlStoreBusyError, controlStoreFor } from './control-store.js';
 import { applyControlAdmission } from './control-store-admission.js';
 import {
+  type ControlProductContentMount,
   type ControlProductOwner,
   ControlProductPreconditionError,
   type PreparedControlEntry,
@@ -43,7 +44,7 @@ interface OwnedDatabase {
   readonly path: string;
   readonly identity: string;
   readonly productOwner: ControlProductOwner | undefined;
-  readonly contentRoot: string | undefined;
+  readonly contentMount: ControlProductContentMount | undefined;
   readonly pending: WriteRequest[];
   timer: ReturnType<typeof setTimeout> | null;
   immediate: ReturnType<typeof setImmediate> | null;
@@ -248,9 +249,17 @@ function openDatabase(request: Extract<ControlWorkerRequest, { operation: 'open'
     request.initialize !== (request.productOwner.kind === 'server' ? 'core' : 'workspace')
   )
     throw new ControlProductPreconditionError();
-  const contentRoot =
-    request.contentRoot === undefined ? undefined : realpathSync(request.contentRoot);
-  if (contentRoot !== undefined && !statSync(contentRoot).isDirectory())
+  const contentMount =
+    request.contentMount === undefined
+      ? undefined
+      : {
+          ...request.contentMount,
+          root: realpathSync(request.contentMount.root),
+        };
+  if (
+    contentMount !== undefined &&
+    (!request.productOwner || !statSync(contentMount.root).isDirectory())
+  )
     throw new ControlProductPreconditionError();
   const path =
     request.create && !existsSync(request.path)
@@ -278,7 +287,7 @@ function openDatabase(request: Extract<ControlWorkerRequest, { operation: 'open'
       path,
       identity,
       productOwner: request.productOwner,
-      contentRoot,
+      contentMount,
       pending: [],
       timer: null,
       immediate: null,
@@ -348,16 +357,21 @@ function receive(value: unknown): void {
       if (owner.pending.length >= CONTROL_WORKER_LIMITS.pendingTransitions) {
         reply(failure(value.id, 'busy'));
       } else {
-        if (value.operation === 'transition' && !owner.productOwner)
-          throw new ControlProductPreconditionError();
-        const preparedEntries =
-          value.operation === 'transition'
-            ? prepareControlEntries(
-                owner.productOwner!,
-                owner.contentRoot,
-                value.transition.entries
-              )
-            : undefined;
+        let preparedEntries: WriteRequest['preparedEntries'];
+        try {
+          if (value.operation === 'transition') {
+            if (!owner.productOwner) throw new ControlProductPreconditionError();
+            preparedEntries = prepareControlEntries(
+              owner.productOwner,
+              owner.contentMount,
+              value.transition.entries
+            );
+          }
+        } catch (error) {
+          // No queue or SQL effect exists yet; only later transaction/reply failures can be unknown.
+          reply(failure(value.id, failureCode(error), 'not-committed'));
+          return;
+        }
         owner.pending.push({ ...value, preparedEntries });
         schedule(owner);
       }

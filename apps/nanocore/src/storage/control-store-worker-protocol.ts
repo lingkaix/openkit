@@ -4,7 +4,11 @@ import {
   type ControlAdmissionResult,
   ControlAdmissionSchema,
 } from './control-store-admission.js';
-import type { ControlProductOwner } from './control-store-products.js';
+import {
+  type ControlProductContentMount,
+  ControlProductContentMountSchema,
+  type ControlProductOwner,
+} from './control-store-products.js';
 import { StoredWorkOwnerV1Schema } from './retained-work-metadata-v1.js';
 
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
@@ -70,8 +74,8 @@ export type ControlWorkerCommand =
           readonly initialize?: ControlInitializationScope;
           /** Explicit admitted product owner; absent on legacy primitive-only fixture scopes. */
           readonly productOwner?: ControlProductOwner;
-          /** Admitted private immutable mount root; never derived from an incoming content locator. */
-          readonly contentRoot?: string;
+          /** Admitted private Storage binding; never derived from an incoming content locator. */
+          readonly contentMount?: ControlProductContentMount;
         }
       | { readonly operation: 'write'; readonly statements: readonly ControlSqlStatement[] }
       | { readonly operation: 'transition'; readonly transition: ControlAdmission }
@@ -309,15 +313,16 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       exactFields(
         value,
         [...scoped, 'path', 'create'],
-        ['initialize', 'productOwner', 'contentRoot']
+        ['initialize', 'productOwner', 'contentMount']
       ) &&
       typeof value.path === 'string' &&
       isAbsolute(value.path) &&
       typeof value.create === 'boolean' &&
       (value.productOwner === undefined ||
         StoredWorkOwnerV1Schema.safeParse(value.productOwner).success) &&
-      (value.contentRoot === undefined ||
-        (typeof value.contentRoot === 'string' && isAbsolute(value.contentRoot))) &&
+      (value.contentMount === undefined ||
+        (ControlProductContentMountSchema.safeParse(value.contentMount).success &&
+          isAbsolute((value.contentMount as ControlProductContentMount).root))) &&
       (value.initialize === undefined ||
         value.initialize === 'core' ||
         value.initialize === 'user' ||

@@ -303,6 +303,7 @@ describe('database setup', () => {
         '0010_retained_record_formats.sql',
         '0011_audit_authentication.sql',
         '0012_quarantined_workspace_retirement.sql',
+        '0013_control_store.sql',
       ]);
       expect(
         ['app', 'core', 'user', 'workspace'].every((scope) =>
@@ -324,6 +325,7 @@ describe('database setup', () => {
         'core_0010_retained_record_formats',
         'core_0011_audit_authentication',
         'core_0012_quarantined_workspace_retirement',
+        'core_0013_control_store',
       ]);
       expect(listTableNames(coreDb)).toEqual(beforeTables);
       for (const table of ['capability_calls', 'usage_records', 'evidence_bundles']) {

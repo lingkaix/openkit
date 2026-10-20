@@ -37,15 +37,23 @@ export const controlThreads = sqliteTable(
 );
 
 /** Existing AgentSession admission facts, including the explicitly NanoHost-specific retained representation. */
-export const controlAgentSessions = sqliteTable('control_agent_sessions', {
-  id: text('id').primaryKey().notNull(),
-  workspaceId: text('workspace_id')
-    .notNull()
-    .references(() => controlWorkspaces.id),
-  threadId: text('thread_id').references(() => controlThreads.id),
-  status: text('status').notNull(),
-  ...metadata(),
-});
+export const controlAgentSessions = sqliteTable(
+  'control_agent_sessions',
+  {
+    id: text('id').primaryKey().notNull(),
+    workspaceId: text('workspace_id')
+      .notNull()
+      .references(() => controlWorkspaces.id),
+    threadId: text('thread_id').references(() => controlThreads.id),
+    status: text('status').notNull(),
+    ...metadata(),
+  },
+  (table) => [
+    uniqueIndex('control_agent_sessions_current_thread_idx')
+      .on(table.threadId)
+      .where(sql`${table.threadId} IS NOT NULL AND ${table.status} NOT IN ('closed', 'failed')`),
+  ]
+);
 
 /** Turn metadata and native single-flight constraints; payload bytes remain immutable content. */
 export const controlTurns = sqliteTable(
