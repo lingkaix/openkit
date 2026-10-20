@@ -85,6 +85,13 @@
       "when": 1792508840964,
       "tag": "0011_workspace_capture_protection",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1792530124911,
+      "tag": "0012_execution_journal",
+      "breakpoints": true
     }
   ]
 }

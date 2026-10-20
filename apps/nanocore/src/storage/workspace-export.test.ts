@@ -257,6 +257,44 @@ function writeExportTree(
 }
 
 describe('workspace export verifier', () => {
+  it('T1 classifies each native Workspace journal table exactly once without changing retained bytes', ({
+    skip,
+  }) => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-journal-export-'));
+    const db = openWorkspaceDb(root, 'ws_00000000-0000-7000-8000-000000000001');
+    try {
+      applyScopedMigrations(db);
+      const names = ['control_execution_steps', 'control_executions'];
+      const tables = (
+        db.sqlite
+          .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('control_executions', 'control_execution_steps') ORDER BY name"
+          )
+          .all() as { name: string }[]
+      ).map((row) => row.name);
+      if (
+        tables.length === 0 &&
+        !existsSync(new URL('../../drizzle/workspace/0012_execution_journal.sql', import.meta.url))
+      )
+        skip('schema-pending: Workspace0012 execution journal');
+      expect(tables).toEqual(names);
+      const before = db.sqlite.serialize();
+      // Classification is a prerequisite, not proof of portable history or a restored execution grant.
+      const classified = [
+        ...WORKSPACE_EXPORT_PORTABLE_WORKSPACE_SQLITE_TABLES,
+        ...WORKSPACE_EXPORT_NON_PORTABLE_WORKSPACE_SQLITE_TABLES.map((entry) => entry.table),
+      ];
+      expect(classified.filter((name) => names.includes(name)).sort()).toEqual([
+        'control_execution_steps',
+        'control_executions',
+      ]);
+      expect(db.sqlite.serialize().equals(before)).toBe(true);
+    } finally {
+      db.sqlite.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('carries non-secret authenticated credential identity through verified export and import', () => {
     const root = freshExportRoot('audit-auth-export-');
     const workspaceId = testEntityId('ws', 'audit-auth-export');
@@ -2766,6 +2804,16 @@ describe('workspace export verifier', () => {
           table: 'workspace_capture_records',
           reason:
             'capture lifecycle belongs to Workspace backup coordination, not portable Workspace product history',
+        },
+        {
+          table: 'control_executions',
+          reason:
+            'non-portable execution control state; operational backup and MOVE retain Workspace database bytes',
+        },
+        {
+          table: 'control_execution_steps',
+          reason:
+            'non-portable execution control state; operational backup and MOVE retain Workspace database bytes',
         },
         {
           table: 'control_workspaces',
