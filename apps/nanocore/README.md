@@ -1,5 +1,7 @@
 # nanocore
 
+C2-B2 preparation keeps canonical file records and current Main SQL writers authoritative. Existing asynchronous Thread and context producers await Store acknowledgements before validating or exposing their results. Audit value construction is separate from its unchanged Main insert, and Task/Goal SQL bodies accept only the supplied owning connection they use. Transaction and nested savepoint boundaries, receipts, pruning and terminal guards remain unchanged; this is not the native authority switch.
+
 NanoHost delete results may carry bounded Host-observed Sandbox lifetime facts. The fixed-effect reader validates the closed optional summary and delivers it to the delete caller outside receipt identity and cleanup decisions. No operator view, retained diagnostic record or process-local diagnostic cache is added. The accepted destination is the existing teardown stage span when its observer API is available. See the [runtime guide](src/runtime/README.md) and [Host resource contract](../../docs/specs/20260802-nanohost_runtime_and_transport.md#host-observed-sandbox-resource-summary).
 
 Native Knowledge page lists pin the authorized Git notebook reader. Source lists filter identities through the same current Source audience owner, and Source detail rechecks current credentials and origin audience after derived metadata and usage reads. A retained notebook commit does not retain a disclosure grant when its Source becomes private.

@@ -412,6 +412,22 @@ function recordAuditEvent(
     workspaceId: string | null;
   }
 ): AuditEvent {
+  const event = prepareAuditEvent(input);
+  insertAuditEvent(sqlite, event);
+  return event;
+}
+
+/**
+ * Builds the existing validated Audit value without writing or authorizing it.
+ *
+ * @param input Existing attribution and event fields, without a database capability.
+ * @returns Audit value for the caller's owning transaction.
+ */
+export function prepareAuditEvent(
+  input: Omit<RecordWorkspaceAuditEventInput, 'workspaceDb' | 'workspaceId'> & {
+    workspaceId: string | null;
+  }
+): AuditEvent {
   const createdAt = (input.now ?? new Date()).toISOString();
   const occurredAt = (input.occurredAt ?? input.now ?? new Date()).toISOString();
   const event = AuditEventSchema.parse({
@@ -447,8 +463,7 @@ function recordAuditEvent(
     occurredAt,
   });
 
-  insertAuditEvent(sqlite, event);
-
+  assertNoUnsafeAuditValue(event);
   return event;
 }
 

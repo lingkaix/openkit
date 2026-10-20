@@ -13,8 +13,11 @@ import { StoredTaskTerminalFactV1Schema } from './goal-retained-v1.js';
 
 /** Minimal Task-owned result; canonical Turn files publish this already committed fact. */
 export const TaskTerminalFactSchema = StoredTaskTerminalFactV1Schema;
-/** Commits a linked Task terminal fact and its Goal wake together, exactly once. */
-export function recordTaskTerminalFact(db: WorkspaceDb, turn: z.infer<typeof TurnSchema>): void {
+/** Commits a linked Task fact and Goal wake on the supplied owning SQLite handle, preserving the existing transaction and nested savepoint boundaries. */
+export function recordTaskTerminalFact(
+  db: Pick<WorkspaceDb, 'sqlite'>,
+  turn: z.infer<typeof TurnSchema>
+): void {
   if (!isSealedTurnTerminal(turn.status)) return;
   const link = db.sqlite
     .prepare(
