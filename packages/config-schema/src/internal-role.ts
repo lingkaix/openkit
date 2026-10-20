@@ -1,3 +1,4 @@
+import { ReasoningEffortSchema } from '@openkit/protocol';
 import { z } from 'zod';
 
 /** Shared Assistant budget accommodates five observed slow model rounds and their local Tool work. */
@@ -17,6 +18,8 @@ const InternalRoleLimitsSchema = z
 const InternalRoleProfileFields = {
   id: z.string().min(1),
   preferredLogicalModelId: z.string().min(1).optional(),
+  /** Optional request effort; omission leaves the Provider default unchanged. */
+  reasoningEffort: ReasoningEffortSchema.optional(),
   compatibleLogicalModelIds: z.array(z.string().min(1)).default([]),
   requiredLogicalModelCapabilities: z.array(z.string().min(1)).default([]),
 };

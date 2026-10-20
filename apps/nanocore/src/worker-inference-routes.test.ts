@@ -14,7 +14,10 @@ import {
 import { openrouterProvider } from '@earendil-works/pi-ai/providers/openrouter';
 import { serve } from '@hono/node-server';
 import type { AgentEnvironmentPackage, GatewayConfig } from '@openkit/config-schema';
-import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
+import {
+  AgentEnvironmentPackageSchema,
+  InternalRoleExecutionProfileSchema,
+} from '@openkit/config-schema';
 import type { ReasoningEffort } from '@openkit/protocol';
 import { workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -27,6 +30,7 @@ import {
   listWorkspaceCapabilityCalls,
   listWorkspaceUsageRecords,
 } from './capability/usage-ledger.js';
+import { createInternalAgentGatewayProvider } from './internal-agents/gateway-provider.js';
 import { FsStore } from './lib/store.js';
 import { type ResolvedLogicalModel, resolveLogicalModel } from './llm/logical-models.js';
 import {
@@ -2954,6 +2958,106 @@ describe('slice 1d round 2 terminal frame closeout', () => {
 });
 
 describe('slice 3c Worker native effort and immutable package', () => {
+  it('fits an internal profile unsupported effort exactly like the Worker route', async () => {
+    const profile = InternalRoleExecutionProfileSchema.parse({
+      id: 'km-probe',
+      roleId: 'knowledge-manager',
+      reasoningEffort: 'medium',
+    });
+    const providerRegistry = new ProviderRegistry([
+      {
+        id: 'agent-openrouter',
+        displayName: 'Synthetic reasoning',
+        kind: 'gateway',
+        vendor: 'openrouter',
+        models: [WORKER_PROVIDER_MODEL],
+        secretRef: 'test:worker-api-key',
+        modelMetadata: {
+          [WORKER_PROVIDER_MODEL]: {
+            reasoning: true,
+            tool_call: true,
+            reasoning_options: [{ type: 'effort', values: ['low', 'high'] }],
+            limit: { context: 32_000, output: 4_000 },
+          },
+        },
+      },
+    ]);
+    const f = createWorkerInferenceRouteFixture(true, undefined, true, true, false, {
+      persistedTurn: true,
+      providerRegistry,
+    });
+    f.dispatcher.responsesResponseOverride = {
+      id: 'resp_parity',
+      object: 'response',
+      status: 'completed',
+      output: [
+        { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Ready.' }] },
+      ],
+    };
+    const response = await postWorkerResponses(f, {
+      model: WORKER_LOGICAL_MODEL_ID,
+      input: 'Hello',
+      reasoning: { effort: profile.reasoningEffort },
+    });
+    expect(response.status, await response.text()).toBe(200);
+    const workerCall = f.dispatcher.responseCalls[0]!;
+    expect(workerCall.request).toHaveProperty('reasoning.effort', 'high');
+
+    const logicalModel: ResolvedLogicalModel = {
+      id: WORKER_LOGICAL_MODEL_ID,
+      displayName: 'Internal reasoning',
+      capabilities: ['responses', 'tool-calling'],
+      contextManagement: { type: 'compaction', compactThreshold: 8_000 },
+      modelFamilyId: null,
+      autoFailover: true,
+      routes: [
+        {
+          id: 'primary',
+          providerProfileId: workerCall.provider.id,
+          providerModel: WORKER_PROVIDER_MODEL,
+          available: true,
+          unavailableReason: null,
+        },
+      ],
+    };
+    const workspaceDb = openWorkspaceDb(f.coreDb!.dataRoot, f.environmentPackage.scope.workspaceId);
+    try {
+      const internal = createInternalAgentGatewayProvider({
+        capture: {
+          workspaceDb,
+          threadId: f.environmentPackage.scope.threadId,
+          turnId: f.environmentPackage.scope.turnId,
+        },
+        logicalModel,
+        reasoningEffort: profile.reasoningEffort,
+        resolveLogicalModel: () => logicalModel,
+        resolveGatewayProvider: () => workerCall.provider,
+        dispatcher: f.dispatcher,
+        promptCacheScope: { sessionId: 'internal-parity' },
+        usageEndpoint: 'responses',
+      });
+      await internal({
+        systemPrompt: 'Internal role.',
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'Hello' }] }],
+        tools: [],
+        model: {
+          logicalModelId: logicalModel.id,
+          capabilities: logicalModel.capabilities,
+          modelFamilyId: logicalModel.modelFamilyId,
+        },
+        signal: new AbortController().signal,
+      });
+      expect(f.dispatcher.responseCalls).toHaveLength(2);
+      expect(f.dispatcher.responseCalls[1]!.request).toHaveProperty('reasoning.effort', 'high');
+      expect(f.dispatcher.responseCalls[1]!.request.reasoning).toEqual(
+        workerCall.request.reasoning
+      );
+      expect(profile.reasoningEffort).toBe('medium');
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+  });
+
   it.each([
     'responses',
     'chat/completions',

@@ -3684,6 +3684,9 @@ export function createConversationService({
               readInternalContextEvidence({ store, coreDb, actor, workspaceId, threadId, items }),
             gateway: {
               logicalModel: selection.logicalModel,
+              ...(selection.profile?.reasoningEffort === undefined
+                ? {}
+                : { reasoningEffort: selection.profile.reasoningEffort }),
               resolveLogicalModel: (logicalModelId) => {
                 const current = runtimeConfig();
                 return resolveLogicalModel(
@@ -4546,6 +4549,9 @@ export function createConversationService({
               gateway: {
                 capture,
                 logicalModel: selection.logicalModel,
+                ...(selection.profile?.reasoningEffort === undefined
+                  ? {}
+                  : { reasoningEffort: selection.profile.reasoningEffort }),
                 resolveLogicalModel: (logicalModelId) => {
                   const current = runtimeConfig();
                   return resolveLogicalModel(
