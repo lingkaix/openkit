@@ -1,8 +1,10 @@
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 import { isMainThread, Worker } from 'node:worker_threads';
 import type { ControlCheckpoint } from './control-store.js';
 import type { ControlAdmission, ControlAdmissionResult } from './control-store-admission.js';
+import type { ControlProductTransition } from './control-store-products.js';
 import {
   CONTROL_WORKER_LIMITS,
   CONTROL_WORKER_VERSION,
@@ -58,6 +60,10 @@ class ControlStoreWorkerClient {
   private readonly worker: Worker;
   private readonly pending = new Map<number, Pending>();
   private readonly outstanding = new Map<string, number>();
+  private readonly openings = new Map<
+    string,
+    { readonly command: Omit<OpenCommand, 'operation'>; readonly promise: Promise<void> }
+  >();
   private nextId = 0;
   private failed = false;
   private stopping = false;
@@ -95,10 +101,39 @@ class ControlStoreWorkerClient {
    * Opens an admitted physical scope and optionally applies its existing native journal.
    *
    * @param command Trusted path/fresh-scope admission; app recovery is not bypassed.
+   * Repeated access to the exact admitted binding shares its existing opening acknowledgement; it never reopens a scope or retries a failed command. Changed bindings and physical aliases still fail closed in the existing owner.
+   *
    * @returns After connection policy and requested initialization have completed in the worker.
    */
   async open(command: Omit<OpenCommand, 'operation'>): Promise<void> {
-    await this.request({ ...command, operation: 'open' });
+    if (this.failed || this.stopping || this.closed)
+      throw new ControlStoreWorkerError('unavailable', 'not-committed');
+    if (
+      !isControlWorkerRequest({
+        ...command,
+        operation: 'open',
+        version: CONTROL_WORKER_VERSION,
+        id: 0,
+      })
+    )
+      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+    const existing = this.openings.get(command.database);
+    if (existing) {
+      if (!isDeepStrictEqual(existing.command, command))
+        throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+      await existing.promise;
+      return;
+    }
+    const binding = structuredClone(command);
+    const promise = this.request({ ...binding, operation: 'open' }).then(() => {});
+    const opening = { command: binding, promise };
+    this.openings.set(command.database, opening);
+    try {
+      await promise;
+    } catch (error) {
+      if (this.openings.get(command.database) === opening) this.openings.delete(command.database);
+      throw error;
+    }
   }
 
   /**
@@ -129,6 +164,11 @@ class ControlStoreWorkerClient {
     return (reply as Extract<Success, { operation: 'transition' }>).result;
   }
 
+  /** Submits a whole non-command product/lifecycle transition; success follows outer FULL COMMIT, never a queued-write acknowledgement. */
+  async products(database: string, transition: ControlProductTransition): Promise<void> {
+    await this.request({ operation: 'products', database, transition });
+  }
+
   /** Attempts native checkpoint progress after prior submitted work. */
   async checkpoint(database: string): Promise<ControlCheckpoint> {
     const reply = await this.request({ operation: 'checkpoint', database });
@@ -143,7 +183,9 @@ class ControlStoreWorkerClient {
 
   /** Closes a scope only after its previously accepted writes have finished. */
   async close(database: string): Promise<void> {
+    const opening = this.openings.get(database);
     await this.request({ operation: 'close', database });
+    if (this.openings.get(database) === opening) this.openings.delete(database);
   }
 
   /**

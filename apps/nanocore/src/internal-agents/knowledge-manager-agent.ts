@@ -94,14 +94,18 @@ function runTurn(store: FsStore, input: Pick<AnyKnowledgeManagerAgentRun, 'turn'
 }
 
 /** Writes only the Turn whose immutable owner admitted this run. */
-function updateRunTurn(store: FsStore, turn: Turn, patch: Parameters<FsStore['updateTurn']>[1]) {
+async function updateRunTurn(
+  store: FsStore,
+  turn: Turn,
+  patch: Parameters<FsStore['updateTurn']>[1]
+) {
   return turn.owner.kind === 'server'
-    ? store.updateServerTurn(turn.id, patch)
-    : store.updateTurn(turn.id, patch);
+    ? await store.updateServerTurn(turn.id, patch)
+    : await store.updateTurn(turn.id, patch);
 }
 
 /** Pins finite role admission before a daily trigger returns; this performs no Provider effect. */
-export function pinKnowledgeManagerExecution(
+export async function pinKnowledgeManagerExecution(
   dependencies: KnowledgeManagerAgentDependencies,
   input: Pick<AnyKnowledgeManagerAgentRun, 'turn' | 'inputs'>
 ) {
@@ -146,7 +150,7 @@ export function pinKnowledgeManagerExecution(
     maxToolCalls: 24,
     deadlineMs: KNOWLEDGE_MANAGER_RUN_DEADLINE_MS,
   };
-  updateRunTurn(dependencies.store, turn, {
+  await updateRunTurn(dependencies.store, turn, {
     internalExecution: {
       roleId: 'knowledge-manager',
       logicalModelId: selection.logicalModel.id,
@@ -234,7 +238,10 @@ async function executeKnowledgeManagerAgent(
   try {
     input.signal.throwIfAborted();
     input.assertCurrent();
-    const { selection, threshold, limits } = pinKnowledgeManagerExecution(dependencies, input);
+    const { selection, threshold, limits } = await pinKnowledgeManagerExecution(
+      dependencies,
+      input
+    );
     const logicalModel = selection.logicalModel;
     const systemPrompt = assembleBuiltInSystemPrompt('knowledge-manager');
     deadlineSignal = AbortSignal.timeout(limits.deadlineMs);
@@ -438,7 +445,10 @@ async function executeKnowledgeManagerAgent(
         return resultText;
       }
     );
-    updateRunTurn(store, turn, { status: 'completed', completedAt: new Date().toISOString() });
+    await updateRunTurn(store, turn, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+    });
     return { turnId: turn.id, text: result };
   } catch (error) {
     // Only this role's deadline is a KM timeout; caller cancellation keeps its original cause.
@@ -450,7 +460,7 @@ async function executeKnowledgeManagerAgent(
           }
         : undefined;
     if (!isSealedTurnTerminal(runTurn(store, input).status))
-      updateRunTurn(store, turn, {
+      await updateRunTurn(store, turn, {
         status: input.signal.aborted ? 'cancelled' : 'failed',
         completedAt: new Date().toISOString(),
         error: timeout ??

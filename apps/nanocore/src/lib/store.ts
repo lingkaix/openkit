@@ -52,6 +52,7 @@ import {
   type TurnStatus,
   WorkOwnerSchema,
   workspaceIdForOwner,
+  writeRetainedV1,
 } from '@openkit/protocol';
 import { parse as parseJsonc } from 'jsonc-parser';
 import { assertScopeAdmitted, isScopeAdmitted, refuseScope } from '../bootstrap/readiness.js';
@@ -110,6 +111,9 @@ import {
   recordCommandRequestRecord,
   recordCommandRequestRecordInDb,
 } from '../storage/command-request-records.js';
+import type { ControlAdmission } from '../storage/control-store-admission.js';
+import { openControlStoreProductReadHandle } from '../storage/control-store-products.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import {
   type CoreDb,
   openWorkspaceDbAtRoot,
@@ -149,6 +153,7 @@ import {
   normalizeAdmittedWorkspaceLogTails,
   parseCanonicalWorkspaceHistory,
   parseOwnedKnowledgePage,
+  projectWorkspaceSystemRecord,
   publishCanonicalPath,
   readCanonicalTextFile,
   readWorkspaceKnowledgePage,
@@ -157,9 +162,10 @@ import {
   serializeKnowledgeProposalRecord,
   TURN_STREAM_EVENT_WINDOW_SIZE,
   type WorkspaceFileRecords,
+  WorkspaceSystemRecordSchema,
   writeFileAtomic,
+  writeWorkspaceConfiguration,
   writeWorkspaceFileRecords,
-  writeWorkspaceMetadata,
 } from '../storage/workspace-file-records.js';
 import { isTargetIssuedEffectAuthority } from '../storage/workspace-import-authority.js';
 
@@ -1721,7 +1727,7 @@ export class FsStore {
 
     try {
       rmSync(stagingRoot, { recursive: true, force: true });
-      writeWorkspaceMetadata(stagingRoot, records.workspace, false);
+      writeWorkspaceConfiguration(stagingRoot, records.workspace, false);
       initializeDefaultKnowledgeBaseId({
         dataRoot: this.dataRoot,
         workspaceRoot: stagingRoot,
@@ -1764,6 +1770,28 @@ export class FsStore {
         workspaceDb.sqlite.close();
       }
       stageWorkspace?.({ workspaceId, workspaceRoot: stagingRoot });
+      const productDb = openWorkspaceDbAtRoot({
+        dataRoot: this.dataRoot,
+        workspaceId,
+        workspaceRoot: stagingRoot,
+      });
+      try {
+        // This scope is still private and unpublished. Live product mutations never use this initializer.
+        productDb.sqlite.transaction(() => {
+          if (productDb.sqlite.prepare('SELECT 1 FROM control_workspaces LIMIT 1').get())
+            throw new Error('Workspace bootstrap requires an empty native product scope.');
+          productDb.sqlite
+            .prepare(
+              'INSERT INTO control_workspaces (id,schema_version,revision,record_json) VALUES (?,1,1,?)'
+            )
+            .run(
+              workspaceId,
+              JSON.stringify(writeRetainedV1(projectWorkspaceSystemRecord(records.workspace)))
+            );
+        })();
+      } finally {
+        productDb.sqlite.close();
+      }
       writeWorkspaceFileRecords(stagingRoot, records);
       publishCanonicalPath(stagingRoot, finalRoot);
     } catch (error) {
@@ -2357,9 +2385,11 @@ export class FsStore {
     for (const workspaceId of this.unacknowledgedWorkspaces) {
       this.assertWorkspacePublicationAcknowledged(workspaceId);
     }
-    return [...this.workspaces.values()].filter(
-      (workspace) => !this.dataRoot || isScopeAdmitted(this.dataRoot, 'workspace', workspace.id)
-    );
+    return [...this.workspaces.values()]
+      .filter(
+        (workspace) => !this.dataRoot || isScopeAdmitted(this.dataRoot, 'workspace', workspace.id)
+      )
+      .map((workspace) => this.getWorkspace(workspace.id));
   }
 
   /**
@@ -2697,6 +2727,7 @@ export class FsStore {
     }
   }
 
+  /** Joins committed native system metadata with the existing configuration and derived read projections. */
   public getWorkspace(workspaceId: string): WorkspaceRecord {
     this.assertWorkspacePublicationAcknowledged(workspaceId);
     const workspace = this.workspaces.get(workspaceId);
@@ -2704,7 +2735,23 @@ export class FsStore {
     if (!workspace) {
       throw new StoreRecordNotFoundError(`Workspace not found: ${workspaceId}`);
     }
-
+    if (this.dataRoot) {
+      const reader = openControlStoreProductReadHandle(
+        join(this.workspaceRootPath(workspaceId), 'db', 'workspace.sqlite'),
+        { kind: 'workspace', workspaceId }
+      );
+      try {
+        const native = reader.get('workspace', workspaceId);
+        if (!native) throw new StoreRecordNotFoundError(`Workspace not found: ${workspaceId}`);
+        const system = WorkspaceSystemRecordSchema.parse(native.record);
+        const row = reader.sqlite
+          .prepare('SELECT COUNT(*) AS count FROM control_threads')
+          .get() as { count: number };
+        return { ...workspace, ...system, counts: { ...workspace.counts, threadCount: row.count } };
+      } finally {
+        reader.close();
+      }
+    }
     return workspace;
   }
 
@@ -3236,15 +3283,34 @@ export class FsStore {
     };
   }
 
+  /** Reads committed native Thread metadata without migration, pruning or a file/cache fallback. */
   public listThreads(workspaceId: string): Thread[] {
     this.assertWorkspacePublicationAcknowledged(workspaceId);
+    if (this.dataRoot) {
+      const reader = openControlStoreProductReadHandle(
+        join(this.workspaceRootPath(workspaceId), 'db', 'workspace.sqlite'),
+        { kind: 'workspace', workspaceId }
+      );
+      try {
+        const threads: Thread[] = [];
+        let after = '';
+        for (;;) {
+          const page = reader.list('thread', after);
+          if (page.length === 0) return threads;
+          for (const snapshot of page) threads.push(ThreadSchema.parse(snapshot.record));
+          after = threads.at(-1)!.id;
+        }
+      } finally {
+        reader.close();
+      }
+    }
     return [...this.threads.values()].filter(
       (thread) => workspaceIdForOwner(thread.owner) === workspaceId
     );
   }
 
   /** Creates formal shared work by default; conversation entrypoints supply the authenticated private audience explicitly. */
-  public createThread(
+  public async createThread(
     workspaceId: string,
     title: string,
     threadId?: string,
@@ -3254,8 +3320,9 @@ export class FsStore {
       privateOwnerUserId?: string;
       threadSource?: Thread['threadSource'];
       parentThreadId?: string;
-    }
-  ): Thread {
+    },
+    admission?: Pick<ControlAdmission, 'receipt' | 'audit'>
+  ): Promise<Thread> {
     const id = threadId ?? allocateEntityId('th');
     if (this.threads.has(id) || this.serverThreads.has(id)) {
       throw new Error(`Thread already exists: ${id}`);
@@ -3284,6 +3351,49 @@ export class FsStore {
       createdAt: now(),
       updatedAt: now(),
     });
+    if (this.dataRoot) {
+      const owner = { kind: 'workspace', workspaceId } as const;
+      const path = join(this.workspaceRootPath(workspaceId), 'db', 'workspace.sqlite');
+      const reader = openControlStoreProductReadHandle(path, owner);
+      try {
+        const previousWorkspace = reader.get('workspace', workspaceId);
+        if (!previousWorkspace)
+          throw new StoreRecordNotFoundError(`Workspace not found: ${workspaceId}`);
+        const workspace = { ...this.getWorkspace(workspaceId), updatedAt: thread.createdAt };
+        const products = [
+          {
+            kind: 'workspace' as const,
+            expectedRevision: previousWorkspace.revision,
+            record: writeRetainedV1(projectWorkspaceSystemRecord(workspace)),
+          },
+          { kind: 'thread' as const, expectedRevision: 0, record: writeRetainedV1(thread) },
+        ];
+        const client = getControlStoreWorkerClient();
+        const database = `workspace:${workspaceId}`;
+        await client.open({
+          database,
+          path,
+          create: false,
+          initialize: 'workspace',
+          productOwner: owner,
+        });
+        let committedId = thread.id;
+        if (admission) {
+          const result = await client.transition(database, { ...admission, products, entries: [] });
+          committedId = result.response.id;
+        } else {
+          await client.products(database, { products, entries: [] });
+        }
+        const committed = reader.get('thread', committedId);
+        if (!committed) throw new StoreRecordNotFoundError(`Thread not found: ${committedId}`);
+        const result = ThreadSchema.parse(committed.record);
+        this.threads.set(result.id, result);
+        this.workspaces.set(workspaceId, this.getWorkspace(workspaceId));
+        return result;
+      } finally {
+        reader.close();
+      }
+    }
     const threads = [...this.listThreads(workspaceId), thread];
     const workspace: WorkspaceRecord = {
       ...this.getWorkspace(workspaceId),
@@ -3306,14 +3416,62 @@ export class FsStore {
    * @param workspaceId Workspace that owns the thread.
    * @param threadId Thread to update.
    * @param input Thread metadata patch.
-   * @returns Updated thread.
+   * @param admission Original command receipt and admitted Audit, when this is a command rather than a lifecycle mutation.
+   * @returns Committed Thread after native acknowledgement, including the original response's resource on replay.
    */
-  public updateThread(
+  public async updateThread(
     workspaceId: string,
     threadId: string,
-    input: Partial<Pick<Thread, 'name' | 'status'>>
-  ): Thread {
+    input: Partial<Pick<Thread, 'name' | 'status'>>,
+    admission?: Pick<ControlAdmission, 'receipt' | 'audit'>
+  ): Promise<Thread> {
     if ('owner' in input) throw new Error('Thread update cannot change field: owner');
+    if (this.dataRoot) {
+      const owner = { kind: 'workspace', workspaceId } as const;
+      const path = join(this.workspaceRootPath(workspaceId), 'db', 'workspace.sqlite');
+      const reader = openControlStoreProductReadHandle(path, owner);
+      try {
+        const previous = reader.get('thread', threadId);
+        if (!previous) throw new StoreRecordNotFoundError(`Thread not found: ${threadId}`);
+        const thread = ThreadSchema.parse(previous.record);
+        const updated = ThreadSchema.parse({
+          ...thread,
+          ...(input.name !== undefined ? { name: input.name } : {}),
+          ...(input.status !== undefined ? { status: input.status } : {}),
+          updatedAt: now(),
+        });
+        const client = getControlStoreWorkerClient();
+        const database = `workspace:${workspaceId}`;
+        await client.open({
+          database,
+          path,
+          create: false,
+          initialize: 'workspace',
+          productOwner: owner,
+        });
+        const products = [
+          {
+            kind: 'thread' as const,
+            expectedRevision: previous.revision,
+            record: writeRetainedV1(updated),
+          },
+        ];
+        let committedId = threadId;
+        if (admission) {
+          const result = await client.transition(database, { ...admission, products, entries: [] });
+          committedId = result.response.id;
+        } else {
+          await client.products(database, { products, entries: [] });
+        }
+        const committed = reader.get('thread', committedId);
+        if (!committed) throw new StoreRecordNotFoundError(`Thread not found: ${committedId}`);
+        const result = ThreadSchema.parse(committed.record);
+        this.threads.set(result.id, result);
+        return result;
+      } finally {
+        reader.close();
+      }
+    }
     const thread = this.getThread(workspaceId, threadId);
     const updated: Thread = {
       ...thread,
@@ -3337,12 +3495,26 @@ export class FsStore {
    * @param threadId Thread to archive.
    * @returns Archived thread.
    */
-  public archiveThread(workspaceId: string, threadId: string): Thread {
+  public archiveThread(workspaceId: string, threadId: string): Promise<Thread> {
     return this.updateThread(workspaceId, threadId, { status: 'archived' });
   }
 
+  /** Reads the committed native Thread in its actual scope; no startup reconstruction or mutable file is authoritative. */
   public getThread(workspaceId: string, threadId: string): Thread {
     this.assertWorkspacePublicationAcknowledged(workspaceId);
+    if (this.dataRoot) {
+      const reader = openControlStoreProductReadHandle(
+        join(this.workspaceRootPath(workspaceId), 'db', 'workspace.sqlite'),
+        { kind: 'workspace', workspaceId }
+      );
+      try {
+        const snapshot = reader.get('thread', threadId);
+        if (!snapshot) throw new StoreRecordNotFoundError(`Thread not found: ${threadId}`);
+        return ThreadSchema.parse(snapshot.record);
+      } finally {
+        reader.close();
+      }
+    }
     const thread = this.threads.get(threadId);
 
     if (!thread || workspaceIdForOwner(thread.owner) !== workspaceId) {

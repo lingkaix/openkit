@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 import { ControlStoreBusyError, controlStoreFor } from './control-store.js';
 import { applyControlAdmission } from './control-store-admission.js';
 import {
+  applyControlProducts,
   type ControlProductContentMount,
   type ControlProductOwner,
   ControlProductPreconditionError,
@@ -33,7 +34,10 @@ if (isMainThread || parentPort === null) {
 const port = parentPort;
 
 /** A queued transition, not a durable request or a second command receipt. */
-type WriteRequest = Extract<ControlWorkerRequest, { operation: 'write' | 'transition' }> & {
+type WriteRequest = Extract<
+  ControlWorkerRequest,
+  { operation: 'write' | 'transition' | 'products' }
+> & {
   readonly preparedEntries?: readonly PreparedControlEntry[] | undefined;
 };
 
@@ -84,7 +88,7 @@ function failureCode(error: unknown): ControlWorkerFailureCode {
   if (code === 'SQLITE_NOTADB' || (typeof code === 'string' && code.startsWith('SQLITE_CORRUPT')))
     return 'integrity';
   if (typeof code === 'string' && code.startsWith('SQLITE_CONSTRAINT')) return 'constraint';
-  if (code === 'SQLITE_BUSY' || code === 'SQLITE_LOCKED') return 'busy';
+  if (typeof code === 'string' && /^(SQLITE_BUSY|SQLITE_LOCKED)(_|$)/.test(code)) return 'busy';
   return 'sql-failed';
 }
 
@@ -163,6 +167,20 @@ function flush(owner: OwnedDatabase): void {
               status: 'ok',
               operation: 'transition',
               result,
+            };
+          } else if (request.operation === 'products') {
+            if (!owner.productOwner) throw new ControlProductPreconditionError();
+            applyControlProducts(
+              sqlite,
+              owner.productOwner,
+              request.transition.products,
+              request.preparedEntries ?? []
+            );
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'products',
             };
           } else {
             const results = apply(sqlite, request.statements);
@@ -353,13 +371,17 @@ function receive(value: unknown): void {
       reply(failure(value.id, 'unavailable'));
       return;
     }
-    if (value.operation === 'write' || value.operation === 'transition') {
+    if (
+      value.operation === 'write' ||
+      value.operation === 'transition' ||
+      value.operation === 'products'
+    ) {
       if (owner.pending.length >= CONTROL_WORKER_LIMITS.pendingTransitions) {
         reply(failure(value.id, 'busy'));
       } else {
         let preparedEntries: WriteRequest['preparedEntries'];
         try {
-          if (value.operation === 'transition') {
+          if (value.operation === 'transition' || value.operation === 'products') {
             if (!owner.productOwner) throw new ControlProductPreconditionError();
             preparedEntries = prepareControlEntries(
               owner.productOwner,

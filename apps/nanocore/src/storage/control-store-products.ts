@@ -24,7 +24,10 @@ import {
   StoredWorkspaceV1Schema,
 } from './retained-work-metadata-v1.js';
 import { assertServerTurnEventLineage } from './server-thread-records.js';
-import { assertTurnEventPayloadLineage } from './workspace-file-records.js';
+import {
+  assertTurnEventPayloadLineage,
+  preserveDescriptiveRecord,
+} from './workspace-file-records.js';
 
 /** Current finite metadata/page defaults; payloads use synchronized immutable Storage objects. */
 export const CONTROL_PRODUCT_LIMITS = {
@@ -75,6 +78,16 @@ export const ControlProductEntrySchema = z
   })
   .strict();
 export type ControlProductEntry = z.infer<typeof ControlProductEntrySchema>;
+/** Existing non-command lifecycle writes share the native product owner, without inventing a command receipt. */
+export const ControlProductTransitionSchema = z
+  .object({
+    products: z.array(ControlProductMutationSchema).max(CONTROL_PRODUCT_LIMITS.entries),
+    entries: z.array(ControlProductEntrySchema).max(CONTROL_PRODUCT_LIMITS.entries),
+  })
+  .strict()
+  .refine((value) => value.products.length + value.entries.length > 0);
+/** Whole bounded product transition; terminal candidates still require the complete native terminal path. */
+export type ControlProductTransition = z.infer<typeof ControlProductTransitionSchema>;
 /** Native prepared bytes never cross an awaited callback or require file I/O inside SQL. */
 export interface PreparedControlEntry {
   readonly input: ControlProductEntry;
@@ -126,7 +139,7 @@ export function assertControlProductOwner(owner: ControlProductOwner, actual: un
 }
 
 /** Decodes the frozen family's known view while callers retain the original JSON bytes unchanged. */
-function decode(
+export function decode(
   kind: ControlProductKind,
   value: unknown,
   owner: ControlProductOwner
@@ -151,7 +164,7 @@ function decode(
 }
 
 /** Returns only native SQL metadata and its revision, never a file-backed fallback or cache. */
-function readProduct(
+export function readProduct(
   sqlite: Database.Database,
   owner: ControlProductOwner,
   kind: ControlProductKind,
@@ -257,12 +270,37 @@ export function applyControlProducts(
       const previous = readProduct(sqlite, owner, kind, id);
       if ((previous?.revision ?? 0) !== input.expectedRevision)
         throw new ControlProductPreconditionError();
+      if (
+        kind === 'thread' &&
+        !previous &&
+        owner.kind === 'workspace' &&
+        record.visibility === 'private' &&
+        record.entryPath === 'conversation' &&
+        sqlite
+          .prepare(
+            "SELECT 1 FROM control_threads WHERE json_extract(record_json,'$.visibility')='private' AND json_extract(record_json,'$.entryPath')='conversation' AND json_extract(record_json,'$.privateOwnerUserId')=? LIMIT 1"
+          )
+          .get(record.privateOwnerUserId as string)
+      )
+        throw new ControlProductPreconditionError();
       checkReplacement(kind, previous?.record, record);
+      const retained = previous
+        ? (sqlite.prepare(`SELECT record_json FROM ${tables[kind]} WHERE id=?`).get(id) as {
+            record_json: string;
+          })
+        : undefined;
+      // Preserve the same descriptive extensions as the retired file owner, inside the deciding native transaction.
+      const replacement = preserveDescriptiveRecord(
+        retained ? JSON.parse(retained.record_json) : undefined,
+        previous?.record,
+        input.record
+      );
+      decode(kind, replacement, owner);
       const columns: Record<string, string | number | null> = {
         id,
         schema_version: 1,
         revision: input.expectedRevision + 1,
-        record_json: JSON.stringify(input.record),
+        record_json: JSON.stringify(replacement),
       };
       if (kind === 'thread') {
         columns.workspace_id = owner.kind === 'workspace' ? owner.workspaceId : null;

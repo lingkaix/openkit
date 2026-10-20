@@ -77,6 +77,7 @@ import {
 import { artifactFilePayloadPath } from './artifacts/file-records.js';
 import { CanonicalPublicationError } from './canonical-publication-error.js';
 import { reserveCanonicalFileWrite } from './canonical-write-capacity.js';
+import { openControlStoreProductReadHandle } from './control-store-products.js';
 import {
   assertWorkspaceWorkOwner,
   ensureLayoutDirectories,
@@ -1068,8 +1069,8 @@ export function writeWorkspaceFileRecords(
   assertExistingWorkspaceDirectoryParents(workspaceRoot);
   ensureWorkspaceLayoutRoot(workspaceRoot);
   assertExistingWorkspaceDirectoryParents(workspaceRoot);
-  writeWorkspaceMetadata(workspaceRoot, records.workspace, updateWorkspaceConfigName);
-  writeThreads(workspaceRoot, records, onRecordPublished);
+  writeWorkspaceConfiguration(workspaceRoot, records.workspace, updateWorkspaceConfigName);
+  writeTurns(workspaceRoot, records, onRecordPublished);
   writeKnowledge(workspaceRoot, records);
   writeArtifacts(workspaceRoot, records, initialArtifact);
   writeAgentSessions(workspaceRoot, records, onRecordPublished);
@@ -1162,16 +1163,10 @@ export function appendWorkspaceTurnEvent(workspaceRoot: string, event: SseEventE
 function loadWorkspace(workspaceRoot: string, workspaceId: string): WorkspaceFileRecords {
   assertExistingWorkspaceDirectoryParents(workspaceRoot);
   const retiredWorkspacePath = join(workspaceRoot, 'workspace.json');
-  const workspacePath = join(workspaceRoot, 'workspace-record.json');
   const workspaceConfigPath = join(workspaceRoot, 'config', 'workspace.jsonc');
 
   if (existsSync(retiredWorkspacePath)) {
     throw new Error(`Unsupported canonical workspace file workspace.json: ${workspaceId}.`);
-  }
-  if (!existsSync(workspacePath)) {
-    throw new Error(
-      `Canonical workspace directory is missing workspace-record.json: ${workspaceId}.`
-    );
   }
   if (!existsSync(workspaceConfigPath)) {
     throw new Error(
@@ -1179,10 +1174,34 @@ function loadWorkspace(workspaceRoot: string, workspaceId: string): WorkspaceFil
     );
   }
 
-  const workspaceRecord = readRetainedV1(
-    readJson(workspacePath),
-    WorkspaceSystemRecordSchema.parse
+  const productReader = openControlStoreProductReadHandle(
+    join(workspaceRoot, 'db', 'workspace.sqlite'),
+    { kind: 'workspace', workspaceId }
   );
+  let workspaceRecord: z.infer<typeof WorkspaceSystemRecordSchema>;
+  const threads: Thread[] = [];
+  try {
+    const native = productReader.get('workspace', workspaceId);
+    if (!native)
+      throw new Error(`Canonical Workspace metadata is missing from SQLite: ${workspaceId}.`);
+    workspaceRecord = WorkspaceSystemRecordSchema.parse(native.record);
+    let afterId = '';
+    for (;;) {
+      const page = productReader.list('thread', afterId);
+      if (page.length === 0) break;
+      for (const nativeThread of page) {
+        assertWorkspaceWorkOwner(nativeThread.record, workspaceId);
+        const thread = ThreadSchema.parse(nativeThread.record);
+        if (workspaceIdForOwner(thread.owner) !== workspaceId) {
+          throw new Error(`Thread record ${thread.id} has invalid workspace lineage.`);
+        }
+        threads.push(thread);
+        afterId = thread.id;
+      }
+    }
+  } finally {
+    productReader.close();
+  }
   const workspaceConfig = readRetainedV1(
     parseJsoncObject(readCanonicalTextFile(workspaceConfigPath), workspaceConfigPath),
     WorkspaceConfigSchema.parse
@@ -1194,29 +1213,19 @@ function loadWorkspace(workspaceRoot: string, workspaceId: string): WorkspaceFil
     );
   }
 
-  const threads: Thread[] = [];
   const turns: Turn[] = [];
   const itemRevisions: Item[] = [];
   const streamEvents: Array<readonly [string, readonly SseEventEnvelope[]]> = [];
   const turnCaptureCoverage = new Map<string, CaptureCoverageBinding>();
   const threadsRoot = join(workspaceRoot, 'threads');
 
-  for (const threadId of listDirectoryNames(threadsRoot)) {
-    const threadPath = join(threadsRoot, threadId, 'thread.json');
-
-    if (!existsSync(threadPath)) {
-      throw new Error(`Canonical thread directory is missing thread.json: ${threadId}.`);
+  for (const thread of threads) {
+    const threadId = thread.id;
+    const threadRoot = join(threadsRoot, threadId);
+    if (lstatSync(threadRoot, { throwIfNoEntry: false })) {
+      assertCanonicalDirectory(threadRoot);
     }
-
-    const rawThread = readJson(threadPath);
-    const thread = parseCanonicalThreadRecord(rawThread, workspaceId, threadId);
-
-    if (thread.id !== threadId || workspaceIdForOwner(thread.owner) !== workspaceId) {
-      throw new Error(`Thread record ${thread.id} has invalid workspace or directory lineage.`);
-    }
-
-    threads.push(thread);
-    const turnsRoot = join(threadsRoot, threadId, 'turns');
+    const turnsRoot = join(threadRoot, 'turns');
 
     for (const turnId of listDirectoryNames(turnsRoot)) {
       const turnPath = join(turnsRoot, turnId, 'turn.json');
@@ -1328,14 +1337,13 @@ function loadWorkspace(workspaceRoot: string, workspaceId: string): WorkspaceFil
   };
 }
 
-/** Writes the system Workspace record and the field-preserving editable Workspace config. */
-export function writeWorkspaceMetadata(
+/** Writes only authored Workspace configuration; native system metadata belongs to its separate SQL owner. */
+export function writeWorkspaceConfiguration(
   workspaceRoot: string,
   workspace: WorkspaceRecord,
   updateWorkspaceConfigName: boolean
 ): void {
   const retiredWorkspacePath = join(workspaceRoot, 'workspace.json');
-  const workspaceRecordPath = join(workspaceRoot, 'workspace-record.json');
   const workspaceConfigPath = join(workspaceRoot, 'config', 'workspace.jsonc');
 
   if (existsSync(retiredWorkspacePath)) {
@@ -1343,12 +1351,6 @@ export function writeWorkspaceMetadata(
   }
 
   const configExists = existsSync(workspaceConfigPath);
-  if (existsSync(workspaceRecordPath) && !configExists) {
-    throw new Error(
-      `Canonical workspace directory is missing config/workspace.jsonc: ${workspace.id}.`
-    );
-  }
-
   if (!configExists) {
     writeJsonAtomic(
       workspaceConfigPath,
@@ -1376,12 +1378,6 @@ export function writeWorkspaceMetadata(
       writeFileAtomic(workspaceConfigPath, updated);
     }
   }
-
-  writeRetainedDescriptiveJson(
-    workspaceRecordPath,
-    projectWorkspaceSystemRecord(workspace),
-    StoredWorkspaceV1Schema
-  );
 }
 
 /**
@@ -2155,52 +2151,11 @@ function parseCanonicalThreadRecord(input: unknown, workspaceId: string, threadI
   return thread;
 }
 
-/** Projects one Thread into its authority-gated canonical record envelope. */
-function projectCanonicalThreadRecord(
-  threadInput: Thread,
-  previous?: unknown
-): Record<string, unknown> {
-  const thread = ThreadSchema.parse(threadInput);
-  let preserved: Record<string, unknown> = {};
-  if (looksLikeThreadEnvelope(previous)) {
-    preserved = parseRecordEnvelope(previous, {
-      supportedFeatures: THREAD_REQUIRED_FEATURES,
-    });
-  }
-  return {
-    ...preserved,
-    ...thread,
-    schemaVersion: 1,
-    recordType: 'thread',
-    ownerScope: 'workspace',
-    lineage: { workspaceId: workspaceIdForOwner(thread.owner), threadId: thread.id },
-    contentDigest: canonicalThreadContentDigest(thread),
-    redactionLevel: 'none',
-    sensitivity: thread.visibility,
-    requiredFeatures: THREAD_REQUIRED_FEATURES,
-    extensions:
-      typeof preserved.extensions === 'object' && preserved.extensions !== null
-        ? preserved.extensions
-        : {},
-  };
-}
-
 /** Computes the stable content digest over the strict current Thread payload. */
 function canonicalThreadContentDigest(thread: Thread): string {
   return `sha256:${createHash('sha256')
     .update(JSON.stringify(ThreadSchema.parse(thread)))
     .digest('hex')}`;
-}
-
-/** Returns whether a record claims any canonical envelope discriminator. */
-function looksLikeThreadEnvelope(input: unknown): input is Record<string, unknown> {
-  return (
-    typeof input === 'object' &&
-    input !== null &&
-    ['schemaVersion', 'recordType', 'ownerScope', 'lineage', 'requiredFeatures'].some(
-      (field) => field in input
-    )
-  );
 }
 
 /**
@@ -2445,20 +2400,17 @@ function writeArtifactDirectory(artifactRoot: string, artifact: Artifact): void 
 }
 
 /**
- * Writes one new Thread directory, including `thread.json`, `turns/`, and every Turn.
+ * Writes only retained child history into a new Thread directory; Thread metadata belongs to SQL.
  *
  * @param threadRoot Existing staging directory that will become the Thread directory.
- * @param thread Thread record to write.
  * @param threadTurns Turns that belong to this Thread.
  * @param records Workspace records that own those Turns.
  */
 function writeStagedThreadDirectory(
   threadRoot: string,
-  thread: Thread,
   threadTurns: readonly Turn[],
   records: WorkspaceFileRecords
 ): void {
-  writeJsonAtomic(join(threadRoot, 'thread.json'), projectCanonicalThreadRecord(thread));
   const turnsRoot = join(threadRoot, 'turns');
   ensureCanonicalDirectory(turnsRoot);
   for (const turn of threadTurns) {
@@ -2467,13 +2419,13 @@ function writeStagedThreadDirectory(
 }
 
 /**
- * Writes changed canonical Thread bytes and Turn metadata while preserving append-only logs.
+ * Writes retained Turn metadata while preserving append-only logs and SQL-owned Thread metadata.
  *
  * @param workspaceRoot Resolved workspace root.
  * @param records Current workspace records.
  * @param onRecordPublished Reports acknowledged references before processing later records.
  */
-function writeThreads(
+function writeTurns(
   workspaceRoot: string,
   records: WorkspaceFileRecords,
   onRecordPublished?: RecordPublished
@@ -2491,19 +2443,13 @@ function writeThreads(
 
     if (!lstatSync(threadRoot, { throwIfNoEntry: false })) {
       publishNewRecordDirectory(workspaceRoot, threadRoot, (stage) => {
-        writeStagedThreadDirectory(stage, thread, threadTurns, records);
+        writeStagedThreadDirectory(stage, threadTurns, records);
       });
       for (const turn of threadTurns) onRecordPublished?.('turn', turn.id);
-      onRecordPublished?.('thread', thread.id);
       continue;
     }
     ensureCanonicalDirectory(threadRoot);
-    // Preparing turnsRoot also commits threadRoot after an unacknowledged file rename.
     ensureCanonicalDirectory(turnsRoot);
-    const threadPath = join(threadRoot, 'thread.json');
-    const previousBytes = existsSync(threadPath) ? readCanonicalFile(threadPath) : undefined;
-    const previous =
-      previousBytes === undefined ? undefined : JSON.parse(previousBytes.toString('utf8'));
     // An absent cache candidate does not delete retained history. Thread or Workspace deletion owns it.
 
     for (const turn of threadTurns) {
@@ -2517,11 +2463,6 @@ function writeThreads(
       });
       onRecordPublished?.('turn', turn.id);
     }
-    const nextBytes = Buffer.from(
-      `${JSON.stringify(projectCanonicalThreadRecord(thread, previous), null, 2)}\n`
-    );
-    if (!previousBytes?.equals(nextBytes)) writeFileAtomic(threadPath, nextBytes);
-    onRecordPublished?.('thread', thread.id);
   }
 }
 

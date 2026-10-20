@@ -412,6 +412,22 @@ function recordAuditEvent(
     workspaceId: string | null;
   }
 ): AuditEvent {
+  const event = prepareAuditEvent(input);
+  insertAuditEvent(sqlite, event);
+  return event;
+}
+
+/**
+ * Builds one validated, non-secret Audit value for its owning transaction without writing or authorizing it. The caller supplies admitted actor and scope; the SQL owner must still validate the complete tuple.
+ *
+ * @param input Existing Audit attribution and event fields, without a database capability.
+ * @returns Protocol Audit ready for the owner's transaction.
+ */
+export function prepareAuditEvent(
+  input: Omit<RecordWorkspaceAuditEventInput, 'workspaceDb' | 'workspaceId'> & {
+    workspaceId: string | null;
+  }
+): AuditEvent {
   const createdAt = (input.now ?? new Date()).toISOString();
   const occurredAt = (input.occurredAt ?? input.now ?? new Date()).toISOString();
   const event = AuditEventSchema.parse({
@@ -447,8 +463,7 @@ function recordAuditEvent(
     occurredAt,
   });
 
-  insertAuditEvent(sqlite, event);
-
+  assertNoUnsafeAuditValue(event);
   return event;
 }
 

@@ -86,7 +86,7 @@ export function startRecurringScheduleService(
           // Attempt initial file publication once while this source admission holds the
           // Workspace fence. Acceptance stays terminal if publication is interrupted.
           const entry = requireSchedulerAdmissionEntry(db, accepted.queueEntryId);
-          input.store.createTurn(
+          await input.store.createTurn(
             entry.workspaceId,
             entry.threadId,
             entry.turnInput,

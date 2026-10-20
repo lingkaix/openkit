@@ -400,7 +400,7 @@ const bootResult = await runBootPhases({
               subject.attemptId
             );
             const anchored = 'state' in subject;
-            const result = terminalizeGovernedWorkerTurn({
+            const result = await terminalizeGovernedWorkerTurn({
               agentSessionId: subject.agentSessionId,
               completedAt: new Date().toISOString(),
               errorCode: 'worker_governance_restart_recovery',

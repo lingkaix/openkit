@@ -13,8 +13,11 @@ import { StoredTaskTerminalFactV1Schema } from './goal-retained-v1.js';
 
 /** Minimal Task-owned result; canonical Turn files publish this already committed fact. */
 export const TaskTerminalFactSchema = StoredTaskTerminalFactV1Schema;
-/** Commits a linked Task terminal fact and its Goal wake together, exactly once. */
-export function recordTaskTerminalFact(db: WorkspaceDb, turn: z.infer<typeof TurnSchema>): void {
+/** Joins a linked Task fact and Goal revision to the caller's existing native terminal transaction, or owns a standalone transaction for current non-product callers. */
+export function recordTaskTerminalFact(
+  db: Pick<WorkspaceDb, 'sqlite'>,
+  turn: z.infer<typeof TurnSchema>
+): void {
   if (!isSealedTurnTerminal(turn.status)) return;
   const link = db.sqlite
     .prepare(
@@ -26,7 +29,7 @@ export function recordTaskTerminalFact(db: WorkspaceDb, turn: z.infer<typeof Tur
   const bytes = JSON.stringify(
     TaskTerminalFactSchema.parse({ ...turn, workspaceId: workspaceIdForOwner(turn.owner) })
   );
-  db.sqlite.transaction(() => {
+  const commit = () => {
     const prior = db.sqlite
       .prepare(
         'SELECT schema_version AS schemaVersion,payload_json FROM task_turn_terminal_facts WHERE turn_id=?'
@@ -45,7 +48,9 @@ export function recordTaskTerminalFact(db: WorkspaceDb, turn: z.infer<typeof Tur
       )
       .run(turn.id, turn.threadId, bytes, writeRetainedV1({}).schemaVersion);
     advanceGoalRevision(db, goalId);
-  })();
+  };
+  if (db.sqlite.inTransaction) commit();
+  else db.sqlite.transaction(commit)();
 }
 /** Finishes file publication after a crash; never asks a model to infer a Task result. */
 export function recoverTaskTerminalFacts(store: FsStore, db: WorkspaceDb): void {

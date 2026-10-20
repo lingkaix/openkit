@@ -356,7 +356,7 @@ export async function startTurn(input: StartTurnInput): Promise<TurnHandle> {
     input.reasoningEffort ?? agentSetupResult.setup?.manifest.models.reasoningEffort;
   const turn =
     existing ??
-    input.store.createTurn(
+    (await input.store.createTurn(
       input.workspaceId,
       input.threadId,
       input.input,
@@ -368,8 +368,8 @@ export async function startTurn(input: StartTurnInput): Promise<TurnHandle> {
         executorKind: 'worker',
         ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
       }
-    );
-  if (existing) input.store.updateTurn(turn.id, { status: 'running' });
+    ));
+  if (existing) await input.store.updateTurn(turn.id, { status: 'running' });
   const agentSetupRecordId =
     agentSetupResult.setup && input.agentSetupWorkspaceDb
       ? recordResolvedAgentSetup(input.agentSetupWorkspaceDb, {

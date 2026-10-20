@@ -539,12 +539,15 @@ function failure(error: unknown): never {
 export function createVaultGrantRequestImplementations(dependencies: Dependencies) {
   const { coreDb, store, repositoryWorkspaceDb } = dependencies;
   /** Open only the selected Workspace database and always release its handle. */
-  function withDatabase<T>(workspaceId: string, execute: (db: WorkspaceDb) => T): T {
+  async function withDatabase<T>(
+    workspaceId: string,
+    execute: (db: WorkspaceDb) => T
+  ): Promise<Awaited<T>> {
     if (!coreDb || !store || !repositoryWorkspaceDb)
       throw new OperationError('vault_storage_unavailable', 'Vault storage is unavailable.', 503);
     const db = repositoryWorkspaceDb(workspaceId);
     try {
-      return execute(db);
+      return await execute(db);
     } catch (error) {
       failure(error);
     } finally {
@@ -571,7 +574,7 @@ export function createVaultGrantRequestImplementations(dependencies: Dependencie
   }
   return {
     'vault.grant-request': (input, context) =>
-      withDatabase(input.workspaceId, (db) => {
+      withDatabase(input.workspaceId, async (db) => {
         const terms = VaultGrantRequestTermsSchema.parse({
           ...input.terms,
           ...(input.terms.expiresAt
@@ -712,7 +715,7 @@ export function createVaultGrantRequestImplementations(dependencies: Dependencie
         // Check the shared bound before admitting a Core-local raising Turn.
         preflightPendingRequest(db.sqlite, raisedInput);
         if (!worker)
-          store!.createTurn(
+          await store!.createTurn(
             input.workspaceId,
             input.threadId,
             'Request credential-use authority',
@@ -722,7 +725,7 @@ export function createVaultGrantRequestImplementations(dependencies: Dependencie
           );
         try {
           const record = raiseRecordedPendingRequest(store!, db.sqlite, raisedInput);
-          store!.createItem({
+          await store!.createItem({
             id: requestItemId,
             owner: { kind: 'workspace', workspaceId: input.workspaceId },
             threadId: input.threadId,
@@ -736,7 +739,8 @@ export function createVaultGrantRequestImplementations(dependencies: Dependencie
             description: raisedInput.approval.description,
             createdAt: now,
           });
-          if (!worker) store!.updateTurn(raisingTurnId, { status: 'completed', completedAt: now });
+          if (!worker)
+            await store!.updateTurn(raisingTurnId, { status: 'completed', completedAt: now });
           return view(
             dependencies,
             record,
@@ -745,7 +749,7 @@ export function createVaultGrantRequestImplementations(dependencies: Dependencie
         } catch (error) {
           // Preserve partial request evidence as inspect-only, while releasing the Core-local raising Turn.
           if (!worker && !isSealedTurnTerminal(store!.getTurnById(raisingTurnId).status))
-            store!.updateTurn(raisingTurnId, {
+            await store!.updateTurn(raisingTurnId, {
               status: 'failed',
               completedAt: new Date().toISOString(),
             });

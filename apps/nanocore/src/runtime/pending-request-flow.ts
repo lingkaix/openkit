@@ -1011,7 +1011,7 @@ async function deliverWorkerOutcome(
           releaseFrozenOutcomes(sqlite, turnId, now);
         });
         if (!isSealedTurnTerminal(store.getTurnById(turnId).status))
-          store.updateTurn(turnId, {
+          await store.updateTurn(turnId, {
             status: 'failed',
             completedAt: now,
             error: { code: error.code, message: error.message },
@@ -1028,7 +1028,7 @@ async function deliverWorkerOutcome(
         markFrozenDeliveryUnknown(sqlite, turnId, now);
       });
       if (!isSealedTurnTerminal(store.getTurnById(turnId).status))
-        store.updateTurn(turnId, {
+        await store.updateTurn(turnId, {
           status: 'failed',
           completedAt: now,
           error: { code: 'delivery_unknown', message: 'Outcome delivery could not be proved.' },
@@ -1061,7 +1061,7 @@ async function deliverWorkerOutcome(
     }
     try {
       if (!isSealedTurnTerminal(store.getTurnById(turnId).status))
-        store.updateTurn(turnId, {
+        await store.updateTurn(turnId, {
           status: 'failed',
           completedAt: now,
           error: refusal

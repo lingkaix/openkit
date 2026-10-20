@@ -200,7 +200,7 @@ export function checkGoalCommandIntent(
     throw new GoalCommandError('approval_conflict', 'The captured Goal operation is unavailable.');
 }
 /** Writes only the already validated owning record. */
-function saveGoal(db: WorkspaceDb, goal: GoalRecord): void {
+function saveGoal(db: Pick<WorkspaceDb, 'sqlite'>, goal: GoalRecord): void {
   const previous = readRecord(db, 'goals', 'goal_id', goal.goalId, StoredGoalV1Schema);
   db.sqlite
     .prepare(
@@ -214,7 +214,7 @@ function saveGoal(db: WorkspaceDb, goal: GoalRecord): void {
     );
 }
 /** Advances the existing two-field marker in the caller's fact transaction. */
-export function advanceGoalRevision(db: WorkspaceDb, goalId: string): void {
+export function advanceGoalRevision(db: Pick<WorkspaceDb, 'sqlite'>, goalId: string): void {
   const goal = readRecord(db, 'goals', 'goal_id', goalId, StoredGoalV1Schema);
   if (goal) saveGoal(db, { ...goal, changeRevision: goal.changeRevision + 1, updatedAt: now() });
 }
