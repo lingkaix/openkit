@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
-import { appendFileSync, mkdtempSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ProductTurnSchema } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
+import * as evidenceBundles from './evidence-bundles.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import * as database from './storage/db.js';
 import { openCoreDb } from './storage/db.js';
@@ -18,7 +19,259 @@ import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
+/** Creates the real in-process Thread operation with current ordinary-user Workspace authority. */
+function ordinaryActivityFixture() {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-f1-thread-activity-'));
+  const coreDb = openCoreDb(dataRoot);
+  applyMigrations(coreDb);
+  ensureLocalUser(coreDb);
+  const store = createDemoStore({ dataRoot });
+  const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+  const actor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
+  recordWorkspaceOwnerMembership({ coreDb, ownerUserId: actor.id, workspaceId });
+  const app = createApp({
+    coreDb,
+    dataRoot,
+    store,
+    mode: 'server',
+    auth: {
+      api: { getSession: async () => ({ user: { id: actor.id } }) },
+      handler: async () => new Response(null, { status: 404 }),
+    },
+  });
+  return { dataRoot, coreDb, store, workspaceId, actor, app };
+}
+
+/** Publishes actual restricted assistant bytes with a deliberately independent native message reference. */
+function publishActivityBody(
+  db: database.WorkspaceDb,
+  threadId: string,
+  turnId: string,
+  messageRef: string
+) {
+  const bytes = Buffer.from('Restricted raw canary.');
+  workObservations.appendWorkObservation(db, {
+    threadId,
+    turnId,
+    observation: {
+      id: 'native-response',
+      type: 'runtime.observed',
+      ts: '2026-09-22T00:00:00.000Z',
+      obs: 'sidecar',
+      payload: {
+        observationId: 'native-response',
+        sourceRef: 'native-source',
+        sourceSequence: 41,
+        observedAt: '2026-09-22T00:00:00.000Z',
+        fact: {
+          kind: 'assistant',
+          runtimeOriginRef: 'native-origin',
+          phase: 'completed',
+          messageRef,
+          representation: 'snapshot',
+        },
+        content: {
+          state: 'expected',
+          bytes: bytes.byteLength,
+          sha256: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+          chunkCount: 1,
+          mediaType: 'text/plain',
+          boundary: 'outward-assistant-v1',
+        },
+      },
+    },
+    bodies: [{ id: 'content', bytes, mediaType: 'text/plain', boundary: 'outward-assistant-v1' }],
+  });
+}
+
 describe('thread dashboard app API', () => {
+  it('projects each interleaved Turn latest admitted reply without a native message association or raw read', async () => {
+    const f = ordinaryActivityFixture();
+    const thread = f.store.createThread(f.workspaceId, 'Ordinary source boundary');
+    const turns = ['First', 'Second', 'No Item', 'Capture off'].map((title, index) =>
+      f.store.createTurn(f.workspaceId, thread.id, title, f.actor, null, {
+        captureCoverage: { scope: 'server', value: index === 3 ? 'off' : 'on' },
+      })
+    );
+    const addReply = (turnIndex: number, name: string, second: number) => {
+      const item = {
+        id: testEntityId('it', name),
+        owner: { kind: 'workspace', workspaceId: f.workspaceId },
+        threadId: thread.id,
+        turnId: turns[turnIndex]!.id,
+        type: 'assistant-message',
+        status: 'completed',
+        text: name,
+        createdAt: `2026-09-22T00:00:${second}.000Z`,
+        completedAt: `2026-09-22T00:00:${second}.000Z`,
+      } as const;
+      f.store.createItem(item);
+      return item;
+    };
+    const old = addReply(0, 'Earlier first reply.', 10);
+    const second = addReply(1, 'Second Turn ordinary canary.', 20);
+    const latest = addReply(0, 'Latest first Turn ordinary canary.', 30);
+    const off = addReply(3, 'Capture-off ordinary canary.', 40);
+    f.store.createItem({
+      id: testEntityId('it', 'later-user-input'),
+      owner: { kind: 'workspace', workspaceId: f.workspaceId },
+      threadId: thread.id,
+      turnId: turns[0]!.id,
+      type: 'user-message',
+      status: 'completed',
+      actor: f.actor,
+      text: 'Later user message is not an assistant reply.',
+      createdAt: '2026-09-22T00:00:50.000Z',
+      completedAt: '2026-09-22T00:00:50.000Z',
+    });
+    const db = database.openWorkspaceDb(f.dataRoot, f.workspaceId);
+    try {
+      // Neither a matching old Item id nor an Item id from another Turn supplies an association.
+      publishActivityBody(db, thread.id, turns[0]!.id, old.id);
+      publishActivityBody(db, thread.id, turns[1]!.id, latest.id);
+      publishActivityBody(db, thread.id, turns[2]!.id, latest.id);
+    } finally {
+      db.sqlite.close();
+    }
+    const rawRead = vi.spyOn(evidenceBundles, 'readWorkObservationBody');
+    try {
+      const response = await f.app.request('/api/app/operations/thread.dashboard', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ workspaceId: f.workspaceId, threadId: thread.id }),
+      });
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect.soft(rawRead).not.toHaveBeenCalled();
+      expect.soft(body.runtimeActivity).toHaveLength(4);
+      for (const [index, reply] of [latest, second, undefined, off].entries()) {
+        const activity = body.runtimeActivity.find(
+          (entry: { turnId: string }) => entry.turnId === turns[index]!.id
+        );
+        expect.soft(activity).toMatchObject({
+          contentCapture: index === 3 ? 'off' : 'on',
+          coverage: index === 3 ? 'unavailable' : 'collecting',
+          omittedEntryCount: 0,
+        });
+        const structural =
+          index === 3
+            ? []
+            : [
+                {
+                  sequence: 1,
+                  observedAt: '2026-09-22T00:00:00.000Z',
+                  kind: 'result',
+                  label: 'Worker: response completed',
+                  textTruncated: false,
+                },
+              ];
+        expect.soft(activity.entries).toEqual([
+          ...structural,
+          ...(reply
+            ? [
+                expect.objectContaining({
+                  label: expect.stringMatching(/turn reply/i),
+                  observedAt: reply.createdAt,
+                  text: reply.text,
+                  textTruncated: false,
+                }),
+              ]
+            : []),
+        ]);
+        if (reply) {
+          const excerpt = activity.entries.find(
+            (entry: { text?: string }) => entry.text === reply.text
+          );
+          expect.soft(excerpt?.sequence).toEqual(expect.any(Number));
+          if (excerpt)
+            expect.soft(Number.isSafeInteger(excerpt.sequence) && excerpt.sequence > 0).toBe(true);
+        }
+      }
+      expect
+        .soft(JSON.stringify(body.runtimeActivity))
+        .not.toMatch(
+          /Restricted raw canary|Earlier first reply|native-source|native-origin|Later user message/
+        );
+      expect
+        .soft(body.turns.every((turn: { status: string }) => turn.status === 'running'))
+        .toBe(true);
+      expect.soft(body.workStatus.pendingApprovalCount).toBe(0);
+      expect.soft(body.pendingRequests).toEqual([]);
+    } finally {
+      rawRead.mockRestore();
+      f.coreDb.sqlite.close();
+      rmSync(f.dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses real private and foreign Thread activity before ordinary Item or raw-body projection', async () => {
+    const f = ordinaryActivityFixture();
+    const privateThread = f.store.createThread(
+      f.workspaceId,
+      'Other private work',
+      undefined,
+      'conversation',
+      {
+        visibility: 'private',
+        privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
+      }
+    );
+    const foreignWorkspace = f.store.createWorkspace('Foreign');
+    const foreignThread = f.store.createThread(foreignWorkspace.id, 'Foreign work');
+    for (const [workspaceId, thread] of [
+      [f.workspaceId, privateThread],
+      [foreignWorkspace.id, foreignThread],
+    ] as const) {
+      const turn = f.store.createTurn(workspaceId, thread.id, 'Protected work', f.actor, null, {
+        captureCoverage: { scope: 'server', value: 'on' },
+      });
+      const itemId = testEntityId('it', `private-${turn.id}`);
+      f.store.createItem({
+        id: itemId,
+        owner: { kind: 'workspace', workspaceId },
+        threadId: thread.id,
+        turnId: turn.id,
+        type: 'assistant-message',
+        status: 'completed',
+        text: 'Protected ordinary Item canary.',
+        createdAt: '2026-09-22T00:00:10.000Z',
+        completedAt: '2026-09-22T00:00:10.000Z',
+      });
+      const db = database.openWorkspaceDb(f.dataRoot, workspaceId);
+      try {
+        publishActivityBody(db, thread.id, turn.id, itemId);
+      } finally {
+        db.sqlite.close();
+      }
+    }
+    const activityRead = vi.spyOn(workObservations, 'readThreadRuntimeActivity');
+    const rawRead = vi.spyOn(evidenceBundles, 'readWorkObservationBody');
+    const itemRead = vi.spyOn(f.store, 'listThreadItems');
+    try {
+      for (const thread of [privateThread, foreignThread]) {
+        const response = await f.app.request('/api/app/operations/thread.dashboard', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ workspaceId: f.workspaceId, threadId: thread.id }),
+        });
+        expect(response.status).toBe(404);
+        const body = await response.json();
+        expect(body).toMatchObject({ code: 'not_found', message: 'Thread not found.' });
+        expect(JSON.stringify(body)).not.toMatch(/Protected ordinary|Restricted raw/);
+      }
+      expect(activityRead).not.toHaveBeenCalled();
+      expect(rawRead).not.toHaveBeenCalled();
+      expect(
+        itemRead.mock.calls.some(([, id]) => id === privateThread.id || id === foreignThread.id)
+      ).toBe(false);
+    } finally {
+      activityRead.mockRestore();
+      rawRead.mockRestore();
+      itemRead.mockRestore();
+      f.coreDb.sqlite.close();
+      rmSync(f.dataRoot, { recursive: true, force: true });
+    }
+  });
   it('projects only this Thread participants and the authenticated viewer without private profile fields', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-thread-authors-'));
     const coreDb = openCoreDb(dataRoot);
