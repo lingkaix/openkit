@@ -11,7 +11,11 @@ NanoCore is neutral to compute substrate and agent-harness location. NanoCore in
 
 OpenKit retains the authority, Knowledge, BWM, MCP, and Skills plane. Governance applies at each integration boundary. Each integration declares its actual capabilities and limitations. Policy uses those declarations to select permitted platforms for a Workspace and refuses placement when required constraints cannot be met.
 
-An external platform may not admit OpenKit's in-loop Policy control or return all run data. This compromise is accepted when the integration declares each gap and the system records capture gaps, preserves truthful unknown outcomes, and refuses placement with unsupported required constraints. OpenKit must never claim coverage it lacks.
+Core retains non-negotiable scheduling and management authority over agents. Core decides admission, placement, start, stop, cancellation, budgets, and deadlines. External platforms are executors scheduled by Core, never the scheduler.
+
+OpenKit's ownership of user data is the more important non-negotiable. Adapters must bring user files, work products, retrievable conversation and process records, and Knowledge into OpenKit storage. Core is the system of record for retrieval, addition, removal, and management; provider copies are caches or external dependencies. Core refuses a platform for any work whose required user data it cannot return.
+
+The accepted compromise covers only provider-internal execution details, such as in-loop Policy hooks and internal traces, never user data. Each integration must declare these gaps; OpenKit records capture gaps, preserves truthful unknown outcomes, and refuses placement with unsupported required constraints. OpenKit must never claim coverage it lacks.
 
 The first integration targets are the OpenAI Agents API, E2B, and Cloudflare Agents. The OpenAI Agents API target includes both the hosted platform and use of that standard API by self-hosted equivalents.
 

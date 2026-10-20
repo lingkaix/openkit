@@ -28,6 +28,8 @@ NanoCore MUST remain neutral to compute substrate and agent-harness location. Na
 
 OpenKit borrows external standards' resource structure and naming, but its specifications MUST define record meanings, what receipts prove, and sufficient cleanup evidence. Adapters MUST remain thin and replaceable; compatibility is a pinned, tested subset, not a promise to follow external API evolution.
 
+Core MUST retain scheduling and management authority over admission, placement, start, stop, cancellation, budgets, and deadlines; external platforms are its executors. OpenKit MUST retain user-data ownership with Core as the system of record; adapters MUST return user data to OpenKit storage, and Core MUST refuse platforms that cannot return the data required by the work.
+
 ## Architecture Shape
 
 OpenKit uses an `App + Core + Agent` architecture.
