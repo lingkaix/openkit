@@ -22,8 +22,10 @@ import {
   openBootVerifiedWorkspaceDb,
   openCoreDb,
   openCoreDbWithIntegrityCheck,
+  openExistingCoreDbWithIntegrityCheck,
   openUserDb,
   openWorkspaceDb,
+  openWorkspaceDbAtRoot,
   type UserDb,
   verifyAndMigrateExistingScopedDatabases,
   type WorkspaceDb,
@@ -62,6 +64,80 @@ function initializeUnmigratedScopedDb(scopedDb: UserDb | WorkspaceDb): void {
 }
 
 describe('scoped storage databases', () => {
+  it.each([
+    { name: 'openCoreDb', open: openCoreDb },
+    { name: 'openCoreDbWithIntegrityCheck', open: openCoreDbWithIntegrityCheck },
+    {
+      name: 'openExistingCoreDbWithIntegrityCheck',
+      create: openCoreDb,
+      open: (dataRoot: string) => {
+        ensureLayout(dataRoot);
+        return openExistingCoreDbWithIntegrityCheck(dataRoot);
+      },
+    },
+    {
+      name: 'openUserDb',
+      open: (dataRoot: string) => openUserDb(dataRoot, 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b'),
+    },
+    {
+      name: 'openWorkspaceDb',
+      open: (dataRoot: string) =>
+        openWorkspaceDb(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201'),
+    },
+    {
+      name: 'openBootVerifiedWorkspaceDb',
+      create: (dataRoot: string) =>
+        openWorkspaceDb(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201'),
+      open: (dataRoot: string) => {
+        verifyAndMigrateExistingScopedDatabases(dataRoot);
+        return openBootVerifiedWorkspaceDb(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201');
+      },
+    },
+    {
+      name: 'openWorkspaceDbAtRoot',
+      open: (dataRoot: string) =>
+        openWorkspaceDbAtRoot({
+          dataRoot,
+          workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
+          workspaceRoot: join(dataRoot, 'workspaces', '.staging', 'full-reopen'),
+        }),
+    },
+  ])('keeps FULL synchronization on creation and WAL reopen through $name', (factory) => {
+    const dataRoot = createDataRoot();
+    let sqlite: UserDb['sqlite'] | undefined;
+    try {
+      const created = (factory.create ?? factory.open)(dataRoot);
+      sqlite = created.sqlite;
+      expect(sqlite.inTransaction).toBe(false);
+      expect(sqlite.pragma('synchronous', { simple: true }), 'fresh connection FULL').toBe(2);
+      if (created.scope === 'core') applyMigrations(created);
+      else applyScopedMigrations(created);
+      expect(sqlite.inTransaction).toBe(false);
+      expect(sqlite.pragma('journal_mode', { simple: true })).toBe('wal');
+      expect(sqlite.pragma('synchronous', { simple: true }), 'migrated connection FULL').toBe(2);
+      const retainedMigrations = sqlite
+        .prepare('SELECT * FROM __drizzle_migrations ORDER BY id')
+        .all();
+      expect(retainedMigrations.length).toBeGreaterThan(0);
+      const expectedPath = sqlite.name;
+      sqlite.close();
+      sqlite = undefined;
+
+      sqlite = factory.open(dataRoot).sqlite;
+      // Read the returned connection before any migration can mask its connection-local policy.
+      expect(sqlite.name).toBe(expectedPath);
+      expect(sqlite.inTransaction).toBe(false);
+      expect(sqlite.prepare('SELECT * FROM __drizzle_migrations ORDER BY id').all()).toEqual(
+        retainedMigrations
+      );
+      expect(sqlite.pragma('journal_mode', { simple: true })).toBe('wal');
+      expect(sqlite.pragma('synchronous', { simple: true }), 'reopened connection FULL').toBe(2);
+    } finally {
+      if (sqlite?.open) sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it('opens and migrates a user-scoped SQLite database with User command and Audit authority', () => {
     const dataRoot = createDataRoot();
     const userDb = openUserDb(dataRoot, 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b');
