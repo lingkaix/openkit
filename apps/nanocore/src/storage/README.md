@@ -16,6 +16,8 @@ This directory owns NanoCore's physical data-root layout, ownership-scoped SQLit
 
 One record family must have one durable authority. Do not add aggregate workspace snapshots, dual file-and-SQLite payload ownership, newest-file recovery, or runtime resource serialization.
 
+C2-B2 preparation does not transfer these authorities. Existing receipt and native product SQL bodies keep their complete read, check, write and rollback boundaries on the supplied owning SQLite connection; ORM access remains bound to that same connection. Asynchronous caller acknowledgements do not activate native product writers, turn file publication into SQL, or permit a separate receipt commit. File and observation owners, immutable-body publication, pruning and terminal guards retain their current boundaries until the complete authority switch.
+
 ## Boundaries
 
 - `fs-layout.ts` owns safe paths and accepted directory placement. `ensureLayout` verifies the ownership tree, database placement, canonical envelopes, and layout marker at boot and during stopped-process migration. Request paths use directory preparation without tree verification; `ensureWorkspaceLayout` creates only the root and Workspace directories needed by its caller.
