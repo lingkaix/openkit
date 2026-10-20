@@ -1,6 +1,7 @@
 import { ActorRefSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import {
+  KnowledgeNotebookEditPathSchema,
   KnowledgeNotebookPathSchema,
   UpdateKnowledgeNotebookRequestSchema,
   UpdateKnowledgeNotebookResponseSchema,
@@ -38,7 +39,7 @@ export const KnowledgeNotebookHistoryResponseSchema = z
               availability: z.literal('available'),
               summary: z.string(),
               producer: ActorRefSchema,
-              changedPaths: z.array(KnowledgeNotebookPathSchema),
+              changedPaths: z.array(KnowledgeNotebookEditPathSchema),
             })
             .strict(),
           z
@@ -76,7 +77,7 @@ export const KnowledgeNotebookDiffResponseSchema = z
       .array(
         z
           .object({
-            path: KnowledgeNotebookPathSchema,
+            path: KnowledgeNotebookEditPathSchema,
             before: z.string().nullable(),
             after: z.string().nullable(),
           })
