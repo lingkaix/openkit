@@ -37,6 +37,7 @@ import type { FileStorageAdmission } from '../storage/artifacts/file-admission.j
 import { type CoreDb, openBootVerifiedWorkspaceDb, openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { loadWorkspaceFileRecords } from '../storage/workspace-file-records.js';
+import { withLifecycleStageTelemetry } from '../telemetry.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
 import { vaultSecretMaterialToString } from '../vault/vault-backend.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
@@ -3337,36 +3338,48 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             : JSON.stringify(session.runtimeCheckVersions),
           session.agentSessionRuntimeBindingId
         );
-      const opened = await this.queueAndWaitForHarnessOperation(session, 'session.open', {
-        adapterId: session.sharedHarness.adapterId,
-        maxActiveTurns: session.sharedHarness.maxActiveTurns,
-        nativeEnvironment: session.environmentPackage.runtime.environment?.values,
-        agentSessionCompatibilityKey: session.agentSessionCompatibilityKey,
-        agentSessionId: session.environmentPackage.scope.agentSessionId,
-        agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
-        effectiveSetupGeneration: 1,
-        resume: session.nativeResume,
-        threadId: session.environmentPackage.scope.threadId,
-        workspaceId: session.environmentPackage.scope.workspaceId,
-      });
-      // A resumed conversation proves the predecessor's exact handle at open; a new one may stay
-      // pending until its first Turn creates the conversation.
-      const openedReady =
-        opened.nativeHandleState === 'ready' &&
-        typeof opened.nativeHandleDigest === 'string' &&
-        /^[0-9a-f]{64}$/.test(opened.nativeHandleDigest);
-      if (
-        opened.state !== 'open' ||
-        opened.maxActiveTurns !== session.sharedHarness.maxActiveTurns ||
-        !(
-          openedReady ||
-          (opened.nativeHandleState === 'pending' && opened.nativeHandleDigest === null)
-        ) ||
-        (session.nativeResume !== null &&
-          (!openedReady || opened.nativeHandleDigest !== session.nativeResume.digest))
-      ) {
-        throw new Error('NanoHost Harness session.open result is incompatible.');
-      }
+      const { opened, openedReady } = await withLifecycleStageTelemetry(
+        {
+          ...session.environmentPackage.scope,
+          packageSnapshotId: session.environmentPackage.snapshotId,
+          workerKind: session.environmentPackage.agent.runtimeKind,
+          stage: 'session.open.inspect',
+          rejectionOutcome: 'unknown',
+        },
+        async () => {
+          const opened = await this.queueAndWaitForHarnessOperation(session, 'session.open', {
+            adapterId: session.sharedHarness.adapterId,
+            maxActiveTurns: session.sharedHarness.maxActiveTurns,
+            nativeEnvironment: session.environmentPackage.runtime.environment?.values,
+            agentSessionCompatibilityKey: session.agentSessionCompatibilityKey,
+            agentSessionId: session.environmentPackage.scope.agentSessionId,
+            agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
+            effectiveSetupGeneration: 1,
+            resume: session.nativeResume,
+            threadId: session.environmentPackage.scope.threadId,
+            workspaceId: session.environmentPackage.scope.workspaceId,
+          });
+          // A resumed conversation proves the predecessor's exact handle at open; a new one may stay
+          // pending until its first Turn creates the conversation.
+          const openedReady =
+            opened.nativeHandleState === 'ready' &&
+            typeof opened.nativeHandleDigest === 'string' &&
+            /^[0-9a-f]{64}$/.test(opened.nativeHandleDigest);
+          if (
+            opened.state !== 'open' ||
+            opened.maxActiveTurns !== session.sharedHarness.maxActiveTurns ||
+            !(
+              openedReady ||
+              (opened.nativeHandleState === 'pending' && opened.nativeHandleDigest === null)
+            ) ||
+            (session.nativeResume !== null &&
+              (!openedReady || opened.nativeHandleDigest !== session.nativeResume.digest))
+          ) {
+            throw new Error('NanoHost Harness session.open result is incompatible.');
+          }
+          return { opened, openedReady };
+        }
+      );
       workspaceGitBaseline = opened.workspaceGitBaseline;
       binding = {
         agentSessionCompatibilityKey: session.agentSessionCompatibilityKey,
@@ -3389,18 +3402,29 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       session.runtimeEnvironment =
         binding.runtimeEnvironment ?? this.restoreCollectionRuntimeEnvironment(session);
       binding.runtimeEnvironment = session.runtimeEnvironment;
-      const inspected = await this.queueAndWaitForHarnessOperation(session, 'session.inspect', {
-        agentSessionId: session.environmentPackage.scope.agentSessionId,
-        agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
-      });
-      if (
-        inspected.state !== 'open' ||
-        inspected.cleanupState !== 'clean' ||
-        inspected.nativeHandleState !== 'ready' ||
-        inspected.nativeHandleDigest !== binding.nativeHandleDigest
-      ) {
-        throw new Error('NanoHost resident AgentSession is not ready for its next Turn.');
-      }
+      await withLifecycleStageTelemetry(
+        {
+          ...session.environmentPackage.scope,
+          packageSnapshotId: session.environmentPackage.snapshotId,
+          workerKind: session.environmentPackage.agent.runtimeKind,
+          stage: 'session.open.inspect',
+          rejectionOutcome: 'unknown',
+        },
+        async () => {
+          const inspected = await this.queueAndWaitForHarnessOperation(session, 'session.inspect', {
+            agentSessionId: session.environmentPackage.scope.agentSessionId,
+            agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
+          });
+          if (
+            inspected.state !== 'open' ||
+            inspected.cleanupState !== 'clean' ||
+            inspected.nativeHandleState !== 'ready' ||
+            inspected.nativeHandleDigest !== binding!.nativeHandleDigest
+          ) {
+            throw new Error('NanoHost resident AgentSession is not ready for its next Turn.');
+          }
+        }
+      );
     }
     await this.ensureWorkspaceBaseline(session, opensNewBinding, workspaceGitBaseline);
     session.evidence.push(
@@ -3486,27 +3510,38 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       native.recoveryState !== null
     )
       throw new Error('Native submission liveness or adoption proof is unavailable.');
-    const started = await this.queueAndWaitForHarnessOperation(session, 'turn.start', {
-      aepRef: inputPaths.packagePath,
-      agentSessionId: session.environmentPackage.scope.agentSessionId,
-      agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
-      contextPackageId: `ctxpkg_${session.environmentPackage.scope.turnId}`,
-      contextRef: inputPaths.contextRoot,
-      deadline: input.deadline,
-      leaseId: session.attemptId,
-      packageSnapshotId: session.environmentPackage.snapshotId,
-      threadId: session.environmentPackage.scope.threadId,
-      turnId: session.environmentPackage.scope.turnId,
-      turnSequence: binding.nextTurnSequence,
-      workspaceId: session.environmentPackage.scope.workspaceId,
-    });
-    if (
-      started.state !== 'started' ||
-      started.nativeHandleState !== (binding.nativeHandleDigest ? 'ready' : 'pending') ||
-      started.nativeHandleDigest !== binding.nativeHandleDigest
-    ) {
-      throw new Error('NanoHost Harness turn.start result is incompatible.');
-    }
+    await withLifecycleStageTelemetry(
+      {
+        ...session.environmentPackage.scope,
+        packageSnapshotId: session.environmentPackage.snapshotId,
+        workerKind: session.environmentPackage.agent.runtimeKind,
+        stage: 'turn.start.delivery',
+        rejectionOutcome: 'unknown',
+      },
+      async () => {
+        const started = await this.queueAndWaitForHarnessOperation(session, 'turn.start', {
+          aepRef: inputPaths.packagePath,
+          agentSessionId: session.environmentPackage.scope.agentSessionId,
+          agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
+          contextPackageId: `ctxpkg_${session.environmentPackage.scope.turnId}`,
+          contextRef: inputPaths.contextRoot,
+          deadline: input.deadline,
+          leaseId: session.attemptId,
+          packageSnapshotId: session.environmentPackage.snapshotId,
+          threadId: session.environmentPackage.scope.threadId,
+          turnId: session.environmentPackage.scope.turnId,
+          turnSequence: binding.nextTurnSequence,
+          workspaceId: session.environmentPackage.scope.workspaceId,
+        });
+        if (
+          started.state !== 'started' ||
+          started.nativeHandleState !== (binding.nativeHandleDigest ? 'ready' : 'pending') ||
+          started.nativeHandleDigest !== binding.nativeHandleDigest
+        ) {
+          throw new Error('NanoHost Harness turn.start result is incompatible.');
+        }
+      }
+    );
     binding.nextTurnSequence += 1;
     session.turnStarted = true;
     return {

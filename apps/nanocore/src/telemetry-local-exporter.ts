@@ -2,14 +2,25 @@ import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import fs, { type FileHandle } from 'node:fs/promises';
 import { join, parse, resolve, sep } from 'node:path';
-import { JsonTraceSerializer } from '@opentelemetry/otlp-transformer';
+import { JsonMetricsSerializer, JsonTraceSerializer } from '@opentelemetry/otlp-transformer';
+import {
+  AggregationTemporality,
+  type PushMetricExporter,
+  type ResourceMetrics,
+} from '@opentelemetry/sdk-metrics';
 import type { ReadableSpan, SpanExporter } from '@opentelemetry/sdk-trace-base';
 
 const REQUEST_BYTES = 1_048_576;
 const SEGMENT_BYTES = 16 * 1_048_576;
 const SEGMENT_AGE_MS = 3_600_000;
 const MAX_QUEUED_REQUESTS = 512;
-const SEGMENT_NAME = /^traces-\d+-[a-f0-9-]+\.jsonl$/;
+const SEGMENT_NAME = /^(traces|metrics)-\d+-[a-f0-9-]+\.jsonl$/;
+
+/** Both signals share one queue, inventory, reserve check and byte cap. */
+export interface LocalTelemetryExporter extends SpanExporter {
+  /** The meter drains first; only the trace exporter's shutdown closes the shared writer. */
+  readonly metrics: PushMetricExporter;
+}
 
 /** Existing composition facts and accepted sink limits; no capacity policy is created here. */
 export interface LocalTelemetryOptions {
@@ -26,7 +37,9 @@ interface Segment {
 }
 
 /** Creates the optional local exporter; invalid limits disable only this destination. */
-export function createLocalTraceExporter(options: LocalTelemetryOptions): SpanExporter | undefined {
+export function createLocalTraceExporter(
+  options: LocalTelemetryOptions
+): LocalTelemetryExporter | undefined {
   const maximumBytes = positiveInteger(
     options.env.OPENKIT_TELEMETRY_LOCAL_MAX_BYTES,
     256 * 1_048_576
@@ -51,8 +64,15 @@ function positiveInteger(value: string | undefined, fallback: number): number | 
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
-/** Stock span serialization over a bounded, single-writer disposable JSONL sink. */
-class LocalTraceExporter implements SpanExporter {
+/** Stock SDK serialization over a bounded, single-writer, mixed-signal inventory. */
+class LocalTraceExporter implements LocalTelemetryExporter {
+  readonly metrics: PushMetricExporter = {
+    export: (metrics, done) => this.export(metrics, done),
+    selectAggregationTemporality: () => AggregationTemporality.DELTA,
+    forceFlush: () => this.tail,
+    // The shared writer remains available for the trace provider's final batch.
+    shutdown: async () => {},
+  };
   private readonly directory: string;
   private tail: Promise<void>;
   private queued = 0;
@@ -61,7 +81,15 @@ class LocalTraceExporter implements SpanExporter {
   private warned = false;
   // A stalled filesystem must not accumulate idle-maintenance jobs.
   private maintenancePending = true;
-  private active: { handle: FileHandle; path: string; bytes: number; created: number } | undefined;
+  private active:
+    | {
+        handle: FileHandle;
+        path: string;
+        bytes: number;
+        created: number;
+        signal: 'traces' | 'metrics';
+      }
+    | undefined;
   private readonly timer: ReturnType<typeof setInterval>;
 
   constructor(
@@ -93,10 +121,25 @@ class LocalTraceExporter implements SpanExporter {
   }
 
   /** Drops malformed, oversized or overflowing requests without truncation or delivery state. */
-  export(spans: ReadableSpan[], done: Parameters<SpanExporter['export']>[1]): void {
+  export(
+    data: ReadableSpan[] | ResourceMetrics,
+    done: Parameters<SpanExporter['export']>[1]
+  ): void {
+    const signal = Array.isArray(data) ? 'traces' : 'metrics';
     let bytes: Uint8Array;
     try {
-      const request = JsonTraceSerializer.serializeRequest(spans);
+      if (
+        !Array.isArray(data) &&
+        !data.scopeMetrics.some((scope) =>
+          scope.metrics.some((metric) => metric.dataPoints.length > 0)
+        )
+      ) {
+        done({ code: 0 });
+        return;
+      }
+      const request = Array.isArray(data)
+        ? JsonTraceSerializer.serializeRequest(data)
+        : JsonMetricsSerializer.serializeRequest(data);
       if (!request || request.byteLength > REQUEST_BYTES) {
         done({ code: 0 });
         return;
@@ -120,7 +163,7 @@ class LocalTraceExporter implements SpanExporter {
     this.tail = this.tail
       .then(async () => {
         try {
-          await this.append(bytes);
+          await this.append(bytes, signal);
         } catch {
           await this.closeActive();
           this.warn();
@@ -222,7 +265,7 @@ class LocalTraceExporter implements SpanExporter {
   }
 
   /** Serializes rotation, admission and one append; a partial write abandons this segment. */
-  private async append(bytes: Uint8Array): Promise<void> {
+  private async append(bytes: Uint8Array, signal: 'traces' | 'metrics'): Promise<void> {
     if (bytes.byteLength > this.maximumBytes) return;
     await this.prune(bytes.byteLength);
     if (this.active) {
@@ -243,19 +286,20 @@ class LocalTraceExporter implements SpanExporter {
     }
     if (
       this.active &&
-      (this.active.bytes > Math.min(SEGMENT_BYTES, this.maximumBytes) - bytes.byteLength ||
+      (this.active.signal !== signal ||
+        this.active.bytes > Math.min(SEGMENT_BYTES, this.maximumBytes) - bytes.byteLength ||
         Date.now() - this.active.created >= SEGMENT_AGE_MS)
     )
       await this.closeActive();
     if (!this.active) {
       const now = Date.now();
-      const path = join(this.directory, `traces-${now}-${randomUUID()}.jsonl`);
+      const path = join(this.directory, `${signal}-${now}-${randomUUID()}.jsonl`);
       const handle = await fs.open(
         path,
         constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW,
         0o600
       );
-      this.active = { handle, path, bytes: 0, created: now };
+      this.active = { handle, path, bytes: 0, created: now, signal };
     }
     const result = await this.active.handle.write(bytes);
     if (result.bytesWritten !== bytes.byteLength) throw new Error('Incomplete telemetry append.');
