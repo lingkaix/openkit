@@ -5038,8 +5038,23 @@ describe('#144 real Assistant command wiring', () => {
         f.workspaceDb,
         'ws_00000000-0000-7000-8000-000000000001'
       );
-      expect(usage).toHaveLength(2);
-      expect(usage.map((row) => row.quantity).sort((a, b) => a - b)).toEqual([12, 17]);
+      expect(usage).toHaveLength(4);
+      const usageByCall = calls.map((call) =>
+        usage
+          .filter((row) => row.capabilityCallId === call.id)
+          .sort((a, b) => (a.source ?? '').localeCompare(b.source ?? ''))
+      );
+      expect(
+        usageByCall
+          .map((rows) => rows.reduce((total, row) => total + row.quantity, 0))
+          .sort((a, b) => a - b)
+      ).toEqual([12, 17]);
+      expect(
+        usageByCall.map((rows) => rows.map((row) => row.quantity)).sort((a, b) => a[0]! - b[0]!)
+      ).toEqual([
+        [9, 3],
+        [13, 4],
+      ]);
       for (const call of calls) {
         expect(call).toMatchObject({
           requestId: null,
@@ -5048,16 +5063,25 @@ describe('#144 real Assistant command wiring', () => {
           threadId: f.thread.id,
           turnId: original.turn.id,
         });
-        expect(usage.filter((row) => row.capabilityCallId === call.id)).toEqual([
-          expect.objectContaining({
-            requestId: null,
-            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            threadId: f.thread.id,
-            turnId: original.turn.id,
-            responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
-            providerRef: 'agent-openrouter',
-          }),
-        ]);
+        expect(
+          usage
+            .filter((row) => row.capabilityCallId === call.id)
+            .sort((a, b) => (a.source ?? '').localeCompare(b.source ?? ''))
+        ).toEqual(
+          ['input', 'output'].map((component) =>
+            expect.objectContaining({
+              capabilityCallId: call.id,
+              requestId: null,
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: f.thread.id,
+              turnId: original.turn.id,
+              responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
+              providerRef: 'agent-openrouter',
+              source: `llm-gateway-adapter-reported:${component}`,
+              unit: 'tokens',
+            })
+          )
+        );
         expect(
           f.workspaceDb.sqlite
             .prepare('SELECT * FROM audit_events WHERE capability_call_id = ?')
@@ -5092,6 +5116,9 @@ describe('#144 real Assistant command wiring', () => {
       expect(
         listWorkspaceCapabilityCalls(f.workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
       ).toEqual(calls);
+      expect(
+        listWorkspaceUsageRecords(f.workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
+      ).toEqual(usage);
       expect(f.environments()).toEqual(originalEnvironment);
       const publicViews = {
         response: originalBody,

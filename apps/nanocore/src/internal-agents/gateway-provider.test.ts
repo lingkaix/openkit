@@ -2532,18 +2532,28 @@ describe('command audit lineage at the internal Gateway seam', () => {
       threadId: f.capture.threadId,
       turnId: f.capture.turnId,
     });
-    expect(
-      listWorkspaceUsageRecords(f.capture.workspaceDb, workspaceIdForOwner(f.capture.turn.owner))
-    ).toEqual([
-      expect.objectContaining({
-        requestId: storedRequestId,
-        capabilityCallId: calls[0]!.id,
-        responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
-        threadId: f.capture.threadId,
-        turnId: f.capture.turnId,
-        quantity: 12,
-      }),
-    ]);
+    const usage = listWorkspaceUsageRecords(
+      f.capture.workspaceDb,
+      workspaceIdForOwner(f.capture.turn.owner)
+    );
+    expect([...usage].sort((a, b) => (a.source ?? '').localeCompare(b.source ?? ''))).toEqual(
+      [
+        ['input', 9],
+        ['output', 3],
+      ].map(([component, quantity]) =>
+        expect.objectContaining({
+          requestId: storedRequestId,
+          capabilityCallId: calls[0]!.id,
+          responsibleUserId: 'usr_00000000-0000-7000-8000-000000000001',
+          threadId: f.capture.threadId,
+          turnId: f.capture.turnId,
+          quantity,
+          source: `llm-gateway-adapter-reported:${component}`,
+          unit: 'tokens',
+        })
+      )
+    );
+    expect(usage.reduce((total, record) => total + record.quantity, 0)).toBe(12);
     expect(
       f.capture.workspaceDb.sqlite
         .prepare('SELECT * FROM audit_events WHERE capability_call_id = ?')
