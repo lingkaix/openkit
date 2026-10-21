@@ -1,8 +1,70 @@
+import { createHash, randomUUID } from 'node:crypto';
+import {
+  chmodSync,
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+  writeSync,
+} from 'node:fs';
+import { dirname, join, resolve, sep } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
+import { LightAppAdmittedSchemaSchema } from '@openkit/app-api-schemas';
+import { isEntityId, SEALED_TURN_TERMINALS } from '@openkit/protocol';
+import Database from 'better-sqlite3';
+import { acquireDataRootLock, type DataRootLock, DataRootLockError } from '../bootstrap/lock.js';
+import { readDefaultKnowledgeBaseId, readKnowledgeMounts } from '../config/knowledge-base.js';
+import {
+  collectionTableName,
+  fieldColumnName,
+  quoteIdent,
+  sqliteTypeForField,
+} from '../generative-kernel/native.js';
+import {
+  assertSnapshotIntegrity,
+  readLightAppSnapshot,
+  readLightAppSnapshots,
+} from '../generative-kernel/snapshots.js';
+import { readSourcePointers } from '../knowledge/source-pointers.js';
+import { assertAppDefinitionMatches } from './app-db.js';
+import { FileAdmissionError, type FileStorageReservation } from './artifacts/file-admission.js';
+import { openControlStoreProductReadHandle } from './control-store-products.js';
+import {
+  DATA_ROOT_BACKUP_MANIFEST_FILE,
+  inventoryRegularFiles,
+  verifyDataRootBackupManifest,
+} from './data-root-backup.js';
+import { bindWorkspaceSqlite } from './db.js';
+import { readDataRootLayoutMarker } from './fs-layout.js';
+import { assertWorkspaceArchiveFilePath } from './workspace-archive.js';
 import type {
   WorkspaceBackupCoverage,
   WorkspaceBackupManifest,
   WorkspaceBackupVerificationInput,
 } from './workspace-backup-bundle.js';
+import {
+  parseWorkspaceBackupManifest,
+  WorkspaceBackupBundleError,
+  withVerifiedWorkspaceBackupBundle,
+} from './workspace-backup-bundle.js';
+import { completeCapture, inspectCapture, protectCapture } from './workspace-capture-protection.js';
+import {
+  loadWorkspaceFileRecords,
+  publishCanonicalPath,
+  syncCanonicalDirectory,
+  syncCanonicalTree,
+} from './workspace-file-records.js';
 
 /** Closed refusal codes shared by the offline Workspace commands. */
 export type WorkspaceRecoveryErrorCode =
@@ -108,37 +170,837 @@ export interface WorkspaceBackupStageResult {
   readonly report: WorkspaceBackupReport;
 }
 
-/**
- * Captures one Workspace; a stopped-data-root source holds the existing exclusive root lock.
- * A data-root-backup source takes no parent lock and is opened strictly read-only.
- * Verify that parent before and after copy, and check copied bytes against its manifest.
- * All affected writers of a stopped-data-root source must be stopped.
- * Opens existing authority only, takes SQLite backup-API snapshots, and verifies full closure.
- * Backup seals only after sync; MOVE preparation remains unsealed for the offline seal owner.
- * @param _input Source selector, exact identities, output, and trusted verification policy.
- * @returns Verified capture facts without runtime authority or external-effect completion claims.
- * @throws WorkspaceRecoveryError; this seam currently always refuses with not-implemented.
- */
-export async function createWorkspaceBackup(
-  _input: WorkspaceBackupCreateInput
-): Promise<WorkspaceBackupCreateResult> {
-  throw new WorkspaceRecoveryError('not-implemented', 'createWorkspaceBackup is not implemented.');
+/** Installed native formats; app keys also admit recognized immutable recovery versions. */
+export const WORKSPACE_BACKUP_DATABASE_FORMATS: Readonly<Record<string, number>> = Object.freeze({
+  'drizzle.workspace': 14,
+  'drizzle.app.1': 1,
+  'drizzle.app.2': 2,
+  'drizzle.app.3': 3,
+  'drizzle.app.4': 4,
+  'drizzle.app.5': 5,
+  'light-app.kernel.1': 1,
+  'light-app.kernel.2': 2,
+});
+const omitted = new Set(['indexes', 'logs', 'projections']);
+const roots = new Set([
+  'db',
+  'light-apps',
+  'knowledge',
+  'content',
+  'files',
+  'data',
+  'sources',
+  'threads',
+  'artifacts',
+  'reviews',
+  'evidence',
+  'config',
+  'catalog',
+  'runtime',
+  'imports',
+]);
+
+/** Emits only a fixed operator message; neither OS diagnostics nor retained content escapes. */
+function refuse(code: WorkspaceRecoveryErrorCode): never {
+  throw new WorkspaceRecoveryError(code, `Workspace recovery refused: ${code}.`);
 }
 
-/**
- * Verifies sealed input and copies it into a caller-owned private candidate.
- * Inventory paths are Workspace-relative: bundleRoot/path maps to candidateRoot/path.
- * The manifest and seal stay bundle metadata; no Workspace or export prefix is stripped.
- * Native journal markers count the complete applied prefix, starting at one, not journal JSON versions.
- * The offline decision owner holds the target root lock and candidate/capacity ownership.
- * Existing-only database opens must close before return; no boot, migration, or recovery runs.
- * The existing bundle verifier supplies private bytes; its callback-scoped reader cannot escape.
- * @param _input Sealed input, expected identities, candidate, and trusted verification policy.
- * @returns Complete staged bytes; registration, current safety and rebinding remain separate.
- * @throws WorkspaceRecoveryError; this seam currently always refuses with not-implemented.
- */
+/** Maps bounded owner errors, keeping unknown storage failures local and content-free. */
+function failure(error: unknown, fallback: WorkspaceRecoveryErrorCode): never {
+  if (error instanceof WorkspaceRecoveryError) throw error;
+  if (error instanceof WorkspaceBackupBundleError) refuse(error.code);
+  if (error instanceof FileAdmissionError) refuse('capacity-exceeded');
+  refuse(fallback);
+}
+
+/** Hashes exact bytes, including the original manifest and serialized inventory. */
+function digest(bytes: Uint8Array | string): string {
+  return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+}
+
+/** Refuses links at any existing path component before file or SQLite access. */
+function realDirectory(path: string): string {
+  const root = resolve(path);
+  if (realpathSync(root) !== root || !lstatSync(root).isDirectory()) refuse('unsafe-path');
+  return root;
+}
+
+/** Enumerates regular canonical bytes only, with explicit omitted projections and no opaque database guesses. */
+function files(root: string): string[] {
+  realDirectory(root);
+  const result: string[] = [];
+  const device = lstatSync(root).dev;
+  const walk = (path: string) => {
+    for (const name of readdirSync(join(root, path)).sort()) {
+      const p = path ? `${path}/${name}` : name;
+      if (!path && omitted.has(name)) continue;
+      if (!path && !roots.has(name)) refuse('incomplete-closure');
+      try {
+        assertWorkspaceArchiveFilePath(p);
+      } catch {
+        refuse('unsafe-path');
+      }
+      const stat = lstatSync(join(root, p));
+      if (stat.isSymbolicLink() || stat.dev !== device) refuse('unsafe-path');
+      if (stat.isDirectory()) walk(p);
+      else {
+        if (!stat.isFile() || stat.nlink !== 1) refuse('unsafe-path');
+        if (!/(?:-wal|-shm)$/.test(p)) result.push(p);
+      }
+      if (result.length > 200_000) refuse('capacity-exceeded');
+    }
+  };
+  walk('');
+  return result;
+}
+
+/** Copies or hashes exact retained bytes in bounded chunks through a no-follow source descriptor. */
+function copyBytes(path: string, destination?: string, expectedDigest?: string): string {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  let output: number | undefined;
+  try {
+    const before = fstatSync(fd, { bigint: true });
+    if (!before.isFile() || before.nlink !== 1n) refuse('unsafe-path');
+    if (destination) output = openSync(destination, 'wx', Number(before.mode & 0o777n));
+    const hash = createHash('sha256');
+    const bytes = Buffer.alloc(65_536);
+    let total = 0n;
+    for (;;) {
+      const count = readSync(fd, bytes, 0, bytes.length, null);
+      if (!count) break;
+      total += BigInt(count);
+      if (total > before.size) refuse('incomplete-closure');
+      hash.update(bytes.subarray(0, count));
+      if (output !== undefined) {
+        let written = 0;
+        while (written < count) {
+          const countWritten = writeSync(output, bytes, written, count - written);
+          if (!countWritten) refuse('capacity-exceeded');
+          written += countWritten;
+        }
+      }
+    }
+    const after = fstatSync(fd, { bigint: true });
+    if (
+      before.size !== total ||
+      before.size !== after.size ||
+      before.mtimeNs !== after.mtimeNs ||
+      before.ctimeNs !== after.ctimeNs
+    )
+      refuse('incomplete-closure');
+    const result = `sha256:${hash.digest('hex')}`;
+    if (expectedDigest && result !== expectedDigest) refuse('parent-backup-invalid');
+    if (destination) chmodSync(destination, Number(before.mode & 0o777n));
+    return result;
+  } finally {
+    closeSync(fd);
+    if (output !== undefined) closeSync(output);
+  }
+}
+
+/** Existing-only and read-only: never migrates, repairs, recovers execution, or creates authority. */
+function database(path: string): Database.Database {
+  let db: Database.Database | undefined;
+  try {
+    db = new Database(path, { readonly: true, fileMustExist: true });
+    db.pragma('query_only = ON');
+    assertSnapshotIntegrity(db);
+    return db;
+  } catch {
+    db?.close();
+    refuse('invalid-database');
+  }
+}
+
+/** Proves the complete one-based native journal prefix, including unknown/interior ledger rows. */
+function nativePrefix(db: Database.Database, scope: 'workspace' | 'app'): number {
+  const journal = JSON.parse(
+    readFileSync(new URL(`../../drizzle/${scope}/meta/_journal.json`, import.meta.url), 'utf8')
+  ) as { entries: { when: number }[] };
+  const applied = db
+    .prepare('SELECT created_at FROM __drizzle_migrations ORDER BY created_at')
+    .all() as { created_at: number }[];
+  if (
+    !applied.length ||
+    applied.some((row, i) => Number(row.created_at) !== journal.entries[i]?.when)
+  )
+    refuse('unsupported-format');
+  return applied.length;
+}
+
+/** Checks every captured database's actual schema/identity and saved app definitions, without upgrading it. */
+function databaseFormats(dataRoot: string, workspaceId: string, root: string) {
+  const formats: WorkspaceBackupManifest['databaseFormats'] = [];
+  for (const path of files(root).filter((p) => p.endsWith('.sqlite'))) {
+    const app = /^light-apps\/([^/]+)\/(data.sqlite|snapshots\/[^/]+.sqlite)$/.exec(path);
+    if (path !== 'db/workspace.sqlite' && !app) refuse('unsupported-format');
+    const db = database(join(root, path));
+    try {
+      const prefix = nativePrefix(db, app ? 'app' : 'workspace');
+      if (!app) {
+        if (prefix !== 14) refuse('unsupported-format');
+        formats.push({ path, markers: { 'drizzle.workspace': prefix } });
+      } else {
+        const snapshot = app[2] !== 'data.sqlite';
+        const hasKernel = (db.pragma('table_info(app_metadata)') as { name: string }[]).some(
+          (c) => c.name === 'kernel_format_version'
+        );
+        const row = db.prepare('SELECT * FROM app_metadata').get() as
+          | Record<string, unknown>
+          | undefined;
+        const kernel = hasKernel ? Number(row?.kernel_format_version) : 1;
+        if (row?.app_id !== app[1] || row?.workspace_id !== workspaceId) refuse('invalid-database');
+        if ((!snapshot && (prefix !== 5 || kernel !== 2)) || prefix > 5 || ![1, 2].includes(kernel))
+          refuse('unsupported-format');
+        const schema = LightAppAdmittedSchemaSchema.parse(JSON.parse(String(row.schema_json)));
+        if (
+          schema.appId !== app[1] ||
+          schema.schemaRevision !== row.schema_revision ||
+          digest(String(row.schema_json)) !== row.schema_digest
+        )
+          refuse('invalid-database');
+        // The native owner supplies names and types; no DDL, migration or replacement database runs.
+        if (kernel === 2) {
+          const tables = new Set([
+            '__drizzle_migrations',
+            'app_metadata',
+            'idempotency_requests',
+            'audit_events',
+            ...schema.collections.map((c) => collectionTableName(c.id)),
+          ]);
+          const actual = db
+            .prepare(
+              "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            )
+            .pluck()
+            .all() as string[];
+          if (actual.length !== tables.size || actual.some((name) => !tables.has(name)))
+            refuse('invalid-database');
+          for (const collection of schema.collections) {
+            const base: Record<string, string> = {
+              id: 'TEXT',
+              revision: 'INTEGER',
+              created: 'TEXT',
+              updated: 'TEXT',
+              creator_json: 'TEXT',
+              last_mutator_json: 'TEXT',
+              create_request_id: 'TEXT',
+              last_request_id: 'TEXT',
+              write_schema_revision: 'INTEGER',
+            };
+            for (const field of collection.fields)
+              base[fieldColumnName(field.id)] = sqliteTypeForField(field);
+            const columns = db.pragma(
+              `table_info(${quoteIdent(collectionTableName(collection.id))})`
+            ) as { name: string; type: string }[];
+            if (
+              columns.length !== Object.keys(base).length ||
+              columns.some((c) => base[c.name] !== c.type)
+            )
+              refuse('invalid-database');
+          }
+        }
+        assertAppDefinitionMatches({
+          scope: 'app',
+          sqlite: db,
+          dataRoot,
+          workspaceId,
+          appId: app[1]!,
+        });
+        if (snapshot) {
+          const saved = readLightAppSnapshot(
+            dataRoot,
+            workspaceId,
+            app[1]!,
+            path.split('/').at(-1)!.slice(0, -7)
+          );
+          if (
+            saved.metadata.kernelFormatVersion !== kernel ||
+            saved.metadata.definitionVersion !== row.schema_digest ||
+            saved.metadata.appRevision !== row.app_revision ||
+            saved.metadata.schemaRevision !== row.schema_revision
+          )
+            refuse('invalid-database');
+        }
+        formats.push({
+          path,
+          markers: { [`drizzle.app.${prefix}`]: prefix, [`light-app.kernel.${kernel}`]: kernel },
+        });
+      }
+    } catch (error) {
+      failure(error, 'invalid-database');
+    } finally {
+      db.close();
+    }
+  }
+  if (!formats.some((f) => f.path === 'db/workspace.sqlite')) refuse('incomplete-closure');
+  // Metadata without its recovery bytes must not disappear from the closure.
+  for (const appId of existsSync(join(root, 'light-apps'))
+    ? readdirSync(join(root, 'light-apps'))
+    : []) {
+    if (!existsSync(join(root, 'light-apps', appId, 'data.sqlite'))) refuse('incomplete-closure');
+    for (const saved of readLightAppSnapshots(dataRoot, workspaceId, appId))
+      readLightAppSnapshot(dataRoot, workspaceId, appId, saved.snapshotId);
+  }
+  return formats;
+}
+
+/** Reuses canonical native, Artifact, Source and Notebook readers on an isolated Workspace placement. */
+function graph(dataRoot: string, workspaceId: string, expectedRevision?: number) {
+  const root = join(dataRoot, 'workspaces', workspaceId);
+  if (!existsSync(join(root, 'db/workspace.sqlite'))) refuse('incomplete-closure');
+  const db = database(join(root, 'db/workspace.sqlite'));
+  let capturedRevision: number;
+  try {
+    const reader = openControlStoreProductReadHandle(join(root, 'db/workspace.sqlite'), {
+      kind: 'workspace',
+      workspaceId,
+    });
+    try {
+      const workspace = reader.get('workspace', workspaceId);
+      if (!workspace || workspace.record.id !== workspaceId) refuse('invalid-database');
+      if (workspace.record.status !== 'active') refuse('workspace-moved-out');
+      capturedRevision = workspace.revision;
+      if (expectedRevision !== undefined && expectedRevision !== capturedRevision)
+        refuse('invalid-database');
+    } finally {
+      reader.close();
+    }
+  } catch (error) {
+    db.close();
+    failure(error, 'invalid-database');
+  }
+  try {
+    const formats = databaseFormats(dataRoot, workspaceId, root);
+    const records = loadWorkspaceFileRecords(dataRoot).find((r) => r.workspace.id === workspaceId);
+    if (!records) refuse('incomplete-closure');
+    const knowledgeBaseIds = [
+      readDefaultKnowledgeBaseId({ dataRoot, scope: { kind: 'workspace', workspaceId } }),
+    ];
+    const mounts = readKnowledgeMounts({ dataRoot, scope: { kind: 'workspace', workspaceId } });
+    const externalDependencies: WorkspaceBackupManifest['coverage']['externalDependencies'] = [];
+    for (const pointer of readSourcePointers({
+      dataRoot,
+      ownerScope: { kind: 'workspace', workspaceId },
+    }).values()) {
+      const ref = pointer.fields.contentRef;
+      const mount = mounts.find((m) => m.name === ref.locator.mount);
+      if (ref.availability !== 'available' || !mount?.default) {
+        externalDependencies.push({
+          kind: 'external-source',
+          reference: pointer.source.id,
+          availability: 'unavailable',
+        });
+        continue;
+      }
+      if (mount.backend !== 'local' || mount.root !== 'raw') refuse('incomplete-closure');
+      assertWorkspaceArchiveFilePath(ref.locator.path);
+      const path = join(root, 'knowledge', 'raw', ref.locator.path);
+      if (
+        copyBytes(path) !== ref.contentDigest ||
+        lstatSync(path).size !== pointer.fields.byteLength
+      )
+        refuse('incomplete-closure');
+    }
+    const privateAudienceRefs = [
+      ...new Set(
+        records.threads.flatMap((t) => (t.privateOwnerUserId ? [t.privateOwnerUserId] : []))
+      ),
+    ].sort();
+    const unknownEffectTurnIds = (
+      db
+        .prepare(
+          "SELECT DISTINCT e.work_id FROM control_executions e JOIN control_execution_steps s ON s.execution_id=e.id WHERE s.state IN ('intent','unknown')"
+        )
+        .all() as { work_id: string }[]
+    )
+      .map((r) => r.work_id)
+      .filter((id) => isEntityId('tu', id));
+    const interruptedTurnIds = records.turns
+      .filter((t) => !SEALED_TURN_TERMINALS[t.status])
+      .map((t) => t.id);
+    return {
+      capturedRevision,
+      formats,
+      knowledgeBaseIds,
+      privateAudienceRefs,
+      interruptedTurnIds,
+      unknownEffectTurnIds,
+      externalDependencies,
+    };
+  } catch (error) {
+    failure(error, 'incomplete-closure');
+  } finally {
+    db.close();
+  }
+}
+
+/** Removes only empty sidecars made by private read-only inspection, after every handle has closed. */
+function closePrivateBytes(root: string): void {
+  for (const path of files(root).filter((p) => p.endsWith('.sqlite'))) {
+    const wal = `${join(root, path)}-wal`;
+    if (existsSync(wal) && lstatSync(wal).size !== 0) refuse('invalid-database');
+    rmSync(wal, { force: true });
+    rmSync(`${join(root, path)}-shm`, { force: true });
+  }
+}
+
+/** Recomputes parent inventory authority, in addition to the existing file-set and byte verifier. */
+function parent(root: string) {
+  try {
+    realDirectory(root);
+    const verified = verifyDataRootBackupManifest({ backupRoot: root });
+    const inventory = inventoryRegularFiles(root).filter(
+      (e) => e.path !== DATA_ROOT_BACKUP_MANIFEST_FILE
+    );
+    if (
+      digest(JSON.stringify(inventory)) !== verified.manifest.contentDigest ||
+      !isDeepStrictEqual(inventory, verified.manifest.contentInventory)
+    )
+      refuse('parent-backup-invalid');
+    return {
+      ...verified.manifest,
+      metadataDigest: copyBytes(join(root, DATA_ROOT_BACKUP_MANIFEST_FILE)),
+    };
+  } catch {
+    refuse('parent-backup-invalid');
+  }
+}
+
+/** Creates the existing directory placement needed by read-only domain owners; it is never booted. */
+function privateRoot(stagingParent: string, workspaceId: string) {
+  realDirectory(stagingParent);
+  const container = mkdtempSync(join(stagingParent, 'workspace-capture-'));
+  const workspaceRoot = join(container, 'workspaces', workspaceId);
+  mkdirSync(workspaceRoot, { recursive: true, mode: 0o700 });
+  return { container, workspaceRoot };
+}
+
+/** Projects only known, path-free capture facts. */
+function report(
+  manifest: WorkspaceBackupManifest,
+  manifestDigest: string,
+  facts: ReturnType<typeof graph>
+): WorkspaceBackupReport {
+  return {
+    backupId: manifest.backupId,
+    workspaceId: manifest.workspaceId,
+    sourceDeploymentId: manifest.sourceDeploymentId,
+    knowledgeBaseIds: manifest.knowledgeBaseIds,
+    capturedRevision: manifest.capturedRevision,
+    manifestDigest,
+    fileCount: manifest.inventory.length,
+    totalBytes: manifest.inventory.reduce((n, e) => n + e.bytes, 0),
+    coverage: manifest.coverage,
+    interruptedTurnIds: facts.interruptedTurnIds,
+    unknownEffectTurnIds: facts.unknownEffectTurnIds,
+  };
+}
+
+/** Captures stopped authority under its root lock, or a verified, unlocked and strictly read-only H1 parent. */
+export async function createWorkspaceBackup(
+  input: WorkspaceBackupCreateInput
+): Promise<WorkspaceBackupCreateResult> {
+  let lock: DataRootLock | undefined;
+  let staging: ReturnType<typeof privateRoot> | undefined;
+  let reservation: FileStorageReservation | undefined;
+  let ownedOutput = false;
+  let captureDb: ReturnType<typeof bindWorkspaceSqlite> | undefined;
+  try {
+    if (
+      !isEntityId('ws', input.workspaceId) ||
+      !isEntityId('wsbak', input.backupId) ||
+      !isEntityId('dep', input.expectedSourceDeploymentId) ||
+      !['backup', 'move'].includes(input.purpose)
+    )
+      refuse('invalid-arguments');
+    const sourceRoot = resolve(
+      input.source.kind === 'stopped-data-root' ? input.source.dataRoot : input.source.backupRoot
+    );
+    if (!existsSync(sourceRoot)) refuse('source-unavailable');
+    realDirectory(sourceRoot);
+    if (input.source.kind === 'stopped-data-root') {
+      try {
+        lock = acquireDataRootLock(sourceRoot, { bootId: randomUUID() });
+      } catch (error) {
+        if (error instanceof DataRootLockError) refuse('root-locked');
+        failure(error, 'source-unavailable');
+      }
+    }
+    const verifiedParent =
+      input.source.kind === 'data-root-backup' ? parent(sourceRoot) : undefined;
+    const deploymentId = readDataRootLayoutMarker(sourceRoot).deploymentId;
+    if (
+      deploymentId !== input.expectedSourceDeploymentId ||
+      (verifiedParent && verifiedParent.sourceDeploymentId !== deploymentId)
+    )
+      refuse('deployment-mismatch');
+    const sourceWorkspace = join(sourceRoot, 'workspaces', input.workspaceId);
+    if (!existsSync(join(sourceWorkspace, 'db/workspace.sqlite'))) refuse('workspace-unavailable');
+    const sourceFiles = files(sourceWorkspace);
+    const output = resolve(input.bundleRoot);
+    if (
+      output === sourceRoot ||
+      output.startsWith(`${sourceRoot}${sep}`) ||
+      sourceRoot.startsWith(`${output}${sep}`)
+    )
+      refuse('unsafe-path');
+    realDirectory(dirname(output));
+    if (lstatSync(output, { throwIfNoEntry: false })) {
+      realDirectory(output);
+      let previous: WorkspaceBackupManifest;
+      try {
+        previous = parseWorkspaceBackupManifest(
+          JSON.parse(readFileSync(join(output, 'manifest.json'), 'utf8'))
+        );
+      } catch {
+        refuse('candidate-conflict');
+      }
+      if (previous.backupId !== input.backupId) refuse('candidate-conflict');
+      if (
+        previous.workspaceId !== input.workspaceId ||
+        previous.sourceDeploymentId !== deploymentId ||
+        previous.purpose !== input.purpose
+      )
+        refuse('request-conflict');
+      if (input.purpose !== 'backup' || !existsSync(join(output, 'seal.json')))
+        refuse('recovery-required');
+      staging = privateRoot(input.stagingParent, input.workspaceId);
+      const staged = await stageWorkspaceBackup({
+        ...input,
+        expectedWorkspaceId: input.workspaceId,
+        expectedSourceDeploymentId: deploymentId,
+        candidateRoot: join(staging.container, 'retry'),
+        purpose: 'backup',
+      });
+      const source: WorkspaceBackupSourceReport = verifiedParent
+        ? {
+            kind: 'data-root-backup',
+            dataRootBackupId: verifiedParent.id,
+            consistency: verifiedParent.consistency,
+          }
+        : { kind: 'stopped-data-root' };
+      if (verifiedParent && !isDeepStrictEqual(verifiedParent, parent(sourceRoot)))
+        refuse('parent-backup-invalid');
+      return {
+        bundleRoot: input.bundleRoot,
+        manifest: staged.manifest,
+        report: { ...staged.report, source },
+        purpose: 'backup',
+        disposition: 'sealed',
+      };
+    }
+    const total = sourceFiles.reduce(
+      (n, p) =>
+        n +
+        lstatSync(join(sourceWorkspace, p)).size +
+        (lstatSync(`${join(sourceWorkspace, p)}-wal`, { throwIfNoEntry: false })?.size ?? 0),
+      1_048_576
+    );
+    reservation = input.admission.reserve({
+      stagingBytes:
+        BigInt(total) * 3n + BigInt(lstatSync(join(sourceRoot, 'server/db/core.sqlite')).size),
+      extractionBytes: 0n,
+      derivativeBytes: 0n,
+      publicationBytes: 0n,
+    });
+    mkdirSync(output, { mode: 0o700 });
+    ownedOutput = true;
+    syncCanonicalDirectory(dirname(output));
+    staging = privateRoot(dirname(output), input.workspaceId);
+    const source: WorkspaceBackupSourceReport = verifiedParent
+      ? {
+          kind: 'data-root-backup',
+          dataRootBackupId: verifiedParent.id,
+          consistency: verifiedParent.consistency,
+        }
+      : { kind: 'stopped-data-root' };
+    // Only the stopped live authority is writable. H1 protects its private snapshot instead.
+    if (!verifiedParent) {
+      const sourceDb = database(join(sourceWorkspace, 'db/workspace.sqlite'));
+      sourceDb.close();
+      const writer = new Database(join(sourceWorkspace, 'db/workspace.sqlite'), {
+        fileMustExist: true,
+      });
+      writer.pragma('synchronous = FULL');
+      captureDb = bindWorkspaceSqlite(writer, sourceRoot, input.workspaceId);
+      protectCapture(captureDb, input.workspaceId, input.backupId);
+    }
+    for (const path of sourceFiles) {
+      reservation.assertAvailable();
+      const destination = join(staging.workspaceRoot, path);
+      mkdirSync(dirname(destination), { recursive: true, mode: 0o700 });
+      const currentDatabase =
+        path === 'db/workspace.sqlite' || /^light-apps\/[^/]+\/data.sqlite$/.test(path);
+      const original = join(sourceWorkspace, path);
+      const mode = lstatSync(original).mode & 0o777;
+      if (verifiedParent || !currentDatabase) {
+        const entry = verifiedParent?.contentInventory.find(
+          (e) => e.path === `workspaces/${input.workspaceId}/${path}`
+        );
+        if (verifiedParent && (!entry || entry.bytes !== lstatSync(original).size))
+          refuse('parent-backup-invalid');
+        copyBytes(original, destination, entry?.digest);
+      }
+      if (currentDatabase) {
+        // A single database-copy method, including WAL: SQLite's backup API.
+        const db = database(verifiedParent ? destination : original);
+        try {
+          await db.backup(`${destination}.capture`);
+        } finally {
+          db.close();
+        }
+        renameSync(`${destination}.capture`, destination);
+        chmodSync(destination, mode);
+      }
+    }
+    if (verifiedParent) {
+      const writer = new Database(join(staging.workspaceRoot, 'db/workspace.sqlite'), {
+        fileMustExist: true,
+      });
+      writer.pragma('synchronous = FULL');
+      captureDb = bindWorkspaceSqlite(writer, staging.container, input.workspaceId);
+      protectCapture(captureDb, input.workspaceId, input.backupId);
+    }
+    const facts = graph(staging.container, input.workspaceId);
+    for (const { markers } of facts.formats)
+      for (const [key, value] of Object.entries(markers))
+        if (input.supportedDatabaseFormats[key] !== value) refuse('unsupported-format');
+    const coreSource = join(sourceRoot, 'server/db/core.sqlite');
+    // H1 opens Core only after making a private copy; no SQLite operation touches its parent.
+    const corePath = join(staging.container, 'core.sqlite');
+    if (verifiedParent) {
+      const entry = verifiedParent.contentInventory.find((e) => e.path === 'server/db/core.sqlite');
+      if (!entry || entry.bytes !== lstatSync(coreSource).size) refuse('parent-backup-invalid');
+      copyBytes(coreSource, corePath, entry.digest);
+    } else {
+      const db = database(coreSource);
+      try {
+        await db.backup(corePath);
+      } finally {
+        db.close();
+      }
+    }
+    const core = database(corePath);
+    let accounts: WorkspaceBackupManifest['accounts'];
+    try {
+      const owner = core
+        .prepare('SELECT owner_user_id FROM workspace_registry WHERE workspace_id=?')
+        .pluck()
+        .get(input.workspaceId) as string | undefined;
+      if (!isEntityId('usr', owner)) refuse('workspace-unavailable');
+      const memberIds = core
+        .prepare(
+          "SELECT user_id FROM workspace_members WHERE workspace_id=? AND status='active' ORDER BY user_id"
+        )
+        .pluck()
+        .all(input.workspaceId) as string[];
+      for (const table of [
+        'recurring_schedules',
+        'recurring_occurrences',
+        'recurring_expired_ranges',
+        'scheduler_admission_entries',
+      ]) {
+        if (
+          core.prepare(`SELECT 1 FROM ${table} WHERE workspace_id=? LIMIT 1`).get(input.workspaceId)
+        )
+          refuse('incomplete-closure');
+      }
+      if (memberIds.some((id) => !isEntityId('usr', id))) refuse('invalid-database');
+      accounts = {
+        ownerId: owner,
+        memberIds: memberIds.filter((id) => isEntityId('usr', id)),
+        privateAudienceRefs: facts.privateAudienceRefs,
+      };
+    } finally {
+      core.close();
+    }
+    if (verifiedParent && !isDeepStrictEqual(verifiedParent, parent(sourceRoot)))
+      refuse('parent-backup-invalid');
+    const startedAt = inspectCapture(captureDb!, input.workspaceId, input.backupId)!.createdAt;
+    // Close before inventory: no WAL/SHM or active SQLite handle travels.
+    captureDb?.sqlite.close();
+    captureDb = undefined;
+    closePrivateBytes(staging.workspaceRoot);
+    const inventory = files(staging.workspaceRoot).map((path) => ({
+      path,
+      bytes: lstatSync(join(staging!.workspaceRoot, path)).size,
+      sha256: copyBytes(join(staging!.workspaceRoot, path)),
+      mode: lstatSync(join(staging!.workspaceRoot, path)).mode & 0o777,
+    }));
+    const manifest = parseWorkspaceBackupManifest({
+      format: 'openkit-workspace-backup',
+      version: 1,
+      purpose: input.purpose,
+      backupId: input.backupId,
+      workspaceId: input.workspaceId,
+      sourceDeploymentId: deploymentId,
+      knowledgeBaseIds: facts.knowledgeBaseIds,
+      capturedRevision: facts.capturedRevision,
+      priorMoves: [],
+      release: input.expectedRelease,
+      databaseFormats: facts.formats,
+      requiredFeatures: [],
+      capture: { startedAt, completedAt: new Date().toISOString(), consistency: 'quiescent' },
+      inventory,
+      inventoryDigest: digest(JSON.stringify(inventory)),
+      coverage: {
+        includedAuthorities: ['workspace-control', 'workspace-content', 'knowledge', 'light-apps'],
+        snapshotRoots: [...new Set(inventory.map((e) => e.path.split('/')[0]!))],
+        omittedProjections: [...omitted],
+        omittedVolumes: [],
+        externalDependencies: facts.externalDependencies,
+      },
+      accounts,
+    });
+    const metadata = `${JSON.stringify(manifest)}\n`;
+    const manifestDigest = digest(metadata);
+    writeFileSync(join(staging.workspaceRoot, 'manifest.json'), metadata, {
+      flag: 'wx',
+      mode: 0o600,
+    });
+    // Remove only empty directories, which the exact file-inventory format does not represent.
+    const prune = (root: string) => {
+      for (const name of readdirSync(root)) {
+        const p = join(root, name);
+        if (lstatSync(p).isDirectory()) {
+          prune(p);
+          if (!readdirSync(p).length) rmSync(p, { recursive: true });
+        }
+      }
+    };
+    prune(staging.workspaceRoot);
+    syncCanonicalTree(staging.workspaceRoot);
+    if (input.purpose === 'backup') {
+      writeFileSync(
+        join(staging.workspaceRoot, 'seal.json'),
+        JSON.stringify({
+          format: 'openkit-workspace-backup-seal',
+          version: 1,
+          backupId: input.backupId,
+          purpose: input.purpose,
+          manifestDigest,
+        }),
+        { flag: 'wx', mode: 0o600 }
+      );
+      syncCanonicalTree(staging.workspaceRoot);
+      await withVerifiedWorkspaceBackupBundle(
+        { ...input, bundleRoot: staging.workspaceRoot },
+        async () => undefined
+      );
+    }
+    reservation.assertAvailable();
+    publishCanonicalPath(staging.workspaceRoot, output);
+    if (input.purpose === 'backup') {
+      if (!verifiedParent) {
+        const writer = new Database(join(sourceWorkspace, 'db/workspace.sqlite'), {
+          fileMustExist: true,
+        });
+        try {
+          writer.pragma('synchronous = FULL');
+          completeCapture(
+            bindWorkspaceSqlite(writer, sourceRoot, input.workspaceId),
+            input.workspaceId,
+            input.backupId
+          );
+        } finally {
+          writer.close();
+        }
+      }
+    }
+    const common = {
+      bundleRoot: input.bundleRoot,
+      manifest,
+      report: { ...report(manifest, manifestDigest, facts), source },
+    };
+    return input.purpose === 'backup'
+      ? { ...common, purpose: 'backup', disposition: 'sealed' }
+      : { ...common, purpose: 'move', disposition: 'prepared' };
+  } catch (error) {
+    // A failed command cannot leave a transferable completion marker.
+    if (ownedOutput) rmSync(join(input.bundleRoot, 'seal.json'), { force: true });
+    return failure(error, 'invalid-database');
+  } finally {
+    captureDb?.sqlite.close();
+    lock?.release();
+    if (staging) rmSync(staging.container, { recursive: true, force: true });
+    reservation?.release();
+  }
+}
+
+/** Verifies a sealed bundle, then copies identity-mapped bytes into an absent private candidate; never admits or boots it. */
 export async function stageWorkspaceBackup(
-  _input: WorkspaceBackupStageInput
+  input: WorkspaceBackupStageInput
 ): Promise<WorkspaceBackupStageResult> {
-  throw new WorkspaceRecoveryError('not-implemented', 'stageWorkspaceBackup is not implemented.');
+  let staging: ReturnType<typeof privateRoot> | undefined;
+  let reserved: FileStorageReservation | undefined;
+  let owned = false;
+  try {
+    realDirectory(dirname(input.candidateRoot));
+    if (lstatSync(input.candidateRoot, { throwIfNoEntry: false })) refuse('candidate-conflict');
+    return await withVerifiedWorkspaceBackupBundle(input, async (bundle) => {
+      const { manifest } = bundle;
+      if (
+        manifest.workspaceId !== input.expectedWorkspaceId ||
+        manifest.sourceDeploymentId !== input.expectedSourceDeploymentId
+      )
+        refuse('deployment-mismatch');
+      if (manifest.purpose !== input.purpose) refuse('invalid-bundle');
+      reserved = input.admission.reserve({
+        stagingBytes: BigInt(bundle.totalBytes),
+        extractionBytes: 0n,
+        derivativeBytes: 0n,
+        publicationBytes: 0n,
+      });
+      mkdirSync(input.candidateRoot, { mode: 0o700 });
+      owned = true;
+      staging = privateRoot(dirname(input.candidateRoot), manifest.workspaceId);
+      for (const entry of manifest.inventory) {
+        const path = join(staging.workspaceRoot, entry.path);
+        mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+        const fd = openSync(path, 'wx', 0o600);
+        try {
+          // Keep memory bounded independently of bundle file sizes.
+          for await (const chunk of bundle.readFile(entry.path)) {
+            let offset = 0;
+            while (offset < chunk.length) offset += writeSync(fd, chunk, offset);
+            reserved.recordWritten(chunk.length);
+          }
+        } finally {
+          closeSync(fd);
+        }
+        chmodSync(path, entry.mode);
+      }
+      const facts = graph(staging.container, manifest.workspaceId, manifest.capturedRevision);
+      if (
+        facts.formats.length !== manifest.databaseFormats.length ||
+        facts.formats.some(
+          (actual) =>
+            !isDeepStrictEqual(
+              actual.markers,
+              manifest.databaseFormats.find((declared) => declared.path === actual.path)?.markers
+            )
+        ) ||
+        !isDeepStrictEqual(facts.knowledgeBaseIds, manifest.knowledgeBaseIds)
+      )
+        refuse('unsupported-format');
+      for (const entry of manifest.inventory)
+        if (copyBytes(join(staging.workspaceRoot, entry.path)) !== entry.sha256)
+          refuse('invalid-database');
+      closePrivateBytes(staging.workspaceRoot);
+      publishCanonicalPath(staging.workspaceRoot, input.candidateRoot);
+      return {
+        disposition: 'staged',
+        candidateRoot: input.candidateRoot,
+        manifest,
+        report: report(manifest, bundle.manifestDigest, facts),
+      };
+    });
+  } catch (error) {
+    if (owned) rmSync(input.candidateRoot, { recursive: true, force: true });
+    return failure(error, 'invalid-bundle');
+  } finally {
+    if (staging) rmSync(staging.container, { recursive: true, force: true });
+    reserved?.release();
+  }
 }

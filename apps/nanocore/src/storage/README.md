@@ -22,6 +22,8 @@ C2-B2 S transfers the declared product families together, without a partial-fami
 
 ## Boundaries
 
+- `workspace-backup.ts` owns offline Workspace capture and full staged verification. Stopped sources hold the existing data-root lock; verified data-root backups stay read-only and unlocked, with verification before and after copying. It uses existing capture records, SQLite backup-API snapshots, canonical graph readers and the bundle verifier. MOVE preparation has no seal. `workspace-recovery-cli.ts` parses the closed offline grammar and runs capture/verify without server composition; restore/MOVE decisions and boot admission remain separate.
+
 - `fs-layout.ts` owns safe paths and accepted directory placement. `ensureLayout` verifies the ownership tree, database placement, canonical envelopes, and layout marker at boot and during stopped-process migration. Request paths use directory preparation without tree verification; `ensureWorkspaceLayout` creates only the root and Workspace directories needed by its caller.
 - `db.ts` and `migrate.ts` own database opening, integrity validation, and native per-scope Drizzle journals under `drizzle/{core,user,workspace,app}`.
 - Notebook publication retains typed content-free admission in the existing owning User, Workspace or Server AuditEvent table before the Git ref changes. User Audit shares `user.sqlite` and its native journal; it creates no notebook database or journal. An app-local Audit table cannot own a notebook admission.
