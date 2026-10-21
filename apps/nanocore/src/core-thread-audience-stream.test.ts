@@ -72,26 +72,32 @@ async function createSharedStreamFixture() {
     type: 'assistant-message',
     owner: { kind: 'workspace', workspaceId: workspace.id },
   });
-  store.emitTurnEvent(turn.id, {
-    data: { status: 'running', turnId: turn.id, type: 'turn-started' },
-    event: 'turn.started',
-    threadId: thread.id,
-    turnId: turn.id,
-    workspaceId: workspace.id,
-  });
-  store.emitTurnEvent(turn.id, {
-    data: {
-      delta: GRANTED_DELTA,
-      deltaKind: 'text-delta',
-      itemId: testEntityId('it', `it_stream_${turn.id}`),
-      itemType: 'assistant-message',
-      type: 'item-delta',
-    },
-    event: 'item.delta',
-    threadId: thread.id,
-    turnId: turn.id,
-    workspaceId: workspace.id,
-  });
+  store.emitTurnEvent(
+    turn.id,
+    await store.persistTurnEvent(turn.id, {
+      data: { status: 'running', turnId: turn.id, type: 'turn-started' },
+      event: 'turn.started',
+      threadId: thread.id,
+      turnId: turn.id,
+      workspaceId: workspace.id,
+    })
+  );
+  store.emitTurnEvent(
+    turn.id,
+    await store.persistTurnEvent(turn.id, {
+      data: {
+        delta: GRANTED_DELTA,
+        deltaKind: 'text-delta',
+        itemId: testEntityId('it', `it_stream_${turn.id}`),
+        itemType: 'assistant-message',
+        type: 'item-delta',
+      },
+      event: 'item.delta',
+      threadId: thread.id,
+      turnId: turn.id,
+      workspaceId: workspace.id,
+    })
+  );
   const issued = createOpenKitAccessTokenRecord(coreDb, {
     expiresAt: TOKEN_EXPIRY,
     ownerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
@@ -196,19 +202,22 @@ describe('core Thread audience streams', () => {
       await vi.waitFor(() => expect(listenerSpy).toHaveBeenCalledTimes(1));
 
       revoke(fixture);
-      fixture.store.emitTurnEvent(fixture.turn.id, {
-        data: {
-          delta: REVOKED_DELTA,
-          deltaKind: 'text-delta',
-          itemId: testEntityId('it', `it_stream_${fixture.turn.id}`),
-          itemType: 'assistant-message',
-          type: 'item-delta',
-        },
-        event: 'item.delta',
-        threadId: fixture.thread.id,
-        turnId: fixture.turn.id,
-        workspaceId: fixture.workspace.id,
-      });
+      fixture.store.emitTurnEvent(
+        fixture.turn.id,
+        await fixture.store.persistTurnEvent(fixture.turn.id, {
+          data: {
+            delta: REVOKED_DELTA,
+            deltaKind: 'text-delta',
+            itemId: testEntityId('it', `it_stream_${fixture.turn.id}`),
+            itemType: 'assistant-message',
+            type: 'item-delta',
+          },
+          event: 'item.delta',
+          threadId: fixture.thread.id,
+          turnId: fixture.turn.id,
+          workspaceId: fixture.workspace.id,
+        })
+      );
 
       const text = await readClosedSseBody(bodyPromise);
       expect(text).toContain(GRANTED_DELTA);

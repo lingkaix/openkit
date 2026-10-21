@@ -63,19 +63,34 @@ async function createCoreAudienceFixture() {
       `INSERT INTO workspace_members (workspace_id, user_id, status, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES (?, 'usr_00000000-0000-73d4-904a-d4c4b905df7c', 'active', NULL, ?, NULL, 1, ?, ?)`
     )
     .run(workspace.id, STAMP, STAMP, STAMP);
-  const own = await assignAudience(
-    store.createThread(workspace.id, 'local-private needle'),
-    'private',
-    'usr_00000000-0000-7000-8000-000000000001'
+  const own = await store.createThread(
+    workspace.id,
+    'local-private needle',
+    undefined,
+    'conversation',
+    {
+      visibility: 'private',
+      privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    }
   );
-  const denied = await assignAudience(
-    store.createThread(workspace.id, 'other-private needle'),
-    'private',
-    'usr_00000000-0000-73d4-904a-d4c4b905df7c'
+  const denied = await store.createThread(
+    workspace.id,
+    'other-private needle',
+    undefined,
+    'conversation',
+    {
+      visibility: 'private',
+      privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
+    }
   );
-  const shared = await assignAudience(
-    store.createThread(workspace.id, 'shared needle'),
-    'workspace'
+  const shared = await store.createThread(
+    workspace.id,
+    'shared needle',
+    undefined,
+    'conversation',
+    {
+      visibility: 'workspace',
+    }
   );
   const ownTurn = await seedCompletedSurface(store, workspace.id, own, 'local-private');
   const deniedTurn = await seedCompletedSurface(store, workspace.id, denied, 'other-private');
@@ -84,7 +99,7 @@ async function createCoreAudienceFixture() {
     kind: 'user',
     id: 'usr_00000000-0000-7000-8000-000000000001',
   });
-  const deniedApprovalTurn = store.createTurn(
+  const deniedApprovalTurn = await store.createTurn(
     workspace.id,
     denied.id,
     'Approve other private push',
@@ -113,7 +128,7 @@ async function createCoreAudienceFixture() {
       createdAt: STAMP,
       completedAt: STAMP,
     });
-    raiseRecordedPendingRequest(store, workspaceDb.sqlite, {
+    await raiseRecordedPendingRequest(store, workspaceDb.sqlite, {
       requestId,
       workspaceId: workspace.id,
       threadId: turn.threadId,
@@ -211,29 +226,6 @@ async function createCoreAudienceFixture() {
 type AudienceFixture = Awaited<ReturnType<typeof createCoreAudienceFixture>>;
 
 /**
- * Overwrites durable audience fields the same way the dashboard visibility fixture does.
- *
- * @param thread Thread record already inserted by the store.
- * @param visibility Requested audience.
- * @param privateOwnerUserId Private owner when visibility is private.
- * @returns The mutated Thread record.
- */
-function assignAudience(
-  thread: ReturnType<FsStore['createThread']>,
-  visibility: 'private' | 'workspace',
-  privateOwnerUserId?: string
-): ReturnType<FsStore['createThread']> {
-  const raw = thread as unknown as Record<string, unknown>;
-  delete raw.privateOwnerUserId;
-  if (visibility === 'private') {
-    Object.assign(raw, { privateOwnerUserId, visibility: 'private' });
-  } else {
-    Object.assign(raw, { visibility: 'workspace' });
-  }
-  return thread;
-}
-
-/**
  * Creates one completed Turn, Item, and retained event stream for HTTP read surfaces.
  *
  * @param store Product store receiving the surface.
@@ -245,9 +237,9 @@ function assignAudience(
 async function seedCompletedSurface(
   store: FsStore,
   workspaceId: string,
-  thread: ReturnType<FsStore['createThread']>,
+  thread: Awaited<ReturnType<FsStore['createThread']>>,
   label: string
-): Promise<ReturnType<FsStore['createTurn']>> {
+): Promise<Awaited<ReturnType<FsStore['createTurn']>>> {
   const turn = await store.createTurn(workspaceId, thread.id, `${label} needle`, {
     kind: 'user',
     id: 'usr_00000000-0000-7000-8000-000000000001',
@@ -263,34 +255,43 @@ async function seedCompletedSurface(
     type: 'assistant-message',
     owner: { kind: 'workspace', workspaceId: workspaceId },
   });
-  store.emitTurnEvent(turn.id, {
-    data: { status: 'running', turnId: turn.id, type: 'turn-started' },
-    event: 'turn.started',
-    threadId: thread.id,
-    turnId: turn.id,
-    workspaceId,
-  });
-  store.emitTurnEvent(turn.id, {
-    data: {
-      delta: `${label} needle content`,
-      deltaKind: 'text-delta',
-      itemId: testEntityId('it', `it_${label}`),
-      itemType: 'assistant-message',
-      type: 'item-delta',
-    },
-    event: 'item.delta',
-    threadId: thread.id,
-    turnId: turn.id,
-    workspaceId,
-  });
-  const completed = store.updateTurn(turn.id, { completedAt: STAMP, status: 'completed' });
-  store.emitTurnEvent(turn.id, {
-    data: { stopReason: 'completed', turn: completed, type: 'turn-completed' },
-    event: 'turn.completed',
-    threadId: thread.id,
-    turnId: turn.id,
-    workspaceId,
-  });
+  store.emitTurnEvent(
+    turn.id,
+    await store.persistTurnEvent(turn.id, {
+      data: { status: 'running', turnId: turn.id, type: 'turn-started' },
+      event: 'turn.started',
+      threadId: thread.id,
+      turnId: turn.id,
+      workspaceId,
+    })
+  );
+  store.emitTurnEvent(
+    turn.id,
+    await store.persistTurnEvent(turn.id, {
+      data: {
+        delta: `${label} needle content`,
+        deltaKind: 'text-delta',
+        itemId: testEntityId('it', `it_${label}`),
+        itemType: 'assistant-message',
+        type: 'item-delta',
+      },
+      event: 'item.delta',
+      threadId: thread.id,
+      turnId: turn.id,
+      workspaceId,
+    })
+  );
+  const completed = await store.updateTurn(turn.id, { completedAt: STAMP, status: 'completed' });
+  store.emitTurnEvent(
+    turn.id,
+    await store.persistTurnEvent(turn.id, {
+      data: { stopReason: 'completed', turn: completed, type: 'turn-completed' },
+      event: 'turn.completed',
+      threadId: thread.id,
+      turnId: turn.id,
+      workspaceId,
+    })
+  );
   return completed;
 }
 

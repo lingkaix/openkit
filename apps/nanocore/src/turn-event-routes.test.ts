@@ -60,50 +60,62 @@ async function createReplayTurn(
     completedAt: null,
   });
 
-  store.emitTurnEvent(turn.id, {
-    event: 'turn.started',
-    workspaceId,
-    threadId: thread.id,
-    turnId: turn.id,
-    data: { type: 'turn-started', turnId: turn.id, status: 'running' },
-  });
-  store.emitTurnEvent(turn.id, {
-    event: 'item.delta',
-    workspaceId,
-    threadId: thread.id,
-    turnId: turn.id,
-    data: {
-      type: 'item-delta',
-      itemId: assistantItem.id,
-      itemType: 'assistant-message',
-      deltaKind: 'text-delta',
-      delta: 'First replay delta.',
-    },
-  });
-  store.emitTurnEvent(turn.id, {
-    event: 'item.delta',
-    workspaceId,
-    threadId: thread.id,
-    turnId: turn.id,
-    data: {
-      type: 'item-delta',
-      itemId: assistantItem.id,
-      itemType: 'assistant-message',
-      deltaKind: 'text-delta',
-      delta: 'Second replay delta.',
-    },
-  });
+  store.emitTurnEvent(
+    turn.id,
+    await store.persistTurnEvent(turn.id, {
+      event: 'turn.started',
+      workspaceId,
+      threadId: thread.id,
+      turnId: turn.id,
+      data: { type: 'turn-started', turnId: turn.id, status: 'running' },
+    })
+  );
+  store.emitTurnEvent(
+    turn.id,
+    await store.persistTurnEvent(turn.id, {
+      event: 'item.delta',
+      workspaceId,
+      threadId: thread.id,
+      turnId: turn.id,
+      data: {
+        type: 'item-delta',
+        itemId: assistantItem.id,
+        itemType: 'assistant-message',
+        deltaKind: 'text-delta',
+        delta: 'First replay delta.',
+      },
+    })
+  );
+  store.emitTurnEvent(
+    turn.id,
+    await store.persistTurnEvent(turn.id, {
+      event: 'item.delta',
+      workspaceId,
+      threadId: thread.id,
+      turnId: turn.id,
+      data: {
+        type: 'item-delta',
+        itemId: assistantItem.id,
+        itemType: 'assistant-message',
+        deltaKind: 'text-delta',
+        delta: 'Second replay delta.',
+      },
+    })
+  );
   const completedTurn = await store.updateTurn(turn.id, {
     status: 'completed',
     completedAt: turn.startedAt,
   });
-  store.emitTurnEvent(turn.id, {
-    event: 'turn.completed',
-    workspaceId,
-    threadId: thread.id,
-    turnId: turn.id,
-    data: { type: 'turn-completed', stopReason: 'completed', turn: completedTurn },
-  });
+  store.emitTurnEvent(
+    turn.id,
+    await store.persistTurnEvent(turn.id, {
+      event: 'turn.completed',
+      workspaceId,
+      threadId: thread.id,
+      turnId: turn.id,
+      data: { type: 'turn-completed', stopReason: 'completed', turn: completedTurn },
+    })
+  );
 
   return { workspaceId, threadId: thread.id, turnId: turn.id };
 }
@@ -168,13 +180,16 @@ describe('turn event routes', () => {
       id: 'usr_00000000-0000-7000-8000-000000000001',
     });
 
-    store.emitTurnEvent(turn.id, {
-      event: 'turn.started',
-      workspaceId,
-      threadId: thread.id,
-      turnId: turn.id,
-      data: { type: 'turn-started', turnId: turn.id, status: 'running' },
-    });
+    store.emitTurnEvent(
+      turn.id,
+      await store.persistTurnEvent(turn.id, {
+        event: 'turn.started',
+        workspaceId,
+        threadId: thread.id,
+        turnId: turn.id,
+        data: { type: 'turn-started', turnId: turn.id, status: 'running' },
+      })
+    );
 
     const res = await app.request(
       `/api/workspaces/${workspaceId}/threads/${thread.id}/events?turnId=${turn.id}&since=1`
@@ -205,26 +220,32 @@ describe('turn event routes', () => {
       completedAt: null,
     });
 
-    store.emitTurnEvent(turn.id, {
-      event: 'turn.started',
-      workspaceId,
-      threadId: thread.id,
-      turnId: turn.id,
-      data: { type: 'turn-started', turnId: turn.id, status: 'running' },
-    });
-    store.emitTurnEvent(turn.id, {
-      event: 'item.delta',
-      workspaceId,
-      threadId: thread.id,
-      turnId: turn.id,
-      data: {
-        type: 'item-delta',
-        itemId: assistantItem.id,
-        itemType: 'assistant-message',
-        deltaKind: 'text-delta',
-        delta: 'Retained replay delta.',
-      },
-    });
+    store.emitTurnEvent(
+      turn.id,
+      await store.persistTurnEvent(turn.id, {
+        event: 'turn.started',
+        workspaceId,
+        threadId: thread.id,
+        turnId: turn.id,
+        data: { type: 'turn-started', turnId: turn.id, status: 'running' },
+      })
+    );
+    store.emitTurnEvent(
+      turn.id,
+      await store.persistTurnEvent(turn.id, {
+        event: 'item.delta',
+        workspaceId,
+        threadId: thread.id,
+        turnId: turn.id,
+        data: {
+          type: 'item-delta',
+          itemId: assistantItem.id,
+          itemType: 'assistant-message',
+          deltaKind: 'text-delta',
+          delta: 'Retained replay delta.',
+        },
+      })
+    );
 
     const listenerSpy = vi.spyOn(store, 'addTurnListener');
     const app = createApp({ store });
@@ -232,19 +253,22 @@ describe('turn event routes', () => {
       `/api/workspaces/${workspaceId}/threads/${thread.id}/events?turnId=${turn.id}&since=0`
     );
 
-    store.emitTurnEvent(turn.id, {
-      event: 'item.delta',
-      workspaceId,
-      threadId: thread.id,
-      turnId: turn.id,
-      data: {
-        type: 'item-delta',
-        itemId: assistantItem.id,
-        itemType: 'assistant-message',
-        deltaKind: 'text-delta',
-        delta: 'Gap replay delta.',
-      },
-    });
+    store.emitTurnEvent(
+      turn.id,
+      await store.persistTurnEvent(turn.id, {
+        event: 'item.delta',
+        workspaceId,
+        threadId: thread.id,
+        turnId: turn.id,
+        data: {
+          type: 'item-delta',
+          itemId: assistantItem.id,
+          itemType: 'assistant-message',
+          deltaKind: 'text-delta',
+          delta: 'Gap replay delta.',
+        },
+      })
+    );
 
     const bodyPromise = res.text();
 
@@ -255,13 +279,16 @@ describe('turn event routes', () => {
       completedAt: turn.startedAt,
     });
 
-    store.emitTurnEvent(turn.id, {
-      event: 'turn.completed',
-      workspaceId,
-      threadId: thread.id,
-      turnId: turn.id,
-      data: { type: 'turn-completed', stopReason: 'completed', turn: completedTurn },
-    });
+    store.emitTurnEvent(
+      turn.id,
+      await store.persistTurnEvent(turn.id, {
+        event: 'turn.completed',
+        workspaceId,
+        threadId: thread.id,
+        turnId: turn.id,
+        data: { type: 'turn-completed', stopReason: 'completed', turn: completedTurn },
+      })
+    );
 
     const events = parseSseEvents(await bodyPromise).map((event) =>
       SseEventEnvelopeSchema.parse(event)
@@ -303,19 +330,22 @@ describe('turn event routes', () => {
     });
 
     for (let index = 0; index < 105; index += 1) {
-      store.emitTurnEvent(turnId, {
-        event: 'item.delta',
-        workspaceId,
-        threadId,
+      store.emitTurnEvent(
         turnId,
-        data: {
-          type: 'item-delta',
-          itemId: testEntityId('it', `it_assistant_${turnId}`),
-          itemType: 'assistant-message',
-          deltaKind: 'text-delta',
-          delta: `Overflow ${index}`,
-        },
-      });
+        await store.persistTurnEvent(turnId, {
+          event: 'item.delta',
+          workspaceId,
+          threadId,
+          turnId,
+          data: {
+            type: 'item-delta',
+            itemId: testEntityId('it', `it_assistant_${turnId}`),
+            itemType: 'assistant-message',
+            deltaKind: 'text-delta',
+            delta: `Overflow ${index}`,
+          },
+        })
+      );
     }
 
     const res = await app.request(
@@ -368,31 +398,40 @@ describe('turn event routes', () => {
       updatedAt: turn.startedAt ?? new Date().toISOString(),
     });
     const hiddenTurn = await store.updateTurn(turn.id, { agentSessionId: agentSession.id });
-    store.emitTurnEvent(turn.id, {
-      event: 'agent.session.updated',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      threadId: thread.id,
-      turnId: turn.id,
-      data: { type: 'agent-session-updated', agentSession },
-    });
-    store.emitTurnEvent(turn.id, {
-      event: 'turn.updated',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      threadId: thread.id,
-      turnId: turn.id,
-      data: { type: 'turn-updated', turn: hiddenTurn },
-    });
+    store.emitTurnEvent(
+      turn.id,
+      await store.persistTurnEvent(turn.id, {
+        event: 'agent.session.updated',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: thread.id,
+        turnId: turn.id,
+        data: { type: 'agent-session-updated', agentSession },
+      })
+    );
+    store.emitTurnEvent(
+      turn.id,
+      await store.persistTurnEvent(turn.id, {
+        event: 'turn.updated',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: thread.id,
+        turnId: turn.id,
+        data: { type: 'turn-updated', turn: hiddenTurn },
+      })
+    );
     const completedTurn = await store.updateTurn(turn.id, {
       status: 'completed',
       completedAt: turn.startedAt,
     });
-    store.emitTurnEvent(turn.id, {
-      event: 'turn.completed',
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-      threadId: thread.id,
-      turnId: turn.id,
-      data: { type: 'turn-completed', stopReason: 'completed', turn: completedTurn },
-    });
+    store.emitTurnEvent(
+      turn.id,
+      await store.persistTurnEvent(turn.id, {
+        event: 'turn.completed',
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        threadId: thread.id,
+        turnId: turn.id,
+        data: { type: 'turn-completed', stopReason: 'completed', turn: completedTurn },
+      })
+    );
 
     const response = await app.request(
       `/api/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/${thread.id}/events?turnId=${turn.id}&since=0`
