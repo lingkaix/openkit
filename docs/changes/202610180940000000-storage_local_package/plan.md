@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: blocked
+status: implemented
 date: "2026-10-18"
 ---
 # Local Storage Package
@@ -23,7 +23,7 @@ An independent test author exercises real Protocol-to-Storage references, JSON b
 
 ## Working Checkpoint
 
-The branch normally merges L-ID's shared Protocol schema preparation as a dependency. That stack contains reset-dependent work and cannot land before its owner and coordinator release it. Merge main after that dependency lands and recompute the actual Storage delta. No landing window, branch CI, host or reset action has occurred.
+The local Storage package is implemented on main in `fc1236635`, with traversal corrections in `280ad1ed3`. Its canonical-reference dependency is also on main, so the dependency and landing hold is closed. The following paragraphs preserve pre-landing checks and failures; their pending actions are historical. This closeout does not relabel failed gates or claim live acceptance.
 
 The independent scaffold run collected33 tests and failed29 at the expected unsupported responses; its earlier offline metadata failure was setup-only. Package-manager resolution then supplied the new Storage importer. A fresh independent Sol found a parent-path mutation defect; pinned no-follow traversal and a disposable-fixture refusal regression corrected it. Source280ad1ed and the subsequent inventory-only heads are independently approved. Complete Protocol/Storage build and Storage coverage passed34/34, with92.05% lines,80.67% branches and100% functions. All33 cases in the complete release-tests, release-shards and Vitest temporary-directory families passed after updating their package-owner cardinalities; exact-owner and distinct-report assertions remain.
 

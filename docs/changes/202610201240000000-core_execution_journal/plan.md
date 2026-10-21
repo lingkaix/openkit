@@ -149,4 +149,4 @@ Source: the engineer authorized the two newly reached inventory additions and a 
 
 ### Final Qualification After Literal Alignment
 
-The complete storage and Core seven-file set must pass all 103 cases without failures or skips. Final checks and a same-context independent read-only review cover the original seven hunks plus these two additions. The execution evidence lists every inventory hunk, exact candidate and named result. Coordinator CI and landing remain separate; ordinary Workspace producers and the native terminal/product/receipt/acknowledgement activation remain with the later delivery and its existing owner.
+The Core administrative journal and Workspace journal storage cuts landed on main in `f4ce56652` and `16acfd487`. Their landing gates are closed; the earlier failed checks and literal-alignment evidence remain historical. The plan stays in-progress for ordinary Workspace producers, the owning terminal/product/receipt/acknowledgement activation and the remaining reconciler work. Authenticated deadline carriage, span export and remote-proof qualification remain separate obligations. No full-engine or live acceptance is claimed.

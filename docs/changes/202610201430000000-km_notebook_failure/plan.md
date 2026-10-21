@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: in-progress
+status: implemented
 ---
 # Knowledge Manager Notebook Failure
 
@@ -32,6 +32,6 @@ The exact supplied 22,130-byte synthetic script succeeds in the real local KM ed
 
 Workspace Tools now return bounded native codes and content-free best-effort owner/class diagnostics, including when the log sink fails. Claim guidance includes finite confidence from zero through one in all three delivery paths. The existing complete-tree validator supplies actionable native diagnostic codes before Proposal creation or publication. Preflight uses the same native attribution helper as both downstream paths; validation, current authority, fixed-base and Review checks remain binding.
 
-Qualified RED evidence covers masked refusals, missing confidence guidance, five-page admission, preflight attribution and delivered User limit metadata. The independently reviewed fake-driver correction preserves all SourceSummary assertions. Complete requalification passes all 121 tests across nine focused suites with no skips. Typecheck, Biome, build and document checks pass on the same implementation. Independent read-only review gates source acceptance; CI dispatch and landing remain with the engineer.
+The correction is implemented on main through merge `4a338c0cd`. Qualified RED evidence covers masked refusals, missing confidence guidance, five-page admission, preflight attribution and delivered User limit metadata. The independently reviewed fake-driver correction preserves all SourceSummary assertions. Recorded requalification passed all 121 tests across nine focused suites with no skips, plus typecheck, Biome, build and document checks. The landing gate is closed; the historical reproduction and live-rerun limits below remain.
 
 The historical scratch and Source inventory are unavailable. The exact-script replay therefore proves the first local refusal but does not prove full historical publication; after the shared-limit correction its original Source admission remains unavailable locally. Separate admitted native controls and an exact structural probe isolate the Claim confidence defect. The live rerun belongs to the engineer after landing. Result repair retains its existing effect guard; no retry or repair mechanism is added.

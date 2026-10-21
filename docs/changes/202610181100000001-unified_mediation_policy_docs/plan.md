@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: in-progress
+status: implemented
 date: "2026-10-18"
 branch: lane/ch-mediation-docs
 ---
@@ -18,4 +18,4 @@ L-GA's published checkpoint assigns the docs writer to L-CH and records no concu
 
 ## Checkpoint
 
-Drafting from main 327aa3705. The shared-base implementation, point identity, Policy statement/revision and decision envelope, delegated containers, policy.write and I16 pilot remain Not Started. Existing specialized mechanisms retain their current truthful implementation states. The follow-up implementation plan is proposed only after this documentation is approved; production work waits for coordinator GO. Raw evidence and landing receipts remain outside the repository.
+The documentation cut is implemented on main at `11594d40d`. The shared base, human Policy candidate path and I16 pilot now have the partial implementation described by [Policy Enforcement](../../specs/20260703-policy_enforcement_mapping.md#current-implementation-projection). The earlier Not Started statement is historical. This closes documentation delivery without claiming complete mediation behavior or live acceptance.
