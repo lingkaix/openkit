@@ -72,7 +72,11 @@ import {
   syncCanonicalDirectory,
   syncCanonicalTree,
 } from './workspace-file-records.js';
-import { prepareRecoveryAdmission } from './workspace-recovery-admissions.js';
+import {
+  prepareRecoveryAdmission,
+  recoveryReport,
+  refuseRecovery as refuse,
+} from './workspace-recovery-admissions.js';
 
 /** Closed refusal codes shared by the offline Workspace commands. */
 export type WorkspaceRecoveryErrorCode =
@@ -210,9 +214,28 @@ const roots = new Set([
   'records',
 ]);
 
-/** Emits only a fixed operator message; neither OS diagnostics nor retained content escapes. */
-function refuse(code: WorkspaceRecoveryErrorCode): never {
-  throw new WorkspaceRecoveryError(code, `Workspace recovery refused: ${code}.`);
+/** Installed offline verification policy shared by capture, CLI and MOVE. */
+export const WORKSPACE_BACKUP_POLICY = {
+  supportedRequiredFeatures: [RECURRING_PORTABLE_FEATURE],
+  supportedDatabaseFormats: WORKSPACE_BACKUP_DATABASE_FORMATS,
+};
+
+/** Reads bounded selector metadata only; the staged verifier still decides authority and exact bytes. */
+export function readWorkspaceBackupManifest(bundleRoot: string): WorkspaceBackupManifest {
+  try {
+    const metadata = join(bundleRoot, 'manifest.json');
+    const stat = lstatSync(metadata);
+    if (
+      realpathSync(bundleRoot) !== resolve(bundleRoot) ||
+      !stat.isFile() ||
+      stat.nlink !== 1 ||
+      stat.size > 16_777_216
+    )
+      throw new Error();
+    return parseWorkspaceBackupManifest(JSON.parse(readFileSync(metadata, 'utf8')));
+  } catch {
+    return refuse('invalid-bundle');
+  }
 }
 
 /** Maps bounded owner errors, keeping unknown storage failures local and content-free. */
@@ -631,6 +654,15 @@ function parent(root: string) {
   }
 }
 
+/** Opens the existing capture-record owner without migrating or initializing authority. */
+function captureDatabase(dataRoot: string, workspaceId: string) {
+  const sqlite = new Database(join(dataRoot, 'workspaces', workspaceId, 'db/workspace.sqlite'), {
+    fileMustExist: true,
+  });
+  sqlite.pragma('synchronous = FULL');
+  return bindWorkspaceSqlite(sqlite, dataRoot, workspaceId);
+}
+
 /** Creates the existing directory placement needed by read-only domain owners; it is never booted. */
 function privateRoot(stagingParent: string, workspaceId: string) {
   realDirectory(stagingParent);
@@ -702,6 +734,13 @@ export async function createWorkspaceBackup(
       (verifiedParent && verifiedParent.sourceDeploymentId !== deploymentId)
     )
       refuse('deployment-mismatch');
+    const source: WorkspaceBackupSourceReport = verifiedParent
+      ? {
+          kind: 'data-root-backup',
+          dataRootBackupId: verifiedParent.id,
+          consistency: verifiedParent.consistency,
+        }
+      : { kind: 'stopped-data-root' };
     const sourceWorkspace = join(sourceRoot, 'workspaces', input.workspaceId);
     if (!existsSync(join(sourceWorkspace, 'db/workspace.sqlite'))) refuse('workspace-unavailable');
     const sourceFiles = files(sourceWorkspace);
@@ -717,9 +756,7 @@ export async function createWorkspaceBackup(
       realDirectory(output);
       let previous: WorkspaceBackupManifest;
       try {
-        previous = parseWorkspaceBackupManifest(
-          JSON.parse(readFileSync(join(output, 'manifest.json'), 'utf8'))
-        );
+        previous = readWorkspaceBackupManifest(output);
       } catch {
         refuse('candidate-conflict');
       }
@@ -740,13 +777,6 @@ export async function createWorkspaceBackup(
         candidateRoot: join(staging.container, 'retry'),
         purpose: 'backup',
       });
-      const source: WorkspaceBackupSourceReport = verifiedParent
-        ? {
-            kind: 'data-root-backup',
-            dataRootBackupId: verifiedParent.id,
-            consistency: verifiedParent.consistency,
-          }
-        : { kind: 'stopped-data-root' };
       if (verifiedParent && !isDeepStrictEqual(verifiedParent, parent(sourceRoot)))
         refuse('parent-backup-invalid');
       return {
@@ -775,22 +805,11 @@ export async function createWorkspaceBackup(
     ownedOutput = true;
     syncCanonicalDirectory(dirname(output));
     staging = privateRoot(dirname(output), input.workspaceId);
-    const source: WorkspaceBackupSourceReport = verifiedParent
-      ? {
-          kind: 'data-root-backup',
-          dataRootBackupId: verifiedParent.id,
-          consistency: verifiedParent.consistency,
-        }
-      : { kind: 'stopped-data-root' };
     // Only the stopped live authority is writable. H1 protects its private snapshot instead.
     if (!verifiedParent) {
       const sourceDb = database(join(sourceWorkspace, 'db/workspace.sqlite'));
       sourceDb.close();
-      const writer = new Database(join(sourceWorkspace, 'db/workspace.sqlite'), {
-        fileMustExist: true,
-      });
-      writer.pragma('synchronous = FULL');
-      captureDb = bindWorkspaceSqlite(writer, sourceRoot, input.workspaceId);
+      captureDb = captureDatabase(sourceRoot, input.workspaceId);
       protectCapture(captureDb, input.workspaceId, input.backupId);
     }
     for (const path of sourceFiles) {
@@ -822,11 +841,7 @@ export async function createWorkspaceBackup(
       }
     }
     if (verifiedParent) {
-      const writer = new Database(join(staging.workspaceRoot, 'db/workspace.sqlite'), {
-        fileMustExist: true,
-      });
-      writer.pragma('synchronous = FULL');
-      captureDb = bindWorkspaceSqlite(writer, staging.container, input.workspaceId);
+      captureDb = captureDatabase(staging.container, input.workspaceId);
       protectCapture(captureDb, input.workspaceId, input.backupId);
     }
     const facts = graph(staging.container, input.workspaceId);
@@ -980,18 +995,11 @@ export async function createWorkspaceBackup(
     publishCanonicalPath(staging.workspaceRoot, output);
     if (input.purpose === 'backup') {
       if (!verifiedParent) {
-        const writer = new Database(join(sourceWorkspace, 'db/workspace.sqlite'), {
-          fileMustExist: true,
-        });
+        const writer = captureDatabase(sourceRoot, input.workspaceId);
         try {
-          writer.pragma('synchronous = FULL');
-          completeCapture(
-            bindWorkspaceSqlite(writer, sourceRoot, input.workspaceId),
-            input.workspaceId,
-            input.backupId
-          );
+          completeCapture(writer, input.workspaceId, input.backupId);
         } finally {
-          writer.close();
+          writer.sqlite.close();
         }
       }
     }
@@ -1015,15 +1023,7 @@ export async function createWorkspaceBackup(
           },
           manifest,
           capture: common.report,
-          result: {
-            command: 'capture',
-            disposition: 'prepared',
-            workspaceId: input.workspaceId,
-            capture: common.report,
-            droppedSourceMemberIds: [],
-            restrictedRecovery: false,
-            nextAction: 'finish',
-          },
+          result: recoveryReport('capture', 'prepared', common.report),
         });
       } finally {
         core.sqlite.close();

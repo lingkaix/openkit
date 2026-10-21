@@ -4,7 +4,7 @@ import { recordWorkspaceAuditEvent } from '../audit-events.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { bindWorkspaceSqlite, type CoreDb } from './db.js';
 import { workspaceDbPath } from './fs-layout.js';
-import { stageWorkspaceBackup, WORKSPACE_BACKUP_DATABASE_FORMATS } from './workspace-backup.js';
+import { stageWorkspaceBackup, WORKSPACE_BACKUP_POLICY } from './workspace-backup.js';
 import { abandonCapture, completeCapture, inspectCapture } from './workspace-capture-protection.js';
 import { syncCanonicalTree } from './workspace-file-records.js';
 import {
@@ -106,12 +106,12 @@ export async function moveOutWorkspace(
       const temporary = mkdtempSync(join(input.dataRoot, 'server/runtime/.move-verify-'));
       try {
         const staged = await stageWorkspaceBackup({
+          ...WORKSPACE_BACKUP_POLICY,
           bundleRoot: input.bundleRoot,
           stagingParent: temporary,
-          candidateRoot: join(temporary, 'candidate'),
-          admission: new FileStorageAdmission(input.dataRoot, () => 1_000_000_000n),
           expectedRelease: manifest.release,
-          supportedDatabaseFormats: WORKSPACE_BACKUP_DATABASE_FORMATS,
+          admission: new FileStorageAdmission(input.dataRoot, () => 1_000_000_000n),
+          candidateRoot: join(temporary, 'candidate'),
           expectedWorkspaceId: input.workspaceId,
           expectedSourceDeploymentId: manifest.sourceDeploymentId,
           purpose: 'move',
@@ -172,10 +172,7 @@ export async function moveOutWorkspace(
         completeCapture(scoped, input.workspaceId, input.backupId);
       core.sqlite
         .transaction(() => {
-          core.sqlite
-            .prepare('UPDATE workspace_recovery_admissions SET proof_json=? WHERE admission_id=?')
-            .run(JSON.stringify({ ...owned.proof, result: report }), input.backupId);
-          endRecoveryAdmission(core, input.backupId, 'finished');
+          endRecoveryAdmission(core, input.backupId, 'finished', report);
         })
         .immediate();
       return report;
@@ -318,9 +315,7 @@ export async function reactivateWorkspace(
         currentRevision: current.row.revision + 1,
         nextAction: 'none',
       };
-      core.sqlite
-        .prepare('UPDATE workspace_recovery_admissions SET proof_json=? WHERE admission_id=?')
-        .run(JSON.stringify({ ...owned.proof, result: report }), input.backupId);
+      endRecoveryAdmission(core, input.backupId, 'abandoned', report);
       return report;
     } finally {
       current.db.close();
