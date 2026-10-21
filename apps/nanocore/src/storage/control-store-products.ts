@@ -213,6 +213,11 @@ export function decode(
     (!Array.isArray(raw.requiredFeatures) || raw.requiredFeatures.length > 0)
   )
     throw new ControlProductPreconditionError();
+  if (isMainThread && kind === 'agent-session' && owner.kind === 'workspace')
+    assertWorkspaceWorkOwner(
+      { owner: { kind: 'workspace', workspaceId: record.workspaceId } },
+      owner.workspaceId
+    );
   if (kind === 'thread' || kind === 'turn') assertControlProductOwner(owner, record.owner);
   else if (
     owner.kind !== 'workspace' ||
@@ -234,11 +239,16 @@ export function readProduct(
   const row = sqlite.prepare(`SELECT * FROM ${tables[kind]} WHERE id=?`).get(id) as
     | MetadataRow
     | undefined;
-  return row === undefined ? undefined : decodeRow(kind, row, owner);
+  return row === undefined ? undefined : decodeRow(sqlite, kind, row, owner);
 }
 
 /** Rejects disagreements between indexed SQL authority and its retained metadata view. */
-function decodeRow(kind: ControlProductKind, row: MetadataRow, owner: ControlProductOwner) {
+function decodeRow(
+  sqlite: Database.Database,
+  kind: ControlProductKind,
+  row: MetadataRow,
+  owner: ControlProductOwner
+) {
   if (row.schema_version !== 1 || !Number.isSafeInteger(row.revision) || row.revision < 1)
     throw new ControlProductPreconditionError();
   const record = decode(kind, JSON.parse(row.record_json), owner);
@@ -254,6 +264,11 @@ function decodeRow(kind: ControlProductKind, row: MetadataRow, owner: ControlPro
         row.agent_session_id !== (record.agentSessionId ?? null)))
   )
     throw new ControlProductPreconditionError();
+  if (kind === 'turn' && record.agentSessionId != null) {
+    const session = readProduct(sqlite, owner, 'agent-session', String(record.agentSessionId));
+    if (!session || session.record.threadId !== record.threadId)
+      throw new ControlProductPreconditionError();
+  }
   return { revision: row.revision, record };
 }
 
@@ -1975,7 +1990,7 @@ export function openControlStoreProductReadHandle(
       const rows = sqlite
         .prepare(`SELECT * FROM ${tables[kind]} WHERE id>? ORDER BY id LIMIT ?`)
         .all(afterId, limit) as MetadataRow[];
-      return rows.map((row) => decodeRow(kind, row, owner));
+      return rows.map((row) => decodeRow(sqlite, kind, row, owner));
     },
     /** Reads ordered immutable descriptors, not mutable transcript files or a repair authority. */
     entries(

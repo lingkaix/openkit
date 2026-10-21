@@ -624,6 +624,12 @@ export function parseCanonicalWorkspaceHistory(input: {
     }
     sessionsById.set(session.id, session);
   }
+  for (const turn of turns) {
+    if (turn.agentSessionId == null) continue;
+    const session = sessionsById.get(turn.agentSessionId);
+    if (!session || session.workspaceId !== workspace.id || session.threadId !== turn.threadId)
+      throw new Error(`Turn ${turn.id} has invalid AgentSession lineage.`);
+  }
   const eventTurnIds = new Set<string>();
   for (const [turnId, events] of turnEvents) {
     const turn = turnsById.get(turnId);
