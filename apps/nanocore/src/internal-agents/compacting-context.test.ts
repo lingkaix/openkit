@@ -29,16 +29,16 @@ afterEach(() => {
 });
 
 /** Uses actual current-Turn Items; the external fake Provider owns only model output. */
-function fixture(previous?: { store: FsStore; turn: ReturnType<FsStore['getTurnById']> }) {
+async function fixture(previous?: { store: FsStore; turn: ReturnType<FsStore['getTurnById']> }) {
   vi.stubEnv('OPENKIT_DATA_ROOT', '');
   const store = previous?.store ?? new FsStore();
   const workspace = previous
     ? { id: workspaceIdForOwner(previous.turn.owner) }
-    : store.createWorkspace('Compaction');
+    : await store.createWorkspace('Compaction');
   const thread = previous
     ? { id: previous.turn.threadId }
-    : store.createThread(workspace.id, 'Maintenance');
-  const turn = store.createTurn(
+    : await store.createThread(workspace.id, 'Maintenance');
+  const turn = await store.createTurn(
     workspace.id,
     thread.id,
     'Maintain notebook.',
@@ -47,7 +47,7 @@ function fixture(previous?: { store: FsStore; turn: ReturnType<FsStore['getTurnB
     { agentId: 'knowledge-manager', executorKind: 'assistant', startedAt: timestamp }
   );
   const committed = new Map<string, Item>();
-  const commitMessages = (messages: readonly AgentMessage[]): Item[] => {
+  const commitMessages = async (messages: readonly AgentMessage[]): Promise<Item[]> => {
     const items: Item[] = [];
     for (const [index, message] of messages.entries()) {
       if (message.role === 'tool') continue;
@@ -59,7 +59,7 @@ function fixture(previous?: { store: FsStore; turn: ReturnType<FsStore['getTurnB
         if (!committed.has(key)) {
           committed.set(
             key,
-            store.createItem({
+            await store.createItem({
               id: allocateEntityId('it'),
               owner: { kind: 'workspace', workspaceId: workspace.id },
               threadId: thread.id,
@@ -87,7 +87,7 @@ function fixture(previous?: { store: FsStore; turn: ReturnType<FsStore['getTurnB
         if (!committed.has(part.callId)) {
           committed.set(
             part.callId,
-            store.createItem({
+            await store.createItem({
               id: allocateEntityId('it'),
               owner: { kind: 'workspace', workspaceId: workspace.id },
               threadId: thread.id,
@@ -173,13 +173,13 @@ function loopInput() {
 }
 
 /** Current canonical summaries accepted by the existing Store. */
-function summaries(f: ReturnType<typeof fixture>) {
+function summaries(f: Awaited<ReturnType<typeof fixture>>) {
   return f.store.getTurnById(f.turn.id).items.filter((item) => item.type === 'context-summary');
 }
 
 describe('bounded current-run compaction', () => {
   it('compacts committed text and Tool pairs, then supplies the summary and later Items within the shared budget', async () => {
-    const f = fixture();
+    const f = await fixture();
     const calls: InternalAgentProviderRequest[] = [];
     let ordinary = 0;
     const provider = vi.fn(async (request: InternalAgentProviderRequest) => {
@@ -229,10 +229,10 @@ describe('bounded current-run compaction', () => {
     for (const call of [calls[0]!, calls[2]!, calls[3]!])
       expect(() => assertInternalAgentContextFits(call, threshold - 1, undefined)).not.toThrow();
     const digest = summary!.sourceRange.sourceDigest;
-    f.store.updateTurn(f.turn.id, { status: 'completed', completedAt: timestamp });
+    await f.store.updateTurn(f.turn.id, { status: 'completed', completedAt: timestamp });
     expect(internalContextSourceDigest(f.store, sources, 'compaction')).toBe(digest);
 
-    const next = fixture(f);
+    const next = await fixture(f);
     const fresh = vi.fn(async () => answer('Fresh run.'));
     await runInternalAgentLoop(
       loopInput(),
@@ -250,7 +250,7 @@ describe('bounded current-run compaction', () => {
   });
 
   it('rejects Tool-requesting summary output without advancing the canonical source boundary', async () => {
-    const f = fixture();
+    const f = await fixture();
     const provider = vi.fn(async () => inspect('call-1'));
     const result = await runInternalAgentLoop(
       loopInput(),
@@ -270,7 +270,7 @@ describe('bounded current-run compaction', () => {
   });
 
   it('reserves an ordinary answer call and does not hide summary calls from the model-call ceiling', async () => {
-    const f = fixture();
+    const f = await fixture();
     const provider = vi.fn(async () => inspect('call-1'));
     const bound = { ...limits, maxModelTurns: 2 };
     const result = await runInternalAgentLoop(
@@ -290,11 +290,11 @@ describe('bounded current-run compaction', () => {
   });
 
   it('rejects changed canonical source bytes before accepting the summary', async () => {
-    const f = fixture();
+    const f = await fixture();
     const provider = vi.fn(async (request: InternalAgentProviderRequest) => {
       if (request.tools.length) return inspect('call-1');
       const source = f.store.getTurnById(f.turn.id).items[0]!;
-      f.store.updateItem(source.id, { text: 'Changed accepted constraint.' });
+      await f.store.updateItem(source.id, { text: 'Changed accepted constraint.' });
       return answer(continuation);
     });
     const result = await runInternalAgentLoop(
@@ -314,7 +314,7 @@ describe('bounded current-run compaction', () => {
   });
 
   it('rechecks authority before summary dispatch when source assembly revokes it', async () => {
-    const f = fixture();
+    const f = await fixture();
     let allowed = true;
     const provider = vi.fn(async () => inspect('call-1'));
     const result = await runInternalAgentLoop(
@@ -339,7 +339,7 @@ describe('bounded current-run compaction', () => {
   });
 
   it('withholds a summary when current audience authority changes during production', async () => {
-    const f = fixture();
+    const f = await fixture();
     let allowed = true;
     const provider = vi.fn(async (request: InternalAgentProviderRequest) => {
       if (request.tools.length) return inspect('call-1');
@@ -368,8 +368,8 @@ describe('bounded current-run compaction', () => {
 it('uses the shared summary Item and exact current-run retrieval for a Server-owned KM Turn', async () => {
   vi.stubEnv('OPENKIT_DATA_ROOT', '');
   const store = new FsStore();
-  const thread = store.createServerThread('Server Knowledge maintenance');
-  const turn = store.createServerTurn(
+  const thread = await store.createServerThread('Server Knowledge maintenance');
+  const turn = await store.createServerTurn(
     thread.id,
     'Maintain Server notebook.',
     { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
@@ -423,7 +423,11 @@ it('uses the shared summary Item and exact current-run retrieval for a Server-ow
   );
   expect(read.isError).not.toBe(true);
   expect(JSON.stringify(read)).toContain('Keep deployment paused.');
-  const other = store.createServerThread('Another Server purpose', undefined, 'administration');
+  const other = await store.createServerThread(
+    'Another Server purpose',
+    undefined,
+    'administration'
+  );
   const refused = await history.execute(
     {
       range: {

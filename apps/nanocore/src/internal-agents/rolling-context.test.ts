@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, relative } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import type { Item } from '@openkit/protocol';
 import { allocateEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -278,6 +278,18 @@ describe('source-bound internal rolling context', () => {
   it('bootstraps large legacy history in bounded advancing batches and reuses canonical summaries after restart', async () => {
     const f = await fixture(8, true);
     const paths = files(f.dataRoot);
+    const nativePayloadPrefix = `${join('workspaces', f.workspace.id, 'evidence', 'backend', 'sha256')}${sep}`;
+    const retainedPayloads = paths
+      .filter((path) => path.startsWith(nativePayloadPrefix))
+      .map(
+        (path) =>
+          [
+            path,
+            createHash('sha256')
+              .update(readFileSync(join(f.dataRoot, path)))
+              .digest('hex'),
+          ] as const
+      );
     const requests: InternalAgentProviderRequest[] = [];
     const execute = vi.fn(async () => ({ content: [] }));
     const tool: AgentTool = {
@@ -345,7 +357,26 @@ describe('source-bound internal rolling context', () => {
         .listThreadItems(f.workspace.id, f.thread.id)
         .filter((item) => f.history.some((source) => source.id === item.id))
     ).toEqual(f.history);
-    expect(files(f.dataRoot)).toEqual(paths);
+    // New native immutable bodies are canonical Item publication, not another context store.
+    // Every earlier payload must retain its exact bytes and no other retained path may appear.
+    expect(
+      files(f.dataRoot).filter(
+        (path) =>
+          paths.includes(path) ||
+          !(
+            path.startsWith(nativePayloadPrefix) &&
+            /^[a-f0-9]{64}$/.test(path.slice(nativePayloadPrefix.length))
+          )
+      )
+    ).toEqual(paths);
+    expect(
+      retainedPayloads.map(([path]) => [
+        path,
+        createHash('sha256')
+          .update(readFileSync(join(f.dataRoot, path)))
+          .digest('hex'),
+      ])
+    ).toEqual(retainedPayloads);
     f.store = new FsStore({ dataRoot: f.dataRoot });
     const restarted = input(f, { tools: [tool] });
     expect((await prepareInternalAgentContext(restarted)).messages).toEqual(prepared.messages);
@@ -590,14 +621,16 @@ it.each([
   'ordinary',
 ] as const)('labels the shared %s deadline without inventing a phase', async (phase) => {
   vi.useFakeTimers();
-  const f = fixture(phase === 'summary' ? 8 : 0);
+  const f = await fixture(phase === 'summary' ? 8 : 0);
   let release!: (value: InternalAgentProviderResponse) => void;
   const request = input(f, {
     limits: { ...limits, deadlineMs: 25 },
-    callProvider: () =>
-      new Promise<InternalAgentProviderResponse>((resolve) => {
-        release = resolve;
-      }),
+    callProvider: vi.fn(
+      () =>
+        new Promise<InternalAgentProviderResponse>((resolve) => {
+          release = resolve;
+        })
+    ),
   });
   let failure: unknown;
   if (phase === 'summary') {

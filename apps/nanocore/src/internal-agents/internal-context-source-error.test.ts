@@ -12,6 +12,7 @@ import {
 } from '../knowledge/memory-lifecycle.js';
 import { initializeScopedNotebook } from '../knowledge/scoped-notebook-owner.js';
 import { FsStore } from '../lib/store.js';
+import { threadReadable } from '../retrieval-knowledge-adapter.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb } from '../storage/db.js';
@@ -37,7 +38,7 @@ const systemPrompt = 'Answer the current request under current source authority.
 const limits = { maxModelTurns: 3, maxToolCalls: 1, deadlineMs: 10_000 };
 
 /** Composes actual User, Notebook, Memory selection, retained trace and canonical history owners. */
-async function fixture(selected = false) {
+async function fixture(selected = false, workspaceOwnerUserId?: string) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'internal-context-source-error-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -51,11 +52,30 @@ async function fixture(selected = false) {
     await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
-  const actor = { kind: 'local' as const, userId };
+  const actor = {
+    kind: workspaceOwnerUserId ? ('session' as const) : ('local' as const),
+    userId,
+  };
   const actorRef = { kind: 'user' as const, id: userId };
   const store = new FsStore({ dataRoot });
   const workspace = await store.createWorkspace('Context source verification');
-  recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
+  if (workspaceOwnerUserId)
+    coreDb.sqlite
+      .prepare(`INSERT INTO users
+        (id, display_name, email, email_verified, created_at, updated_at, kind, status)
+        VALUES (?, 'Workspace owner', ?, 0, ?, ?, 'human', 'active')`)
+      .run(workspaceOwnerUserId, `${workspaceOwnerUserId}@context.invalid`, timestamp, timestamp);
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    workspaceId: workspace.id,
+    ownerUserId: workspaceOwnerUserId ?? userId,
+  });
+  if (workspaceOwnerUserId)
+    coreDb.sqlite
+      .prepare(`INSERT INTO workspace_members
+        (workspace_id, user_id, status, joined_at, revision, created_at, updated_at)
+        VALUES (?, ?, 'active', ?, 1, ?, ?)`)
+      .run(workspace.id, userId, timestamp, timestamp, timestamp);
   const writer = {
     coreDb,
     userDb,
@@ -135,7 +155,7 @@ async function fixture(selected = false) {
     `${reference.objectId}.json`
   );
   await store.updateTurn(sourceTurn.id, { status: 'completed', completedAt: timestamp });
-  const turn = store.createTurn(workspace.id, thread.id, 'Continue.', actorRef, null, {
+  const turn = await store.createTurn(workspace.id, thread.id, 'Continue.', actorRef, null, {
     agentId: 'quick-chat',
     executorKind: 'assistant',
   });
@@ -247,12 +267,33 @@ describe('Internal rolling context source failure classification', () => {
     'private audience',
     'trace integrity',
   ] as const)('keeps the %s check strict and reports its native verifier before dispatch', async (fault) => {
-    const f = await fixture();
-    if (fault === 'private audience')
-      Object.assign(f.store.getThread(f.workspace.id, f.thread.id), {
-        privateOwnerUserId: allocateEntityId('usr'),
-      });
-    else if (fault === 'trace integrity')
+    const workspaceOwnerUserId = fault === 'private audience' ? allocateEntityId('usr') : undefined;
+    const f = await fixture(false, workspaceOwnerUserId);
+    if (fault === 'private audience') {
+      // Active Workspace ownership does not grant another User's private audience.
+      expect(
+        threadReadable(
+          {
+            workspaceId: f.workspace.id,
+            access: {
+              ...f.access,
+              requestActor: { kind: 'session', userId: workspaceOwnerUserId! },
+              actor: { kind: 'user', id: workspaceOwnerUserId! },
+            },
+          },
+          f.thread.id
+        )
+      ).toBe(false);
+      expect(f.store.getThread(f.workspace.id, f.thread.id).privateOwnerUserId).toBe(
+        f.access.actor.id
+      );
+      // Current private-entry eligibility can be revoked; its retained private owner stays immutable.
+      f.coreDb.sqlite
+        .prepare(`UPDATE workspace_members
+          SET status = 'removed', removed_at = ?, revision = revision + 1, updated_at = ?
+          WHERE workspace_id = ? AND user_id = ?`)
+        .run(timestamp, timestamp, f.workspace.id, f.access.actor.id);
+    } else if (fault === 'trace integrity')
       writeFileSync(
         f.tracePath,
         JSON.stringify(writeRetainedV1({ ...f.trace, traceId: allocateEntityId('krt') }))
