@@ -1,5 +1,9 @@
+import { appendFile, mkdtemp, rm, unlink, writeFile } from 'node:fs/promises';
 import { Session } from 'node:inspector/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
+import { WorkerObservationDataEmissionSchema } from '@openkit/worker-protocol';
 import { describe, expect, it } from 'vitest';
 import { type RuntimeObservation, runtimeRef } from '../runtime-capture.js';
 import { PiRuntimeCapture } from './pi-runtime-capture.js';
@@ -44,6 +48,78 @@ async function stalledCapture(value: 'off' | 'on') {
 function tool(id: string, text: string) {
   return { type: 'tool_execution_start', toolCallId: id, toolName: 'echo', args: { text } };
 }
+
+// RET Capture Coverage: source faults are named gaps; observed prefixes and independent safe sources survive.
+it('RET E REVIEW R2 keeps a read Pi file prefix and names its later disappearance without crashing', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'pi-e-review-'));
+  const path = join(directory, 'session.jsonl');
+  const prefix = Buffer.from('{"native":"accepted-prefix"}\n');
+  const fileRead = Promise.withResolvers<void>();
+  const packageSnapshotId = 'e-review-pi-package';
+  const turnId = 'e-review-file-turn';
+  const sourceRef = runtimeRef('rts', packageSnapshotId, `pi-channel:${turnId}`);
+  const barrierRef = runtimeRef('rtc', packageSnapshotId, `${turnId}:file-read-barrier`);
+  const received: Array<{ record: RuntimeObservation; body?: Buffer }> = [];
+  const capture = new PiRuntimeCapture(
+    {
+      packageSnapshotId,
+      captureCoverage: { scope: 'task', value: 'on' },
+      nativeLogMaxBytes: 16 * 1024 * 1024,
+      authoredVersion: '1.0.2',
+      credentialValues: ['ret-e-synthetic-credential'],
+      emit: async (record, body) => {
+        received.push({
+          record: WorkerObservationDataEmissionSchema.parse(record),
+          ...(body ? { body: Buffer.from(body) } : {}),
+        });
+        if (record.fact.callRef === barrierRef && body) fileRead.resolve();
+      },
+    },
+    turnId
+  );
+  try {
+    await writeFile(path, '');
+    await capture.bindFile(path);
+    await capture.start();
+    await appendFile(path, prefix);
+    // The existing tool emit follows pollFile, so it joins the read without a timer or private state.
+    capture.observe(tool('file-read-barrier', 'ordinary tool output'));
+    await fileRead.promise;
+    await unlink(path);
+    const failure = await capture.finalize('completed', null).then(
+      () => null,
+      (error: unknown) => error
+    );
+    expect.soft(failure).toBeNull();
+    const native = received.filter(
+      ({ record, body }) => record.fact.native?.format === 'pi-session-jsonl' && body
+    );
+    expect.soft(Buffer.concat(native.map(({ body }) => body!))).toEqual(prefix);
+    expect.soft(native.every(({ record }) => record.fact.native?.sourceEnded === false)).toBe(true);
+    expect
+      .soft(
+        received.some(
+          ({ record }) =>
+            (record.sourceRef === `${sourceRef}:file` || record.sourceRef === sourceRef) &&
+            record.fact.coverage === 'unavailable' &&
+            (record.fact.reason === 'source-missing' || record.fact.reason === 'collector-failed')
+        )
+      )
+      .toBe(true);
+    expect
+      .soft(
+        Buffer.concat(
+          received.flatMap(({ record, body }) =>
+            record.fact.native?.format === 'pi-sdk-event-json' && body ? [body] : []
+          )
+        )
+      )
+      .toEqual(Buffer.from(JSON.stringify(tool('file-read-barrier', 'ordinary tool output'))));
+  } finally {
+    capture.abandon();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 /** Assistant snapshots preserve whitespace and exclude the separate reasoning carrier. */
 function assistant(text: string) {

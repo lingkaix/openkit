@@ -11,6 +11,52 @@ import {
   runtimeRef,
 } from './runtime-capture.js';
 
+// RET Native Transcripts And Runtime Logs: supervision loss keeps observed prefixes with a named gap.
+it('RET E REVIEW R3 retains a read Codex rollout prefix when supervision invalidates capture', async () => {
+  const f = await fixture('on');
+  const capture = await CodexRuntimeCapture.create(
+    { ...f.input, nativeLogMaxBytes: 16 * 1024 * 1024, authoredVersion: '0.153.4' },
+    f.home,
+    '0.153.4'
+  );
+  const prefix = Buffer.from(
+    lines(meta('root'), {
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'assistant',
+        channel: 'analysis',
+        content: [{ type: 'output_text', text: 'crash-prefix' }],
+      },
+    })
+  );
+  const sourceRef = runtimeRef('rts', f.input.packageSnapshotId, 'root');
+  try {
+    await writeFile(f.path('root'), prefix);
+    // Await the existing stdout path's rollout poll before invalidating supervision.
+    await capture.writeStdout(Buffer.from(lines({ type: 'thread.started', thread_id: 'root' })));
+    await capture.invalidate();
+    const native = f.received.filter(
+      ({ record, body }) => record.fact.kind === 'native-transcript' && body
+    );
+    expect.soft(Buffer.concat(native.map(({ body }) => body!))).toEqual(prefix);
+    expect.soft(native.every(({ record }) => record.fact.native?.sourceEnded === false)).toBe(true);
+    expect
+      .soft(
+        f.received.some(
+          ({ record }) =>
+            (record.sourceRef === sourceRef || record.sourceRef === `${sourceRef}:native`) &&
+            record.fact.coverage === 'unavailable' &&
+            record.fact.reason === 'collector-failed'
+        )
+      )
+      .toBe(true);
+  } finally {
+    await capture.invalidate().catch(() => undefined);
+    await rm(f.home, { recursive: true, force: true });
+  }
+});
+
 /** Encodes complete native frames without transforming admitted content strings. */
 function lines(...records: unknown[]): string {
   return `${records.map((record) => JSON.stringify(record)).join('\n')}\n`;
