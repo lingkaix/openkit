@@ -52,11 +52,15 @@ describe('storage layout report', () => {
       const report = createStorageLayoutReport(root);
       expect(report.workspaces).toHaveLength(1);
       expect(report.workspaces[0]?.workspaceId).toBe(workspaceId);
-      expect(report.workspaces[0]?.workspaceDb.appliedMigrations.slice(-2)).toEqual([
+      expect(report.workspaces[0]?.workspaceDb.appliedMigrations.slice(-3)).toEqual([
         'workspace_0011_workspace_capture_protection',
         'workspace_0012_execution_journal',
+        'workspace_0013_work_observations',
       ]);
-      expect(report.serverDb.appliedMigrations.slice(-1)).toEqual(['core_0014_execution_journal']);
+      expect(report.serverDb.appliedMigrations.slice(-2)).toEqual([
+        'core_0014_execution_journal',
+        'core_0015_work_observations',
+      ]);
       expect(report.serverDb.appliedMigrations).not.toContain('workspace_0012_execution_journal');
       expect(workspace.sqlite.serialize().equals(before)).toBe(true);
     } finally {
@@ -96,6 +100,7 @@ describe('storage layout report', () => {
         'core_0012_quarantined_workspace_retirement',
         'core_0013_control_store',
         'core_0014_execution_journal',
+        'core_0015_work_observations',
       ]);
       expect(report.users).toEqual(
         expect.arrayContaining([
@@ -135,6 +140,7 @@ describe('storage layout report', () => {
               'workspace_0010_product_control',
               'workspace_0011_workspace_capture_protection',
               'workspace_0012_execution_journal',
+              'workspace_0013_work_observations',
             ],
           }),
           indexesDir: expect.objectContaining({ exists: true, entryCount: 0 }),

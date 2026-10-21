@@ -3,7 +3,7 @@ import { closeSync, constants, fstatSync, openSync, readFileSync, realpathSync }
 import { link, open, unlink } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { allocateEntityId, ContentReferenceSchema } from '@openkit/protocol';
+import { ContentReferenceSchema } from '@openkit/protocol';
 import {
   LocalStorage,
   STORAGE_LIMITS,
@@ -150,7 +150,12 @@ export async function publishImmutableProductJson(
   stagingRoot: string,
   value: unknown
 ): Promise<StorageContent> {
+  if (mount.knowledgeBaseId !== null || mount.mount !== 'backend-evidence')
+    throw new Error(
+      'Canonical product publication requires the admitted native work-byte binding.'
+    );
   const bytes = Buffer.from(JSON.stringify(value));
+  const digest = createHash('sha256').update(bytes).digest('hex');
   if (bytes.length > CONTROL_PRODUCT_LIMITS.payloadBytes)
     throw new Error('Control product body exceeds its byte limit.');
   await ensureCanonicalDirectoryAsync(mount.root);
@@ -167,15 +172,12 @@ export async function publishImmutableProductJson(
     stagingRoot,
   });
   const access: StorageAccess = {
-    basis: 'lease',
-    grantId: allocateEntityId('grant'),
-    knowledgeBaseId: mount.knowledgeBaseId,
+    basis: 'work-capture',
+    knowledgeBaseId: null,
     ownerScope: owner,
     mount: mount.mount,
-    pathPrefix: 'entries',
+    pathPrefix: '',
     mode: 'staged-write',
-    expiresAt: new Date(Date.now() + 60000).toISOString(),
-    revoked: false,
   };
   const admitted = <T>(result: { status: string; value?: T }): T => {
     if (result.status !== 'ok') throw new Error('Control product Storage publication failed.');
@@ -185,7 +187,7 @@ export async function publishImmutableProductJson(
     const { handle } = admitted(
       await storage.beginStage({
         access,
-        locator: { ownerScope: owner, mount: mount.mount, path: 'entries/staged.json' },
+        locator: { ownerScope: owner, mount: mount.mount, path: `sha256/${digest}` },
         maxByteLength: bytes.length,
       })
     );

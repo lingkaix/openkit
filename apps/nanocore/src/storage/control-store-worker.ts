@@ -19,11 +19,14 @@ import { ControlStoreBusyError, controlStoreFor } from './control-store.js';
 import { applyControlAdmission } from './control-store-admission.js';
 import {
   applyControlProducts,
+  applyControlTerminal,
   type ControlProductContentMount,
   type ControlProductOwner,
   ControlProductPreconditionError,
   type PreparedControlEntry,
+  type PreparedControlTerminal,
   prepareControlEntries,
+  prepareControlTerminal,
 } from './control-store-products.js';
 import {
   CONTROL_WORKER_LIMITS,
@@ -61,11 +64,13 @@ type WriteRequest = Extract<
       | 'project-cleanup'
       | 'observation'
       | 'goal'
-      | 'maintenance';
+      | 'maintenance'
+      | 'terminal';
   }
 > & {
   readonly preparedEntries?: readonly PreparedControlEntry[] | undefined;
   readonly preparedGoal?: PreparedControlGoalCommand | undefined;
+  readonly preparedTerminal?: PreparedControlTerminal | undefined;
 };
 
 /** One worker-owned writable connection and its finite, disposable pending work. */
@@ -79,6 +84,9 @@ interface OwnedDatabase {
   readonly productOwner: ControlProductOwner | undefined;
   readonly contentMount: ControlProductContentMount | undefined;
   readonly pending: WriteRequest[];
+  /** Accepted native-local preparation shares this finite scope lifetime, before SQL. */
+  readonly preparations: Set<Promise<void>>;
+  closing: boolean;
   timer: ReturnType<typeof setTimeout> | null;
   immediate: ReturnType<typeof setImmediate> | null;
   poisoned: boolean;
@@ -88,6 +96,7 @@ const databases = new Map<string, OwnedDatabase>();
 const paths = new Set<string>();
 const identities = new Set<string>();
 const pendingIds = new Set<number>();
+let stopping = false;
 
 /** Marks a failed SQL condition without leaking statement text or bound data. */
 class PreconditionError extends Error {}
@@ -253,6 +262,21 @@ function flush(owner: OwnedDatabase): void {
               operation: 'goal',
               result,
             };
+          } else if (request.operation === 'terminal') {
+            if (!owner.scopeDb || !owner.productOwner || !request.preparedTerminal)
+              throw new ControlProductPreconditionError();
+            const result = applyControlTerminal(
+              owner.scopeDb,
+              request.input,
+              request.preparedTerminal
+            );
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'terminal',
+              result,
+            };
           } else if (request.operation === 'maintenance') {
             if (!owner.scopeDb || !owner.productOwner) throw new ControlProductPreconditionError();
             const result = applyControlMaintenanceAdmission(owner.scopeDb, request.input);
@@ -357,6 +381,80 @@ function drain(owner: OwnedDatabase): void {
   unschedule(owner);
 }
 
+/** Includes accepted asynchronous preparation in ordered close/checkpoint/reclaim, without holding SQL across an await. */
+function maintainDatabase(
+  request: Extract<ControlWorkerRequest, { operation: 'close' | 'checkpoint' | 'reclaim' }>,
+  owner: OwnedDatabase
+): void {
+  if (request.operation === 'close') owner.closing = true;
+  const finish = () => {
+    try {
+      drain(owner);
+      if (request.operation === 'close') {
+        owner.sqlite.close();
+        databases.delete(request.database);
+        paths.delete(owner.path);
+        identities.delete(owner.identity);
+        reply({
+          version: CONTROL_WORKER_VERSION,
+          id: request.id,
+          status: 'ok',
+          operation: 'close',
+        });
+      } else if (owner.poisoned) reply(failure(request.id, 'unavailable'));
+      else if (request.operation === 'checkpoint')
+        reply({
+          version: CONTROL_WORKER_VERSION,
+          id: request.id,
+          status: 'ok',
+          operation: 'checkpoint',
+          pressure: owner.writer.checkpoint(),
+        });
+      else
+        reply({
+          version: CONTROL_WORKER_VERSION,
+          id: request.id,
+          status: 'ok',
+          operation: 'reclaim',
+          complete: owner.writer.reclaim(),
+        });
+    } catch (error) {
+      const code = failureCode(error);
+      reply(failure(request.id, code === 'sql-failed' ? 'unavailable' : code, 'unknown'));
+    }
+  };
+  if (owner.preparations.size) void Promise.all([...owner.preparations]).then(finish);
+  else finish();
+}
+
+/** Stops new admission and drains every accepted preparation and SQL body before closing the actual worker. */
+function shutdownWorker(id: number): void {
+  stopping = true;
+  const preparations: Promise<void>[] = [];
+  for (const owner of databases.values()) {
+    owner.closing = true;
+    preparations.push(...owner.preparations);
+  }
+  const finish = () => {
+    try {
+      for (const owner of databases.values()) {
+        drain(owner);
+        owner.sqlite.close();
+      }
+      databases.clear();
+      paths.clear();
+      identities.clear();
+      reply({ version: CONTROL_WORKER_VERSION, id, status: 'ok', operation: 'shutdown' });
+      port.close();
+    } catch (error) {
+      const code = failureCode(error);
+      reply(failure(id, code === 'sql-failed' ? 'unavailable' : code, 'unknown'));
+    }
+  };
+  if (preparations.length) void Promise.all(preparations).then(finish);
+  else finish();
+}
+
 /** Refuses stored conflict/trigger semantics that can undo successful batch siblings. */
 function assertSavepointSafeSchema(sqlite: Database.Database): void {
   const rows = sqlite
@@ -435,6 +533,8 @@ function openDatabase(request: Extract<ControlWorkerRequest, { operation: 'open'
       productOwner: request.productOwner,
       contentMount,
       pending: [],
+      preparations: new Set(),
+      closing: false,
       timer: null,
       immediate: null,
       poisoned: false,
@@ -465,16 +565,12 @@ function receive(value: unknown): void {
   }
   pendingIds.add(value.id);
   try {
+    if (stopping) {
+      reply(failure(value.id, 'unavailable'));
+      return;
+    }
     if (value.operation === 'shutdown') {
-      for (const owner of databases.values()) {
-        drain(owner);
-        owner.sqlite.close();
-      }
-      databases.clear();
-      paths.clear();
-      identities.clear();
-      reply({ version: CONTROL_WORKER_VERSION, id: value.id, status: 'ok', operation: 'shutdown' });
-      port.close();
+      shutdownWorker(value.id);
       return;
     }
     if (value.operation === 'open') {
@@ -486,13 +582,12 @@ function receive(value: unknown): void {
       reply(failure(value.id, 'not-open'));
       return;
     }
+    if (owner.closing) {
+      reply(failure(value.id, 'not-open'));
+      return;
+    }
     if (value.operation === 'close') {
-      drain(owner);
-      owner.sqlite.close();
-      databases.delete(value.database);
-      paths.delete(owner.path);
-      identities.delete(owner.identity);
-      reply({ version: CONTROL_WORKER_VERSION, id: value.id, status: 'ok', operation: 'close' });
+      maintainDatabase(value, owner);
       return;
     }
     if (owner.poisoned) {
@@ -506,11 +601,37 @@ function receive(value: unknown): void {
       value.operation === 'project-cleanup' ||
       value.operation === 'observation' ||
       value.operation === 'goal' ||
-      value.operation === 'maintenance'
+      value.operation === 'maintenance' ||
+      value.operation === 'terminal'
     ) {
-      if (owner.pending.length >= CONTROL_WORKER_LIMITS.pendingTransitions) {
+      if (
+        owner.pending.length + owner.preparations.size >=
+        CONTROL_WORKER_LIMITS.pendingTransitions
+      ) {
         reply(failure(value.id, 'busy'));
       } else {
+        if (value.operation === 'terminal') {
+          if (!owner.scopeDb || !owner.productOwner) {
+            reply(failure(value.id, 'precondition'));
+            return;
+          }
+          let preparation: Promise<void>;
+          preparation = prepareControlTerminal(owner.scopeDb, value.input, owner.contentMount)
+            .then((preparedTerminal) => {
+              if (owner.poisoned || databases.get(value.database) !== owner)
+                throw new ControlProductPreconditionError();
+              owner.pending.push({ ...value, preparedTerminal });
+              schedule(owner);
+            })
+            .catch((error) => {
+              reply(failure(value.id, failureCode(error), 'not-committed'));
+            })
+            .finally(() => {
+              owner.preparations.delete(preparation);
+            });
+          owner.preparations.add(preparation);
+          return;
+        }
         let preparedEntries: WriteRequest['preparedEntries'];
         let preparedGoal: PreparedControlGoalCommand | undefined;
         try {
@@ -545,26 +666,7 @@ function receive(value: unknown): void {
       }
       return;
     }
-    drain(owner);
-    if (owner.poisoned) {
-      reply(failure(value.id, 'unavailable'));
-    } else if (value.operation === 'checkpoint') {
-      reply({
-        version: CONTROL_WORKER_VERSION,
-        id: value.id,
-        status: 'ok',
-        operation: 'checkpoint',
-        pressure: owner.writer.checkpoint(),
-      });
-    } else {
-      reply({
-        version: CONTROL_WORKER_VERSION,
-        id: value.id,
-        status: 'ok',
-        operation: 'reclaim',
-        complete: owner.writer.reclaim(),
-      });
-    }
+    maintainDatabase(value, owner);
   } catch (error) {
     const code = failureCode(error);
     reply(failure(value.id, code === 'sql-failed' ? 'unavailable' : code, 'unknown'));
@@ -573,9 +675,13 @@ function receive(value: unknown): void {
 
 port.on('message', receive);
 port.on('close', () => {
+  stopping = true;
   for (const owner of databases.values()) {
     unschedule(owner);
     owner.pending.length = 0;
     owner.sqlite.close();
   }
+  databases.clear();
+  paths.clear();
+  identities.clear();
 });

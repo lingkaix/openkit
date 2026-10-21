@@ -35,7 +35,6 @@ import {
   workspaceIdForOwner,
   writeRetainedV1,
 } from '@openkit/protocol';
-import { LocalStorage, type StorageAccess, type StorageResult } from '@openkit/storage';
 import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
 import {
@@ -44,7 +43,6 @@ import {
   requireCurrentDeploymentAdmin,
 } from '../auth/operation-authorizer.js';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
-import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
 import { commandRequestKey, type FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import type { GoalDomainPolicyService } from '../policy/goal-domains.js';
@@ -67,8 +65,11 @@ import {
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { workspaceDbPath } from '../storage/fs-layout.js';
-import { publishImmutableContent } from '../storage/immutable-content.js';
-import { ensureCanonicalDirectoryAsync } from '../storage/workspace-file-records.js';
+import { publishImmutableProductJson } from '../storage/immutable-content.js';
+import {
+  ensureCanonicalDirectoryAsync,
+  nativeProductScope,
+} from '../storage/workspace-file-records.js';
 import {
   StoredGoalCardTaskV1Schema,
   StoredGoalCardV1Schema,
@@ -855,22 +856,10 @@ function raiseIntent(
     ]
   );
 }
-/** Resolves the existing Workspace content owner; it never creates a Knowledge Base or a second ledger. */
+/** Uses the existing native work-byte owner without inventing a Knowledge grant or changing product retention. */
 function goalContentMount(db: WorkspaceDb): ControlProductContentMount {
-  return {
-    root: join(db.dataRoot, 'workspaces', db.workspaceId, 'content'),
-    knowledgeBaseId: readDefaultKnowledgeBaseId({
-      dataRoot: db.dataRoot,
-      scope: { kind: 'workspace', workspaceId: db.workspaceId },
-    }),
-    mount: 'private',
-  };
-}
-/** Requires the actual Storage success branch before admitting a reference to native SQL. */
-function goalStorageValue<T>(result: StorageResult<T>): T {
-  if (result.status !== 'ok')
-    throw new GoalCommandError('recovery_required', 'Goal immutable Item publication failed.');
-  return result.value;
+  return nativeProductScope(db.dataRoot, { kind: 'workspace', workspaceId: db.workspaceId })
+    .contentMount;
 }
 /** Publishes the exact pending Item through the existing staged Storage handoff before SQL admission. */
 async function publishGoalPendingItem(
@@ -904,61 +893,16 @@ async function publishGoalPendingItem(
         : 'Approve the exact captured commitment.',
     createdAt: receipt.createdAt,
   });
-  const bytes = Buffer.from(JSON.stringify(writeRetainedV1(item)));
-  const stagingRoot = join(db.dataRoot, 'workspaces', db.workspaceId, 'runtime', 'staging');
-  await ensureCanonicalDirectoryAsync(mount.root);
-  await ensureCanonicalDirectoryAsync(stagingRoot);
-  const storage = new LocalStorage({
-    mounts: [
-      {
-        knowledgeBaseId: mount.knowledgeBaseId,
-        ownerScope: owner,
-        name: mount.mount,
-        root: mount.root,
-      },
-    ],
-    stagingRoot,
-  });
-  const access: StorageAccess = {
-    basis: 'lease',
-    grantId: allocateEntityId('grant'),
-    knowledgeBaseId: mount.knowledgeBaseId,
-    ownerScope: owner,
-    mount: mount.mount,
-    pathPrefix: 'entries',
-    mode: 'staged-write',
-    expiresAt: new Date(Date.now() + 60000).toISOString(),
-    revoked: false,
+  const content = await publishImmutableProductJson(
+    mount,
+    owner,
+    join(db.dataRoot, 'workspaces', db.workspaceId, 'runtime', 'staging'),
+    writeRetainedV1(item)
+  );
+  return {
+    id: item.id,
+    entry: { kind: 'item', turnId, sequence: 1, expectedRevision: 0, content },
   };
-  try {
-    const { handle } = goalStorageValue(
-      await storage.beginStage({
-        access,
-        locator: { ownerScope: owner, mount: mount.mount, path: 'entries/staged.json' },
-        maxByteLength: bytes.length,
-      })
-    );
-    try {
-      goalStorageValue(
-        await storage.writeStage({ access, handle, data: bytes.toString('base64') })
-      );
-      const stage = goalStorageValue(await storage.finishStage({ access, handle }));
-      const content = await publishImmutableContent({
-        storage,
-        access,
-        stage,
-        mountRoot: mount.root,
-      });
-      return {
-        id: item.id,
-        entry: { kind: 'item', turnId, sequence: 1, expectedRevision: 0, content },
-      };
-    } finally {
-      goalStorageValue(await storage.discardStage({ access, handle }));
-    }
-  } finally {
-    await storage.close();
-  }
 }
 /** Pins the typed proposal to native Plan lineage before the human sees either effect. */
 function captureGoalDomain(
@@ -1729,6 +1673,8 @@ export async function executeGoalOperation<K extends GoalOperationId>(
   const client = getControlStoreWorkerClient();
   const path = workspaceDbPath(db.dataRoot, input.workspaceId);
   const database = `workspace:${path}`;
+  const contentMount = goalContentMount(db);
+  await ensureCanonicalDirectoryAsync(contentMount.root);
   await client.open({
     database,
     path,
@@ -1736,6 +1682,7 @@ export async function executeGoalOperation<K extends GoalOperationId>(
     create: false,
     initialize: 'workspace',
     productOwner: { kind: 'workspace', workspaceId: input.workspaceId },
+    contentMount,
   });
   const invoke = async (receipt: IdempotentCommandReceipt | null): Promise<GoalView> => {
     const request = input.pendingRequestId

@@ -37,6 +37,8 @@ export const CONTROL_ADMISSION_COMMANDS = [
 /** Activated native command partitions share the original receipt owner, not a second ledger or Main backfill. */
 export const CONTROL_NATIVE_RECEIPT_COMMANDS = [
   ...CONTROL_ADMISSION_COMMANDS,
+  'task.start',
+  'turn.interrupt',
   'goal.create',
   'goal.intent.revise',
   'goal.card.create',

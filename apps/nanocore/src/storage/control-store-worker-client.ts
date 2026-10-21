@@ -19,7 +19,11 @@ import type {
 } from '../runtime/worker-backend-cleanup-projection.js';
 import type { ControlCheckpoint } from './control-store.js';
 import type { ControlAdmission, ControlAdmissionResult } from './control-store-admission.js';
-import type { ControlProductTransition } from './control-store-products.js';
+import type {
+  ControlProductTransition,
+  ControlTerminalResult,
+  ControlTerminalTransition,
+} from './control-store-products.js';
 import {
   CONTROL_WORKER_LIMITS,
   CONTROL_WORKER_VERSION,
@@ -245,6 +249,15 @@ class ControlStoreWorkerClient {
       }
       throw error;
     }
+  }
+
+  /** Commits the complete local terminal tuple; only outer FULL COMMIT produces this acknowledgement, never physical release. */
+  async terminal(
+    database: string,
+    input: ControlTerminalTransition
+  ): Promise<ControlTerminalResult> {
+    const reply = await this.request({ operation: 'terminal', database, input });
+    return (reply as Extract<Success, { operation: 'terminal' }>).result;
   }
 
   /** Attempts native checkpoint progress after prior submitted work. */

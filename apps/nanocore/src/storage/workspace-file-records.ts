@@ -37,7 +37,6 @@ import {
   deriveEntityId,
   entityIdPattern,
   type ItemSchema,
-  KnowledgeBaseIdSchema,
   KnowledgeNotebookPageSchema,
   readRetainedV1,
   responsibleUserIdForActor,
@@ -59,7 +58,6 @@ import { applyEdits, modify } from 'jsonc-parser';
 import { z } from 'zod';
 import { isScopeAdmitted, refuseScope } from '../bootstrap/readiness.js';
 import { parseJsoncObject } from '../config/jsonc.js';
-import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import {
   parseOkfDocument,
@@ -817,7 +815,7 @@ export function nativeProductMetadataScope(
   };
 }
 
-/** Resolves retained default Knowledge identity and the actual private product mount for byte access. */
+/** Resolves the existing native retained-work byte binding; canonical product retention does not depend on capture enablement or Knowledge authority. */
 export function nativeProductScope(
   dataRoot: string,
   owner: ControlProductOwner,
@@ -831,19 +829,9 @@ export function nativeProductScope(
     path: join(root, 'db', owner.kind === 'workspace' ? 'workspace.sqlite' : 'core.sqlite'),
     owner,
     contentMount: {
-      root: join(root, 'content'),
-      mount: 'private',
-      knowledgeBaseId:
-        owner.kind === 'workspace' && workspaceRoot
-          ? KnowledgeBaseIdSchema.parse(
-              readRetainedV1(
-                parseJsoncObject(
-                  readCanonicalTextFile(join(workspaceRoot, 'config', 'workspace.jsonc'))
-                ),
-                WorkspaceConfigSchema.parse
-              ).workspace.defaultKnowledgeBaseId
-            )
-          : readDefaultKnowledgeBaseId({ dataRoot, scope: owner }),
+      root: join(root, 'evidence', 'backend'),
+      mount: 'backend-evidence',
+      knowledgeBaseId: null,
     },
   };
 }

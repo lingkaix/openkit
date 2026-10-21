@@ -10,8 +10,9 @@ import { LocalStorage, type StorageResult } from '@openkit/storage';
 import { afterEach, describe, expect, it } from 'vitest';
 import { commandRequestExpiresAt, commandRequestKey, FsStore } from '../lib/store.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { openWorkspaceDb } from '../storage/db.js';
+import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { publishImmutableContent } from '../storage/immutable-content.js';
+import { applyMigrations } from '../storage/migrate.js';
 import { testGoalDomainProposal } from '../test-support/goal-domain.js';
 import {
   applyControlGoalCommand,
@@ -281,8 +282,12 @@ describe('native Goal command deciding body', () => {
   it('rolls back and replays the real public Goal tuple through the production worker transport', async () => {
     const root = mkdtempSync(join(tmpdir(), 'native-goal-public-'));
     roots.push(root);
+    // The private fixture initializes the real Server scope before native readers and Workspace publication.
+    const core = openCoreDb(root);
+    applyMigrations(core);
+    core.sqlite.close();
     const store = new FsStore({ dataRoot: root });
-    const workspace = store.createWorkspace('Native Goal public tuple');
+    const workspace = await store.createWorkspace('Native Goal public tuple');
     const db = openWorkspaceDb(root, workspace.id);
     const input = {
       workspaceId: workspace.id,

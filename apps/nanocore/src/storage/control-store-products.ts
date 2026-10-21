@@ -20,7 +20,7 @@ import {
 } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { z } from 'zod';
-import type { CommandRequestResponse } from '../lib/store.js';
+import type { CommandRequestName, CommandRequestResponse } from '../lib/store.js';
 import {
   createExecutionStepJournalReader,
   settleExecutionJournalStep,
@@ -59,10 +59,14 @@ export const CONTROL_PRODUCT_LIMITS = {
 export const ControlProductContentMountSchema = z
   .object({
     root: z.string().min(1),
-    knowledgeBaseId: KnowledgeBaseIdSchema,
+    knowledgeBaseId: KnowledgeBaseIdSchema.nullable(),
     mount: z.string().min(1),
   })
-  .strict();
+  .strict()
+  .refine(
+    (binding) => (binding.knowledgeBaseId === null) === (binding.mount === 'backend-evidence'),
+    'Native retained work bytes require their exact null-Knowledge-Base backend-evidence binding.'
+  );
 export type ControlProductContentMount = z.infer<typeof ControlProductContentMountSchema>;
 
 /** Physical product kinds project existing retained families; they are not new product concepts. */
@@ -731,7 +735,7 @@ const terminalReceiptSchema = z
       'knowledge.maintain',
       'knowledge.server.tell',
       'knowledge.server.maintain',
-    ]),
+    ] satisfies readonly CommandRequestName[]),
     requestId: RequestIdSchema,
     scope: z.record(z.string(), z.string()),
     inputHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
@@ -1072,7 +1076,11 @@ function applyTerminalReceipt(
   const { receipt, audit } = input.command;
   if (!terminalOwners) throw new ControlProductPreconditionError();
   const { commandRequestKey } = terminalOwners.store;
-  const { mapCommandRequestRow, normalizeCommandRequestResponse } = terminalOwners.requests;
+  const {
+    mapCommandRequestRow,
+    normalizeCommandRequestResponse,
+    recordControlCommandRequestRecordInDb,
+  } = terminalOwners.requests;
   const { recordServerAuditEvent, recordWorkspaceAuditEvent } = terminalOwners.audit;
   const owner = input.owner;
   if (
@@ -1095,6 +1103,9 @@ function applyTerminalReceipt(
     receipt.command,
     receipt.response as CommandRequestResponse
   );
+  // This owner admits Turn-producing commands, never a receipt for an unrelated product.
+  if (response.kind !== 'turn' || response.id !== input.turn.record.id)
+    throw new ControlProductPreconditionError();
   const row = db.sqlite
     .prepare(
       'SELECT schema_version AS schemaVersion,request_key AS key,command_name AS command,request_id AS requestId,scope_json AS scopeJson,input_hash AS inputHash,response_kind AS responseKind,response_id AS responseId,response_json AS responseJson,created_at AS createdAt,expires_at AS expiresAt FROM idempotency_requests WHERE request_key=?'
@@ -1125,25 +1136,8 @@ function applyTerminalReceipt(
     if (localAudit?.schema_version !== 1) throw new ControlProductPreconditionError();
     return prior.response;
   }
-  // Never prune another producer's rows or replace an existing request identity during closeout.
-  db.sqlite
-    .prepare(
-      'INSERT INTO idempotency_requests (schema_version,request_key,command_name,request_id,scope_json,input_hash,response_kind,response_id,response_json,created_at,expires_at) VALUES (1,?,?,?,?,?,?,?,?,?,?)'
-    )
-    .run(
-      receipt.key,
-      receipt.command,
-      receipt.requestId,
-      JSON.stringify(receipt.scope),
-      receipt.inputHash,
-      response.kind,
-      response.id,
-      response.conversationMetadata === undefined
-        ? null
-        : JSON.stringify(response.conversationMetadata),
-      receipt.createdAt,
-      receipt.expiresAt
-    );
+  // The existing native receipt owner also owns its disjoint operation/scope maintenance partition.
+  recordControlCommandRequestRecordInDb(db, { ...receipt, response });
   const {
     id,
     createdAt,

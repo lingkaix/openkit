@@ -29,6 +29,9 @@ import {
   type ControlProductOwner,
   type ControlProductTransition,
   ControlProductTransitionSchema,
+  type ControlTerminalResult,
+  type ControlTerminalTransition,
+  ControlTerminalTransitionSchema,
 } from './control-store-products.js';
 import { StoredWorkOwnerV1Schema } from './retained-work-metadata-v1.js';
 import {
@@ -113,6 +116,7 @@ export type ControlWorkerCommand =
       | { readonly operation: 'observation'; readonly input: ControlWorkObservationInput }
       | { readonly operation: 'goal'; readonly input: ControlGoalCommandInput }
       | { readonly operation: 'maintenance'; readonly input: ControlMaintenanceAdmissionInput }
+      | { readonly operation: 'terminal'; readonly input: ControlTerminalTransition }
       | { readonly operation: 'checkpoint' | 'reclaim' | 'close' }
     ));
 
@@ -187,6 +191,11 @@ export type ControlWorkerReply = {
       readonly status: 'ok';
       readonly operation: 'maintenance';
       readonly result: ControlMaintenanceAdmissionResult;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'terminal';
+      readonly result: ControlTerminalResult;
     }
   | {
       readonly status: 'ok';
@@ -316,6 +325,34 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     } catch {
       return false;
     }
+  }
+  if (reply.operation === 'terminal') {
+    const result = reply.result;
+    return (
+      isRecord(result) &&
+      typeof result.turnId === 'string' &&
+      result.turnId.length > 0 &&
+      Number.isSafeInteger(result.revision) &&
+      (result.revision as number) > 0 &&
+      typeof result.replayed === 'boolean' &&
+      (result.reap === null ||
+        (isRecord(result.reap) &&
+          typeof result.reap.id === 'string' &&
+          result.reap.id.length > 0 &&
+          Number.isSafeInteger(result.reap.sequence) &&
+          (result.reap.sequence as number) > 0)) &&
+      (result.response === null ||
+        (isRecord(result.response) &&
+          result.response.kind === 'turn' &&
+          result.response.id === result.turnId)) &&
+      (result.execution === null ||
+        (isRecord(result.execution) &&
+          typeof result.execution.executionId === 'string' &&
+          result.execution.executionId.length > 0 &&
+          Number.isSafeInteger(result.execution.revision) &&
+          (result.execution.revision as number) > 0 &&
+          (result.execution.phase === 'closing' || result.execution.phase === 'closed')))
+    );
   }
   if (reply.operation === 'maintenance')
     return ControlMaintenanceAdmissionResultSchema.safeParse(reply.result).success;
@@ -470,7 +507,8 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     value.operation === 'project-cleanup' ||
     value.operation === 'observation' ||
     value.operation === 'goal' ||
-    value.operation === 'maintenance'
+    value.operation === 'maintenance' ||
+    value.operation === 'terminal'
   ) {
     try {
       const schema =
@@ -480,7 +518,9 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
             ? ControlGoalCommandInputSchema
             : value.operation === 'maintenance'
               ? ControlMaintenanceAdmissionInputSchema
-              : ControlWorkObservationInputSchema;
+              : value.operation === 'terminal'
+                ? ControlTerminalTransitionSchema
+                : ControlWorkObservationInputSchema;
       return (
         exactFields(value, [...scoped, 'input']) &&
         schema.safeParse(value.input).success &&

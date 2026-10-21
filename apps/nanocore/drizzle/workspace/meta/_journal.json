@@ -92,6 +92,13 @@
       "when": 1792530124911,
       "tag": "0012_execution_journal",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1792546582630,
+      "tag": "0013_work_observations",
+      "breakpoints": true
     }
   ]
 }
