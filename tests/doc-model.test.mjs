@@ -289,8 +289,7 @@ describe('documentation model validator', () => {
       );
       writeFileSync(
         join(root, 'docs/audits/20260102-sample_reading.md'),
-        readFileSync(join(root, 'docs/audits/20260102-sample_reading.md'), 'utf8') +
-          `\nSee \`${legacyPath}\`.\n`
+        `${readFileSync(join(root, 'docs/audits/20260102-sample_reading.md'), 'utf8')}\nSee \`${legacyPath}\`.\n`
       );
 
       assert.deepEqual(validateDocModel(root), []);
@@ -302,7 +301,7 @@ describe('documentation model validator', () => {
       const specPath = 'docs/specs/20260101-sample_design.md';
       writeFileSync(
         join(root, specPath),
-        readFileSync(join(root, specPath), 'utf8') + `\nSee \`${legacyPath}\`.\n`
+        `${readFileSync(join(root, specPath), 'utf8')}\nSee \`${legacyPath}\`.\n`
       );
 
       assert.deepEqual(validateDocModel(root), [
