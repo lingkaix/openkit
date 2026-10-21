@@ -129,7 +129,6 @@ import {
   listThreadPendingRequests,
   type PendingRequestRecord,
   pendingRequestItemId,
-  proveFrozenDelivery,
 } from './runtime/pending-requests.js';
 import {
   observeTurnAdmission,
