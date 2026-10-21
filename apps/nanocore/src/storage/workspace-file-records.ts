@@ -28,7 +28,7 @@ import {
   KnowledgeSourceSchema,
   validKnowledgeProposalShape,
 } from '@openkit/app-api-schemas';
-import { parseRecordEnvelope, WorkspaceConfigSchema } from '@openkit/config-schema';
+import { WorkspaceConfigSchema } from '@openkit/config-schema';
 import {
   ActorRefSchema,
   type ArtifactSchema,
@@ -36,10 +36,13 @@ import {
   ArtifactVersionRecordSchema,
   deriveEntityId,
   entityIdPattern,
-  ItemSchema,
+  type ItemSchema,
+  KnowledgeBaseIdSchema,
   KnowledgeNotebookPageSchema,
   readRetainedV1,
-  SseEventEnvelopeSchema,
+  responsibleUserIdForActor,
+  type ServerTurnEventEnvelope,
+  type SseEventEnvelopeSchema,
   ThreadSchema,
   type TurnSchema,
   WorkerStorageTargetIdSchema,
@@ -56,6 +59,7 @@ import { applyEdits, modify } from 'jsonc-parser';
 import { z } from 'zod';
 import { isScopeAdmitted, refuseScope } from '../bootstrap/readiness.js';
 import { parseJsoncObject } from '../config/jsonc.js';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import {
   parseOkfDocument,
@@ -77,27 +81,38 @@ import {
 import { artifactFilePayloadPath } from './artifacts/file-records.js';
 import { CanonicalPublicationError } from './canonical-publication-error.js';
 import { reserveCanonicalFileWrite } from './canonical-write-capacity.js';
-import { openControlStoreProductReadHandle } from './control-store-products.js';
+import {
+  CONTROL_PRODUCT_LIMITS,
+  type ControlProductContentMount,
+  type ControlProductKind,
+  type ControlProductOwner,
+  type ControlProductSnapshot,
+  openControlStoreProductReadHandle,
+} from './control-store-products.js';
 import {
   assertWorkspaceWorkOwner,
   ensureLayoutDirectories,
   ensureWorkspaceLayoutRoot,
   WorkOwnershipViolationError,
 } from './fs-layout.js';
+import { readImmutableProductJson } from './immutable-content.js';
+import { StoredServerEventV1Schema } from './retained-server-work-v1.js';
 import {
   StoredArtifactSnapshotV1Schema,
   StoredEventPayloadV1Schema,
   StoredEventV1Schema,
+  StoredThreadSnapshotV1Schema,
   StoredTurnSnapshotV1Schema,
   StoredWorkspaceSnapshotV1Schema,
 } from './retained-work-events-v1.js';
-import { StoredItemPayloadV1Schema, StoredItemV1Schema } from './retained-work-items-v1.js';
+import { StoredItemPayloadV1Schema } from './retained-work-items-v1.js';
 import {
   StoredAgentSessionV1Schema,
   StoredArtifactV1Schema,
   StoredTurnV1Schema,
   StoredWorkspaceV1Schema,
 } from './retained-work-metadata-v1.js';
+import { assertServerTurnEventLineage } from './server-thread-records.js';
 
 type WorkspaceRecord = import('zod').infer<typeof WorkspaceRecordSchema>;
 type KnowledgeNotebookPage = import('zod').infer<typeof KnowledgeNotebookPageSchema>;
@@ -107,17 +122,10 @@ type Item = import('zod').infer<typeof ItemSchema>;
 type Artifact = import('zod').infer<typeof ArtifactSchema>;
 type SseEventEnvelope = import('zod').infer<typeof SseEventEnvelopeSchema>;
 
-/** Admission-time resolved capture pair stored on turn.json. */
+/** Admission-time resolved capture pair retained on native Turn metadata. */
 export type { CaptureCoverageBinding };
-/** Admission-time resolved capture pair stored on turn.json. */
+/** Admission-time resolved capture pair retained on native Turn metadata. */
 export { CaptureCoverageBindingSchema };
-
-const THREAD_ENTRY_REQUIRED_FEATURE = 'openkit.thread-entry.v1' as const;
-const THREAD_VISIBILITY_REQUIRED_FEATURE = 'openkit.thread-visibility.v1' as const;
-const THREAD_REQUIRED_FEATURES = [
-  THREAD_ENTRY_REQUIRED_FEATURE,
-  THREAD_VISIBILITY_REQUIRED_FEATURE,
-];
 
 const CanonicalTimestampSchema = z.string().datetime();
 const retainedProposal = Symbol('retainedKnowledgeProposal');
@@ -127,8 +135,6 @@ export const ActorRefReaderSchema = z.union(ActorRefSchema.options.map((schema) 
 const ItemReaderSchema = StoredItemPayloadV1Schema;
 /** Retained Turn snapshots validate attribution and Item relationships independently of wire schemas. */
 export const TurnReaderSchema = StoredTurnSnapshotV1Schema;
-/** Metadata retains its feature and capture declarations without embedded Item payloads. */
-const TurnFileMetadataSchema = StoredTurnV1Schema.omit({ schemaVersion: true });
 /** Body-bearing retained projections preserve immutable Artifact lineage. */
 export const ArtifactReaderSchema = StoredArtifactSnapshotV1Schema;
 /** Historical event meaning is independent of the live protocol version. */
@@ -357,9 +363,15 @@ export function parseCanonicalWorkspaceHistory(input: {
   turnEvents: Array<[string, SseEventEnvelope[]]>;
 } {
   const workspace = StoredWorkspaceSnapshotV1Schema.parse(input.workspace);
-  const threads = input.threads.map((record) => ThreadSchema.parse(record));
-  const turns = input.turns.map((record) => TurnReaderSchema.parse(record));
-  const itemRevisions = input.itemRevisions.map((record) => ItemReaderSchema.parse(record));
+  const retained = <T>(record: unknown, known: T): T =>
+    preserveDescriptiveRecord(record, known, known) as T;
+  const threads = input.threads.map((record) =>
+    retained(record, StoredThreadSnapshotV1Schema.parse(record))
+  );
+  const turns = input.turns.map((record) => retained(record, TurnReaderSchema.parse(record)));
+  const itemRevisions = input.itemRevisions.map((record) =>
+    retained(record, ItemReaderSchema.parse(record))
+  );
   const artifacts = input.artifacts.map((record) => ArtifactReaderSchema.parse(record));
   const knowledgeProposals = (input.knowledgeProposals ?? []).map((record) =>
     parseRetainedKnowledgeProposal(record)
@@ -371,11 +383,11 @@ export function parseCanonicalWorkspaceHistory(input: {
     KnowledgeSourceRecordSchema.parse(record)
   );
   const agentSessions = input.agentSessions.map(
-    (record) => AgentSessionRecordSchema.parse(record) as AgentSession
+    (record) => retained(record, AgentSessionRecordSchema.parse(record)) as AgentSession
   );
   const turnEvents = input.turnEvents.map(
     ([turnId, events]) =>
-      [turnId, events.map((event) => SseEventReaderSchema.parse(event))] as [
+      [turnId, events.map((event) => retained(event, SseEventReaderSchema.parse(event)))] as [
         string,
         SseEventEnvelope[],
       ]
@@ -741,10 +753,8 @@ export function readCanonicalFile(path: string): Buffer {
   }
 }
 
-/** Complete canonical file records for one workspace. */
+/** Complete Workspace history projection joining native products and independently file-owned resources. */
 export interface WorkspaceFileRecords {
-  /** Request-private verified originals consumed only while publishing their new receiving Turn. */
-  readonly turnFilePayloads?: ReadonlyMap<string, readonly string[]>;
   /** Workspace metadata. */
   readonly workspace: WorkspaceRecord;
   /** Exact canonical Notebook pages from the published Git revision. */
@@ -771,11 +781,316 @@ export interface WorkspaceFileRecords {
   readonly turnCaptureCoverage?: ReadonlyMap<string, CaptureCoverageBinding>;
 }
 
+/** File-owned resources exclude all activated native product metadata and histories. */
+type FileOwnedWorkspaceRecords = Pick<
+  WorkspaceFileRecords,
+  'workspace' | 'artifacts' | 'knowledgeProposals' | 'knowledgeProposalReviews'
+>;
+
 /** One published Turn identity read without repairing canonical files. */
 export interface PublishedTurnIdentity {
   readonly threadId: string;
   readonly turnId: string;
   readonly workspaceId: string;
+}
+
+/** Actual physical product and content binding; the locator never selects another owner. */
+export interface NativeProductScope {
+  readonly path: string;
+  readonly owner: ControlProductOwner;
+  readonly contentMount: ControlProductContentMount;
+}
+
+/** Resolves only native owner selectors; metadata reads do not require a content grant or byte mount. */
+export function nativeProductMetadataScope(
+  dataRoot: string,
+  owner: ControlProductOwner,
+  workspaceRoot?: string
+): Pick<NativeProductScope, 'path' | 'owner'> {
+  const root =
+    owner.kind === 'workspace'
+      ? (workspaceRoot ?? join(dataRoot, 'workspaces', owner.workspaceId))
+      : join(dataRoot, 'server');
+  return {
+    path: join(root, 'db', owner.kind === 'workspace' ? 'workspace.sqlite' : 'core.sqlite'),
+    owner,
+  };
+}
+
+/** Resolves retained default Knowledge identity and the actual private product mount for byte access. */
+export function nativeProductScope(
+  dataRoot: string,
+  owner: ControlProductOwner,
+  workspaceRoot?: string
+): NativeProductScope {
+  const root =
+    owner.kind === 'workspace'
+      ? (workspaceRoot ?? join(dataRoot, 'workspaces', owner.workspaceId))
+      : join(dataRoot, 'server');
+  return {
+    path: join(root, 'db', owner.kind === 'workspace' ? 'workspace.sqlite' : 'core.sqlite'),
+    owner,
+    contentMount: {
+      root: join(root, 'content'),
+      mount: 'private',
+      knowledgeBaseId:
+        owner.kind === 'workspace' && workspaceRoot
+          ? KnowledgeBaseIdSchema.parse(
+              readRetainedV1(
+                parseJsoncObject(
+                  readCanonicalTextFile(join(workspaceRoot, 'config', 'workspace.jsonc'))
+                ),
+                WorkspaceConfigSchema.parse
+              ).workspace.defaultKnowledgeBaseId
+            )
+          : readDefaultKnowledgeBaseId({ dataRoot, scope: owner }),
+    },
+  };
+}
+
+/** Materializes one validated retained metadata row in a short read-only SQL snapshot. */
+export function readNativeProduct(
+  scope: Pick<NativeProductScope, 'path' | 'owner'>,
+  kind: ControlProductKind,
+  id: string
+): ControlProductSnapshot | undefined {
+  const reader = openControlStoreProductReadHandle(scope.path, scope.owner);
+  try {
+    return reader.sqlite.transaction(() => {
+      const known = reader.get(kind, id);
+      if (!known) return undefined;
+      const table = {
+        workspace: 'control_workspaces',
+        thread: 'control_threads',
+        turn: 'control_turns',
+        'agent-session': 'control_agent_sessions',
+      }[kind];
+      const raw = reader.sqlite.prepare(`SELECT record_json FROM ${table} WHERE id=?`).get(id) as {
+        record_json: string;
+      };
+      return {
+        revision: known.revision,
+        record: preserveDescriptiveRecord(
+          JSON.parse(raw.record_json),
+          known.record,
+          known.record
+        ) as Record<string, unknown>,
+      };
+    })();
+  } finally {
+    reader.close();
+  }
+}
+
+/** Reads bounded native metadata pages; no cursor or transaction reaches a downstream consumer. */
+export function listNativeProducts(
+  scope: Pick<NativeProductScope, 'path' | 'owner'>,
+  kind: ControlProductKind
+): ControlProductSnapshot[] {
+  const reader = openControlStoreProductReadHandle(scope.path, scope.owner);
+  const result: ControlProductSnapshot[] = [];
+  try {
+    let after = '';
+    for (;;) {
+      const page = reader.sqlite.transaction(() => {
+        const known = reader.list(kind, after);
+        const table = {
+          workspace: 'control_workspaces',
+          thread: 'control_threads',
+          turn: 'control_turns',
+          'agent-session': 'control_agent_sessions',
+        }[kind];
+        const rows = reader.sqlite
+          .prepare(`SELECT id,record_json FROM ${table} WHERE id>? ORDER BY id LIMIT ?`)
+          .all(after, CONTROL_PRODUCT_LIMITS.pageRows) as { id: string; record_json: string }[];
+        const raw = new Map(rows.map((row) => [row.id, JSON.parse(row.record_json)]));
+        return known.map((row) => ({
+          revision: row.revision,
+          record: preserveDescriptiveRecord(
+            raw.get(row.record.id as string),
+            row.record,
+            row.record
+          ) as Record<string, unknown>,
+        }));
+      })();
+      if (!page.length) return result;
+      result.push(...page);
+      after = page.at(-1)!.record.id as string;
+    }
+  } finally {
+    reader.close();
+  }
+}
+
+/** Reads a complete native revision or transcript stream, with exact immutable proof on every row. */
+export function readNativeProductEntries(
+  scope: NativeProductScope,
+  turnId: string,
+  kind: 'item' | 'event'
+) {
+  const reader = openControlStoreProductReadHandle(scope.path, scope.owner);
+  const entries: Array<{ sequence: number; id: string; revision: number; value: unknown }> = [];
+  try {
+    const turn = reader.get('turn', turnId);
+    if (!turn) return entries;
+    let after = 0;
+    for (;;) {
+      const page = reader.entries(turnId, kind, after);
+      if (!page.length) return entries;
+      // The page SELECT has ended before any byte reads. Its descriptors remain immutable.
+      for (const row of page) {
+        if (row.sequence !== after + 1)
+          throw new Error('Control product sequence is recovery_required.');
+        const value = readImmutableProductJson(scope.contentMount, scope.owner, row.content);
+        if (kind === 'item') {
+          const item = readRetainedV1(value, StoredItemPayloadV1Schema.parse);
+          if (
+            !isDeepStrictEqual(item.owner, scope.owner) ||
+            item.id !== row.id ||
+            item.turnId !== turnId ||
+            item.threadId !== turn.record.threadId
+          )
+            throw new Error('Native Item content lineage is recovery_required.');
+        } else {
+          const event = readRetainedV1<
+            z.infer<typeof StoredServerEventV1Schema> | z.infer<typeof StoredEventV1Schema>
+          >(value, (record) =>
+            scope.owner.kind === 'server'
+              ? StoredServerEventV1Schema.parse(record)
+              : StoredEventV1Schema.parse(record)
+          );
+          if (
+            event.turnId !== turnId ||
+            event.threadId !== turn.record.threadId ||
+            event.sequence !== row.sequence ||
+            row.id !== `${turnId}:${event.sequence}` ||
+            (scope.owner.kind === 'workspace'
+              ? !('workspaceId' in event) || event.workspaceId !== scope.owner.workspaceId
+              : !('owner' in event) || !isDeepStrictEqual(event.owner, scope.owner))
+          )
+            throw new Error('Native event content lineage is recovery_required.');
+        }
+        if (
+          value &&
+          typeof value === 'object' &&
+          'requiredFeatures' in value &&
+          (!Array.isArray(value.requiredFeatures) || value.requiredFeatures.length > 0)
+        )
+          throw new Error('Native product required semantics are unsupported.');
+        entries.push({ sequence: row.sequence, id: row.id, revision: row.revision, value });
+        after = row.sequence;
+      }
+    }
+  } finally {
+    reader.close();
+  }
+}
+
+/** Reconstructs current Items in original first-seen order and retains every native revision. */
+export function readNativeTurnHistory(scope: NativeProductScope, turnId: string) {
+  const snapshot = readNativeProduct(scope, 'turn', turnId);
+  if (!snapshot) return undefined;
+  const metadata = StoredTurnV1Schema.parse(snapshot.record);
+  const items = new Map<string, Item>();
+  const revisions: Item[] = [];
+  const counts = new Map<string, number>();
+  for (const row of readNativeProductEntries(scope, turnId, 'item')) {
+    const parsed = readRetainedV1(row.value, StoredItemPayloadV1Schema.parse);
+    const { schemaVersion: _header, ...payload } = row.value as Record<string, unknown>;
+    const item = preserveDescriptiveRecord(payload, parsed, parsed) as Item;
+    const previous = items.get(item.id);
+    if (
+      !isDeepStrictEqual(item.owner, scope.owner) ||
+      item.turnId !== turnId ||
+      item.threadId !== metadata.threadId ||
+      row.id !== item.id ||
+      row.revision !== (counts.get(item.id) ?? 0) + 1 ||
+      (previous && (previous.type !== item.type || previous.createdAt !== item.createdAt))
+    )
+      throw new Error('Native Item revision lineage is recovery_required.');
+    if (previous) assertImmutableItemAttribution(previous, item);
+    if (
+      item.type === 'user-input-request' &&
+      item.responsibleUserId !== responsibleUserIdForActor(metadata.triggerActor)
+    )
+      throw new Error('Native user-input request attribution is recovery_required.');
+    if (item.type === 'user-input-response') {
+      const request = [...items.values()].find(
+        (candidate) =>
+          candidate.type === 'user-input-request' &&
+          candidate.userInputRequestId === item.userInputRequestId
+      );
+      if (request?.type === 'user-input-request' && request.responsibleUserId !== item.actor.id)
+        throw new Error('Native user-input response attribution is recovery_required.');
+    }
+    items.set(item.id, item);
+    counts.set(item.id, row.revision);
+    revisions.push(item);
+  }
+  const {
+    schemaVersion: _header,
+    captureCoverage: _coverage,
+    requiredFeatures: _features,
+    ...payload
+  } = snapshot.record;
+  const turn = { ...payload, items: [...items.values()] } as Turn;
+  TurnReaderSchema.parse(turn);
+  return {
+    revision: snapshot.revision,
+    metadata: snapshot.record,
+    turn,
+    itemRevisions: revisions,
+    captureCoverage: metadata.captureCoverage ?? null,
+  };
+}
+
+/** Reads complete ordered native transcript history and validates retained lineage. */
+export function readNativeTurnEvents(
+  scope: NativeProductScope,
+  turn: Turn
+): Array<SseEventEnvelope | ServerTurnEventEnvelope> {
+  const itemIds = new Set(turn.items.map((item) => item.id));
+  return readNativeProductEntries(scope, turn.id, 'event').map((row) => {
+    const event = readRetainedV1<
+      z.infer<typeof StoredServerEventV1Schema> | z.infer<typeof StoredEventV1Schema>
+    >(row.value, (value) =>
+      scope.owner.kind === 'server'
+        ? StoredServerEventV1Schema.parse(value)
+        : StoredEventV1Schema.parse(value)
+    );
+    if (
+      row.revision !== 1 ||
+      row.id !== `${turn.id}:${row.sequence}` ||
+      event.sequence !== row.sequence ||
+      event.threadId !== turn.threadId ||
+      event.turnId !== turn.id ||
+      event.event !== event.data.type.replaceAll('-', '.')
+    )
+      throw new Error('Native transcript lineage is recovery_required.');
+    if (scope.owner.kind === 'workspace') {
+      if (!('workspaceId' in event) || event.workspaceId !== scope.owner.workspaceId)
+        throw new Error('Native transcript Workspace is recovery_required.');
+      assertTurnEventPayloadLineage(
+        event as SseEventEnvelope,
+        scope.owner.workspaceId,
+        turn.threadId,
+        turn.id,
+        itemIds
+      );
+    } else {
+      if (!('owner' in event) || !isDeepStrictEqual(event.owner, scope.owner))
+        throw new Error('Native transcript owner is recovery_required.');
+      assertServerTurnEventLineage(
+        event as Parameters<typeof assertServerTurnEventLineage>[0],
+        turn
+      );
+    }
+    const { schemaVersion: _header, ...payload } = row.value as Record<string, unknown>;
+    const { schemaVersion: _knownHeader, ...known } = event;
+    return preserveDescriptiveRecord(payload, known, known) as
+      | SseEventEnvelope
+      | ServerTurnEventEnvelope;
+  });
 }
 
 /** Read-only result of scanning published Turn files. */
@@ -788,40 +1103,20 @@ export type PublishedAgentSessionIdRead =
   | { readonly sessionIds: readonly string[]; readonly status: 'readable' }
   | { readonly status: 'unreadable' };
 
-/**
- * Reads published Turn identities without creating layout, rewriting Thread envelopes, or repairing history.
- *
- * @param dataRoot Data root whose workspace tree should be inspected.
- * @returns Turn identities whose file lineage matches their directories, or `unreadable` when a Turn file is missing or corrupt.
- */
+/** Reads native Turn selectors without body disclosure, file repair or layout creation. */
 export function readPublishedTurnIdentities(dataRoot: string): PublishedTurnIdentityRead {
   try {
     const turns: PublishedTurnIdentity[] = [];
-    const workspacesRoot = join(dataRoot, 'workspaces');
-    for (const workspaceId of listDirectoryNames(workspacesRoot)) {
+    for (const workspaceId of listDirectoryNames(join(dataRoot, 'workspaces'))) {
       if (workspaceId === '.staging') continue;
-      const workspaceRoot = join(workspacesRoot, workspaceId);
-      const workspaceRecord = readRetainedV1(
-        readJson(join(workspaceRoot, 'workspace-record.json')),
-        WorkspaceSystemRecordSchema.parse
-      );
-      if (workspaceRecord.id !== workspaceId) {
-        return { status: 'unreadable' };
-      }
-      const threadsRoot = join(workspaceRoot, 'threads');
-      for (const threadId of listDirectoryNames(threadsRoot)) {
-        const threadPath = join(threadsRoot, threadId, 'thread.json');
-        const thread = parseCanonicalThreadRecord(readJson(threadPath), workspaceId, threadId);
-        if (thread.id !== threadId || workspaceIdForOwner(thread.owner) !== workspaceId) {
-          return { status: 'unreadable' };
-        }
-        const turnsRoot = join(threadsRoot, threadId, 'turns');
-        for (const turnId of listDirectoryNames(turnsRoot)) {
-          if (!readPublishedTurnFileRecords(dataRoot, workspaceId, threadId, turnId))
-            return { status: 'unreadable' };
-          turns.push({ threadId, turnId, workspaceId });
-        }
-      }
+      const scope = nativeProductScope(dataRoot, { kind: 'workspace', workspaceId });
+      if (!readNativeProduct(scope, 'workspace', workspaceId)) return { status: 'unreadable' };
+      for (const row of listNativeProducts(scope, 'turn'))
+        turns.push({
+          workspaceId,
+          threadId: row.record.threadId as string,
+          turnId: row.record.id as string,
+        });
     }
     return { status: 'readable', turns };
   } catch {
@@ -829,16 +1124,7 @@ export function readPublishedTurnIdentities(dataRoot: string): PublishedTurnIden
   }
 }
 
-/**
- * Validates one published Turn and its complete Item history without rewriting canonical files.
- *
- * @param dataRoot Data root containing the exact owning Workspace.
- * @param workspaceId Owning Workspace id.
- * @param threadId Owning Thread id.
- * @param turnId Turn directory id.
- * @returns Canonical Turn, complete Item revisions and immutable capture pair, or null when either required file is missing.
- * @throws Error when the Turn schema, lineage, or Item history cannot be read.
- */
+/** Reads an admitted Turn from native metadata and exact immutable revision history. */
 export function readPublishedTurnFileRecords(
   dataRoot: string,
   workspaceId: string,
@@ -849,123 +1135,33 @@ export function readPublishedTurnFileRecords(
   readonly itemRevisions: readonly Item[];
   readonly captureCoverage: CaptureCoverageBinding | null;
 } | null {
-  assertSafeWorkspacePathSegment(workspaceId, 'Workspace id');
-  assertSafeWorkspacePathSegment(threadId, 'Thread id');
-  assertSafeWorkspacePathSegment(turnId, 'Turn id');
-  let turnRoot = dataRoot;
-  assertCanonicalDirectory(turnRoot);
-  // Direct scoped reads must keep the parent checks that directory enumeration supplied.
-  for (const segment of ['workspaces', workspaceId, 'threads', threadId, 'turns', turnId]) {
-    turnRoot = join(turnRoot, segment);
-    if (!lstatSync(turnRoot, { throwIfNoEntry: false })) return null;
-    assertCanonicalDirectory(turnRoot);
-  }
-  const turnPath = join(turnRoot, 'turn.json');
-  if (!existsSync(turnPath)) {
-    return null;
-  }
-  const rawTurn = readRetainedV1(readJson(turnPath), (record) => record as Record<string, unknown>);
-  if (rawTurn.items !== undefined && (!Array.isArray(rawTurn.items) || rawTurn.items.length > 0)) {
-    throw new Error(`Canonical turn metadata must not embed items: ${turnId}.`);
-  }
-  const turnWithoutItems = TurnFileMetadataSchema.parse({ ...rawTurn, items: [] });
-  if (
-    turnWithoutItems.id !== turnId ||
-    workspaceIdForOwner(turnWithoutItems.owner) !== workspaceId ||
-    turnWithoutItems.threadId !== threadId
-  ) {
-    throw new Error(`Turn record ${turnWithoutItems.id} has invalid lineage.`);
-  }
-  const itemsPath = join(turnRoot, 'items.jsonl');
-  if (!existsSync(itemsPath)) {
-    return null;
-  }
-  const history = readPublishedItemRevisions(itemsPath, workspaceId, threadId, turnId);
+  const history = readNativeTurnHistory(
+    nativeProductScope(dataRoot, { kind: 'workspace', workspaceId }),
+    turnId
+  );
+  if (!history || history.turn.threadId !== threadId) return null;
+  verifyTurnFileInputs(join(dataRoot, 'workspaces', workspaceId), history.turn);
   return {
-    turn: TurnReaderSchema.parse({ ...turnWithoutItems, items: history.items }),
-    itemRevisions: history.revisions,
-    captureCoverage: turnWithoutItems.captureCoverage ?? null,
+    turn: history.turn,
+    itemRevisions: history.itemRevisions,
+    captureCoverage: history.captureCoverage,
   };
 }
 
-/**
- * Reads Item revisions with the canonical JSONL rules and does not repair the file.
- *
- * An incomplete final fragment is ignored. A completed malformed row is rejected.
- *
- * @param path Item JSONL path.
- * @param workspaceId Owning Workspace id.
- * @param threadId Owning Thread id.
- * @param turnId Owning Turn id.
- * @returns Current Items in first-seen order and every validated append-order revision.
- */
-function readPublishedItemRevisions(
-  path: string,
-  workspaceId: string,
-  threadId: string,
-  turnId: string
-): { readonly items: Item[]; readonly revisions: Item[] } {
-  const order: string[] = [];
-  const items = new Map<string, Item>();
-  const revisions: Item[] = [];
-  for (const value of readDurableCanonicalJsonLines(path)) {
-    const item = readRetainedV1(value, ItemReaderSchema.parse);
-    const previous = items.get(item.id);
-    if (
-      workspaceIdForOwner(item.owner) !== workspaceId ||
-      item.threadId !== threadId ||
-      item.turnId !== turnId
-    ) {
-      throw new Error(`Item record ${item.id} has invalid lineage.`);
-    }
-    if (previous && (item.type !== previous.type || item.createdAt !== previous.createdAt)) {
-      throw new Error(`Item revision changed immutable identity: ${item.id}.`);
-    }
-    if (previous) {
-      assertImmutableItemAttribution(previous, item);
-    }
-    if (!items.has(item.id)) {
-      order.push(item.id);
-    }
-    items.set(item.id, item);
-    revisions.push(item);
-  }
-  return { items: order.map((itemId) => items.get(itemId) as Item), revisions };
-}
-
-/**
- * Reads published AgentSession ids without repairing session records.
- *
- * @param dataRoot Data root that owns the Workspace.
- * @param workspaceId Workspace whose runtime session directory should be inspected.
- * @returns Session ids, or `unreadable` when a session directory cannot be proved.
- */
+/** Reads native AgentSession selectors and their actual Thread dependencies. */
 export function readPublishedAgentSessionIds(
   dataRoot: string,
   workspaceId: string
 ): PublishedAgentSessionIdRead {
   try {
-    const root = join(dataRoot, 'workspaces', workspaceId, 'runtime', 'agent-sessions');
-    const sessionIds: string[] = [];
-    for (const sessionId of listDirectoryNames(root)) {
-      const sessionPath = join(root, sessionId, 'session.json');
-      if (!existsSync(sessionPath)) {
-        return { status: 'unreadable' };
-      }
-      const session = readRetainedV1(readJson(sessionPath), AgentSessionRecordSchema.parse);
-      if (
-        session.id !== sessionId ||
-        session.workspaceId !== workspaceId ||
-        !session.threadId ||
-        !existsSync(
-          join(dataRoot, 'workspaces', workspaceId, 'threads', session.threadId, 'thread.json')
-        )
-      ) {
-        return { status: 'unreadable' };
-      }
-      sessionIds.push(session.id);
-    }
-    return { sessionIds, status: 'readable' };
+    const scope = nativeProductScope(dataRoot, { kind: 'workspace', workspaceId });
+    const sessionIds = listNativeProducts(scope, 'agent-session').map((row) => {
+      const session = AgentSessionRecordSchema.parse(row.record);
+      if (!session.threadId || !readNativeProduct(scope, 'thread', session.threadId))
+        throw new Error('Native AgentSession lineage is recovery_required.');
+      return session.id;
+    });
+    return { status: 'readable', sessionIds };
   } catch {
     return { status: 'unreadable' };
   }
@@ -979,7 +1175,8 @@ export function readPublishedAgentSessionIds(
  * @throws When the shared container or a Workspace identity is unsafe rather than an attributable record failure.
  */
 export function loadWorkspaceFileRecords(dataRoot: string): WorkspaceFileRecords[] {
-  const workspacesRoot = ensureLayoutDirectories(dataRoot).workspaces;
+  const workspacesRoot = join(dataRoot, 'workspaces');
+  if (!lstatSync(workspacesRoot, { throwIfNoEntry: false })) return [];
   assertCanonicalDirectory(workspacesRoot);
   const records: WorkspaceFileRecords[] = [];
   for (const workspaceId of listDirectoryNames(workspacesRoot).filter(
@@ -1021,24 +1218,6 @@ export function loadWorkspaceFileRecords(dataRoot: string): WorkspaceFileRecords
   return records.filter((record) => isScopeAdmitted(dataRoot, 'workspace', record.workspace.id));
 }
 
-/**
- * Applies existing append-tail recovery only after the complete Workspace file and SQL admission.
- * Validation reads remain non-mutating, including when a later record refuses the Workspace.
- * @param workspaceRoot Admitted canonical Workspace root.
- * @param records Fully validated history belonging to this Workspace.
- * @throws When an admitted append boundary cannot be normalized.
- */
-export function normalizeAdmittedWorkspaceLogTails(
-  workspaceRoot: string,
-  records: WorkspaceFileRecords
-): void {
-  for (const turn of records.turns) {
-    const root = join(workspaceRoot, 'threads', turn.threadId, 'turns', turn.id);
-    normalizeAppendBoundary(join(root, 'items.jsonl'));
-    normalizeAppendBoundary(join(root, 'runtime', 'events.jsonl'));
-  }
-}
-
 /** Discards abandoned private staging at Store startup, before any live admission. Read-only canonical inspection must never delete a concurrent capture. */
 export function discardAbandonedWorkspaceStaging(dataRoot: string): void {
   const root = ensureLayoutDirectories(dataRoot).workspaces;
@@ -1046,111 +1225,27 @@ export function discardAbandonedWorkspaceStaging(dataRoot: string): void {
   rmSync(join(root, '.staging'), { recursive: true, force: true });
 }
 
-/** Reports only an acknowledged canonical record, never an unpublished staged leaf. */
-type RecordPublished = (kind: 'thread' | 'turn' | 'agent-session', id: string) => void;
-
 /**
- * Writes one workspace's mutable canonical file records under a resolved root.
+ * Writes only still-file-owned configuration, Artifacts and Knowledge Proposals under a resolved root.
  *
  * @param workspaceRoot Resolved workspace root.
  * @param records Current workspace records.
  * @param updateWorkspaceConfigName Whether Core may refresh its owned config name.
  * @param initialArtifact Actual admitted v1 record and optional original for one initial directory publication.
- * @param onRecordPublished Publishes a derivative cache at its own durable commit, even if a later record fails.
  */
 export function writeWorkspaceFileRecords(
   workspaceRoot: string,
-  records: WorkspaceFileRecords,
+  records: FileOwnedWorkspaceRecords,
   updateWorkspaceConfigName = false,
-  initialArtifact?: { readonly record: ArtifactVersionRecord; readonly payloadPath?: string },
-  onRecordPublished?: RecordPublished
+  initialArtifact?: { readonly record: ArtifactVersionRecord; readonly payloadPath?: string }
 ): void {
   assertSafeWorkspaceFileRecordIds(records);
   assertExistingWorkspaceDirectoryParents(workspaceRoot);
   ensureWorkspaceLayoutRoot(workspaceRoot);
   assertExistingWorkspaceDirectoryParents(workspaceRoot);
   writeWorkspaceConfiguration(workspaceRoot, records.workspace, updateWorkspaceConfigName);
-  writeTurns(workspaceRoot, records, onRecordPublished);
   writeKnowledge(workspaceRoot, records);
   writeArtifacts(workspaceRoot, records, initialArtifact);
-  writeAgentSessions(workspaceRoot, records, onRecordPublished);
-}
-
-/**
- * Appends one full item revision to its owning turn log.
- *
- * @param workspaceRoot Resolved workspace root.
- * @param item Item revision to append.
- */
-export function appendWorkspaceItemRevision(workspaceRoot: string, item: Item): void {
-  const parsed = ItemSchema.parse(item);
-
-  assertSafeWorkspacePathSegment(parsed.id, 'Item id');
-  assertSafeWorkspacePathSegment(parsed.threadId, 'Item thread id');
-  assertSafeWorkspacePathSegment(parsed.turnId, 'Item turn id');
-  const path = join(
-    workspaceRoot,
-    'threads',
-    parsed.threadId,
-    'turns',
-    parsed.turnId,
-    'items.jsonl'
-  );
-
-  for (const parent of [
-    workspaceRoot,
-    join(workspaceRoot, 'threads'),
-    join(workspaceRoot, 'threads', parsed.threadId),
-    join(workspaceRoot, 'threads', parsed.threadId, 'turns'),
-    dirname(path),
-  ]) {
-    assertCanonicalDirectory(parent);
-  }
-  appendCanonicalTextFile(
-    path,
-    `${JSON.stringify(StoredItemV1Schema.parse(writeRetainedV1(parsed)))}\n`
-  );
-}
-
-/**
- * Appends one validated event envelope to its owning turn event log.
- *
- * @param workspaceRoot Resolved workspace root.
- * @param event Event envelope to append.
- */
-export function appendWorkspaceTurnEvent(workspaceRoot: string, event: SseEventEnvelope): void {
-  const parsed = SseEventEnvelopeSchema.parse(event);
-
-  if (!parsed.threadId || !parsed.turnId) {
-    throw new Error('Turn event storage requires thread and turn lineage.');
-  }
-  assertSafeWorkspacePathSegment(parsed.threadId, 'Event thread id');
-  assertSafeWorkspacePathSegment(parsed.turnId, 'Event turn id');
-
-  const path = join(
-    workspaceRoot,
-    'threads',
-    parsed.threadId,
-    'turns',
-    parsed.turnId,
-    'runtime',
-    'events.jsonl'
-  );
-
-  for (const parent of [
-    workspaceRoot,
-    join(workspaceRoot, 'threads'),
-    join(workspaceRoot, 'threads', parsed.threadId),
-    join(workspaceRoot, 'threads', parsed.threadId, 'turns'),
-    join(workspaceRoot, 'threads', parsed.threadId, 'turns', parsed.turnId),
-  ]) {
-    assertCanonicalDirectory(parent);
-  }
-  ensureCanonicalDirectory(dirname(path));
-  appendCanonicalTextFile(
-    path,
-    `${JSON.stringify(StoredEventV1Schema.parse(writeRetainedV1(parsed)))}\n`
-  );
 }
 
 /**
@@ -1213,75 +1308,25 @@ function loadWorkspace(workspaceRoot: string, workspaceId: string): WorkspaceFil
     );
   }
 
+  const scope = nativeProductScope(
+    dirname(dirname(workspaceRoot)),
+    { kind: 'workspace', workspaceId },
+    workspaceRoot
+  );
   const turns: Turn[] = [];
   const itemRevisions: Item[] = [];
   const streamEvents: Array<readonly [string, readonly SseEventEnvelope[]]> = [];
   const turnCaptureCoverage = new Map<string, CaptureCoverageBinding>();
-  const threadsRoot = join(workspaceRoot, 'threads');
-
-  for (const thread of threads) {
-    const threadId = thread.id;
-    const threadRoot = join(threadsRoot, threadId);
-    if (lstatSync(threadRoot, { throwIfNoEntry: false })) {
-      assertCanonicalDirectory(threadRoot);
-    }
-    const turnsRoot = join(threadRoot, 'turns');
-
-    for (const turnId of listDirectoryNames(turnsRoot)) {
-      const turnPath = join(turnsRoot, turnId, 'turn.json');
-
-      if (!existsSync(turnPath)) {
-        throw new Error(`Canonical turn directory is missing turn.json: ${turnId}.`);
-      }
-
-      const rawTurn = readRetainedV1(
-        readJson(turnPath),
-        (record) => record as Record<string, unknown>
-      );
-      assertWorkspaceWorkOwner(rawTurn, workspaceId);
-      if (
-        rawTurn.items !== undefined &&
-        (!Array.isArray(rawTurn.items) || rawTurn.items.length > 0)
-      ) {
-        throw new Error(`Canonical turn metadata must not embed items: ${turnId}.`);
-      }
-      if (rawTurn.captureCoverage !== undefined) {
-        const parsedCoverage = CaptureCoverageBindingSchema.safeParse(rawTurn.captureCoverage);
-        if (!parsedCoverage.success) {
-          throw new Error(
-            `Canonical turn metadata has an invalid capture coverage binding: ${turnId}.`
-          );
-        }
-        turnCaptureCoverage.set(turnId, parsedCoverage.data);
-      }
-      const turnWithoutItems = TurnFileMetadataSchema.parse({ ...rawTurn, items: [] });
-
-      if (
-        turnWithoutItems.id !== turnId ||
-        workspaceIdForOwner(turnWithoutItems.owner) !== workspaceId ||
-        turnWithoutItems.threadId !== threadId
-      ) {
-        throw new Error(`Turn record ${turnWithoutItems.id} has invalid lineage.`);
-      }
-
-      const itemsPath = join(turnsRoot, turnId, 'items.jsonl');
-      if (!existsSync(itemsPath)) {
-        throw new Error(`Canonical turn directory is missing items.jsonl: ${turnId}.`);
-      }
-
-      const loadedItems = loadItemRevisions(itemsPath, workspaceId, threadId, turnId);
-      const turn = TurnReaderSchema.parse({ ...turnWithoutItems, items: loadedItems.current });
-      verifyTurnFileInputs(workspaceRoot, turn);
-      const runtimeRoot = join(turnsRoot, turnId, 'runtime');
-      if (lstatSync(runtimeRoot, { throwIfNoEntry: false })) {
-        assertCanonicalDirectory(runtimeRoot);
-      }
-      const events = readWorkspaceTurnEvents(workspaceRoot, turn);
-
-      itemRevisions.push(...loadedItems.revisions);
-      turns.push(turn);
-      streamEvents.push([turnId, events]);
-    }
+  for (const snapshot of listNativeProducts(scope, 'turn')) {
+    const history = readNativeTurnHistory(scope, snapshot.record.id as string)!;
+    verifyTurnFileInputs(workspaceRoot, history.turn);
+    turns.push(history.turn);
+    itemRevisions.push(...history.itemRevisions);
+    if (history.captureCoverage) turnCaptureCoverage.set(history.turn.id, history.captureCoverage);
+    streamEvents.push([
+      history.turn.id,
+      readNativeTurnEvents(scope, history.turn) as SseEventEnvelope[],
+    ]);
   }
 
   const threadIds = new Set(threads.map((thread) => thread.id));
@@ -1295,7 +1340,9 @@ function loadWorkspace(workspaceRoot: string, workspaceId: string): WorkspaceFil
     new Map(knowledgeProposals.map((proposal) => [proposal.id, proposal]))
   );
   const knowledgeSources = loadKnowledgeSources(workspaceRoot, workspaceId, threadIds, turnsById);
-  const agentSessions = loadAgentSessions(workspaceRoot, workspaceId, threadIds);
+  const agentSessions = listNativeProducts(scope, 'agent-session').map(
+    (row) => AgentSessionRecordSchema.parse(row.record) as AgentSession
+  );
   const workspace = WorkspaceRecordSchema.parse({
     ...workspaceRecord,
     name: workspaceConfig.workspace.name,
@@ -1387,122 +1434,17 @@ export function writeWorkspaceConfiguration(
  * @returns System-owned Workspace record without editable or derived fields.
  */
 export function projectWorkspaceSystemRecord(workspace: WorkspaceRecord) {
-  return WorkspaceSystemRecordSchema.parse({
-    id: workspace.id,
-    kind: workspace.kind,
-    status: workspace.status,
-    importedFrom: workspace.importedFrom,
-    createdAt: workspace.createdAt,
-    updatedAt: workspace.updatedAt,
-  });
+  const { name: _name, counts: _counts, ...record } = workspace;
+  const known = WorkspaceSystemRecordSchema.parse(record);
+  return preserveDescriptiveRecord(record, known, known) as typeof known;
 }
 
-/**
- * Reads one turn's complete canonical event history.
- *
- * @param workspaceRoot Owning workspace root.
- * @param turn Turn whose validated event log should be read.
- * @returns Every event from sequence one in append order.
- */
+/** Reads the complete native transcript, never a mutable event file. */
 export function readWorkspaceTurnEvents(workspaceRoot: string, turn: Turn): SseEventEnvelope[] {
-  assertSafeWorkspacePathSegment(turn.threadId, 'Event thread id');
-  assertSafeWorkspacePathSegment(turn.id, 'Event turn id');
-  return loadTurnEvents(
-    join(workspaceRoot, 'threads', turn.threadId, 'turns', turn.id, 'runtime', 'events.jsonl'),
-    workspaceIdForOwner(turn.owner),
-    turn.threadId,
-    turn.id,
-    new Set(turn.items.map((item) => item.id))
-  );
-}
-
-/**
- * Loads the latest revision for each item while preserving first-id order.
- *
- * @param path Item JSONL path.
- * @param workspaceId Expected workspace id.
- * @param threadId Expected thread id.
- * @param turnId Expected turn id.
- * @returns Latest item revisions.
- */
-function loadItemRevisions(
-  path: string,
-  workspaceId: string,
-  threadId: string,
-  turnId: string
-): { current: Item[]; revisions: Item[] } {
-  const order: string[] = [];
-  const items = new Map<string, Item>();
-  const revisions: Item[] = [];
-
-  for (const value of readDurableCanonicalJsonLines(path)) {
-    const item = readRetainedV1(value, ItemReaderSchema.parse);
-    assertWorkspaceWorkOwner(item, workspaceId);
-    const previous = items.get(item.id);
-
-    if (
-      workspaceIdForOwner(item.owner) !== workspaceId ||
-      item.threadId !== threadId ||
-      item.turnId !== turnId
-    ) {
-      throw new Error(`Item record ${item.id} has invalid lineage.`);
-    }
-    if (previous && (item.type !== previous.type || item.createdAt !== previous.createdAt)) {
-      throw new Error(`Item revision changed immutable identity: ${item.id}.`);
-    }
-    if (previous) {
-      assertImmutableItemAttribution(previous, item);
-    }
-    if (!items.has(item.id)) {
-      order.push(item.id);
-    }
-    items.set(item.id, item);
-    revisions.push(item);
-  }
-
-  return { current: order.map((itemId) => items.get(itemId) as Item), revisions };
-}
-
-/**
- * Loads and validates the retained event window for one turn.
- *
- * @param path Event JSONL path.
- * @param workspaceId Expected workspace id.
- * @param threadId Expected thread id.
- * @param turnId Expected turn id.
- * @param itemIds Item ids owned by the turn.
- * @returns Every event envelope in append order.
- */
-function loadTurnEvents(
-  path: string,
-  workspaceId: string,
-  threadId: string,
-  turnId: string,
-  itemIds: ReadonlySet<string>
-): SseEventEnvelope[] {
-  const rows = lstatSync(path, { throwIfNoEntry: false })
-    ? readDurableCanonicalJsonLines(path)
-    : [];
-  const events = rows.map((value) => readRetainedV1(value, SseEventReaderSchema.parse));
-
-  for (const [index, event] of events.entries()) {
-    if (
-      event.workspaceId !== workspaceId ||
-      event.threadId !== threadId ||
-      event.turnId !== turnId
-    ) {
-      throw new Error(`Turn event ${event.event} has invalid lineage for ${turnId}.`);
-    }
-    assertTurnEventPayloadLineage(event, workspaceId, threadId, turnId, itemIds);
-    const expectedSequence = index + 1;
-    if (event.sequence !== expectedSequence) {
-      throw new Error(
-        `Turn event sequence must be contiguous from 1 for ${turnId}; expected ${expectedSequence}, received ${event.sequence}.`
-      );
-    }
-  }
-
-  return events;
+  return readNativeTurnEvents(
+    nativeProductScope(dirname(dirname(workspaceRoot)), turn.owner, workspaceRoot),
+    turn
+  ) as SseEventEnvelope[];
 }
 
 /**
@@ -2019,90 +1961,19 @@ function loadArtifacts(
 }
 
 /**
- * Loads durable AgentSession JSON records.
- *
- * @param workspaceRoot Published workspace root.
- * @param workspaceId Owning workspace id.
- * @param threadIds Known thread ids.
- * @returns AgentSessions in directory-name order.
- */
-function loadAgentSessions(
-  workspaceRoot: string,
-  workspaceId: string,
-  threadIds: ReadonlySet<string>
-): AgentSession[] {
-  const root = join(workspaceRoot, 'runtime', 'agent-sessions');
-
-  return listDirectoryNames(root).map((sessionId) => {
-    const sessionPath = join(root, sessionId, 'session.json');
-
-    if (!existsSync(sessionPath)) {
-      throw new Error(`Canonical AgentSession directory is missing session.json: ${sessionId}.`);
-    }
-
-    const session = readRetainedV1(
-      readJson(sessionPath),
-      AgentSessionRecordSchema.parse
-    ) as AgentSession;
-
-    if (
-      session.id !== sessionId ||
-      session.workspaceId !== workspaceId ||
-      !session.threadId ||
-      !threadIds.has(session.threadId)
-    ) {
-      throw new Error(`AgentSession ${sessionId} has invalid lineage.`);
-    }
-
-    return session;
-  });
-}
-
-/**
  * Validates every record id used to derive a canonical file or directory path.
  *
  * @param records Workspace records about to be published.
  * @throws Error when an id is not a safe canonical owner path.
  */
-function assertSafeWorkspaceFileRecordIds(records: WorkspaceFileRecords): void {
+function assertSafeWorkspaceFileRecordIds(records: FileOwnedWorkspaceRecords): void {
   assertSafeWorkspacePathSegment(records.workspace.id, 'Workspace id');
-  for (const thread of records.threads) {
-    assertSafeWorkspacePathSegment(thread.id, 'Thread id');
-  }
-  for (const turn of records.turns) {
-    assertSafeWorkspacePathSegment(turn.id, 'Turn id');
-    assertSafeWorkspacePathSegment(turn.threadId, 'Turn thread id');
-    for (const item of turn.items) {
-      assertSafeWorkspacePathSegment(item.id, 'Item id');
-      assertSafeWorkspacePathSegment(item.threadId, 'Item thread id');
-      assertSafeWorkspacePathSegment(item.turnId, 'Item turn id');
-    }
-  }
-  for (const item of records.itemRevisions) {
-    assertSafeWorkspacePathSegment(item.id, 'Item id');
-    assertSafeWorkspacePathSegment(item.threadId, 'Item thread id');
-    assertSafeWorkspacePathSegment(item.turnId, 'Item turn id');
-  }
-  for (const entry of records.knowledge) {
-    for (const segment of KnowledgeProposalPageIdSchema.parse(entry.id).split('/')) {
-      assertSafeWorkspacePathSegment(segment, 'Knowledge entry id segment');
-    }
-  }
-  for (const proposal of records.knowledgeProposals) {
+  for (const proposal of records.knowledgeProposals)
     assertSafeWorkspacePathSegment(proposal.id, 'Knowledge proposal id');
-  }
-  for (const review of records.knowledgeProposalReviews) {
+  for (const review of records.knowledgeProposalReviews)
     assertSafeWorkspacePathSegment(review.proposalId, 'Knowledge proposal review id');
-  }
-  for (const source of records.knowledgeSources) {
-    assertSafeWorkspacePathSegment(source.id, 'Knowledge source id');
-  }
-  for (const artifact of records.artifacts) {
+  for (const artifact of records.artifacts)
     assertSafeWorkspacePathSegment(artifact.id, 'Artifact id');
-  }
-  for (const session of records.agentSessions) {
-    assertSafeWorkspacePathSegment(session.id, 'AgentSession id');
-  }
 }
 
 /**
@@ -2126,37 +1997,6 @@ function assertExistingWorkspaceDirectoryParents(workspaceRoot: string): void {
       assertCanonicalDirectory(path);
     }
   }
-}
-
-/** Validates the reset-cohort Thread envelope without converting or rewriting predecessors. */
-function parseCanonicalThreadRecord(input: unknown, workspaceId: string, threadId: string): Thread {
-  const envelope = parseRecordEnvelope(input, { supportedFeatures: THREAD_REQUIRED_FEATURES });
-  assertWorkspaceWorkOwner(input, workspaceId);
-  if (
-    envelope.schemaVersion !== 1 ||
-    envelope.recordType !== 'thread' ||
-    envelope.ownerScope !== 'workspace' ||
-    envelope.id !== threadId ||
-    envelope.lineage.workspaceId !== workspaceId ||
-    envelope.lineage.threadId !== threadId ||
-    !envelope.requiredFeatures.includes(THREAD_ENTRY_REQUIRED_FEATURE) ||
-    !envelope.requiredFeatures.includes(THREAD_VISIBILITY_REQUIRED_FEATURE)
-  ) {
-    throw new Error(
-      `Canonical Thread envelope has invalid ownership, lineage or required features: ${threadId}.`
-    );
-  }
-  const thread = ThreadSchema.parse(input);
-  if (envelope.contentDigest !== canonicalThreadContentDigest(thread))
-    throw new Error(`Canonical Thread envelope content digest does not match: ${threadId}.`);
-  return thread;
-}
-
-/** Computes the stable content digest over the strict current Thread payload. */
-function canonicalThreadContentDigest(thread: Thread): string {
-  return `sha256:${createHash('sha256')
-    .update(JSON.stringify(ThreadSchema.parse(thread)))
-    .digest('hex')}`;
 }
 
 /**
@@ -2196,94 +2036,30 @@ export function publishNewRecordDirectory(
   }
 }
 
-/**
- * Writes one Turn directory's metadata, item log, optional event log, and exact original inputs before first publication.
- *
- * @param turnRoot Existing Turn directory, either canonical or staged.
- * @param turn Turn record to write.
- * @param records Workspace records that own the Turn's items and events.
- * @param onMetadataPublished Acknowledges existing canonical metadata before any later log preparation.
- */
-function writeTurnDirectory(
-  turnRoot: string,
+/** Publishes only original inputs before native Turn admission; metadata and histories never enter files. */
+export function publishTurnFileInputs(
+  workspaceRoot: string,
   turn: Turn,
-  records: WorkspaceFileRecords,
-  onMetadataPublished?: () => void
+  sources?: readonly string[]
 ): void {
-  const itemsPath = join(turnRoot, 'items.jsonl');
-  const eventsPath = join(turnRoot, 'runtime', 'events.jsonl');
-  const runtimeRoot = dirname(eventsPath);
-
-  ensureCanonicalDirectory(turnRoot);
-  const turnPath = join(turnRoot, 'turn.json');
-  const newTurn = !existsSync(turnPath);
-  const sources = records.turnFilePayloads?.get(turn.id);
-  if (sources && sources.length !== turn.fileInputs?.length)
-    throw new Error('Turn input publication inventory is inconsistent.');
-  for (const [ordinal, input] of (turn.fileInputs ?? []).entries()) {
-    const payload = join(turnRoot, 'inputs', String(ordinal), 'payload');
-    ensureCanonicalDirectory(dirname(payload));
-    if (sources) publishCanonicalPath(sources[ordinal]!, payload);
-    const measured =
-      sources || newTurn
-        ? measureCanonicalFile(payload)
-        : { byteLength: lstatSync(payload).size, contentDigest: input.contentDigest };
-    assertCanonicalRegularFile(payload);
-    if (measured.byteLength !== input.sizeBytes || measured.contentDigest !== input.contentDigest)
-      throw new Error('Turn original input is recovery_required.');
-  }
-  const previousRaw = existsSync(turnPath)
-    ? readRetainedV1(readJson(turnPath), TurnFileMetadataSchema.parse)
-    : undefined;
-  const previousCoverage =
-    previousRaw?.captureCoverage === undefined
-      ? undefined
-      : CaptureCoverageBindingSchema.parse(previousRaw.captureCoverage);
-  const nextCoverage = records.turnCaptureCoverage?.get(turn.id);
-  if (
-    previousCoverage !== undefined &&
-    nextCoverage !== undefined &&
-    !isDeepStrictEqual(previousCoverage, nextCoverage)
-  ) {
-    throw new Error(`Turn ${turn.id} capture coverage binding is recovery_required.`);
-  }
-  const captureCoverage = nextCoverage ?? previousCoverage;
-  writeRetainedDescriptiveJson(
-    turnPath,
-    {
-      ...turn,
-      items: [],
-      ...(captureCoverage ? { captureCoverage } : {}),
-      ...(previousRaw?.requiredFeatures ? { requiredFeatures: previousRaw.requiredFeatures } : {}),
-    },
-    StoredTurnV1Schema
-  );
-  onMetadataPublished?.();
-  const revisions = records.itemRevisions.filter((item) => item.turnId === turn.id);
-  const itemLogMetadata = lstatSync(itemsPath, { throwIfNoEntry: false });
-  if (!itemLogMetadata) {
-    writeFileAtomic(
-      itemsPath,
-      revisions
-        .map((item) => JSON.stringify(StoredItemV1Schema.parse(writeRetainedV1(item))))
-        .join('\n') + (revisions.length ? '\n' : '')
-    );
-  } else {
-    assertCanonicalRegularFile(itemsPath);
-  }
-  ensureCanonicalDirectory(runtimeRoot);
-  const eventLogMetadata = lstatSync(eventsPath, { throwIfNoEntry: false });
-  if (!eventLogMetadata) {
-    const events = records.streamEvents.find(([turnId]) => turnId === turn.id)?.[1] ?? [];
-    if (events.length > 0) {
-      writeFileAtomic(
-        eventsPath,
-        `${events.map((event) => JSON.stringify(StoredEventV1Schema.parse(writeRetainedV1(event)))).join('\n')}\n`
-      );
+  if (!turn.fileInputs?.length) return;
+  if (!sources || sources.length !== turn.fileInputs.length)
+    throw new Error('Turn input publication requires its exact private originals.');
+  const root = join(workspaceRoot, 'threads', turn.threadId, 'turns', turn.id);
+  ensureCanonicalDirectory(dirname(root));
+  if (existsSync(root))
+    throw new Error('Turn input destination already exists; inspection is required.');
+  publishNewRecordDirectory(workspaceRoot, root, (stage) => {
+    for (const [ordinal, input] of turn.fileInputs!.entries()) {
+      const measured = measureCanonicalFile(sources[ordinal]!);
+      if (measured.byteLength !== input.sizeBytes || measured.contentDigest !== input.contentDigest)
+        throw new Error('Turn original input is recovery_required.');
+      const destination = join(stage, 'inputs', String(ordinal), 'payload');
+      ensureCanonicalDirectory(dirname(destination));
+      publishCanonicalPath(sources[ordinal]!, destination);
     }
-  } else {
-    assertCanonicalRegularFile(eventsPath);
-  }
+  });
+  verifyTurnFileInputs(workspaceRoot, turn);
 }
 
 /** Resolves one stable input ordinal under its exact receiving Turn. Names are never path segments. */
@@ -2401,79 +2177,12 @@ function writeArtifactDirectory(artifactRoot: string, artifact: Artifact): void 
 }
 
 /**
- * Writes only retained child history into a new Thread directory; Thread metadata belongs to SQL.
- *
- * @param threadRoot Existing staging directory that will become the Thread directory.
- * @param threadTurns Turns that belong to this Thread.
- * @param records Workspace records that own those Turns.
- */
-function writeStagedThreadDirectory(
-  threadRoot: string,
-  threadTurns: readonly Turn[],
-  records: WorkspaceFileRecords
-): void {
-  const turnsRoot = join(threadRoot, 'turns');
-  ensureCanonicalDirectory(turnsRoot);
-  for (const turn of threadTurns) {
-    writeTurnDirectory(join(turnsRoot, turn.id), turn, records);
-  }
-}
-
-/**
- * Writes retained Turn metadata while preserving append-only logs and SQL-owned Thread metadata.
- *
- * @param workspaceRoot Resolved workspace root.
- * @param records Current workspace records.
- * @param onRecordPublished Reports acknowledged references before processing later records.
- */
-function writeTurns(
-  workspaceRoot: string,
-  records: WorkspaceFileRecords,
-  onRecordPublished?: RecordPublished
-): void {
-  const root = join(workspaceRoot, 'threads');
-  const expectedThreadIds = new Set(records.threads.map((thread) => thread.id));
-
-  ensureCanonicalDirectory(root);
-  removeStaleDirectories(root, expectedThreadIds);
-
-  for (const thread of records.threads) {
-    const threadRoot = join(root, thread.id);
-    const turnsRoot = join(threadRoot, 'turns');
-    const threadTurns = records.turns.filter((turn) => turn.threadId === thread.id);
-
-    if (!lstatSync(threadRoot, { throwIfNoEntry: false })) {
-      publishNewRecordDirectory(workspaceRoot, threadRoot, (stage) => {
-        writeStagedThreadDirectory(stage, threadTurns, records);
-      });
-      for (const turn of threadTurns) onRecordPublished?.('turn', turn.id);
-      continue;
-    }
-    ensureCanonicalDirectory(threadRoot);
-    ensureCanonicalDirectory(turnsRoot);
-    // An absent cache candidate does not delete retained history. Thread or Workspace deletion owns it.
-
-    for (const turn of threadTurns) {
-      const turnRoot = join(turnsRoot, turn.id);
-      if (lstatSync(turnRoot, { throwIfNoEntry: false })) {
-        writeTurnDirectory(turnRoot, turn, records, () => onRecordPublished?.('turn', turn.id));
-        continue;
-      }
-      publishNewRecordDirectory(workspaceRoot, turnRoot, (stage) => {
-        writeTurnDirectory(stage, turn, records);
-      });
-      onRecordPublished?.('turn', turn.id);
-    }
-  }
-}
-
-/**
  * Writes separate Knowledge Proposal and Review owners without changing notebook content.
  *
  * @param workspaceRoot Resolved workspace root.
  * @param records Current workspace records.
  */
-function writeKnowledge(workspaceRoot: string, records: WorkspaceFileRecords): void {
+function writeKnowledge(workspaceRoot: string, records: FileOwnedWorkspaceRecords): void {
   const proposalsRoot = join(workspaceRoot, 'knowledge', 'proposals');
   const reviewsRoot = join(workspaceRoot, 'knowledge', 'reviews');
   const expectedProposals = new Set(records.knowledgeProposals.map((record) => `${record.id}.md`));
@@ -2540,7 +2249,7 @@ function parseRetainedKnowledgeProposal(value: unknown): KnowledgeProposalRecord
  */
 function writeArtifacts(
   workspaceRoot: string,
-  records: WorkspaceFileRecords,
+  records: FileOwnedWorkspaceRecords,
   initialArtifact?: { readonly record: ArtifactVersionRecord; readonly payloadPath?: string }
 ): void {
   const artifactsRoot = join(workspaceRoot, 'artifacts');
@@ -2602,47 +2311,6 @@ function writeArtifacts(
 }
 
 /**
- * Writes durable AgentSession records and removes stale session directories.
- *
- * @param workspaceRoot Resolved workspace root.
- * @param records Current workspace records.
- * @param onRecordPublished Reports acknowledged references before processing later sessions.
- */
-function writeAgentSessions(
-  workspaceRoot: string,
-  records: WorkspaceFileRecords,
-  onRecordPublished?: RecordPublished
-): void {
-  const root = join(workspaceRoot, 'runtime', 'agent-sessions');
-  const expectedIds = new Set(records.agentSessions.map((session) => session.id));
-
-  ensureCanonicalDirectory(root);
-  removeStaleDirectories(root, expectedIds);
-  for (const session of records.agentSessions) {
-    const sessionRoot = join(root, session.id);
-    if (lstatSync(sessionRoot, { throwIfNoEntry: false })) {
-      ensureCanonicalDirectory(sessionRoot);
-      writeRetainedDescriptiveJson(
-        join(sessionRoot, 'session.json'),
-        session,
-        StoredAgentSessionV1Schema
-      );
-      onRecordPublished?.('agent-session', session.id);
-      continue;
-    }
-    publishNewRecordDirectory(workspaceRoot, sessionRoot, (stage) => {
-      ensureCanonicalDirectory(stage);
-      writeRetainedDescriptiveJson(
-        join(stage, 'session.json'),
-        session,
-        StoredAgentSessionV1Schema
-      );
-    });
-    onRecordPublished?.('agent-session', session.id);
-  }
-}
-
-/**
  * Returns the canonical content file for one artifact format.
  *
  * @param format Artifact content format.
@@ -2660,38 +2328,6 @@ export function artifactContentFileName(format: Artifact['content']['format']): 
  */
 function readJson(path: string): unknown {
   return JSON.parse(readCanonicalTextFile(path)) as unknown;
-}
-
-/**
- * Reads canonical JSONL rows without repairing an incomplete tail or appending a newline.
- *
- * @param path JSONL file path.
- * @returns Parsed completed rows.
- * @throws Error when a newline-terminated row is malformed.
- */
-function readDurableCanonicalJsonLines(path: string): unknown[] {
-  const content = readCanonicalFile(path);
-  const values: unknown[] = [];
-  let rowStart = 0;
-  for (let index = 0; index < content.length; index += 1) {
-    if (content[index] !== 0x0a) continue;
-    const row = content.subarray(rowStart, index);
-    if (row.length > 0) {
-      values.push(JSON.parse(row.toString('utf8')) as unknown);
-    }
-    rowStart = index + 1;
-  }
-  if (rowStart < content.length) {
-    const finalRowText = content.subarray(rowStart).toString('utf8');
-    try {
-      values.push(JSON.parse(finalRowText) as unknown);
-    } catch (error) {
-      if (!isIncompleteJsonFragment(error, finalRowText)) {
-        throw error;
-      }
-    }
-  }
-  return values;
 }
 
 /**
