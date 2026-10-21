@@ -30,7 +30,7 @@ import {
   loadRuntimeConfig,
 } from '../config/runtime-config.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
-import { FsStore } from '../lib/store.js';
+import { commandRequestExpiresAt, commandRequestKey, FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import * as attemptActionOwners from '../scheduler-records.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
@@ -82,6 +82,7 @@ import {
   createNanoHostEffectRequest,
   stableNanoHostEffectJson,
 } from './nanohost-effect-identity.js';
+import * as harnessRecords from './nanohost-harness-records.js';
 import {
   createNanoHostHarnessRuntime,
   deriveNanoHostAgentSessionCompatibilityKey,
@@ -136,6 +137,7 @@ import {
 } from './worker-governance-backend.js';
 import {
   agentSessionCompatibilityKeyFromPackage,
+  prepareWorkerTurnJournalIntents,
   WorkerGovernanceTurnExecutor,
 } from './worker-governance-turn-executor.js';
 import {
@@ -398,6 +400,63 @@ async function submitTestNanoHostTurn(
   return observation;
 }
 
+/** Admits the real Turn binding and original execution obligations before a backend fixture effect. */
+async function admitFactoryTurnJournal(
+  coreDb: ReturnType<typeof createFactoryCoreDb>,
+  environmentPackage: AgentEnvironmentPackage,
+  attemptId: string,
+  identity: WorkerGovernanceBackendSessionIdentity
+): Promise<void> {
+  const store = new FsStore({ dataRoot: coreDb.dataRoot });
+  try {
+    store.getTurnById(environmentPackage.scope.turnId);
+  } catch {
+    await store.createTurn(
+      environmentPackage.scope.workspaceId,
+      environmentPackage.scope.threadId,
+      'Factory backend fixture',
+      environmentPackage.scope.triggerActor,
+      null,
+      {
+        turnId: environmentPackage.scope.turnId,
+        agentId: environmentPackage.agent.agentId,
+        executorKind: 'worker',
+        captureCoverage: { scope: 'server', value: 'off' },
+      }
+    );
+  }
+  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, environmentPackage.scope.workspaceId);
+  try {
+    if (
+      workspaceDb.sqlite
+        .prepare('SELECT 1 FROM control_executions WHERE work_id=?')
+        .get(environmentPackage.scope.turnId)
+    )
+      return;
+    const attempt = attempts.requireSchedulerExecutionAttempt(coreDb, attemptId);
+    const journalIntents = prepareWorkerTurnJournalIntents(
+      workspaceDb,
+      environmentPackage,
+      attempt,
+      {
+        backendKind: identity.backendKind,
+        targetId: identity.runtimeTargetId,
+        allocationRef: attempt.bindingRef,
+      }
+    );
+    await store.updateTurn(
+      environmentPackage.scope.turnId,
+      {
+        agentId: environmentPackage.agent.agentId,
+        agentSessionId: environmentPackage.scope.agentSessionId,
+      },
+      { journalIntents }
+    );
+  } finally {
+    workspaceDb.sqlite.close();
+  }
+}
+
 /** Adds the already-owned pre-effect backend anchor for direct backend-unit materialization. */
 async function anchorNanoHostMaterialization(
   coreDb: ReturnType<typeof createFactoryCoreDb>,
@@ -474,6 +533,7 @@ async function anchorNanoHostMaterialization(
     });
     lease = { sandboxBindingRef };
   }
+  await admitFactoryTurnJournal(coreDb, environmentPackage, leaseId, identity);
   coreDb.sqlite
     .prepare(
       `INSERT INTO worker_backend_sessions (
@@ -1784,7 +1844,7 @@ describe('createConfiguredTurnExecutor', () => {
       });
       const backend = (
         runtime.turnExecutor as unknown as {
-          readonly backend: {
+          readonly backend: WorkerGovernanceBackend & {
             queueAndWaitForHarnessOperation(
               session: unknown,
               operation: 'harness.drain',
@@ -1793,17 +1853,51 @@ describe('createConfiguredTurnExecutor', () => {
           };
         }
       ).backend;
+      const environmentPackage = completeNanoHostPackage({
+        scope: {
+          workspaceId: testEntityId('ws', 'harness-deadline'),
+          threadId: testEntityId('th', 'harness-deadline'),
+          turnId: testEntityId('tu', 'harness-deadline'),
+          agentSessionId: testEntityId('as', 'harness-deadline'),
+        },
+        snapshotId: 'snapshot-harness-deadline',
+      });
+      await authorizeNanoHostPackage(coreDb, environmentPackage);
+      await anchorNanoHostMaterialization(coreDb, backend, environmentPackage);
+      const attemptId = (
+        coreDb.sqlite
+          .prepare('SELECT attempt_id FROM scheduler_execution_attempts WHERE input_ref=?')
+          .get(environmentPackage.snapshotId) as { attempt_id: string }
+      ).attempt_id;
       const session: {
+        environmentPackage: AgentEnvironmentPackage;
+        attemptId: string;
         harnessBindingRef: string;
         harnessInstanceId: string;
         pendingHarnessOperation: { operationId: string | null } | null;
       } = {
+        environmentPackage,
+        attemptId,
         harnessBindingRef: 'harness-binding-never-polled',
         harnessInstanceId: 'harness-never-polled',
         pendingHarnessOperation: null,
       };
+      const queue = harnessRecords.queueNanoHostHarnessOperation;
+      let queued!: () => void;
+      const queuedCommand = new Promise<void>((resolve) => {
+        queued = resolve;
+      });
+      const queueObservation = vi
+        .spyOn(harnessRecords, 'queueNanoHostHarnessOperation')
+        .mockImplementation((...args) => {
+          const sequence = queue(...args);
+          queued();
+          return sequence;
+        });
       const pending = backend.queueAndWaitForHarnessOperation(session, 'harness.drain', {});
       void pending.catch(() => undefined);
+      await Promise.race([queuedCommand, pending]);
+      queueObservation.mockRestore();
       if (dispatched) {
         const command = dispatchNanoHostHarnessOperation(coreDb, {
           sandboxIntegrationBindingRef: 'integration-never-polled',
@@ -2241,7 +2335,10 @@ describe('createConfiguredTurnExecutor', () => {
     const backend = (
       runtime.turnExecutor as unknown as {
         readonly backend: WorkerGovernanceBackend & {
-          bindNativeHandleRecorder(snapshotId: string, recorder: (digest: string) => void): void;
+          bindNativeHandleRecorder(
+            snapshotId: string,
+            recorder: (digest: string) => void | Promise<void>
+          ): Promise<void>;
           inspectTerminalHarnessSession(session: unknown): Promise<void>;
           readonly sessions: Map<string, unknown>;
         };
@@ -2315,7 +2412,7 @@ describe('createConfiguredTurnExecutor', () => {
       retainedStorage: materialization.retainedStorage!,
     });
     const recordedDigests: string[] = [];
-    backend.bindNativeHandleRecorder(environmentPackage.snapshotId, (digest) => {
+    await backend.bindNativeHandleRecorder(environmentPackage.snapshotId, (digest) => {
       recordedDigests.push(digest);
     });
     const integrationRef = () =>
@@ -2584,7 +2681,7 @@ describe('createConfiguredTurnExecutor', () => {
                 },
               }),
         });
-        f.backend.bindNativeHandleRecorder(environmentPackage.snapshotId, () => undefined);
+        await f.backend.bindNativeHandleRecorder(environmentPackage.snapshotId, () => undefined);
         const launch = submitTestNanoHostTurn(f.coreDb, f.backend, materialization);
         if (index === 0) {
           await f.settleNext('session.inspect', inspectBody(0, 'open'));
@@ -4798,7 +4895,7 @@ describe('createConfiguredTurnExecutor', () => {
         nativeResume: resume,
         workspaceRoots: [],
       });
-      backend.bindNativeHandleRecorder(successorPackage.snapshotId, () => undefined);
+      await backend.bindNativeHandleRecorder(successorPackage.snapshotId, () => undefined);
       const successorLaunch = submitTestNanoHostTurn(coreDb, backend, successorMaterialization);
       const opened = await settleNext('session.open', {
         maxActiveTurns: 20,
@@ -5082,7 +5179,7 @@ describe('createConfiguredTurnExecutor', () => {
         workspaceRoots: [],
       });
       const recordedDigests: string[] = [];
-      firstBackend.bindNativeHandleRecorder?.(environmentPackage.snapshotId, (digest) => {
+      await firstBackend.bindNativeHandleRecorder?.(environmentPackage.snapshotId, (digest) => {
         recordedDigests.push(digest);
       });
       const launch = submitTestNanoHostTurn(coreDb, firstBackend, materialization);
@@ -7333,7 +7430,7 @@ describe('createConfiguredTurnExecutor', () => {
           workspaceId: workspaceIdForOwner(proofTurn.owner),
         });
       }
-      backend.bindNativeHandleRecorder?.(environmentPackage.snapshotId, async (digest) => {
+      await backend.bindNativeHandleRecorder?.(environmentPackage.snapshotId, async (digest) => {
         if (purpose === 'failed-ready-unrecorded') {
           throw new Error('recorder failed');
         }
@@ -9500,7 +9597,7 @@ describe('createConfiguredTurnExecutor', () => {
         workspaceRoots: [],
       });
       const recordedDigests: string[] = [];
-      backend.bindNativeHandleRecorder?.(environmentPackage.snapshotId, (digest) => {
+      await backend.bindNativeHandleRecorder?.(environmentPackage.snapshotId, (digest) => {
         recordedDigests.push(digest);
       });
       const launch = submitTestNanoHostTurn(coreDb, backend, materialization);
@@ -9540,7 +9637,7 @@ describe('createConfiguredTurnExecutor', () => {
         testEntityId('attempt', 'lease-snapshot_resume_open')
       );
       const restoredDigests: string[] = [];
-      restored.bindNativeHandleRecorder?.(environmentPackage.snapshotId, (digest) => {
+      await restored.bindNativeHandleRecorder?.(environmentPackage.snapshotId, (digest) => {
         restoredDigests.push(digest);
       });
       expect(restoredDigests).toEqual([predecessorDigest]);
@@ -9645,7 +9742,7 @@ describe('createConfiguredTurnExecutor', () => {
         sandboxBindingRef: factoryPackageBinding(coreDb, environmentPackage),
         workspaceRoots: [],
       });
-      backend.bindNativeHandleRecorder?.(environmentPackage.snapshotId, () => {
+      await backend.bindNativeHandleRecorder?.(environmentPackage.snapshotId, () => {
         throw new Error('recorder failed');
       });
       const launch = submitTestNanoHostTurn(coreDb, backend, materialization);
@@ -9725,7 +9822,7 @@ describe('createConfiguredTurnExecutor', () => {
       expect(effects.map((effect) => effect.kind)).not.toContain('sandbox.delete');
       expect(backend.sessions.has(environmentPackage.snapshotId)).toBe(true);
       const recordedDigests: string[] = [];
-      backend.bindNativeHandleRecorder?.(environmentPackage.snapshotId, (digest) => {
+      await backend.bindNativeHandleRecorder?.(environmentPackage.snapshotId, (digest) => {
         recordedDigests.push(digest);
       });
       expect(recordedDigests).toEqual([readyDigest]);
@@ -9884,7 +9981,7 @@ describe('createConfiguredTurnExecutor', () => {
         },
         workspaceRoots: [],
       });
-      backend.bindNativeHandleRecorder?.(environmentPackage.snapshotId, () => undefined);
+      await backend.bindNativeHandleRecorder?.(environmentPackage.snapshotId, () => undefined);
       const launch = submitTestNanoHostTurn(coreDb, backend, materialization);
       void launch.catch(() => undefined);
       await settleNext('session.open', {
@@ -9904,11 +10001,11 @@ describe('createConfiguredTurnExecutor', () => {
         environmentPackage,
         testEntityId('attempt', 'lease-snapshot_restored_proof')
       );
-      expect(() => {
+      await expect(
         restored.bindNativeHandleRecorder?.(environmentPackage.snapshotId, () => {
           throw new Error('recorder failed');
-        });
-      }).toThrow(/recorder failed/);
+        })
+      ).rejects.toThrow(/recorder failed/);
       expect(
         coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM agent_session_runtime_bindings').get()
       ).toEqual({ count: 1 });
@@ -9931,7 +10028,7 @@ describe('createConfiguredTurnExecutor', () => {
       expect(effects).not.toContain('sandbox.delete');
       expect(restored.sessions.has(environmentPackage.snapshotId)).toBe(true);
       const recordedDigests: string[] = [];
-      restored.bindNativeHandleRecorder?.(environmentPackage.snapshotId, (digest) => {
+      await restored.bindNativeHandleRecorder?.(environmentPackage.snapshotId, (digest) => {
         recordedDigests.push(digest);
       });
       expect(recordedDigests).toEqual([readyDigest]);
@@ -10482,7 +10579,7 @@ describe('createConfiguredTurnExecutor', () => {
         backendId: 'nanohost',
         now: () => `2999-10-03T00:00:${tick}.000Z`,
         queueEntryId: `queue_resume_${index}`,
-        requestId: `request_resume_${index}`,
+        requestId: testEntityId('tu', `request_resume_${index}`).slice(3),
         requestedAgentId: setups[agentIndex]!.manifest.id,
         threadId: testEntityId('th', `thread_resume_${agentIndex}`),
         turnId: testEntityId('tu', `turn_resume_${index}`),
@@ -10954,7 +11051,7 @@ describe('createConfiguredTurnExecutor', () => {
           if (scenario === 'ignored-package-restoration') {
             expect(() => internal.restoreSession(normalized, lease.leaseId)).not.toThrow();
             const recorder = vi.fn();
-            restoredBackend.bindNativeHandleRecorder?.(normalized.snapshotId, recorder);
+            await restoredBackend.bindNativeHandleRecorder?.(normalized.snapshotId, recorder);
             expect(recorder).toHaveBeenCalledExactlyOnceWith(digest, predecessor.retainedStorage);
             return;
           }
@@ -11513,7 +11610,7 @@ describe('createConfiguredTurnExecutor', () => {
           .sandboxRuntimeId;
         if (index === 0) originalOpenCodeSandboxId = sandboxId;
         if (index === 2) expect(sandboxId).toBe(originalOpenCodeSandboxId);
-        backend.bindNativeHandleRecorder?.(environmentPackage.snapshotId, () => {});
+        await backend.bindNativeHandleRecorder?.(environmentPackage.snapshotId, () => {});
         const launch = submitTestNanoHostTurn(coreDb, backend, materialized);
         await settleNext('session.open', {
           maxActiveTurns: 20,
@@ -11949,7 +12046,7 @@ describe('createConfiguredTurnExecutor', () => {
         }
       );
       const recordedDigests: string[] = [];
-      backend.bindNativeHandleRecorder?.(firstPackage.snapshotId, (digest) => {
+      await backend.bindNativeHandleRecorder?.(firstPackage.snapshotId, (digest) => {
         recordedDigests.push(digest);
       });
       const launch = submitTestNanoHostTurn(coreDb, backend, firstMaterialization);
@@ -15861,6 +15958,15 @@ async function publishFactoryAdmission(
   store: FsStore,
   entry: ReturnType<typeof createSchedulerAdmissionEntry>
 ) {
+  const createdAt = new Date().toISOString();
+  const scope = {
+    workspaceId: entry.workspaceId,
+    threadId: entry.threadId,
+    actorId:
+      entry.triggerActor.kind === 'user'
+        ? entry.triggerActor.id
+        : entry.triggerActor.responsibleUserId!,
+  };
   await store.createTurn(
     entry.workspaceId,
     entry.threadId,
@@ -15872,23 +15978,21 @@ async function publishFactoryAdmission(
       status: 'pending',
       agentId: entry.requestedAgentId,
       executorKind: 'worker',
+      commandReceipt: {
+        key: commandRequestKey('turn.start', entry.requestId, scope),
+        command: 'turn.start',
+        requestId: entry.requestId,
+        scope,
+        inputHash: commandInputHash({
+          queueEntryId: entry.queueEntryId,
+          turnInput: entry.turnInput,
+        }),
+        responseKind: 'turn',
+        createdAt,
+        expiresAt: commandRequestExpiresAt(createdAt),
+      },
     }
   );
-  store.recordCommandRequest({
-    command: 'turn.start',
-    requestId: entry.requestId,
-    inputHash: `fixture:${entry.queueEntryId}`,
-    scope: {
-      workspaceId: entry.workspaceId,
-      threadId: entry.threadId,
-      actorId:
-        entry.triggerActor.kind === 'user'
-          ? entry.triggerActor.id
-          : entry.triggerActor.responsibleUserId!,
-    },
-    response: { kind: 'turn', id: entry.turnId },
-    createdAt: new Date().toISOString(),
-  });
 }
 
 /** Carries the exact already-prepared Core binding at the direct Native materialization boundary. */

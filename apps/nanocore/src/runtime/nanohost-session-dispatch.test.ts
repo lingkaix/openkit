@@ -1733,12 +1733,16 @@ describe('authoritative NanoHost session dispatch', () => {
     // Retain actual caller provenance before exercising the original storage fault.
     const actor: ExecutionStepControl['actor'] = { kind: 'user', id: ensureLocalUser(coreDb) };
     const store = new FsStore({ dataRoot: coreDb.dataRoot });
-    const thread = store.createServerThread(
+    const thread = await store.createServerThread(
       'Administrative image settlement',
       undefined,
       'conversation'
     );
-    const publicationTurn = store.createServerTurn(thread.id, 'Prepare the authored image.', actor);
+    const publicationTurn = await store.createServerTurn(
+      thread.id,
+      'Prepare the authored image.',
+      actor
+    );
     expect(getLocalUserId(coreDb)).toBe(actor.id);
     expect(
       new FsStore({ dataRoot: coreDb.dataRoot }).getServerTurn(thread.id, publicationTurn.id)

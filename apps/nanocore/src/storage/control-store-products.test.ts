@@ -12,10 +12,7 @@ import {
 import { afterEach, describe, expect, it } from 'vitest';
 import { type CommandRequestRecord, commandRequestKey } from '../lib/store.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
-import {
-  getCommandRequestRecordFromDb,
-  recordCommandRequestRecordInDb,
-} from './command-request-records.js';
+import { getCommandRequestRecordFromDb } from './command-request-records.js';
 import { type ControlAdmission, ControlAdmissionSchema } from './control-store-admission.js';
 import type {
   ControlProductEntry,
@@ -396,7 +393,25 @@ describe('prepared control product boundaries', () => {
       expiresAt: '2026-10-27T00:00:00.000Z',
     };
     try {
-      recordCommandRequestRecordInDb(f.db, record);
+      // Seed retained receipt bytes while the worker is stopped. The live Main writer
+      // cannot publish this native family; the test below exercises its real replay owner.
+      f.db.sqlite
+        .prepare(`INSERT INTO idempotency_requests
+          (schema_version,request_key,command_name,request_id,scope_json,input_hash,
+           response_kind,response_id,response_json,created_at,expires_at)
+          VALUES (1,?,?,?,?,?,?,?,?,?,?)`)
+        .run(
+          record.key,
+          record.command,
+          record.requestId,
+          JSON.stringify(record.scope),
+          record.inputHash,
+          record.response.kind,
+          record.response.id,
+          JSON.stringify(record.response.conversationMetadata),
+          record.createdAt,
+          record.expiresAt
+        );
       // This is retained-data mutation, not a synthetic producer or ordinary public C3 proof.
       f.db.sqlite
         .prepare('UPDATE idempotency_requests SET response_json=? WHERE request_key=?')

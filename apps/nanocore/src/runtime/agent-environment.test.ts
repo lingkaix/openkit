@@ -686,7 +686,7 @@ describe('agent environment package resolver', () => {
     expect(
       (await resolve([])).supply.mcpServers.some((server) => server.id === 'openkit-repository')
     ).toBe(false);
-    expect(() => resolve(['openkit-repository'])).toThrow(/MCP|catalog/);
+    await expect(resolve(['openkit-repository'])).rejects.toThrow(/MCP|catalog/);
   });
 
   it('requires one explicit container backend', async () => {
@@ -1405,8 +1405,8 @@ describe('agent environment package resolver', () => {
     ]);
   });
 
-  it('refuses an unsupported filesystem source without inspecting host Git', () => {
-    expect(() =>
+  it('refuses an unsupported filesystem source without inspecting host Git', async () => {
+    await expect(async () =>
       resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
         agentSetup: createTestSetup(),
@@ -1414,7 +1414,7 @@ describe('agent environment package resolver', () => {
         backend: { kind: 'openshell' },
         createdAt: '2026-07-18T00:00:00.000Z',
         requestId: 'req_filesystem',
-        turn: createTurnFixture('Use an ordinary filesystem root'),
+        turn: await createTurnFixture('Use an ordinary filesystem root'),
         triggerActor: USER_TRIGGER_ACTOR,
         workspaceCwd: null,
         workspaceRoots: [
@@ -1427,7 +1427,7 @@ describe('agent environment package resolver', () => {
           },
         ],
       })
-    ).toThrow(
+    ).rejects.toThrow(
       'Only credential-free remote Git sources can be materialized into a work slot in this release. Folder and other source kinds are not supported yet. Work without a source input still runs.'
     );
   });
@@ -2211,7 +2211,7 @@ describe('agent environment package resolver', () => {
       referenceScope: { ownerScope: 'server' as const },
       triggerActor: USER_TRIGGER_ACTOR,
     },
-  ])('rejects a mismatched $name credential grant before sinks or injection records', ({
+  ])('rejects a mismatched $name credential grant before sinks or injection records', async ({
     expectedError,
     grantTarget,
     name,
@@ -2258,7 +2258,7 @@ describe('agent environment package resolver', () => {
     });
 
     try {
-      expect(() =>
+      await expect(async () =>
         resolveAgentEnvironmentPackage({
           captureCoverage: { scope: 'server', value: 'off' },
           agentSetup: createTestSetup({
@@ -2294,13 +2294,13 @@ describe('agent environment package resolver', () => {
           requestId: `req_scope_${name}`,
           runtimeEnvCredentialSink: (credential) =>
             runtimeEnvCredentials.push(credential.credentialValue),
-          turn: createTurnFixture(`Reject ${name} scope`),
+          turn: await createTurnFixture(`Reject ${name} scope`),
           triggerActor,
           vaultBackend: () => vaultUnlockState.backend(),
           workspaceCwd: '/workspace/repo',
           workspaceRoots: [],
         })
-      ).toThrow(expectedError);
+      ).rejects.toThrow(expectedError);
       expect(runtimeEnvCredentials).toEqual([]);
       expect(listVaultInjectionPlans(coreDb)).toEqual([]);
       expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
