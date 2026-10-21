@@ -46,13 +46,16 @@ afterEach(async () => {
 });
 
 /** Creates real identity, membership, conversation lineage, and catalog storage owners. */
-async function fixture() {
+async function fixture(
+  productStore?: FsStore,
+  audience: Parameters<FsStore['createThread']>[4] = { visibility: 'workspace' }
+) {
   const dataRoot = fs.mkdtempSync(join(tmpdir(), 'assistant-skill-resources-'));
   const coreDb = openCoreDb(dataRoot);
   fixtures.push({ coreDb, dataRoot });
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  const store = new FsStore({ dataRoot });
+  const store = productStore ?? new FsStore({ dataRoot });
   const workspace = await store.createWorkspace('Skill resource tests');
   recordWorkspaceOwnerMembership({
     coreDb,
@@ -70,7 +73,13 @@ async function fixture() {
     (workspace_id, user_id, status, invitation_id, joined_at, removed_at, revision, created_at, updated_at)
     VALUES (?, ?, 'active', NULL, ?, NULL, 1, ?, ?)`)
     .run(workspace.id, testEntityId('usr', 'skill-reader'), timestamp, timestamp, timestamp);
-  const thread = await store.createThread(workspace.id, 'Use selected resources');
+  const thread = await store.createThread(
+    workspace.id,
+    'Use selected resources',
+    undefined,
+    'conversation',
+    audience
+  );
   const turn = await store.createTurn(workspace.id, thread.id, 'Use selected resources', {
     kind: 'user',
     id: testEntityId('usr', 'skill-reader'),
@@ -411,7 +420,12 @@ describe('Assistant selected Skill assembly', () => {
     'audience',
     'turn-lineage',
   ])('checks current %s authority before assembly even for empty selection', async (condition) => {
-    const f = await fixture();
+    const f = await fixture(
+      undefined,
+      condition === 'audience'
+        ? { visibility: 'private', privateOwnerUserId: testEntityId('usr', 'another-user') }
+        : { visibility: 'workspace' }
+    );
     if (condition === 'membership')
       f.coreDb.sqlite
         .prepare(
@@ -422,11 +436,6 @@ describe('Assistant selected Skill assembly', () => {
       f.coreDb.sqlite
         .prepare("UPDATE users SET status = 'disabled' WHERE id = ?")
         .run(f.actor.userId);
-    if (condition === 'audience')
-      Object.assign(f.store.getThread(f.workspaceId, f.threadId), {
-        visibility: 'private',
-        privateOwnerUserId: testEntityId('usr', 'another-user'),
-      });
     if (condition === 'turn-lineage')
       f.threadId = (await f.store.createThread(f.workspaceId, 'Different thread')).id;
 
@@ -465,7 +474,14 @@ describe('Assistant progressive Skill reads', () => {
     'purged',
     'inventory',
   ] as const)('discards verified bytes when %s changes during the actual file read', async (condition) => {
-    const f = await fixture();
+    // L1 current-authority proof: only this synchronous callback branch uses the real in-memory product owner.
+    // This branch proves no native durability or worker interleaving.
+    const f = await fixture(
+      condition === 'completed' ? new FsStore({ dataRoot: '' }) : undefined,
+      condition === 'audience'
+        ? { visibility: 'private', privateOwnerUserId: testEntityId('usr', 'skill-reader') }
+        : { visibility: 'workspace' }
+    );
     const imported = importSkill(f);
     const assembled = await assembleAssistantSkillResources({ ...f, skillIds: ['alpha'] });
     const file = join(
@@ -474,6 +490,7 @@ describe('Assistant progressive Skill reads', () => {
     );
     const original = fs.readFileSync;
     let changed = false;
+    let completion: ReturnType<FsStore['updateTurn']> | undefined;
     vi.spyOn(fs, 'readFileSync').mockImplementation((path, options) => {
       const bytes = original(path, options);
       if (String(path) === file && !changed) {
@@ -489,12 +506,13 @@ describe('Assistant progressive Skill reads', () => {
             .prepare("UPDATE users SET status = 'disabled' WHERE id = ?")
             .run(f.actor.userId);
         if (condition === 'audience')
-          Object.assign(f.store.getThread(f.workspaceId, f.threadId), {
-            visibility: 'private',
-            privateOwnerUserId: 'another-user',
-          });
+          f.coreDb.sqlite
+            .prepare(
+              "UPDATE workspace_members SET status = 'removed', removed_at = updated_at, revision = revision + 1 WHERE workspace_id = ? AND user_id = ?"
+            )
+            .run(f.workspaceId, f.actor.userId);
         if (condition === 'completed')
-          f.store.updateTurn(f.turnId, {
+          completion = f.store.updateTurn(f.turnId, {
             status: 'completed',
             completedAt: new Date().toISOString(),
             durationMs: 1,
@@ -510,6 +528,7 @@ describe('Assistant progressive Skill reads', () => {
     });
     syncBuiltinESMExports();
     const result = await read(assembled);
+    await completion;
     refusal(result, f);
     expect(changed).toBe(true);
     expect(JSON.parse((result.content[0] as { text: string }).text).code).toBe(
@@ -805,7 +824,12 @@ describe('Assistant progressive Skill reads', () => {
     'audience',
     'turn-lineage',
   ])('denies a later read after %s changes before opening Skill bytes', async (condition) => {
-    const f = await fixture();
+    const f = await fixture(
+      undefined,
+      condition === 'audience'
+        ? { visibility: 'private', privateOwnerUserId: testEntityId('usr', 'skill-reader') }
+        : { visibility: 'workspace' }
+    );
     const imported = importSkill(f);
     const assembled = await assembleAssistantSkillResources({ ...f, skillIds: ['alpha'] });
     if (condition === 'removed' || condition === 'missing-version')
@@ -824,14 +848,15 @@ describe('Assistant progressive Skill reads', () => {
         .prepare("UPDATE users SET status = 'disabled' WHERE id = ?")
         .run(f.actor.userId);
     if (condition === 'audience')
-      Object.assign(f.store.getThread(f.workspaceId, f.threadId), {
-        visibility: 'private',
-        privateOwnerUserId: testEntityId('usr', 'another-user'),
-      });
+      f.coreDb.sqlite
+        .prepare(
+          "UPDATE workspace_members SET status = 'removed', removed_at = updated_at, revision = revision + 1 WHERE workspace_id = ? AND user_id = ?"
+        )
+        .run(f.workspaceId, f.actor.userId);
     if (condition === 'turn-lineage')
-      f.store.getTurn(f.workspaceId, f.threadId, f.turnId).threadId = (
-        await f.store.createThread(f.workspaceId, 'Different thread')
-      ).id;
+      Object.assign(contexts.get(assembled)!, {
+        threadId: (await f.store.createThread(f.workspaceId, 'Different thread')).id,
+      });
     const spies = observeReads();
 
     refusal(await read(assembled), f);

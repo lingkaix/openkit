@@ -1,11 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
-import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { BootReadinessSnapshot } from '@openkit/app-api-schemas';
 import { deriveEntityId, PROTOCOL_VERSION, writeRetainedV1 } from '@openkit/protocol';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
@@ -27,14 +26,22 @@ import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-us
 import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
-import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
+import {
+  ControlStoreWorkerError,
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
-import { readPublishedTurnFileRecords } from './workspace-file-records.js';
+import {
+  nativeProductScope,
+  readNativeProductEntries,
+  readPublishedTurnFileRecords,
+} from './workspace-file-records.js';
 
 const fixtures: Array<{ root: string; db: ReturnType<typeof openCoreDb> }> = [];
-const nodeFs = createRequire(import.meta.url)('node:fs') as typeof import('node:fs');
 afterEach(async () => {
+  vi.restoreAllMocks();
   await shutdownControlStoreWorkerClient();
   for (const { root, db } of fixtures.splice(0)) {
     if (db.sqlite.open) db.sqlite.close();
@@ -120,20 +127,20 @@ describe('Workspace JSON transfer cutover', () => {
       createdAt: '2026-10-16T00:00:00.000Z',
       completedAt: '2026-10-16T00:00:00.000Z',
     });
-    const fsync = nodeFs.fsyncSync;
+    const client = getControlStoreWorkerClient();
+    const products = client.products.bind(client);
     let faults = 0;
-    nodeFs.fsyncSync = () => {
+    const interception = vi.spyOn(client, 'products').mockImplementationOnce(async (...args) => {
+      await products(...args);
       faults++;
-      throw new Error('Append synchronization interrupted');
-    };
-    syncBuiltinESMExports();
+      throw new ControlStoreWorkerError('unavailable', 'unknown');
+    });
     try {
-      expect(() => store.updateItem(item.id, { text: 'B' })).toThrow(
-        'Append synchronization interrupted'
-      );
+      await expect(store.updateItem(item.id, { text: 'B' })).rejects.toMatchObject({
+        commit: 'unknown',
+      });
     } finally {
-      nodeFs.fsyncSync = fsync;
-      syncBuiltinESMExports();
+      interception.mockRestore();
     }
     expect(faults).toBe(1);
     await store.updateItem(item.id, { text: 'C' });
@@ -142,27 +149,17 @@ describe('Workspace JSON transfer cutover', () => {
         .listWorkspaceItemRevisions(DEMO_WORKSPACE_ID)
         .filter((row) => row.id === item.id)
         .map((row) => (row.type === 'assistant-message' ? row.text : null));
-    expect(cachedTexts()).toEqual(['A', 'C']);
+    expect(cachedTexts()).toEqual(['A', 'B', 'C']);
     expect(readPublishedTurnFileRecords(root, DEMO_WORKSPACE_ID, thread.id, turn.id)?.turn).toEqual(
       store.getTurn(DEMO_WORKSPACE_ID, thread.id, turn.id)
     );
-    const sourcePath = join(
-      root,
-      'workspaces',
-      DEMO_WORKSPACE_ID,
-      'threads',
-      thread.id,
-      'turns',
-      turn.id,
-      'items.jsonl'
-    );
-    const originalBytes = readFileSync(sourcePath, 'utf8');
-    expect(
-      originalBytes
-        .trim()
-        .split('\n')
-        .map((line) => JSON.parse(line).text)
-    ).toEqual(['A', 'B', 'C']);
+    const scope = nativeProductScope(root, { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID });
+    const originalEntries = readNativeProductEntries(scope, turn.id, 'item');
+    expect(originalEntries.map(({ value }) => (value as { text: string }).text)).toEqual([
+      'A',
+      'B',
+      'C',
+    ]);
     const exported = await app.request(
       ...request('/api/app/operations/workspace.export', { workspaceId: DEMO_WORKSPACE_ID })
     );
@@ -189,8 +186,8 @@ describe('Workspace JSON transfer cutover', () => {
         .filter((row) => row.id === item.id)
         .map((row) => row.text)
     ).toEqual(['A', 'B', 'C']);
-    expect(readFileSync(sourcePath, 'utf8')).toBe(originalBytes);
-    expect(cachedTexts()).toEqual(['A', 'C']);
+    expect(readNativeProductEntries(scope, turn.id, 'item')).toEqual(originalEntries);
+    expect(cachedTexts()).toEqual(['A', 'B', 'C']);
   });
 
   it('exports canonical recurring Turn data after an actual update persistence failure', async () => {
@@ -242,56 +239,26 @@ describe('Workspace JSON transfer cutover', () => {
     );
     const published = readPublishedTurnFileRecords(root, DEMO_WORKSPACE_ID, thread.id, turn.id)!;
     expect(published.turn.status).toBe('pending');
-    const turnRoot = join(
-      root,
-      'workspaces',
-      DEMO_WORKSPACE_ID,
-      'threads',
-      thread.id,
-      'turns',
-      turn.id
-    );
-    const turnPath = join(turnRoot, 'turn.json');
-    const sourceBytes = new Map(
-      ['turn.json', 'items.jsonl'].map((name) => [name, readFileSync(join(turnRoot, name))])
-    );
-    const rename = nodeFs.renameSync;
-    let faults = 0;
-    // Refuse the real replacement, then separately seed a divergent projection for the export oracle.
-    nodeFs.renameSync = ((from, to) => {
-      if (String(to) === turnPath) {
-        faults++;
-        throw new Error('Turn replacement interrupted');
-      }
-      rename(from, to);
-    }) as typeof nodeFs.renameSync;
-    syncBuiltinESMExports();
+    const nativeDb = openWorkspaceDb(root, DEMO_WORKSPACE_ID);
+    const sourceBytes = nativeDb.sqlite
+      .prepare('SELECT * FROM control_turns WHERE id=?')
+      .get(turn.id);
     try {
-      expect(() =>
-        store.updateTurn(turn.id, {
-          status: 'running',
-          agentId: 'failed-cache-agent',
-          agentSessionId: testEntityId('as', 'as_failed_cache'),
-        })
-      ).toThrow('Turn replacement interrupted');
+      nativeDb.sqlite.exec(
+        "CREATE TRIGGER refuse_turn_update BEFORE UPDATE ON control_turns BEGIN SELECT RAISE(ABORT, 'injected native Turn failure'); END"
+      );
+      await expect(store.updateTurn(turn.id, { status: 'running' })).rejects.toMatchObject({
+        commit: 'not-committed',
+      });
+      expect(
+        nativeDb.sqlite.prepare('SELECT * FROM control_turns WHERE id=?').get(turn.id)
+      ).toEqual(sourceBytes);
     } finally {
-      nodeFs.renameSync = rename;
-      syncBuiltinESMExports();
+      nativeDb.sqlite.exec('DROP TRIGGER refuse_turn_update');
+      nativeDb.sqlite.close();
     }
-    expect(faults).toBe(1);
     expect(store.getTurn(DEMO_WORKSPACE_ID, thread.id, turn.id)).toEqual(turn);
-    (store as unknown as { turns: Map<string, typeof turn> }).turns.set(turn.id, {
-      ...turn,
-      status: 'running',
-      agentId: 'failed-cache-agent',
-      agentSessionId: testEntityId('as', 'as_failed_cache'),
-    });
-    expect(store.getTurn(DEMO_WORKSPACE_ID, thread.id, turn.id)).toMatchObject({
-      status: 'running',
-      agentId: 'failed-cache-agent',
-      agentSessionId: testEntityId('as', 'as_failed_cache'),
-    });
-    expect(recurringTurnPublicationIssue(store, entry)).toBe('turn_contradictory');
+    expect(recurringTurnPublicationIssue(store, entry)).toBeNull();
     const exported = await app.request(
       ...request('/api/app/operations/workspace.export', { workspaceId: DEMO_WORKSPACE_ID })
     );
@@ -317,10 +284,11 @@ describe('Workspace JSON transfer cutover', () => {
         .map((line) => JSON.parse(line))
     ).toEqual([writeRetainedV1({ ...published.turn, captureCoverage: published.captureCoverage })]);
     expect(exportedTurns).not.toContain('failed-cache');
-    // A discarded cache candidate cannot hide the same complete canonical Turn from later exports.
-    (store as unknown as { turns: Map<string, unknown> }).turns.delete(turn.id);
-    expect(store.listThreadTurns(DEMO_WORKSPACE_ID, thread.id)).toEqual([]);
-    const withoutCache = await app.request(
+    // A fresh Store must export the same canonical Turn without a prior candidate cache.
+    const freshStore = new FsStore({ dataRoot: root });
+    expect(freshStore.listThreadTurns(DEMO_WORKSPACE_ID, thread.id)).toEqual([turn]);
+    const freshApp = createApp({ dataRoot: root, coreDb: db, store: freshStore });
+    const withoutCache = await freshApp.request(
       ...request('/api/app/operations/workspace.export', { workspaceId: DEMO_WORKSPACE_ID })
     );
     expect(withoutCache.status, await withoutCache.clone().text()).toBe(200);
@@ -340,8 +308,13 @@ describe('Workspace JSON transfer cutover', () => {
         'utf8'
       )
     ).toBe(exportedTurns);
-    for (const [name, bytes] of sourceBytes) {
-      expect(readFileSync(join(turnRoot, name))).toEqual(bytes);
+    const preserved = openWorkspaceDb(root, DEMO_WORKSPACE_ID);
+    try {
+      expect(
+        preserved.sqlite.prepare('SELECT * FROM control_turns WHERE id=?').get(turn.id)
+      ).toEqual(sourceBytes);
+    } finally {
+      preserved.sqlite.close();
     }
     expect(readPublishedTurnFileRecords(root, DEMO_WORKSPACE_ID, thread.id, turn.id)).toEqual(
       published
