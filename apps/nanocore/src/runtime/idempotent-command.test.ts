@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { recordServerAuditEvent } from '../audit-events.js';
 import { type CommandRequestScope, FsStore } from '../lib/store.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { testEntityId } from '../test-support/entity-ids.js';
@@ -56,6 +57,8 @@ describe('workspace-transaction idempotent commands', () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime('2026-10-20T12:00:00.000Z');
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-user-original-receipt-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
     const store = new FsStore({ dataRoot });
     const userId = testEntityId('usr', 'original-user-receipt');
     const turnId = testEntityId('tu', 'original-user-receipt');
@@ -95,7 +98,9 @@ describe('workspace-transaction idempotent commands', () => {
       expect(read()).toEqual(original);
       expect(read()).toHaveLength(1);
     } finally {
+      await shutdownControlStoreWorkerClient();
       userDb.sqlite.close();
+      coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
       vi.useRealTimers();
     }
@@ -104,6 +109,7 @@ describe('workspace-transaction idempotent commands', () => {
   it('commits Core authority, audit, and pointer receipt in one transaction', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-core-idempotent-command-'));
     const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
     const store = new FsStore({ dataRoot });
     const inflightCommands = new WeakMap<FsStore, Map<string, InflightIdempotentCommand>>();
     const scope: CommandRequestScope = {
@@ -112,7 +118,6 @@ describe('workspace-transaction idempotent commands', () => {
     };
 
     try {
-      applyMigrations(coreDb);
       ensureLocalUser(coreDb);
       const common = {
         command: 'user.disable' as const,
@@ -227,13 +232,17 @@ describe('workspace-transaction idempotent commands', () => {
         )
       ).toThrow('must name exactly one Core, User, Workspace, or App owner');
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 
   it('commits synchronous owners with receipts and rolls back incomplete commands', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-idempotent-command-'));
     const workspaceId = 'ws_00000000-0000-796a-8af7-97608a790532';
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
     const store = new FsStore({ dataRoot });
     const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
 
@@ -354,7 +363,10 @@ describe('workspace-transaction idempotent commands', () => {
         )
         .toBeNull();
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 });
