@@ -3,7 +3,7 @@ status: Accepted
 ---
 # Fault Tolerance Model
 
-This document owns the OpenKit fault model, the correctness properties that every aspect keeps under failure, the collection-before-loss principle, the proportional recovery policy, and the explicit limits of what OpenKit can guarantee.
+This document owns the OpenKit fault model, durable execution, the correctness properties that every aspect keeps under failure, the collection-before-loss principle, the proportional recovery policy, and the explicit limits of what OpenKit can guarantee.
 
 This document does not own command identity and replay, Turn lifecycle, AgentSession replacement, capability call outcomes, storage formats, retention, backup procedure, approval delivery, Vault injection, or provider retry algorithms. Those owners keep their concrete rules; this document states the shared policy they realize and the limits they disclose.
 
@@ -41,6 +41,8 @@ Effect uncertainty and any recovery requirement are expressed by the effect owne
 
 `Fault Source` is one of the four groups of failing parts in the fault model below.
 
+`Durable Execution` is continuation of an existing work execution from committed state and step outcomes, not replay of native agent code or a new public Run.
+
 `Acknowledgement Point` is the durable commit after which an owner may report that content or a decision is accepted.
 
 `Collection Before Loss` is the rule that valuable work information is collected while its source is still readable.
@@ -50,6 +52,16 @@ Effect uncertainty and any recovery requirement are expressed by the effect owne
 `Danger Window` is an interval in which durable records do not establish whether an external effect occurred or what its result was. It includes uncertainty after dispatch and before receipt or execution is proved.
 
 `End-To-End Owner` is the one owner whose deadline bounds an operation across every layer it crosses.
+
+## Durable Execution
+
+The same `End-To-End Owner` advances normal work and work reopened after restart from each `Safe Point` and committed step outcome. Completed steps are not executed again. Effect intent and its permitting decision precede dispatch and open the `Danger Window`; result and dependent local state share one commit at the `Acknowledgement Point`. Unknown effects retain uncertainty and their required fences. The [durable execution decision](../decisions/20261019-durable_execution_and_control_store.md) replaces scattered execution and recovery authority rather than adding a parallel workflow service.
+
+Durable signals and timers preserve waiting and wake conditions through restart. They reuse existing request and schedule semantics. Human outcomes still enter later Turns; there is no paused Turn status or default response expiry. A lost Worker cannot resume its executing code: its step becomes unknown, its Turn is interrupted truthfully, and continuation requires a newly admitted Turn with proved native-session continuity. Failed native resume follows [AgentSession](agent-session.md).
+
+Global dispatch may index Workspace-owned work, but that index is rebuildable and cannot become a second durable queue. Server-owned capacity and physical bindings are separate effect authority. Their reservation and release must be idempotent under exact work identity; a missing acknowledgement never permits duplicate allocation or unproved capacity release. Necessary Host, Worker and attachment fences remain until an owner-proved replacement protects their failure boundary.
+
+Execution history retains lifecycle timing, outcomes and failed checks through the existing work-data owners. Operational spans are projections of those facts. Journal correlation identifiers grant no execution, access or cleanup authority, and telemetry loss cannot erase work history or determine retry.
 
 ## Fault Model
 
@@ -134,7 +146,7 @@ Before `v0.1.0`, release resets are explicit operator actions under [Contract Ev
 - [Foundation](foundation.md) owns durable product truth and trust boundaries; this document applies them to failure.
 - [Storage](storage.md) owns acknowledgement points, integrity failure handling, retained volumes and backup coverage.
 - [Protocol](protocol.md) and [Communication](communication.md) own request replay, Turn outcomes, streams, pending-outcome delivery and closeout.
-- [Runtime Model](runtime-model.md) owns collection, interruption and execution-domain cleanup, and projects safe points and danger windows onto the execution lifecycle.
+- [Runtime Model](runtime-model.md) owns scheduling, placement, collection, interruption and execution-domain cleanup, and projects durable execution, safe points and danger windows onto the execution lifecycle.
 - [Permissions](permissions.md) owns enforcement points and current authorization at each governed effect boundary.
 - [AgentSession](agent-session.md) owns native continuity and its failure.
 - [Agent Capability](agent-capability.md) and [Vault](vault.md) own external call outcomes and secret injection receipts.

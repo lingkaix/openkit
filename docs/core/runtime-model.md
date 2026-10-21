@@ -158,19 +158,9 @@ Agents and adapters translate user-visible or protocol-visible runtime activity 
 
 Task graphs, tool retries, chain-of-thought internals, process logs, native SDK traces, and scheduler traces remain private unless intentionally projected as item summaries or diagnostics.
 
-## Durable Execution
-
-`Durable Execution` is continuation of an existing work execution from committed state and step outcomes, not replay of native agent code or a new public Run. The same owner advances normal work and work reopened after restart. Completed steps are not executed again. Effect intent and its permitting decision precede dispatch; result and dependent local state share one commit. Unknown effects retain uncertainty and their required fences. The [durable execution decision](../decisions/20261019-durable_execution_and_control_store.md) replaces scattered execution and recovery authority rather than adding a parallel workflow service.
-
-Durable signals and timers preserve waiting and wake conditions through restart. They reuse existing request and schedule semantics. Human outcomes still enter later Turns; there is no paused Turn status or default response expiry. A lost Worker cannot resume its executing code: its step becomes unknown, its Turn is interrupted truthfully, and continuation requires a newly admitted Turn with proved native-session continuity. Failed native resume follows [AgentSession](agent-session.md).
-
-Global dispatch may index Workspace-owned work, but that index is rebuildable and cannot become a second durable queue. Server-owned capacity and physical bindings are separate effect authority. Their reservation and release must be idempotent under exact work identity; a missing acknowledgement never permits duplicate allocation or unproved capacity release. Necessary Host, Worker and attachment fences remain until an owner-proved replacement protects their failure boundary.
-
-Execution history retains lifecycle timing, outcomes and failed checks through the existing work-data owners. Operational spans are projections of those facts. Journal correlation identifiers grant no execution, access or cleanup authority, and telemetry loss cannot erase work history or determine retry.
-
 ## Scheduling Model
 
-Core schedules work at the thread and turn level.
+Core schedules work at the thread and turn level. [Fault Tolerance](fault-tolerance.md#durable-execution) owns `Durable Execution`, including step continuation from committed state, durable signals and timers, rebuildable dispatch indexing, idempotent capacity reservation, and effect-uncertainty recovery.
 
 A durable recurring instruction remains a source of new Turn requests rather than a parallel run model. Each due occurrence must enter the ordinary admission boundary with current authority and its own stable lineage; after admission, the existing Thread, Turn, AgentSession, scheduler, and runtime owners determine execution and outcome. Recurrence must not duplicate Turn status, bypass a Gate, retry an uncertain effect, or execute concurrent Turns in one Thread.
 
