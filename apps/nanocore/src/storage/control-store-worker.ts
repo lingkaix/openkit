@@ -19,6 +19,7 @@ import {
   prepareControlGoalCommand,
 } from '../runtime/goal-owner.js';
 import { IdempotencyKeyConflictError } from '../runtime/idempotent-command.js';
+import type { PreparedControlPendingCommand } from '../runtime/pending-requests.js';
 import {
   applyControlPendingCommand,
   PendingRequestCommandError,
@@ -35,17 +36,22 @@ import {
 } from '../workspace-materials.js';
 import { ControlStoreBusyError, controlStoreFor } from './control-store.js';
 import { applyControlAdmission } from './control-store-admission.js';
-import { applyControlPendingTransition,prepareControlPendingCommands } from './control-store-pending.js';
-import type {PreparedControlPendingCommand} from '../runtime/pending-requests.js';
+import {
+  applyControlPendingTransition,
+  prepareControlPendingCommands,
+} from './control-store-pending.js';
 import {
   applyControlProducts,
+  applyControlPublication,
   applyControlTerminal,
   type ControlProductContentMount,
   type ControlProductOwner,
   ControlProductPreconditionError,
   type PreparedControlEntry,
+  type PreparedControlPublication,
   type PreparedControlTerminal,
   prepareControlEntries,
+  prepareControlPublication,
   prepareControlTerminal,
 } from './control-store-products.js';
 import {
@@ -81,6 +87,7 @@ type WriteRequest = Extract<
       | 'write'
       | 'transition'
       | 'products'
+      | 'publication'
       | 'project-cleanup'
       | 'observation'
       | 'pending'
@@ -92,8 +99,9 @@ type WriteRequest = Extract<
       | 'terminal';
   }
 > & {
+  readonly preparedPublication?: PreparedControlPublication | undefined;
   readonly preparedEntries?: readonly PreparedControlEntry[] | undefined;
-  readonly preparedPending?:PreparedControlPendingCommand | undefined;
+  readonly preparedPending?: PreparedControlPendingCommand | undefined;
   readonly preparedGoal?: PreparedControlGoalCommand | undefined;
   readonly preparedMaterial?: ControlMaterialCommandInput | undefined;
   readonly preparedReview?: PreparedControlReviewCommand | undefined;
@@ -151,7 +159,19 @@ function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRe
     (error instanceof PendingRequestCommandError || error instanceof IdempotencyKeyConflictError)
   )
     return { operation, code: error.code, message: error.message, status: error.status };
+  // Retained format refusal is a fixed owner message, not an arbitrary TypeError diagnostic.
   if (
+    operation === 'goal' &&
+    error instanceof TypeError &&
+    error.message === 'Unsupported retained record format.'
+  ) {
+    domain = {
+      operation,
+      code: 'unsupported_retained_format',
+      message: 'Unsupported retained record format.',
+      status: 409,
+    };
+  } else if (
     operation === 'goal' &&
     (error instanceof GoalCommandError || error instanceof IdempotencyKeyConflictError)
   ) {
@@ -287,7 +307,11 @@ function flush(owner: OwnedDatabase): void {
             );
             for (const command of request.transition.pending ?? []) {
               if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
-              applyControlPendingCommand(owner.scopeDb,command,request.preparedPending ?? {entries:[],dependencies:[]});
+              applyControlPendingCommand(
+                owner.scopeDb,
+                command,
+                request.preparedPending ?? { entries: [], dependencies: [] }
+              );
             }
             for (const inputJson of request.transition.journalIntents ?? []) {
               if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
@@ -299,12 +323,22 @@ function flush(owner: OwnedDatabase): void {
               status: 'ok',
               operation: 'products',
             };
+          } else if (request.operation === 'publication') {
+            if (!owner.scopeDb || !request.preparedPublication)
+              throw new ControlProductPreconditionError();
+            applyControlPublication(owner.scopeDb, request.input, request.preparedPublication);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'publication',
+            };
           } else if (request.operation === 'pending') {
             if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
             const result = applyControlPendingTransition(
               owner.scopeDb,
               request.input,
-              request.preparedPending ?? {entries:[],dependencies:[]},
+              request.preparedPending ?? { entries: [], dependencies: [] },
               request.preparedTerminal
             );
             outcome = {
@@ -701,6 +735,7 @@ function receive(value: unknown): void {
       value.operation === 'write' ||
       value.operation === 'transition' ||
       value.operation === 'products' ||
+      value.operation === 'publication' ||
       value.operation === 'project-cleanup' ||
       value.operation === 'observation' ||
       value.operation === 'pending' ||
@@ -768,17 +803,31 @@ function receive(value: unknown): void {
           owner.preparations.add(preparation);
           return;
         }
+        let preparedPublication: PreparedControlPublication | undefined;
         let preparedEntries: WriteRequest['preparedEntries'];
-        let preparedPending:PreparedControlPendingCommand|undefined;
+        let preparedPending: PreparedControlPendingCommand | undefined;
         let preparedGoal: PreparedControlGoalCommand | undefined;
         let preparedMaterial: ControlMaterialCommandInput | undefined;
         let preparedReview: PreparedControlReviewCommand | undefined;
         try {
+          if (value.operation === 'publication') {
+            if (!owner.scopeDb || !owner.productOwner) throw new ControlProductPreconditionError();
+            preparedPublication = prepareControlPublication(
+              owner.scopeDb,
+              value.input,
+              owner.contentMount
+            );
+          }
           if (value.operation === 'pending') {
             if (owner.scopeDb?.scope !== 'workspace' || !owner.productOwner)
               throw new ControlProductPreconditionError();
-            preparedPending=prepareControlPendingCommands(owner.scopeDb,[value.input.input],owner.contentMount,value.input.entries);
-            preparedEntries=preparedPending.entries;
+            preparedPending = prepareControlPendingCommands(
+              owner.scopeDb,
+              [value.input.input],
+              owner.contentMount,
+              value.input.entries
+            );
+            preparedEntries = preparedPending.entries;
           }
           if (value.operation === 'material') {
             if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
@@ -807,9 +856,15 @@ function receive(value: unknown): void {
               owner.contentMount,
               value.transition.entries
             );
-            if(value.operation==='products' && value.transition.pending?.length) {
-              if(owner.scopeDb?.scope!=='workspace') throw new ControlProductPreconditionError();
-              preparedPending=prepareControlPendingCommands(owner.scopeDb,value.transition.pending,owner.contentMount,value.transition.entries,preparedEntries);
+            if (value.operation === 'products' && value.transition.pending?.length) {
+              if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
+              preparedPending = prepareControlPendingCommands(
+                owner.scopeDb,
+                value.transition.pending,
+                owner.contentMount,
+                value.transition.entries,
+                preparedEntries
+              );
             }
           }
         } catch (error) {
@@ -826,7 +881,14 @@ function receive(value: unknown): void {
           const { content: _content, ...framing } = value;
           owner.pending.push({ ...framing, preparedMaterial });
         } else {
-          owner.pending.push({ ...value, preparedEntries, preparedGoal, preparedReview,preparedPending });
+          owner.pending.push({
+            ...value,
+            preparedEntries,
+            preparedGoal,
+            preparedReview,
+            preparedPending,
+            preparedPublication,
+          });
         }
         schedule(owner);
       }

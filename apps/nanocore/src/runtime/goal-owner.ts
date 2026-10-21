@@ -621,6 +621,10 @@ export const ControlGoalCommandInputSchema = z
       )
       .max(200),
     proposalTurnId: z.string().min(1).nullable(),
+    captureCoverage: z
+      .object({ scope: z.enum(['server', 'workspace', 'task']), value: z.enum(['off', 'on']) })
+      .strict()
+      .optional(),
     pendingItem: z
       .object({ id: z.string().min(1), entry: z.lazy(() => ControlProductEntrySchema) })
       .strict()
@@ -1100,6 +1104,7 @@ function applyNativeGoalMutation(
     checkRevision(goal.changeRevision, input.expectedRevision);
     if (
       !nativeInput.proposalTurnId ||
+      !nativeInput.captureCoverage ||
       nativeTurns(db, goal.threadId).some((turn) => !isSealedTurnTerminal(turn.status))
     )
       throw new GoalCommandError('thread_busy', 'The Goal Thread already has a Turn in flight.');
@@ -1126,8 +1131,8 @@ function applyNativeGoalMutation(
             threadId: goal.threadId,
             triggerActor: { kind: 'user', id: context.actor.userId },
             triggerSource: { kind: 'user-input', summary: 'Propose a Goal Plan' },
-            agentSessionId: null,
             agentId: 'goal-coordinator',
+            captureCoverage: nativeInput.captureCoverage,
             error: null,
             configVersion: null,
             startedAt: now(),
@@ -1807,6 +1812,7 @@ export async function executeGoalOperation<K extends GoalOperationId>(
       grantAdmission,
       externalEvidence,
       proposalTurnId,
+      captureCoverage: store.getLiveCaptureCoverage(),
       pendingItem,
     });
     const outcome: ControlGoalCommandResult = await client.goal(database, nativeInput);

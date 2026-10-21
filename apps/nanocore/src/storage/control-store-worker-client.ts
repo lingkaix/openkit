@@ -38,6 +38,7 @@ import type { ControlAdmission, ControlAdmissionResult } from './control-store-a
 import type { ControlPendingTransition } from './control-store-pending.js';
 import type {
   ControlProductTransition,
+  ControlPublicationInput,
   ControlTerminalResult,
   ControlTerminalTransition,
 } from './control-store-products.js';
@@ -222,6 +223,11 @@ class ControlStoreWorkerClient {
     await this.request({ operation: 'products', database, transition });
   }
 
+  /** Publishes only the named sealed-Turn entry category after native preparation and FULL acknowledgement. */
+  async publication(database: string, input: ControlPublicationInput): Promise<void> {
+    await this.request({ operation: 'publication', database, input });
+  }
+
   /** Commits the complete Workspace cleanup projection on its admitted scoped handle; physical release authority remains with its existing producer. */
   async projectCleanup(
     database: string,
@@ -275,6 +281,8 @@ class ControlStoreWorkerClient {
       return (reply as Extract<Success, { operation: 'goal' }>).result;
     } catch (error) {
       if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'goal') {
+        if (error.domain.code === 'unsupported_retained_format')
+          throw new TypeError('Unsupported retained record format.');
         if (error.domain.code === 'idempotency_key_conflict')
           throw new IdempotencyKeyConflictError();
         throw new GoalCommandError(error.domain.code, error.domain.message, error.domain.status);

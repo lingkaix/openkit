@@ -163,7 +163,7 @@ export function admitCapturedPendingCall(
 ): StartedCapabilityCall {
   const source = readCapturedMediationSource(record, workspaceDb.sqlite);
   const reviewed =
-    source && !prepared?.failed && workspaceDb.workspaceId === record.workspaceId
+    source && !failure && !prepared?.failed && workspaceDb.workspaceId === record.workspaceId
       ? readCapturedMediationAllow(record, workspaceDb.sqlite, source, prepared?.mediation)
       : null;
   if (source && !reviewed && !failure)

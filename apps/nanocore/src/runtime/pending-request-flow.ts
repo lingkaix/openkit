@@ -11,6 +11,7 @@ import {
   currentWorkspaceAuthority,
   isCurrentDeploymentAdministrator,
 } from '../auth/operation-authorizer.js';
+import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
 import type { FsStore } from '../lib/store.js';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION } from '../lib/store.js';
 import { readCommandRequestRecordsFromSqlite } from '../storage/command-request-records.js';
@@ -769,16 +770,22 @@ export async function respondRecordedApproval(input: {
   assertDisclosure();
   await input.prepare?.();
   // Reservation waits for FULL acknowledgement. No Main authority snapshot enters native SQL.
-  const reserved = await input.store.applyPendingRequestCommand(current.workspaceId, {
-    action: 'claim',
-    workspaceId: current.workspaceId,
-    threadId: current.threadId,
-    requestId: current.requestId,
-    actor,
-    now: new Date().toISOString(),
-    decisionContext: input.requestActor ?? { kind: 'local', userId: input.actorId },
-    expected: pendingSources([current]),
-  });
+  const claimSource = readPendingRequest(input.sqlite, current.requestId);
+  if (!claimSource) throw associationGap();
+  const reserved = await input.store.applyPendingRequestCommand(
+    current.workspaceId,
+    {
+      action: 'claim',
+      workspaceId: current.workspaceId,
+      threadId: current.threadId,
+      requestId: current.requestId,
+      actor,
+      now: new Date().toISOString(),
+      decisionContext: input.requestActor ?? { kind: 'local', userId: input.actorId },
+      expected: pendingSources([claimSource]),
+    },
+    { ...(input.receipt ? { receipt: input.receipt } : {}) }
+  );
   let record = readPendingRequest(input.sqlite, current.requestId);
   if (!record) throw associationGap();
   if (reserved.applied !== 'claimed') {
@@ -793,13 +800,17 @@ export async function respondRecordedApproval(input: {
   let failure: string | undefined;
   // This is the existing Main effect-submission step. Its call/decision/Audit rows precede contact.
   input.sqlite.transaction(() => {
-    const supplied = input.evaluate?.();
-    const membership =
-      supplied?.membership ??
-      authorityAllows(input.coreDb, input.store, current, input.requestActor);
-    const agent =
-      supplied?.agentAuthority ??
-      (current.agentId === null || agentStillKnown(input.store, current));
+    const currentMembership = authorityAllows(
+      input.coreDb,
+      input.store,
+      current,
+      input.requestActor
+    );
+    const currentAgent = current.agentId === null || agentStillKnown(input.store, current);
+    // A revoked principal cannot enter the Policy/credential evaluator; record the local refusal first.
+    const supplied = currentMembership && currentAgent ? input.evaluate?.() : undefined;
+    const membership = currentMembership && supplied?.membership !== false;
+    const agent = currentAgent && supplied?.agentAuthority !== false;
     failure = !membership
       ? 'membership-revoked'
       : !agent
@@ -1401,6 +1412,11 @@ function authorityAllows(
   requestActor: Actor | undefined
 ): boolean {
   if (!coreDb) return true;
+  if (
+    !isCanonicalUserActive(coreDb, record.responsibleUserId) ||
+    (requestActor && !isCanonicalUserActive(coreDb, requestActor.userId))
+  )
+    return false;
   if (requestActor)
     return (
       authorizeWorkspace(coreDb, requestActor, record.workspaceId, {

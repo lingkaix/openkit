@@ -202,7 +202,7 @@ import {
   listNativeProducts,
   nativeProductScope,
   readCanonicalFile,
-  readCanonicalTextFile,
+  readNativeProduct,
   readNativeTurnHistory,
   readWorkspaceTurnEvents,
   writeFileAtomic,
@@ -1342,10 +1342,7 @@ export function createVerifiedWorkspaceExport({
   const turnObservations = new Map<string, string>();
   for (const turn of turns) {
     const root = join(workspaceRoot, 'threads', turn.threadId, 'turns', turn.id);
-    const rawTurn = readRetainedV1(
-      JSON.parse(readCanonicalTextFile(join(root, 'turn.json'))),
-      StoredTurnV1Schema.parse
-    );
+    const rawTurn = StoredTurnV1Schema.parse(readNativeProduct(scope, 'turn', turn.id)!.record);
     const declared =
       Array.isArray(rawTurn.requiredFeatures) &&
       rawTurn.requiredFeatures.includes('openkit.work-observations.v1');

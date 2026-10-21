@@ -203,6 +203,7 @@ import {
   readWorkspaceTurnEvents,
   serializeKnowledgeProposalRecord,
   TURN_STREAM_EVENT_WINDOW_SIZE,
+  TurnReaderSchema,
   verifyTurnFileInputs,
   type WorkspaceFileRecords,
   WorkspaceSystemRecordSchema,
@@ -3211,7 +3212,8 @@ export class FsStore {
   /** Appends an immutable revision and conditions it on the same native Turn and Item revision. */
   private async persistNativeItem(
     item: Item,
-    history: NonNullable<ReturnType<typeof readNativeTurnHistory>>
+    history: NonNullable<ReturnType<typeof readNativeTurnHistory>>,
+    admission?: TerminalTurnWriteAdmission
   ): Promise<Item> {
     const scope = this.nativeScope(item.owner);
     const prior = history.itemRevisions.filter((row) => row.id === item.id);
@@ -3226,19 +3228,25 @@ export class FsStore {
       join(dirname(dirname(scope.path)), 'runtime', 'staging'),
       writeRetainedV1(retained)
     );
-    await this.writeNativeProducts(
-      scope,
-      [{ kind: 'turn', expectedRevision: history.revision, record: history.metadata }],
-      [
-        {
-          kind: 'item',
-          turnId: item.turnId,
-          sequence: history.itemRevisions.length + 1,
-          expectedRevision: previousRevision,
-          content,
-        },
-      ]
-    );
+    const entries: ControlProductEntry[] = [
+      {
+        kind: 'item',
+        turnId: item.turnId,
+        sequence: history.itemRevisions.length + 1,
+        expectedRevision: previousRevision,
+        content,
+      },
+    ];
+    if (isSealedTurnTerminal(history.turn.status)) {
+      if (!admission) throw terminalTurnWriteRejected(item.turnId);
+      await this.writeNativePublication(scope, history, entries, admission.category);
+    } else {
+      await this.writeNativeProducts(
+        scope,
+        [{ kind: 'turn', expectedRevision: history.revision, record: history.metadata }],
+        entries
+      );
+    }
     const committed = readNativeTurnHistory(scope, item.turnId)!.turn.items.find(
       (value) => value.id === item.id
     );
@@ -3296,6 +3304,32 @@ export class FsStore {
         : {}),
     });
     return undefined;
+  }
+
+  /** Completes only the declared post-terminal Item/event publication under its unchanged native Turn. */
+  private async writeNativePublication(
+    scope: NativeProductScope,
+    history: NonNullable<ReturnType<typeof readNativeTurnHistory>>,
+    entries: ControlProductEntry[],
+    category: TerminalTurnWriteAdmission['category']
+  ): Promise<void> {
+    const client = getControlStoreWorkerClient();
+    const database = `${scope.owner.kind === 'server' ? 'core' : 'workspace'}:${scope.path}`;
+    await client.open({
+      database,
+      path: scope.path,
+      dataRoot: this.dataRoot!,
+      create: false,
+      initialize: scope.owner.kind === 'server' ? 'core' : 'workspace',
+      productOwner: scope.owner,
+      contentMount: scope.contentMount,
+    });
+    await client.publication(database, {
+      category,
+      turnId: history.turn.id,
+      expectedRevision: history.revision,
+      entries,
+    });
   }
 
   /** Synchronizes exact Item bytes for a complete native Pending tuple, without publishing them. */
@@ -3719,6 +3753,81 @@ export class FsStore {
     return updated;
   }
 
+  /** Creates an already-decided Core-local Turn through the complete native terminal owner. */
+  private async createNativeTerminalTurn(
+    scope: NativeProductScope,
+    turn: Turn,
+    captureCoverage: CaptureCoverageBinding,
+    products: ControlProductMutation[],
+    entries: ControlProductEntry[] = [],
+    pending: readonly ControlPendingCommandInput[] = []
+  ): Promise<void> {
+    const event = (
+      scope.owner.kind === 'server' ? ServerTurnEventEnvelopeSchema : SseEventEnvelopeSchema
+    ).parse({
+      protocolVersion: PROTOCOL_VERSION,
+      ...(scope.owner.kind === 'server'
+        ? { owner: scope.owner }
+        : { workspaceId: scope.owner.workspaceId }),
+      threadId: turn.threadId,
+      turnId: turn.id,
+      requestId: null,
+      timestamp: turn.completedAt,
+      sequence: 1,
+      event: 'turn.completed',
+      data: {
+        type: 'turn-completed',
+        stopReason:
+          turn.status === 'completed'
+            ? 'completed'
+            : turn.status === 'failed'
+              ? 'error'
+              : 'aborted',
+        turn,
+      },
+    });
+    entries.push({
+      kind: 'event',
+      turnId: turn.id,
+      sequence: 1,
+      expectedRevision: 0,
+      content: await publishImmutableProductJson(
+        scope.contentMount,
+        scope.owner,
+        join(dirname(dirname(scope.path)), 'runtime', 'staging'),
+        writeRetainedV1(event)
+      ),
+    });
+    const client = getControlStoreWorkerClient();
+    const database = `${scope.owner.kind === 'server' ? 'core' : 'workspace'}:${scope.path}`;
+    await client.open({
+      database,
+      path: scope.path,
+      dataRoot: this.dataRoot!,
+      create: false,
+      initialize: scope.owner.kind === 'server' ? 'core' : 'workspace',
+      productOwner: scope.owner,
+      contentMount: scope.contentMount,
+    });
+    await client.terminal(database, {
+      owner: scope.owner,
+      turn: {
+        kind: 'turn',
+        expectedRevision: 0,
+        record: writeRetainedV1({ ...turn, items: [], captureCoverage }),
+      },
+      products,
+      entries,
+      pending: [...pending],
+      reap: { reason: turn.status, inferredBy: 'native-terminal-creation' },
+      evidence: [],
+      evidenceContent: [],
+      command: null,
+      execution: null,
+    });
+    this.acknowledgedTurnEvents.set(event, structuredClone(event));
+  }
+
   /** Admits one sequential Server Turn; the runtime owner chooses the model and performs execution. */
   public async createServerTurn(
     threadId: string,
@@ -3767,6 +3876,25 @@ export class FsStore {
     if (this.dataRoot) {
       const scope = this.nativeScope({ kind: 'server' });
       const previousThread = readNativeProduct(scope, 'thread', threadId)!;
+      if (terminal) {
+        await this.createNativeTerminalTurn(
+          scope,
+          turn,
+          options.captureCoverage ?? this.liveCaptureCoverage,
+          [
+            {
+              kind: 'thread',
+              expectedRevision: previousThread.revision,
+              record: writeRetainedV1({
+                ...previousThread.record,
+                preview: input,
+                updatedAt: timestamp,
+              }),
+            },
+          ]
+        );
+        return this.getServerTurnById(turn.id);
+      }
       await this.writeNativeProducts(scope, [
         {
           kind: 'thread',
@@ -3811,7 +3939,7 @@ export class FsStore {
       ? readNativeTurnHistory(this.nativeScope({ kind: 'server' }), turnId)?.turn
       : this.serverTurns.get(turnId);
     if (!turn) throw new StoreRecordNotFoundError(`Server Turn not found: ${turnId}`);
-    return TurnSchema.parse(turn);
+    return TurnSchema.parse(TurnReaderSchema.parse(turn));
   }
 
   /** Lists Server Turns in their canonical chronological order. */
@@ -3835,7 +3963,7 @@ export class FsStore {
       if (!SERVER_TURN_UPDATE_FIELDS.includes(key))
         throw new Error(`Server Turn update cannot change field: ${key}`);
     const updated = TurnSchema.parse({
-      ...turn,
+      ...TurnReaderSchema.parse(turn),
       ...input,
       durationMs:
         (input.completedAt ?? turn.completedAt) && turn.startedAt
@@ -3851,12 +3979,18 @@ export class FsStore {
       throw terminalTurnWriteRejected(turn.id);
     }
     if (this.dataRoot) {
+      if (isSealedTurnTerminal(updated.status)) return this.completeTurn(turnId, input);
       const scope = this.nativeScope({ kind: 'server' });
       await this.writeNativeProducts(scope, [
         {
           kind: 'turn',
           expectedRevision: native!.revision,
-          record: writeRetainedV1({ ...native!.metadata, ...updated, items: [] }),
+          record: writeRetainedV1({
+            ...native!.metadata,
+            ...input,
+            durationMs: updated.durationMs,
+            items: [],
+          }),
         },
       ]);
       return this.getServerTurnById(turnId);
@@ -3890,7 +4024,7 @@ export class FsStore {
       if (admission?.category !== 'already-decided-publication' || existing)
         throw terminalTurnWriteRejected(turn.id);
     }
-    if (this.dataRoot) return this.persistNativeItem(item, native!);
+    if (this.dataRoot) return this.persistNativeItem(item, native!, admission);
     const updatedTurn = TurnSchema.parse({
       ...turn,
       items: existing
@@ -3992,11 +4126,17 @@ export class FsStore {
         join(dirname(dirname(scope.path)), 'runtime', 'staging'),
         writeRetainedV1(envelope)
       );
-      await this.writeNativeProducts(
-        scope,
-        [{ kind: 'turn', expectedRevision: previous.revision, record: previous.record }],
-        [{ kind: 'event', turnId, sequence: envelope.sequence, expectedRevision: 0, content }]
-      );
+      const entries: ControlProductEntry[] = [
+        { kind: 'event', turnId, sequence: envelope.sequence, expectedRevision: 0, content },
+      ];
+      if (isSealedTurnTerminal(turn.status))
+        await this.writeNativePublication(scope, native!, entries, 'already-decided-publication');
+      else
+        await this.writeNativeProducts(
+          scope,
+          [{ kind: 'turn', expectedRevision: previous.revision, record: previous.record }],
+          entries
+        );
     } else {
       const state = this.serverTurnStream(turnId);
       state.sequence = envelope.sequence;
@@ -4257,8 +4397,8 @@ export class FsStore {
       error: null,
       configVersion,
       startedAt: timestamp,
-      completedAt: null,
-      durationMs: null,
+      completedAt: isSealedTurnTerminal(options.status ?? 'running') ? timestamp : null,
+      durationMs: isSealedTurnTerminal(options.status ?? 'running') ? 0 : null,
       ...(options.internalExecution !== undefined
         ? { internalExecution: options.internalExecution }
         : {}),
@@ -4289,6 +4429,27 @@ export class FsStore {
         options.executorKind
       );
       const pendingEntries = await this.preparePendingItems(scope, pendingAdmission?.items ?? []);
+      if (isSealedTurnTerminal(turn.status)) {
+        await this.createNativeTerminalTurn(
+          scope,
+          turn,
+          options.captureCoverage ?? this.liveCaptureCoverage,
+          [
+            {
+              kind: 'thread',
+              expectedRevision: previousThread.revision,
+              record: writeRetainedV1({
+                ...previousThread.record,
+                preview: input,
+                updatedAt: timestamp,
+              }),
+            },
+          ],
+          pendingEntries,
+          pendingAdmission?.pending
+        );
+        return this.getTurnById(turn.id);
+      }
       await this.writeNativeProducts(
         scope,
         [
@@ -4517,7 +4678,7 @@ export class FsStore {
     }
 
     const updated = TurnSchema.parse({
-      ...turn,
+      ...TurnReaderSchema.parse(turn),
       ...input,
       durationMs:
         (input.completedAt ?? turn.completedAt) && turn.startedAt
@@ -4546,15 +4707,19 @@ export class FsStore {
     if (this.dataRoot) {
       const scope = this.nativeScope(turn.owner);
       const previous = { revision: native!.revision, record: native!.metadata };
-      // The worker owns terminal admission. Until its structured terminal API is delivered,
-      // products rejects terminal candidates; no Main Task hook or split terminal write runs.
+      if (isSealedTurnTerminal(updated.status)) return this.completeTurn(turnId, input);
       await this.writeNativeProducts(
         scope,
         [
           {
             kind: 'turn',
             expectedRevision: previous.revision,
-            record: writeRetainedV1({ ...previous.record, ...updated, items: [] }),
+            record: writeRetainedV1({
+              ...previous.record,
+              ...input,
+              durationMs: updated.durationMs,
+              items: [],
+            }),
           },
         ],
         [],
@@ -4624,7 +4789,7 @@ export class FsStore {
       items.set(item.id, item);
     }
     const turn = TurnSchema.parse({
-      ...before,
+      ...TurnReaderSchema.parse(before),
       ...patch,
       completedAt,
       durationMs:
@@ -4762,7 +4927,13 @@ export class FsStore {
         turn: {
           kind: 'turn',
           expectedRevision: history!.revision,
-          record: writeRetainedV1({ ...history!.metadata, ...turn, items: [] }),
+          record: writeRetainedV1({
+            ...history!.metadata,
+            ...patch,
+            completedAt: turn.completedAt,
+            durationMs: turn.durationMs,
+            items: [],
+          }),
         },
         products: [],
         entries,
@@ -4896,7 +5067,7 @@ export class FsStore {
     if (existing) {
       assertImmutableItemAttribution(existing, item);
     }
-    if (this.dataRoot) return this.persistNativeItem(item, native!);
+    if (this.dataRoot) return this.persistNativeItem(item, native!, admission);
     const updatedTurn = {
       ...turn,
       items: existing
@@ -4983,7 +5154,7 @@ export class FsStore {
       throw new Error(`Item immutable identity cannot change: ${itemId}`);
     }
     assertImmutableItemAttribution(item, updated);
-    if (this.dataRoot) return this.persistNativeItem(updated, native!);
+    if (this.dataRoot) return this.persistNativeItem(updated, native!, admission);
     const updatedTurn = {
       ...turn,
       items: turn.items.map((candidate) => (candidate.id === itemId ? updated : candidate)),
@@ -6603,11 +6774,17 @@ export class FsStore {
         join(dirname(dirname(scope.path)), 'runtime', 'staging'),
         writeRetainedV1(envelope)
       );
-      await this.writeNativeProducts(
-        scope,
-        [{ kind: 'turn', expectedRevision: previous.revision, record: previous.record }],
-        [{ kind: 'event', turnId, sequence: envelope.sequence, expectedRevision: 0, content }]
-      );
+      const entries: ControlProductEntry[] = [
+        { kind: 'event', turnId, sequence: envelope.sequence, expectedRevision: 0, content },
+      ];
+      if (isSealedTurnTerminal(turn.status))
+        await this.writeNativePublication(scope, native!, entries, 'already-decided-publication');
+      else
+        await this.writeNativeProducts(
+          scope,
+          [{ kind: 'turn', expectedRevision: previous.revision, record: previous.record }],
+          entries
+        );
     } else {
       const state = this.turnStream(turnId);
       state.sequence = envelope.sequence;

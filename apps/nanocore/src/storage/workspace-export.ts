@@ -105,6 +105,7 @@ export const WORKSPACE_EXPORT_PORTABLE_WORKSPACE_SQLITE_TABLES = [
   'control_agent_sessions',
   'control_turns',
   'control_product_entries',
+  'control_work_observations',
   'goals',
   'goal_cards',
   'goal_plan_versions',

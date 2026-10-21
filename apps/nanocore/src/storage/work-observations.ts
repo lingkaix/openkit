@@ -26,7 +26,6 @@ import {
   SystemPromptDigestSchema,
   TurnIdSchema,
   WorkspaceIdSchema,
-  workspaceIdForOwner,
   writeRetainedV1,
 } from '@openkit/protocol';
 import { WorkerObservationDataSchema } from '@openkit/worker-protocol';
@@ -38,18 +37,12 @@ import type { ControlProductOwner } from './control-store-products.js';
 import type { CoreDb, WorkspaceDb } from './db.js';
 import { StoredThreadSnapshotV1Schema } from './retained-work-events-v1.js';
 import { StoredTurnV1Schema, StoredWorkOwnerV1Schema } from './retained-work-metadata-v1.js';
-import { readServerTurnRecord } from './server-thread-records.js';
 import {
   appendCanonicalTextFile,
-  assertCanonicalDirectory,
-  assertSafeWorkspacePathSegment,
-  CaptureCoverageBindingSchema,
   preserveDescriptiveRecord,
   readCanonicalFile,
-  readCanonicalTextFile,
   readPublishedTurnFileRecords,
   syncCanonicalDirectory,
-  TurnReaderSchema,
   writeFileAtomic,
 } from './workspace-file-records.js';
 
@@ -406,78 +399,46 @@ export function readWorkObservationTurnBinding(
   workspaceDb: WorkspaceDb | CoreDb,
   input: { readonly threadId: string; readonly turnId: string }
 ) {
-  for (const id of [
-    ...(workspaceDb.scope === 'workspace' ? [workspaceDb.workspaceId] : []),
-    input.threadId,
-    input.turnId,
-  ])
-    assertSafeWorkspacePathSegment(id, 'Observation owner');
-  if (workspaceDb.scope === 'core') {
-    let root = workspaceDb.dataRoot;
-    for (const part of ['server', 'threads', input.threadId, 'turns', input.turnId]) {
-      root = join(root, part);
-      assertCanonicalDirectory(root);
-    }
-    const turn = readServerTurnRecord(workspaceDb.dataRoot, input.threadId, input.turnId);
-    const raw = readRetainedV1(
-      JSON.parse(readCanonicalTextFile(join(root, 'turn.json'))),
-      (record) => record as Record<string, unknown>
-    );
-    return { root, turn, raw, coverage: turn.captureCoverage ?? null };
-  }
-  let root = workspaceDb.dataRoot;
-  for (const part of ['workspaces', workspaceDb.workspaceId, 'threads', input.threadId]) {
-    root = join(root, part);
-    assertCanonicalDirectory(root);
-  }
-  const thread = StoredThreadSnapshotV1Schema.parse(
-    JSON.parse(readCanonicalTextFile(join(root, 'thread.json')))
-  );
-  if (thread.id !== input.threadId || workspaceIdForOwner(thread.owner) !== workspaceDb.workspaceId)
-    throw new Error('recovery_required: observation Thread lineage mismatch');
-  for (const part of ['turns', input.turnId]) {
-    root = join(root, part);
-    assertCanonicalDirectory(root);
-  }
-  const raw = readRetainedV1(
-    JSON.parse(readCanonicalTextFile(join(root, 'turn.json'))),
-    (record) => record as Record<string, unknown>
-  );
-  const metadata = StoredTurnV1Schema.parse(raw);
-  const turn = TurnReaderSchema.parse({ ...metadata, items: [] });
-  if (
-    turn.id !== input.turnId ||
-    turn.threadId !== input.threadId ||
-    workspaceIdForOwner(turn.owner) !== workspaceDb.workspaceId
-  )
-    throw new Error('recovery_required: observation Turn lineage mismatch');
-  return {
-    root,
-    turn,
-    raw,
-    coverage:
-      raw.captureCoverage === undefined
-        ? null
-        : CaptureCoverageBindingSchema.parse(raw.captureCoverage),
-  };
+  const owner: ControlProductOwner =
+    workspaceDb.scope === 'core'
+      ? { kind: 'server' }
+      : { kind: 'workspace', workspaceId: workspaceDb.workspaceId };
+  const binding = readControlWorkObservationTurnBinding(workspaceDb.sqlite, owner, input);
+  const root =
+    owner.kind === 'server'
+      ? join(workspaceDb.dataRoot, 'server', 'threads', input.threadId, 'turns', input.turnId)
+      : join(
+          workspaceDb.dataRoot,
+          'workspaces',
+          owner.workspaceId,
+          'threads',
+          input.threadId,
+          'turns',
+          input.turnId
+        );
+  return { root, turn: binding.turn, raw: binding.raw, coverage: binding.coverage };
 }
 
-/** Reads committed LF-terminated rows only; malformed interior data fails closed. */
+/** Reads complete ordered native pages; malformed or missing authority fails closed. */
 export function readWorkObservations(
   workspaceDb: WorkspaceDb | CoreDb,
   input: { readonly threadId: string; readonly turnId: string }
 ): readonly WorkObservationRecord[] {
-  const { root, raw } = readWorkObservationTurnBinding(workspaceDb, input);
-  const path = join(root, 'observations.jsonl');
-  if (
-    existsSync(path) &&
-    !z
-      .array(z.string())
-      .parse(raw.requiredFeatures ?? [])
-      .includes('openkit.work-observations.v1')
-  )
-    throw new Error('recovery_required: missing observation manifest feature');
-  return readRows(path, input.turnId).rows;
+  const owner: ControlProductOwner =
+    workspaceDb.scope === 'core'
+      ? { kind: 'server' }
+      : { kind: 'workspace', workspaceId: workspaceDb.workspaceId };
+  const records: WorkObservationRecord[] = [];
+  let afterSequence = 0;
+  for (;;) {
+    const page = readControlWorkObservations(workspaceDb.sqlite, owner, {
+      ...input,
+      afterSequence,
+    });
+    records.push(...page);
+    if (page.length < 128) return records;
+    afterSequence = page.at(-1)!.seq;
+  }
 }
 
 /** Commits exact admitted bodies through evidence, then the single observation publication marker. */

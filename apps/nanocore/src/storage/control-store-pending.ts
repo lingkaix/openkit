@@ -335,6 +335,8 @@ export function applyControlPendingTransition(
         advanceGoalForThread(db.sqlite, record.threadId);
     }
   }
+  // A winning reservation has no command result yet; its later disposition commits the original receipt.
+  if (receipt && transition.input.action === 'claim' && result.applied === 'claimed') return result;
   if (receipt) {
     const record = readPendingRequest(db.sqlite, receipt.responseId);
     if (!record || (record.claim === 'claimed' && record.disposition === null))

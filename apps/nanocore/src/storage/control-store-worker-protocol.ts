@@ -54,6 +54,8 @@ import {
   type ControlProductOwner,
   type ControlProductTransition,
   ControlProductTransitionSchema,
+  type ControlPublicationInput,
+  ControlPublicationInputSchema,
   type ControlTerminalResult,
   type ControlTerminalTransition,
   ControlTerminalTransitionSchema,
@@ -139,6 +141,7 @@ export type ControlWorkerCommand =
       | { readonly operation: 'write'; readonly statements: readonly ControlSqlStatement[] }
       | { readonly operation: 'transition'; readonly transition: ControlAdmission }
       | { readonly operation: 'products'; readonly transition: ControlProductTransition }
+      | { readonly operation: 'publication'; readonly input: ControlPublicationInput }
       | { readonly operation: 'project-cleanup'; readonly input: ProjectWorkerBackendCleanupInput }
       | { readonly operation: 'observation'; readonly input: ControlWorkObservationInput }
       | { readonly operation: 'goal'; readonly input: ControlGoalCommandInput }
@@ -196,7 +199,10 @@ export type ControlWorkerReply = {
   readonly version: typeof CONTROL_WORKER_VERSION;
   readonly id: number;
 } & (
-  | { readonly status: 'ok'; readonly operation: 'open' | 'close' | 'shutdown' | 'products' }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'open' | 'close' | 'shutdown' | 'products' | 'publication';
+    }
   | { readonly status: 'ok'; readonly operation: 'journal'; readonly resultJson: string }
   | {
       readonly status: 'ok';
@@ -309,6 +315,11 @@ function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
   return (
     isRecord(value) &&
     exactFields(value, ['operation', 'code', 'message', 'status']) &&
+    // This reserved owner refusal carries no native exception text or SQL details.
+    (value.code !== 'unsupported_retained_format' ||
+      (value.operation === 'goal' &&
+        value.message === 'Unsupported retained record format.' &&
+        value.status === 409)) &&
     (value.operation === 'goal' ||
       value.operation === 'pending' ||
       ((value.operation === 'material' || value.operation === 'review') &&
@@ -366,7 +377,8 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     reply.operation === 'open' ||
     reply.operation === 'close' ||
     reply.operation === 'shutdown' ||
-    reply.operation === 'products'
+    reply.operation === 'products' ||
+    reply.operation === 'publication'
   )
     return true;
   if (reply.operation === 'project-cleanup')
@@ -628,6 +640,7 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     }
   }
   if (
+    value.operation === 'publication' ||
     value.operation === 'pending' ||
     value.operation === 'journal' ||
     value.operation === 'project-cleanup' ||
@@ -639,21 +652,23 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
   ) {
     try {
       const schema =
-        value.operation === 'pending'
-          ? ControlPendingTransitionSchema
-          : value.operation === 'journal'
-            ? ControlExecutionJournalInputSchema
-            : value.operation === 'project-cleanup'
-              ? ProjectWorkerBackendCleanupInputSchema
-              : value.operation === 'goal'
-                ? ControlGoalCommandInputSchema
-                : value.operation === 'review'
-                  ? ControlReviewCommandInputSchema
-                  : value.operation === 'maintenance'
-                    ? ControlMaintenanceAdmissionInputSchema
-                    : value.operation === 'terminal'
-                      ? ControlTerminalTransitionSchema
-                      : ControlWorkObservationInputSchema;
+        value.operation === 'publication'
+          ? ControlPublicationInputSchema
+          : value.operation === 'pending'
+            ? ControlPendingTransitionSchema
+            : value.operation === 'journal'
+              ? ControlExecutionJournalInputSchema
+              : value.operation === 'project-cleanup'
+                ? ProjectWorkerBackendCleanupInputSchema
+                : value.operation === 'goal'
+                  ? ControlGoalCommandInputSchema
+                  : value.operation === 'review'
+                    ? ControlReviewCommandInputSchema
+                    : value.operation === 'maintenance'
+                      ? ControlMaintenanceAdmissionInputSchema
+                      : value.operation === 'terminal'
+                        ? ControlTerminalTransitionSchema
+                        : ControlWorkObservationInputSchema;
       return (
         exactFields(value, [...scoped, 'input']) &&
         schema.safeParse(value.input).success &&
