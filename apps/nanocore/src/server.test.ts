@@ -11602,44 +11602,112 @@ describe('nanocore server', () => {
       submission: true,
     });
     const interrupt = vi.spyOn(executor, 'interruptTurn');
-    const interruptRes = await app.request(
-      ...operationRequest(
-        'turn.interrupt',
-        {
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          threadId: 'th_00000000-0000-7000-8000-000000000001',
-          turnId: turn.id,
-        },
-        {
-          method: 'POST',
-          body: JSON.stringify({
+    const { commandRequestKey } = await import('./lib/store.js');
+    const { getControlStoreWorkerClient } = await import(
+      './storage/control-store-worker-client.js'
+    );
+    const requestId = '0190f4c8-0000-7000-8000-000000000206';
+    const scope = {
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId: turn.id,
+    };
+    const expectedReceipt = {
+      command: 'turn.interrupt',
+      requestId,
+      scope,
+      key: commandRequestKey('turn.interrupt', requestId, scope),
+      inputHash: commandInputHash({ requestId, ...scope }),
+      response: { kind: 'turn', id: turn.id },
+    };
+    const expectedCommand = {
+      receipt: expect.objectContaining(expectedReceipt),
+      audit: expect.objectContaining({
+        action: 'turn.interrupt',
+        category: 'command',
+        outcome: 'succeeded',
+        actor: { kind: 'user', id: LOCAL_USER_ID },
+        requestId,
+        ...scope,
+      }),
+    };
+    expect(store.getCommandRequest('turn.interrupt', requestId, scope)).toBeNull();
+    const client = getControlStoreWorkerClient();
+    const publishTerminal = client.terminal.bind(client);
+    const publications: Array<{
+      command: Parameters<typeof client.terminal>[1]['command'];
+      response: Awaited<ReturnType<typeof client.terminal>>['response'];
+      receipt: ReturnType<FsStore['getCommandRequest']>;
+      status: string;
+    }> = [];
+    // Observe the real native ACK before its caller can attempt a later receipt reconciliation.
+    const nativePublication = vi
+      .spyOn(client, 'terminal')
+      .mockImplementation(async (database, input) => {
+        const command = structuredClone(input.command);
+        const result = await publishTerminal(database, input);
+        publications.push({
+          command,
+          response: result.response,
+          receipt: store.getCommandRequest('turn.interrupt', requestId, scope),
+          status: store.getTurnById(turn.id).status,
+        });
+        return result;
+      });
+    try {
+      const interruptRes = await app.request(
+        ...operationRequest(
+          'turn.interrupt',
+          {
             workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             threadId: 'th_00000000-0000-7000-8000-000000000001',
             turnId: turn.id,
-            requestId: '0190f4c8-0000-7000-8000-000000000206',
-          }),
-          headers: { 'content-type': 'application/json' },
-        }
-      )
-    );
+          },
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId: 'th_00000000-0000-7000-8000-000000000001',
+              turnId: turn.id,
+              requestId: '0190f4c8-0000-7000-8000-000000000206',
+            }),
+            headers: { 'content-type': 'application/json' },
+          }
+        )
+      );
 
-    expect(interrupt).toHaveBeenCalledExactlyOnceWith(store, turn.id, {
-      requestId: '0190f4c8-0000-7000-8000-000000000206',
-    });
-    expect(interruptRes.status).toBe(200);
-    expect((await interruptRes.json()) as { status: string }).toMatchObject({
-      status: 'interrupted',
-    });
-    expect(
-      requireSchedulerExecutionAttempt(coreDb, 'attempt_00000000-0000-7cb2-98f2-3a36a5686b98')
-    ).toMatchObject({
-      phase: 'closing',
-      operationId: 'original:interrupt_route',
-      fenceRef: null,
-    });
-    expect(store.getTurnEvents(turn.id).at(-1)?.requestId).toBe(
-      '0190f4c8-0000-7000-8000-000000000206'
-    );
+      expect(publications[0]).toEqual({
+        command: expectedCommand,
+        response: expectedReceipt.response,
+        receipt: expect.objectContaining(expectedReceipt),
+        status: 'interrupted',
+      });
+      const forwardedCommand = interrupt.mock.calls[0]?.[2]?.command;
+      expect(publications[0]?.command).toEqual(forwardedCommand);
+      expect(publications[0]?.receipt).toEqual(forwardedCommand?.receipt);
+      expect(nativePublication).toHaveBeenCalledTimes(1);
+      expect(interrupt).toHaveBeenCalledExactlyOnceWith(store, turn.id, {
+        requestId: '0190f4c8-0000-7000-8000-000000000206',
+        command: expectedCommand,
+      });
+      expect(interruptRes.status).toBe(200);
+      expect((await interruptRes.json()) as { status: string }).toMatchObject({
+        status: 'interrupted',
+      });
+      expect(
+        requireSchedulerExecutionAttempt(coreDb, 'attempt_00000000-0000-7cb2-98f2-3a36a5686b98')
+      ).toMatchObject({
+        phase: 'closing',
+        operationId: 'original:interrupt_route',
+        fenceRef: null,
+      });
+      expect(store.getTurnEvents(turn.id).at(-1)?.requestId).toBe(
+        '0190f4c8-0000-7000-8000-000000000206'
+      );
+    } finally {
+      nativePublication.mockRestore();
+      interrupt.mockRestore();
+    }
   });
 
   it('lists workspace vault grant injection metadata through App API', async () => {
