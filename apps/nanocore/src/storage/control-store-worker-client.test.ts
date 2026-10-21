@@ -1,12 +1,17 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import type { Worker as NativeWorker } from 'node:worker_threads';
 import { Worker } from 'node:worker_threads';
+import { allocateEntityId } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { FsStore } from '../lib/store.js';
+import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
+import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import {
   CONTROL_WORKER_LIMITS,
@@ -15,6 +20,16 @@ import {
   isControlWorkerReply,
   isControlWorkerRequest,
 } from './control-store-worker-protocol.js';
+import { createDataRootAdminOperationImplementations } from './data-root-admin-operations.js';
+import * as dataRootBackup from './data-root-backup.js';
+import {
+  coreDbPath,
+  ensureLayout,
+  ensureUserLayout,
+  userDbPath,
+  workspaceDbPath,
+} from './fs-layout.js';
+import { nativeProductScope } from './workspace-file-records.js';
 
 const interception = vi.hoisted(() => ({
   workers: [] as NativeWorker[],
@@ -71,10 +86,15 @@ const roots: string[] = [];
 let client: ReturnType<typeof getControlStoreWorkerClient> | undefined;
 
 /** Uses the real worker and current User journal in a private database, never a product fixture default. */
-async function fixture(point?: 'before' | 'after') {
+async function fixture(point?: 'before' | 'after', layout: 'private' | 'data-root' = 'private') {
   const root = mkdtempSync(join(tmpdir(), 'control-client-'));
   roots.push(root);
-  const path = join(root, 'user.sqlite');
+  if (layout === 'data-root') {
+    ensureLayout(root);
+    ensureUserLayout(root, FIXTURE_LOCAL_USER_ID);
+  }
+  const path =
+    layout === 'data-root' ? userDbPath(root, FIXTURE_LOCAL_USER_ID) : join(root, 'user.sqlite');
   if (point !== undefined) {
     interception.gate = new SharedArrayBuffer(8);
     interception.point = point;
@@ -318,6 +338,196 @@ describe('control writer parent admission', () => {
     await shutdown;
     expect(f.client.isClosed).toBe(true);
     expect(count(f.path)).toBe(3);
+  });
+
+  it('holds backup copying until native acknowledgement and captures the complete Item closure', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'control-backup-'));
+    roots.push(root, `${root}.backups`);
+    interception.gate = new SharedArrayBuffer(8);
+    interception.point = 'before';
+    const gate = new Int32Array(interception.gate);
+    Atomics.store(gate, 0, 1); // Setup commits are outside the controlled publication.
+    client = getControlStoreWorkerClient();
+    const store = await createDemoStore({ dataRoot: root });
+    const turn = await store.createTurn(
+      DEMO_WORKSPACE_ID,
+      DEMO_THREAD_ID,
+      'Capture the acknowledged result.',
+      { kind: 'user', id: FIXTURE_LOCAL_USER_ID }
+    );
+    const capture = vi.spyOn(dataRootBackup, 'writeHotDataRootBackup');
+    const posted = vi.spyOn(interception.workers[0]!, 'postMessage');
+    Atomics.store(gate, 0, 0);
+    let acknowledged = false;
+    const publication = store
+      .createItem({
+        id: allocateEntityId('it'),
+        owner: turn.owner,
+        threadId: turn.threadId,
+        turnId: turn.id,
+        type: 'assistant-message',
+        status: 'completed',
+        text: 'Exact immutable backup bytes.\n',
+        createdAt: turn.startedAt!,
+        completedAt: turn.startedAt!,
+      })
+      .then((item) => {
+        acknowledged = true;
+        return item;
+      });
+    await waitForHold(gate);
+    expect(posted).toHaveBeenCalled();
+    expect(acknowledged).toBe(false);
+    const operations = createDataRootAdminOperationImplementations(root);
+    const backup = operations['backup.create']();
+    let copiesWhileHeld = -1;
+    let destinationWhileHeld = true;
+    try {
+      await nextTurn();
+      copiesWhileHeld = capture.mock.calls.length;
+      destinationWhileHeld = existsSync(`${root}.backups`);
+    } finally {
+      release(gate);
+    }
+    // Settle both real owners so a failed ordering check leaves no in-flight request.
+    await Promise.allSettled([publication, backup]);
+    expect(copiesWhileHeld).toBe(0);
+    expect(destinationWhileHeld).toBe(false);
+    const item = await publication;
+    const result = await backup;
+    expect(acknowledged).toBe(true);
+    expect(capture).toHaveBeenCalledTimes(1);
+    const backupRoot = join(`${root}.backups`, result.backupId);
+    const verified = dataRootBackup.verifyDataRootBackupManifest({ backupRoot });
+    expect(verified.manifest).toEqual(result.manifest);
+    expect(operations['backup.verify']({ backupId: result.backupId }).manifest).toEqual(
+      result.manifest
+    );
+    expect(
+      new FsStore({ dataRoot: backupRoot }).listThreadItems(DEMO_WORKSPACE_ID, DEMO_THREAD_ID)
+    ).toEqual([item]);
+    for (const path of [coreDbPath(backupRoot), workspaceDbPath(backupRoot, DEMO_WORKSPACE_ID)]) {
+      const reader = new Database(path, { readonly: true, fileMustExist: true });
+      try {
+        expect(reader.pragma('quick_check', { simple: true })).toBe('ok');
+      } finally {
+        reader.close();
+      }
+    }
+    const reader = new Database(workspaceDbPath(backupRoot, DEMO_WORKSPACE_ID), {
+      readonly: true,
+      fileMustExist: true,
+    });
+    try {
+      const entries = reader
+        .prepare('SELECT content_json FROM control_product_entries ORDER BY sequence')
+        .pluck()
+        .all() as string[];
+      expect(entries.length).toBeGreaterThan(0);
+      const scope = nativeProductScope(backupRoot, turn.owner);
+      for (const json of entries) {
+        const content = JSON.parse(json);
+        const bytes = readFileSync(join(scope.contentMount.root, content.reference.locator.path));
+        expect(bytes.length).toBe(content.byteLength);
+        expect(`sha256:${createHash('sha256').update(bytes).digest('hex')}`).toBe(
+          content.reference.contentDigest
+        );
+      }
+    } finally {
+      reader.close();
+    }
+  });
+
+  it('bounds capture waiters before posting and commits them only after backup resumes', async () => {
+    const f = await fixture(undefined, 'data-root');
+    roots.push(`${f.root}.backups`);
+    const posted = vi.spyOn(interception.workers[0]!, 'postMessage');
+    const capture = dataRootBackup.writeHotDataRootBackup;
+    const operations = createDataRootAdminOperationImplementations(f.root);
+    const accepted: Promise<unknown>[] = [];
+    let excess: Promise<unknown> | undefined;
+    let postedDuringCapture = -1;
+    let rowsDuringCapture = -1;
+    vi.spyOn(dataRootBackup, 'writeHotDataRootBackup').mockImplementationOnce((input) => {
+      accepted.push(f.client.write('user', metadata('after-capture')));
+      for (let index = 1; index < CONTROL_WORKER_LIMITS.pendingTransitions; index += 1) {
+        accepted.push(
+          f.client.write('user', [{ mode: 'get', sql: 'SELECT 1 AS value', parameters: [] }])
+        );
+      }
+      excess = f.client.write('user', metadata('excess')).catch((error: unknown) => error);
+      postedDuringCapture = posted.mock.calls.length;
+      rowsDuringCapture = count(f.path);
+      return capture(input);
+    });
+    const result = await operations['backup.create']();
+    await Promise.all(accepted);
+    expect(postedDuringCapture).toBe(0);
+    expect(rowsDuringCapture).toBe(0);
+    expect(await excess).toMatchObject({ code: 'busy', commit: 'not-committed' });
+    expect(
+      count(userDbPath(join(`${f.root}.backups`, result.backupId), FIXTURE_LOCAL_USER_ID))
+    ).toBe(0);
+    expect(count(f.path)).toBe(1);
+    expect(posted.mock.calls.filter(([request]) => request.operation === 'write')).toHaveLength(
+      CONTROL_WORKER_LIMITS.pendingTransitions
+    );
+    expect(interception.workers).toHaveLength(1);
+  });
+
+  it('resumes native commands after a real backup capture failure', async () => {
+    const f = await fixture(undefined, 'data-root');
+    roots.push(`${f.root}.backups`);
+    writeFileSync(`${f.root}.backups`, 'The private backup destination is a file.');
+    const posted = vi.spyOn(interception.workers[0]!, 'postMessage');
+    const capture = dataRootBackup.writeHotDataRootBackup;
+    let waiting: Promise<unknown> | undefined;
+    let postedDuringCapture = -1;
+    vi.spyOn(dataRootBackup, 'writeHotDataRootBackup').mockImplementationOnce((input) => {
+      waiting = f.client.write('user', metadata('resumed'));
+      postedDuringCapture = posted.mock.calls.length;
+      return capture(input);
+    });
+    await expect(
+      createDataRootAdminOperationImplementations(f.root)['backup.create']()
+    ).rejects.toMatchObject({ code: 'data_root_backup_failed', status: 400 });
+    expect(await waiting).toMatchObject([{ mode: 'run', changes: 1 }]);
+    expect(postedDuringCapture).toBe(0);
+    await expect(f.client.write('user', metadata('later'))).resolves.toMatchObject([
+      { mode: 'run', changes: 1 },
+    ]);
+    expect(count(f.path)).toBe(2);
+  });
+
+  it('keeps posted loss unknown and unposted backup waiters not committed without replay', async () => {
+    const f = await fixture('after', 'data-root');
+    roots.push(`${f.root}.backups`);
+    const posted = vi.spyOn(interception.workers[0]!, 'postMessage');
+    const original = f.client
+      .write('user', metadata('committed-before-lost-ack'))
+      .catch((error: unknown) => error);
+    await waitForHold(f.gate!);
+    expect(count(f.path)).toBe(1);
+    const capture = vi.spyOn(dataRootBackup, 'writeHotDataRootBackup');
+    const backup = createDataRootAdminOperationImplementations(f.root)
+      ['backup.create']()
+      .catch((error: unknown) => error);
+    const waiting = f.client
+      .write('user', metadata('never-posted'))
+      .catch((error: unknown) => error);
+    await interception.workers[0]!.terminate();
+    expect(await original).toMatchObject({ code: 'unavailable', commit: 'unknown' });
+    expect(await waiting).toMatchObject({ code: 'unavailable', commit: 'not-committed' });
+    expect(await backup).toMatchObject({ code: 'data_root_backup_failed', status: 400 });
+    expect(capture).not.toHaveBeenCalled();
+    expect(posted.mock.calls.filter(([request]) => request.operation === 'write')).toHaveLength(1);
+    expect(count(f.path)).toBe(1);
+    expect(getControlStoreWorkerClient()).toBe(f.client);
+    await expect(f.client.write('user', metadata('no-retry'))).rejects.toMatchObject({
+      code: 'unavailable',
+      commit: 'not-committed',
+    });
+    expect(interception.workers).toHaveLength(1);
   });
 
   it('retains closed initialization errors without exposing native diagnostic data', async () => {
