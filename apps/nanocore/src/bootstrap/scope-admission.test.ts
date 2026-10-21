@@ -7,6 +7,7 @@ import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { startCapabilityCall } from '../capability/usage-ledger.js';
 import { FsStore } from '../lib/store.js';
+import { openControlStoreProductReadHandle } from '../storage/control-store-products.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import {
   openBootVerifiedWorkspaceDb,
@@ -18,6 +19,7 @@ import {
 } from '../storage/db.js';
 import { coreDbPath, ensureLayout, userDbPath, workspaceDbPath } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { nativeProductScope } from '../storage/workspace-file-records.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { createTestStore } from '../test-support/store.js';
 import {
@@ -34,6 +36,21 @@ function root(): string {
   const path = mkdtempSync(join(tmpdir(), 'scope-admission-'));
   roots.push(path);
   return path;
+}
+
+/** Keeps SQLite integrity intact while replacing its native record with an invalid scalar. The writer is stopped first. */
+function damageWorkspaceRecord(dataRoot: string, workspaceId: string, damaged: string): Buffer {
+  const db = openWorkspaceDb(dataRoot, workspaceId);
+  try {
+    expect(
+      db.sqlite
+        .prepare('UPDATE control_workspaces SET record_json = ? WHERE id = ?')
+        .run(JSON.stringify(damaged), workspaceId).changes
+    ).toBe(1);
+  } finally {
+    db.sqlite.close();
+  }
+  return readFileSync(workspaceDbPath(dataRoot, workspaceId));
 }
 afterEach(async () => {
   await shutdownControlStoreWorkerClient();
@@ -114,19 +131,20 @@ describe('scope-owned admission', () => {
     ]);
   });
 
-  it('loads healthy file history without publishing a corrupt sibling cache', async () => {
+  it('loads healthy native history without publishing a corrupt sibling cache', async () => {
     const dataRoot = root();
     const initial = createTestStore({ dataRoot });
     const good = await initial.createWorkspace('Healthy history');
     const bad = await initial.createWorkspace('Damaged history');
-    const path = join(dataRoot, 'workspaces', bad.id, 'workspace-record.json');
     const damaged = '{not a canonical record';
-    writeFileSync(path, damaged);
+    await shutdownControlStoreWorkerClient();
+    const before = damageWorkspaceRecord(dataRoot, bad.id, damaged);
+    const path = workspaceDbPath(dataRoot, bad.id);
     const reopened = new FsStore({ dataRoot });
     expect(reopened.getWorkspace(good.id).name).toBe('Healthy history');
     expect(reopened.listWorkspaces().map(({ id }) => id)).toEqual([good.id]);
     expect(() => reopened.getWorkspace(bad.id)).toThrow('quarantined');
-    expect(readFileSync(path, 'utf8')).toBe(damaged);
+    expect(readFileSync(path)).toEqual(before);
     expect(scopeAdmissionFailures(dataRoot)).toContainEqual({
       scope: 'workspace',
       id: bad.id,
@@ -134,11 +152,11 @@ describe('scope-owned admission', () => {
     });
   });
 
-  it('validates file authority before scoped migration or call-loss recovery writes', async () => {
+  it('validates native authority before scoped migration or call-loss recovery writes', async () => {
     const dataRoot = root();
     const initial = createTestStore({ dataRoot });
-    const bad = await initial.createWorkspace('Malformed file authority');
-    const good = await initial.createWorkspace('Healthy file authority');
+    const bad = await initial.createWorkspace('Malformed native authority');
+    const good = await initial.createWorkspace('Healthy native authority');
     const callId = 'cap_00000000-0000-7800-b75d-def690d8fb88';
     for (const workspace of [bad, good]) {
       const db = openWorkspaceDb(dataRoot, workspace.id);
@@ -158,9 +176,9 @@ describe('scope-owned admission', () => {
         db.sqlite.close();
       }
     }
+    await shutdownControlStoreWorkerClient();
     const badDatabase = workspaceDbPath(dataRoot, bad.id);
-    const before = readFileSync(badDatabase);
-    writeFileSync(join(dataRoot, 'workspaces', bad.id, 'workspace-record.json'), '{bad history');
+    const before = damageWorkspaceRecord(dataRoot, bad.id, '{bad history');
     verifyAndMigrateExistingScopedDatabases(dataRoot, () =>
       FsStore.validateFileAuthority(dataRoot)
     );
@@ -185,6 +203,7 @@ describe('scope-owned admission', () => {
     const bad = await initial.createWorkspace('Unreadable subtree');
     const good = await initial.createWorkspace('Readable subtree');
     const badRoot = join(dataRoot, 'workspaces', bad.id);
+    await shutdownControlStoreWorkerClient();
     chmodSync(badRoot, 0);
     try {
       expect(() => ensureLayout(dataRoot)).not.toThrow();
@@ -199,10 +218,12 @@ describe('scope-owned admission', () => {
     }
   });
 
-  it('validates files independently of approval SQL that needs an existing native migration', async () => {
+  it('refuses an earlier database without native product authority before domain migration', async () => {
     const dataRoot = root();
     const initial = createTestStore({ dataRoot });
     const workspace = await initial.createWorkspace('Earlier native schema');
+    const sibling = await initial.createWorkspace('Current native authority');
+    await shutdownControlStoreWorkerClient();
     const current = openWorkspaceDb(dataRoot, workspace.id);
     const ledgerDdl = current.sqlite
       .prepare("SELECT sql FROM sqlite_master WHERE name = '__drizzle_migrations'")
@@ -230,11 +251,18 @@ describe('scope-owned admission', () => {
     } finally {
       earlier.sqlite.close();
     }
+    const before = readFileSync(workspaceDbPath(dataRoot, workspace.id));
+    // Workspace 0000 predates native products. Its former file history is no longer an authority.
+    // Boot cannot synthesize product records from later DDL or a readable configuration projection.
     verifyAndMigrateExistingScopedDatabases(dataRoot, () =>
       FsStore.validateFileAuthority(dataRoot)
     );
-    expect(isScopeAdmitted(dataRoot, 'workspace', workspace.id)).toBe(true);
-    expect(new FsStore({ dataRoot }).getWorkspace(workspace.id).name).toBe('Earlier native schema');
+    expect(isScopeAdmitted(dataRoot, 'workspace', workspace.id)).toBe(false);
+    expect(readFileSync(workspaceDbPath(dataRoot, workspace.id))).toEqual(before);
+    const reopened = new FsStore({ dataRoot });
+    expect(() => reopened.getWorkspace(workspace.id)).toThrow('quarantined');
+    expect(reopened.listWorkspaces().map(({ id }) => id)).toEqual([sibling.id]);
+    expect(reopened.getWorkspace(sibling.id).name).toBe('Current native authority');
   });
 
   it('removes a later-refused Workspace from an already published Store listing', async () => {
@@ -242,6 +270,7 @@ describe('scope-owned admission', () => {
     const store = createTestStore({ dataRoot });
     const bad = await store.createWorkspace('Migration failure');
     const good = await store.createWorkspace('Still admitted');
+    await shutdownControlStoreWorkerClient();
     const db = openWorkspaceDb(dataRoot, bad.id);
     try {
       db.sqlite.exec(
@@ -264,7 +293,7 @@ describe('scope-owned admission', () => {
     const bad = await store.createWorkspace('Refused aggregate source');
     const good = await store.createWorkspace('Admitted aggregate source');
     const ids = new Map<string, string>();
-    let badItemsPath = '';
+    let badItemPath = '';
     for (const workspace of [bad, good]) {
       const thread = await store.createThread(workspace.id, 'Retained source');
       const turn = await store.createTurn(
@@ -291,22 +320,24 @@ describe('scope-owned admission', () => {
         createdAt: now,
         completedAt: now,
       });
-      if (workspace.id === bad.id)
-        badItemsPath = join(
-          dataRoot,
-          'workspaces',
-          bad.id,
-          'threads',
-          thread.id,
-          'turns',
-          turn.id,
-          'items.jsonl'
-        );
+      if (workspace.id === bad.id) {
+        const scope = nativeProductScope(dataRoot, turn.owner);
+        const reader = openControlStoreProductReadHandle(scope.path, scope.owner);
+        try {
+          // Read the actual native descriptor; the content reader returns decoded Item values.
+          const entry = reader.entries(turn.id, 'item').find((candidate) => candidate.id === id);
+          expect(entry).toBeDefined();
+          badItemPath = join(scope.contentMount.root, entry!.content.reference.locator.path);
+        } finally {
+          reader.close();
+        }
+      }
     }
     expect(store.listAllItems().map(({ id }) => id)).toEqual(
       expect.arrayContaining([...ids.values()])
     );
-    const before = readFileSync(badItemsPath);
+    await shutdownControlStoreWorkerClient();
+    const before = readFileSync(badItemPath);
     refuseScope(dataRoot, { scope: 'workspace', id: bad.id, check: 'database' });
     expect(() => store.getWorkspace(bad.id)).toThrow('quarantined');
     const aggregate = store.listAllItems();
@@ -317,7 +348,7 @@ describe('scope-owned admission', () => {
         (item) => item.owner.kind === 'workspace' && item.owner.workspaceId === good.id
       )
     ).toBe(true);
-    expect(readFileSync(badItemsPath)).toEqual(before);
+    expect(readFileSync(badItemPath)).toEqual(before);
   });
 
   it('contains private User database loss without refusing a healthy Workspace', () => {
