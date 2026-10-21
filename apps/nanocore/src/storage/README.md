@@ -246,3 +246,5 @@ Post-terminal Item and event completion uses `prepareControlPublication` and `ap
 Native observation import verifies the exact evidence owner for both restricted raw originals and originals under legal hold. A hold changes retention, grants no access, and survives the same staged import and cold reopen checks.
 
 Main writable Core, User and Workspace connections use the accepted 5 ms SQLite busy timeout. This bounds lock waiting only; COMMIT and file synchronization have separate latency. The native worker keeps its own connection policy. Neither owner retries a refused transaction.
+
+Task receipt recovery replays the complete native terminal owner with its original execution obligations and actual runtime evidence; it never inserts a detached receipt through Main.

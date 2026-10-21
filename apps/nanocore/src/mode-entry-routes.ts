@@ -75,6 +75,8 @@ import { createTaskKnowledgePreparation } from './knowledge-operations.js';
 import {
   type CommandRequestRecord,
   type ConversationCommandReceiptMetadata,
+  commandRequestExpiresAt,
+  commandRequestKey,
   DISPLAY_PROJECTION_REFRESH_ADMISSION,
   type FsStore,
   type TerminalTurnPublication,
@@ -152,7 +154,10 @@ import {
   resolveInterruptedWorkerRetryDecision,
 } from './runtime/worker-recovery.js';
 import { isTerminalWorkerTurnStage, workerTurnStageForStopReason } from './runtime/worker-stage.js';
-import { terminalizeGovernedWorkerTurn } from './runtime/worker-turn-failure.js';
+import {
+  terminalizeGovernedWorkerTurn,
+  workerTurnTerminalPublication,
+} from './runtime/worker-turn-failure.js';
 import { runWorkerTurnLoop } from './runtime/worker-turn-loop.js';
 import { listWorkspaceSyncReviews } from './runtime/workspace-sync-records.js';
 import {
@@ -1493,15 +1498,54 @@ export async function classifyDirectTaskCheckpointAfterSchedulerRecovery(input: 
     throw directTaskModeRecoveryError('The closed Task Gate has no response command receipt.');
   }
   if (!receipt) {
-    input.store.recordCommandRequest(
+    // Recovery replays the complete native terminal owner; a receipt cannot escape its original execution proof.
+    const turn = TurnSchema.parse(response.turn);
+    if (
+      turn.status !== 'completed' &&
+      turn.status !== 'failed' &&
+      turn.status !== 'cancelled' &&
+      turn.status !== 'interrupted'
+    ) {
+      throw directTaskModeRecoveryError('The missing Task receipt has no sealed terminal owner.');
+    }
+    const createdAt = new Date().toISOString();
+    await input.store.completeTurn(
+      turn.id,
+      {},
       {
-        command: 'task.start',
+        ...(await workerTurnTerminalPublication(input.workspaceDb, turn.id, turn.status)),
         requestId: checkpoint.requestId,
-        scope,
-        inputHash: checkpoint.requestInputHash,
-        response: { kind: 'turn', id: checkpoint.turnId },
-      },
-      input.workspaceDb
+        ...(recoveredCheckpoint.stopReason ? { stopReason: recoveredCheckpoint.stopReason } : {}),
+        command: {
+          receipt: {
+            key: commandRequestKey('task.start', checkpoint.requestId, scope),
+            command: 'task.start',
+            requestId: checkpoint.requestId,
+            scope,
+            inputHash: checkpoint.requestInputHash,
+            response: { kind: 'turn', id: checkpoint.turnId },
+            createdAt,
+            expiresAt: commandRequestExpiresAt(createdAt),
+          },
+          audit: {
+            ...prepareAuditEvent({
+              workspaceId: checkpoint.workspaceId,
+              threadId: checkpoint.threadId,
+              turnId: checkpoint.turnId,
+              requestId: checkpoint.requestId,
+              actor: turn.triggerActor,
+              category: 'command',
+              action: 'task.start',
+              resource: `turn:${checkpoint.turnId}`,
+              outcome: 'succeeded',
+              summary: 'Recovered Task result published from its original terminal execution.',
+              now: new Date(createdAt),
+            }),
+            createdAt,
+            occurredAt: createdAt,
+          },
+        },
+      }
     );
   }
   if (recoveredCheckpoint.stage === 'waiting_for_user') {
