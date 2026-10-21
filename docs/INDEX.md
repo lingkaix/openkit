@@ -35,7 +35,6 @@ and are not listed here.
 - `docs/core/agent-supply.md` — This document defines OpenKit agent supply semantics.
 - `docs/core/agent-workflow.md` — This document owns the Core workflow mechanisms used to coordinate worker-agent work.
 - `docs/core/architecture.md` — This document owns the stable App/Core/Agent layer boundary, the split between Core coordination and agent execution, the adapter translation boundary, interna…
-- `docs/core/audit.md` — This document defines OpenKit audit semantics.
 - `docs/core/communication.md` — This document defines OpenKit core communication semantics.
 - `docs/core/contract-evolution.md` — This document owns how OpenKit classifies contract stability, promotes contract surfaces, evolves breaking contracts, and judges implementations against the pr…
 - `docs/core/core-concepts.md` — This document owns the shared root concepts that every OpenKit aspect projects: `CoreServer`, `Workspace`, `Thread`, `Turn`, `Item`, `Artifact`, `ApprovalReque…
@@ -46,7 +45,6 @@ and are not listed here.
 - `docs/core/identity.md` — This document defines OpenKit identity semantics.
 - `docs/core/knowledge.md` — This document defines OpenKit knowledge semantics.
 - `docs/core/mediation.md` — This document defines OpenKit mediation semantics for operation definition and invocation, worker capability supply, and internal-role Tool projection.
-- `docs/core/metering.md` — This document owns the system-wide principles for measuring resource consumption, including runtime, storage, and network usage that is not naturally defined b…
 - `docs/core/policy.md` — This document defines OpenKit policy and permission semantics.
 - `docs/core/protocol.md` — This document defines stable OpenKit core protocol semantics.
 - `docs/core/runtime-model.md` — This document defines OpenKit runtime semantics.
