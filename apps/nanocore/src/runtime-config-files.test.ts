@@ -19,6 +19,7 @@ import { createApp as createTestApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { initializeTestCore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /**
@@ -27,7 +28,9 @@ import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
  * @returns Temporary data root path.
  */
 function createDataRoot(): string {
-  return mkdtempSync(join(tmpdir(), 'openkit-config-files-'));
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-config-files-'));
+  initializeTestCore(dataRoot);
+  return dataRoot;
 }
 
 /** Creates a simulated app whose runtime config owner reads the real test data root. */

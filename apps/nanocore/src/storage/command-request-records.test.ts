@@ -6,6 +6,7 @@ import { describe, expect, it, onTestFinished } from 'vitest';
 import type { CommandRequestResponse, CommandRequestResponseKind } from '../lib/store.js';
 import { FsStore } from '../lib/store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { createTestStore } from '../test-support/store.js';
 import {
   getCommandRequestRecordFromDb,
   normalizeCommandRequestResponse,
@@ -21,7 +22,7 @@ describe('retained conversation receipt metadata', () => {
     'goal',
   ] as const)('reads, replays, rewrites and reopens extended %s facts without changing identity', (kind) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-receipt-extension-'));
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     const workspace = store.createWorkspace('Receipt');
     const input = {
       command: 'conversation.submit' as const,
@@ -116,7 +117,7 @@ describe('kind-named command response pointers', () => {
     RESPONSE_ID_CASES
   )('admits %s only as its owned %s kind before publication and on readback', (kind, entityKind) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-receipt-kinds-'));
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     const memory = new FsStore();
     const workspace = store.createWorkspace('Receipt kind boundary');
     const db = openWorkspaceDb(dataRoot, workspace.id);
@@ -177,7 +178,7 @@ describe('kind-named command response pointers', () => {
     'knowledge_conflict',
   ])('refuses unsupported Core response kind %s instead of treating it as an opaque owner', (kind) => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-receipt-unknown-kind-'));
-    const store = new FsStore({ dataRoot: root });
+    const store = createTestStore({ dataRoot: root });
     const workspace = store.createWorkspace('Closed receipt kind');
     const memory = new FsStore();
     const input = {

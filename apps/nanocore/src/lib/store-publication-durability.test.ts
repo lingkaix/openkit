@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { feedbackFilePath } from '../runtime/feedback.js';
+import { createTestStore } from '../test-support/store.js';
 import { FsStore } from './store.js';
 
 const fault = vi.hoisted(() => ({ root: '', filename: '', injections: 0 }));
@@ -38,7 +39,7 @@ afterEach(() => {
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'store-publication-'));
   roots.push(root);
-  const store = new FsStore({ dataRoot: root });
+  const store = createTestStore({ dataRoot: root });
   const workspace = store.createWorkspace('Publication');
   const thread = store.createThread(workspace.id, 'Before');
   const turn = store.createTurn(workspace.id, thread.id, 'Before request', actor);

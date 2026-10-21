@@ -21,6 +21,7 @@ import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { commandInputHash, IdempotencyKeyConflictError } from '../runtime/idempotent-command.js';
 import type { WorkerEnvironmentRuntimeEffects } from '../runtime/worker-environment-runtime-effects.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { createTestStore } from '../test-support/store.js';
 import { createWorkerEnvironmentOperationImplementations } from './worker-environment-operation-implementations.js';
 import { WorkerEnvironmentOperationError } from './worker-environment-operations.js';
 import {
@@ -97,7 +98,7 @@ function referenceDeclaration(
 function createFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-environment-preparation-'));
   dataRoots.push(dataRoot);
-  const store = new FsStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
   const workspace = store.ensureQuickChatWorkspace(actor.userId);
   const thread = store.createThread(
     workspace.id,

@@ -18,6 +18,7 @@ import {
 import { coreDbPath, ensureLayout, userDbPath, workspaceDbPath } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { createTestStore } from '../test-support/store.js';
 import {
   createBootReadinessSnapshot,
   isScopeAdmitted,
@@ -113,7 +114,7 @@ describe('scope-owned admission', () => {
 
   it('loads healthy file history without publishing a corrupt sibling cache', () => {
     const dataRoot = root();
-    const initial = new FsStore({ dataRoot });
+    const initial = createTestStore({ dataRoot });
     const good = initial.createWorkspace('Healthy history');
     const bad = initial.createWorkspace('Damaged history');
     const path = join(dataRoot, 'workspaces', bad.id, 'workspace-record.json');
@@ -133,7 +134,7 @@ describe('scope-owned admission', () => {
 
   it('validates file authority before scoped migration or call-loss recovery writes', () => {
     const dataRoot = root();
-    const initial = new FsStore({ dataRoot });
+    const initial = createTestStore({ dataRoot });
     const bad = initial.createWorkspace('Malformed file authority');
     const good = initial.createWorkspace('Healthy file authority');
     const callId = 'cap_00000000-0000-7800-b75d-def690d8fb88';
@@ -178,7 +179,7 @@ describe('scope-owned admission', () => {
 
   it('contains an unreadable Workspace traversal without refusing its readable sibling', () => {
     const dataRoot = root();
-    const initial = new FsStore({ dataRoot });
+    const initial = createTestStore({ dataRoot });
     const bad = initial.createWorkspace('Unreadable subtree');
     const good = initial.createWorkspace('Readable subtree');
     const badRoot = join(dataRoot, 'workspaces', bad.id);
@@ -198,7 +199,7 @@ describe('scope-owned admission', () => {
 
   it('validates files independently of approval SQL that needs an existing native migration', () => {
     const dataRoot = root();
-    const initial = new FsStore({ dataRoot });
+    const initial = createTestStore({ dataRoot });
     const workspace = initial.createWorkspace('Earlier native schema');
     const current = openWorkspaceDb(dataRoot, workspace.id);
     const ledgerDdl = current.sqlite
@@ -236,7 +237,7 @@ describe('scope-owned admission', () => {
 
   it('removes a later-refused Workspace from an already published Store listing', () => {
     const dataRoot = root();
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     const bad = store.createWorkspace('Migration failure');
     const good = store.createWorkspace('Still admitted');
     const db = openWorkspaceDb(dataRoot, bad.id);
@@ -257,7 +258,7 @@ describe('scope-owned admission', () => {
 
   it('excludes previously cached Items after a late Workspace refusal without changing history', () => {
     const dataRoot = root();
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     const bad = store.createWorkspace('Refused aggregate source');
     const good = store.createWorkspace('Admitted aggregate source');
     const ids = new Map<string, string>();

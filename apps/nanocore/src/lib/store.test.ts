@@ -30,6 +30,7 @@ import { parseCanonicalWorkspaceHistory } from '../storage/workspace-file-record
 import { seedDemoWorkspace } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { createTestStore } from '../test-support/store.js';
 import {
   captureWorkspaceSourceFixture,
   readWorkspaceSourceFixture,
@@ -354,7 +355,7 @@ describe('FsStore persistence', () => {
 
   it('records exact immutable provenance and one deterministic producing-Turn reference', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-artifact-reference-'));
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     const workspace = await store.createWorkspace('Artifact lineage workspace');
     const thread = await store.createThread(workspace.id, 'Artifact lineage thread');
     const turn = await store.createTurn(workspace.id, thread.id, 'Create an Artifact', LOCAL_ACTOR);
@@ -587,7 +588,7 @@ describe('FsStore persistence', () => {
 
   it('introduces one imported Artifact through deterministic completed Core-local Turns', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-artifact-introduction-'));
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     const workspace = await store.createWorkspace('Artifact introduction workspace');
     const thread = await store.createThread(workspace.id, 'Artifact introduction thread');
     const busyThread = await store.createThread(workspace.id, 'Busy Artifact introduction thread');
@@ -733,7 +734,7 @@ describe('FsStore persistence', () => {
 
   it('does not retain a turn when its owning thread is missing', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     const orphanTurnId = 'tu_00000000-0000-7b75-ac5e-5a48515fb117';
 
     await seedDemoWorkspace(store);
@@ -779,7 +780,7 @@ describe('FsStore persistence', () => {
 
   it('persists an immutable actual retained-storage attachment beside native proof', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-retained-'));
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     await seedDemoWorkspace(store);
     const session = await store.createAgentSession({
       id: 'as_00000000-0000-7042-83a0-3127fd547a0c',
@@ -822,7 +823,7 @@ describe('FsStore persistence', () => {
 
   it('restores thread, turn, event, knowledge, artifact, and AgentSession history after restart', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     await seedDemoWorkspace(store);
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
@@ -1012,7 +1013,7 @@ describe('FsStore persistence', () => {
 
   it('projects AgentSession events before returning or notifying listeners', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     await seedDemoWorkspace(store);
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
@@ -1246,7 +1247,7 @@ describe('FsStore persistence', () => {
 
   it('persists command idempotency records and prunes expired entries after restart', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     const workspace = await store.createWorkspace('Idempotency workspace');
 
     store.recordCommandRequest({
@@ -1356,7 +1357,7 @@ describe('FsStore persistence', () => {
 
   it('does not create storage for workspace-scoped idempotency without a workspace', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     const workspaceId = 'ws_00000000-0000-7490-845b-dcfa3ee49925';
 
     expect(() =>
@@ -1378,7 +1379,7 @@ describe('FsStore persistence', () => {
 
   it('homes durable command idempotency in its user or workspace database', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     await seedDemoWorkspace(store);
     const userDb = openUserDb(dataRoot, 'usr_00000000-0000-7000-8000-000000000001');
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
@@ -1455,7 +1456,7 @@ describe('FsStore persistence', () => {
 
   it('does not serialize dynamic execution resources under workspace storage', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     await seedDemoWorkspace(store);
     const marker = 'runtime_only_test_marker';
     const resources = store.getWorkspaceResources('ws_00000000-0000-7000-8000-000000000001');

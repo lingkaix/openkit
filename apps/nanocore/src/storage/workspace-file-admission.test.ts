@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { allocateEntityId, ItemSchema, readRetainedV1, WorkOwnerSchema } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { FsStore } from '../lib/store.js';
+import { createTestStore } from '../test-support/store.js';
 import { openWorkspaceDb } from './db.js';
 import { WorkOwnershipViolationError } from './fs-layout.js';
 
@@ -17,7 +18,7 @@ afterEach(() => {
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'workspace-file-admission-'));
   roots.push(root);
-  const store = new FsStore({ dataRoot: root });
+  const store = createTestStore({ dataRoot: root });
   const workspace = store.createWorkspace('Damaged source');
   const healthy = store.createWorkspace('Healthy source');
   const [first, later] = [

@@ -8,6 +8,7 @@ import { commandInputHash } from '../runtime/idempotent-command.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
+import { createTestStore } from '../test-support/store.js';
 import { KnowledgeNotebook } from './notebook.js';
 import { publishWorkspaceNotebook } from './notebook-publication.js';
 import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT, parseOkfDocument } from './okf.js';
@@ -357,7 +358,7 @@ Exact Agent body.\r\n\t  `;
   it('retains an exact multi-page pending Proposal through restart and records Review against its full candidate', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'notebook-multi-proposal-'));
     onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
-    let store = new FsStore({ dataRoot });
+    let store = createTestStore({ dataRoot });
     const workspace = store.createWorkspace('Exact candidate', {
       requestId: randomUUID(),
       producer,

@@ -10,6 +10,7 @@ import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { initializeTestCore } from './test-support/store.js';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -19,6 +20,7 @@ afterEach(() => {
 /** Builds real authored files so active provenance and restart retention use the production loader. */
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'gateway-settings-'));
+  initializeTestCore(root);
   roots.push(root);
   mkdirSync(join(root, 'config', 'providers'), { recursive: true });
   writeFileSync(

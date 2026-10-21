@@ -1,3 +1,4 @@
+import { createTestStore } from '../test-support/store.js';
 // openkit-test-platform: posix
 
 import { createHash } from 'node:crypto';
@@ -91,7 +92,7 @@ const timestamp = '2026-07-12T00:00:00.000Z';
  */
 function createFixture(prefix: string) {
   const dataRoot = mkdtempSync(join(tmpdir(), prefix));
-  const store = new FsStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
   const workspace = store.createWorkspace('Direct canonical write boundary');
 
   return {
@@ -236,7 +237,7 @@ function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
 describe('direct canonical write boundaries', () => {
   it('rejects a symlinked import staging parent before staging or publication', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-import-staging-symlink-'));
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     const workspaceId = 'ws_00000000-0000-7cc0-bb9d-9038c067cd62';
     const workspacesRoot = join(dataRoot, 'workspaces');
     const outsideRoot = installOutsideParent(
@@ -410,7 +411,7 @@ describe('canonical file durability failures', () => {
 function durableFileFixture(kind: 'backup' | 'vault' | 'feedback') {
   const root = mkdtempSync(join(tmpdir(), `openkit-${kind}-durability-`));
   if (kind === 'feedback') {
-    const store = new FsStore({ dataRoot: root });
+    const store = createTestStore({ dataRoot: root });
     const workspace = store.createWorkspace('Feedback durability');
     const thread = store.createThread(workspace.id, 'Feedback');
     const turn = store.createTurn(workspace.id, thread.id, 'Durable feedback', {

@@ -19,12 +19,12 @@ import { join, relative } from 'node:path';
 import { ItemSchema, PROTOCOL_VERSION, writeRetainedV1 } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { scopeAdmissionFailures } from '../bootstrap/readiness.js';
-
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { FsStore } from '../lib/store.js';
 import { createApp } from '../test-support/app.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { createTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { openCoreDb } from './db.js';
 import { ensureLayout } from './fs-layout.js';
@@ -48,7 +48,7 @@ function artifactDigest(content: string): string {
  */
 function createBoundaryFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-file-record-boundary-'));
-  const store = new FsStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
   const firstWorkspace = store.createWorkspace('First boundary workspace');
   const firstThread = store.createThread(firstWorkspace.id, 'First boundary thread');
   const firstTurn = store.createTurn(firstWorkspace.id, firstThread.id, 'First boundary turn', {
@@ -101,7 +101,7 @@ function createNotebookBoundaryFixture() {
   onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
   const source = new FsStore();
   const workspace = source.createWorkspace('Notebook boundary workspace');
-  const store = new FsStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
   const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
   const repositoryPath = join(workspaceRoot, 'knowledge', 'notebook.git');
   return {
@@ -262,7 +262,7 @@ describe('workspace file-record write and load boundaries', () => {
   });
   it('does not fall back to owner-nested workspace records when the canonical root is absent', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-file-record-no-fallback-'));
-    const seedStore = new FsStore({ dataRoot });
+    const seedStore = createTestStore({ dataRoot });
     const workspace = seedStore.createWorkspace('Legacy nested workspace');
     const canonicalRoot = join(dataRoot, 'workspaces', workspace.id);
     const ownerNestedRoot = join(
@@ -604,7 +604,7 @@ describe('workspace file-record write and load boundaries', () => {
     currentResponsibleUserId,
   }) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-item-attribution-boundary-'));
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     const workspace = store.createWorkspace('Item attribution boundary');
     const thread = store.createThread(workspace.id, 'Item attribution boundary');
     const triggerActor = { kind: 'user', id: currentResponsibleUserId } as const;

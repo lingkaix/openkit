@@ -20,12 +20,12 @@ import {
   listWorkspaceUsageRecords,
 } from '../capability/usage-ledger.js';
 import { readWorkObservationBody } from '../evidence-bundles.js';
-import { FsStore } from '../lib/store.js';
 import { withTurnModelCapture } from '../llm/model-capture.js';
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { readWorkObservations } from '../storage/work-observations.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { createTestStore } from '../test-support/store.js';
 
 const databases: WorkspaceDb[] = [];
 const roots: string[] = [];
@@ -39,7 +39,7 @@ afterEach(() => {
 function captureBinding(value: 'off' | 'on' = 'off') {
   const dataRoot = mkdtempSync(join(tmpdir(), 'internal-model-capture-'));
   roots.push(dataRoot);
-  const store = new FsStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
   const workspace = store.createWorkspace('Internal capture');
   const thread = store.createThread(workspace.id, 'Internal capture');
   const turn = store.createTurn(

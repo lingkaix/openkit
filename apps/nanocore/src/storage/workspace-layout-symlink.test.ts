@@ -2,15 +2,14 @@
 import { mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
 import { describe, expect, it } from 'vitest';
-
 import { FsStore } from '../lib/store.js';
+import { createTestStore } from '../test-support/store.js';
 
 describe('workspace layout symbolic-link boundaries', () => {
   it('rejects a linked workspace before inspecting its external records', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-linked-workspace-load-'));
-    new FsStore({ dataRoot });
+    createTestStore({ dataRoot });
     const outsideRoot = mkdtempSync(join(tmpdir(), 'openkit-linked-workspace-outside-'));
     const workspacesRoot = join(dataRoot, 'workspaces');
 
@@ -30,7 +29,7 @@ describe('workspace layout symbolic-link boundaries', () => {
     'evidence',
   ] as const)('rejects a linked workspace %s directory without creating outside children', (name) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-linked-workspace-write-'));
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     const workspace = store.createWorkspace('Linked workspace write');
     const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
     const outsideRoot = mkdtempSync(join(tmpdir(), 'openkit-linked-layout-outside-'));

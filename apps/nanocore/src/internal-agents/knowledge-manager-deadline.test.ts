@@ -5,11 +5,11 @@ import { InternalRoleProfilesConfigSchema } from '@openkit/config-schema';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
-import { FsStore } from '../lib/store.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { createTestStore } from '../test-support/store.js';
 import { runKnowledgeManagerAgent } from './knowledge-manager-agent.js';
 import { internalContextDigest } from './rolling-context.js';
 
@@ -18,7 +18,7 @@ type ProviderResponse = Awaited<ReturnType<LLMGatewayProviderDispatcher['createR
 /** Retains the real role, Gateway, capture and Turn; only the external Provider is deferred. */
 function fixture(profile: 'omitted-limits' | 'no-profile' | 'explicit-limit') {
   const dataRoot = mkdtempSync(join(tmpdir(), 'km-deadline-'));
-  const store = new FsStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
   const workspace = store.createWorkspace('Knowledge deadline');
   const thread = store.createThread(workspace.id, 'Knowledge', undefined, 'knowledge-manager');
   const actor = { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' };

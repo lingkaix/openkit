@@ -5,12 +5,13 @@ import { join } from 'node:path';
 import { allocateEntityId, KnowledgeBaseIdSchema } from '@openkit/protocol';
 import { expect, it, onTestFinished } from 'vitest';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
+import { createTestStore } from '../test-support/store.js';
 import { FsStore } from './store.js';
 
 it('publishes one independent default base with each new Workspace and retains it after restart', () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'workspace-base-creation-'));
   onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
-  const store = new FsStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
   const workspace = store.createWorkspace('First base');
   const owner = { dataRoot, scope: { kind: 'workspace' as const, workspaceId: workspace.id } };
   const knowledgeBaseId = readDefaultKnowledgeBaseId(owner);
@@ -31,7 +32,7 @@ it('publishes one independent default base with each new Workspace and retains i
 it('retains the trusted reminted import base before Notebook publication', () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'workspace-base-import-'));
   onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
-  const store = new FsStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
   const source = store.createWorkspace('Source');
   const workspaceId = allocateEntityId('ws');
   const knowledgeBaseId = allocateEntityId('kb');

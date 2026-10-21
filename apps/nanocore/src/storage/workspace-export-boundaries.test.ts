@@ -1,3 +1,4 @@
+import { createTestStore } from '../test-support/store.js';
 // openkit-test-platform: posix
 
 import { execFileSync } from 'node:child_process';
@@ -156,7 +157,7 @@ function knowledgeSource(id: string): Record<string, unknown> {
 
 /** Creates a file-backed route store containing the legacy demo workspace. */
 function createBoundaryStore(dataRoot: string): FsStore {
-  const store = new FsStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
   const demo = createDemoWorkspaceForUser('usr_00000000-0000-7000-8000-000000000001');
   store.importWorkspaceSnapshot({
     ...notebookImportFixture({ workspaceId: demo.workspace.id, knowledge: demo.knowledge }),
@@ -338,7 +339,7 @@ describe('workspace export filesystem boundaries', () => {
   it('rejects an unsafe persisted Source raw locator before reading outside the export', async () => {
     const parent = mkdtempSync(join(tmpdir(), 'openkit-import-source-boundary-'));
     const dataRoot = join(parent, 'data');
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     const workspace = store.createWorkspace('Unsafe raw locator');
     const coreDb = boundaryAuthority(dataRoot, workspace.id);
     const sourceContent = 'Contained original bytes.';

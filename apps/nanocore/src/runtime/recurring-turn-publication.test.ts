@@ -21,6 +21,7 @@ import { applyMigrations } from '../storage/migrate.js';
 import { readPublishedTurnFileRecords } from '../storage/workspace-file-records.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
+import { createTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { startRecurringScheduleService } from './recurring-schedule-service.js';
@@ -34,7 +35,7 @@ it.each([
 ])('checks the exact required Turn feature %s without changing metadata', (feature) => {
   const root = mkdtempSync(join(tmpdir(), 'recurring-feature-'));
   try {
-    const store = new FsStore({ dataRoot: root });
+    const store = createTestStore({ dataRoot: root });
     const workspace = store.createWorkspace('Required features');
     const thread = store.createThread(workspace.id, 'Target');
     const turn = store.createTurn(workspace.id, thread.id, 'Inspect metadata', {
@@ -76,7 +77,7 @@ it.each([
   const root = mkdtempSync(join(tmpdir(), 'recurring-parent-'));
   const outside = mkdtempSync(join(tmpdir(), 'recurring-parent-outside-'));
   try {
-    const store = new FsStore({ dataRoot: root });
+    const store = createTestStore({ dataRoot: root });
     const workspace = store.createWorkspace('Canonical source');
     const thread = store.createThread(workspace.id, 'Target');
     const turn = store.createTurn(workspace.id, thread.id, 'Retain exact bytes', {
@@ -230,7 +231,7 @@ it.each([
 it('keeps failed initial Turn files and permits later unrelated Workspace writes', () => {
   const root = mkdtempSync(join(tmpdir(), 'recurring-uncertain-publication-'));
   try {
-    const store = new FsStore({ dataRoot: root });
+    const store = createTestStore({ dataRoot: root });
     const workspace = store.createWorkspace('Uncertain publication');
     const thread = store.createThread(workspace.id, 'Existing target');
     const turnId = testEntityId('tu', 'tu_uncertain_publication');

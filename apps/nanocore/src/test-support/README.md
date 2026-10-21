@@ -4,6 +4,8 @@ This directory owns explicit reusable NanoCore test fixtures and no production b
 
 ## Boundaries
 
+- `store.ts` initializes the native Core schema before constructing a Store in an explicit fixture data root. Existing databases remain unchanged. The caller owns root cleanup and must close the native writer before removing or replacing database files.
+
 - `execution-attempt.ts` establishes exact prepared Native attempt authority below the dispatcher from a caller-supplied authorized admission. It records an optional submission intent without inventing acceptance, a cleanup fence, or Workspace membership.
 - `demo-store.ts` asynchronously creates an isolated `FsStore`, initializes absent fixture Core storage, and awaits Quick Chat and Demo Workspace publication. Callers await setup and close the native worker before deleting or replacing a persistent root.
 - `workspace-source.ts` captures exact supplied fixture bytes through the actual shared Source publisher and current Notebook admission. The caller supplies an existing real User and Core/Workspace authority; the helper seeds no identity, membership, digest or malformed-input normalization.

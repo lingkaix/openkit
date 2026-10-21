@@ -7,11 +7,11 @@ import { workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
-import { FsStore } from '../lib/store.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { createTestStore } from '../test-support/store.js';
 import { createVaultReference } from '../vault/vault-references.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { PiAiGatewayClient } from './pi-ai-client.js';
@@ -47,7 +47,7 @@ function fixture(
   } = {}
 ) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'gateway-effort-'));
-  const store = new FsStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
   const workspace = store.createWorkspace('Effort');
   const thread = store.createThread(workspace.id, 'Effort');
   const turn = store.createTurn(

@@ -25,6 +25,7 @@ import { createDemoStore } from './test-support/demo-store.js';
 import { seedWritableGitRepository } from './test-support/git-repository.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { initializeTestCore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /**
@@ -35,6 +36,7 @@ import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
  */
 function createConfiguredDataRoot(model: string): string {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-runtime-reload-api-'));
+  initializeTestCore(dataRoot);
 
   writeServerConfig(dataRoot, model);
 

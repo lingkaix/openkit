@@ -7,6 +7,7 @@ import { isScopeAdmitted } from '../bootstrap/readiness.js';
 import { FsStore } from '../lib/store.js';
 import { openBootVerifiedWorkspaceDb, openWorkspaceDb } from '../storage/db.js';
 import { workspaceDbPath } from '../storage/fs-layout.js';
+import { createTestStore } from '../test-support/store.js';
 import { raiseRecordedPendingRequest } from './pending-request-flow.js';
 
 it.each([
@@ -16,7 +17,7 @@ it.each([
 ] as const)('contains missing approval %s authority without losing a healthy sibling projection', (fault) => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'pending-scope-'));
   try {
-    const initial = new FsStore({ dataRoot });
+    const initial = createTestStore({ dataRoot });
     const bad = initial.createWorkspace('Unreadable approval authority');
     const good = initial.createWorkspace('Healthy approval authority');
     const userId = 'usr_00000000-0000-7000-8000-000000000001';

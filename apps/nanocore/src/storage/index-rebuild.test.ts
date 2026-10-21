@@ -31,6 +31,7 @@ import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from '../test-support/local-user.js';
+import { createTestStore } from '../test-support/store.js';
 import {
   captureWorkspaceSourceFixture,
   readWorkspaceSourceFixture,
@@ -172,7 +173,7 @@ function publishedPage(workspaceRoot: string, path: string): string {
 
 it('discovers native Workspaces and rebuilds indexes without former Workspace metadata files', async () => {
   const dataRoot = createDataRoot();
-  const store = new FsStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
   const workspace = await store.createWorkspace('Native index owner');
   const formerMetadata = join(dataRoot, 'workspaces', workspace.id, 'workspace-record.json');
   rmSync(formerMetadata, { force: true });
@@ -190,7 +191,7 @@ it('discovers native Workspaces and rebuilds indexes without former Workspace me
 
 it('refuses missing native Workspace authority rather than using a former metadata file', async () => {
   const dataRoot = createDataRoot();
-  const store = new FsStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
   const workspace = await store.createWorkspace('Native authority must exist');
   const formerMetadata = join(dataRoot, 'workspaces', workspace.id, 'workspace-record.json');
   writeFileSync(formerMetadata, JSON.stringify({ id: workspace.id, name: 'Not authority' }));
@@ -913,7 +914,7 @@ describe('workspace derived index rebuild', () => {
 
   it('publishes one immutable trace beside an interrupted temporary file', async () => {
     const dataRoot = createDataRoot();
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     const workspace = await store.createWorkspace(
       'Retrieval trace recovery',
       notebookInitialization()
@@ -956,7 +957,7 @@ describe('workspace derived index rebuild', () => {
 
   it('rejects a symlinked immutable retrieval-trace target without writing outside', async () => {
     const dataRoot = createDataRoot();
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     const workspace = await store.createWorkspace(
       'Retrieval trace symlink',
       notebookInitialization()

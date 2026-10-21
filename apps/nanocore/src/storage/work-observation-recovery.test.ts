@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION, FsStore } from '../lib/store.js';
 import { ModelCapture } from '../llm/model-capture.js';
 import { terminalizeGovernedWorkerTurn } from '../runtime/worker-turn-failure.js';
+import { createTestStore } from '../test-support/store.js';
 import { openWorkspaceDb, type WorkspaceDb } from './db.js';
 import { applyScopedMigrations } from './migrate.js';
 import { appendRecoveredTurnObservation } from './work-observation-recovery.js';
@@ -33,7 +34,7 @@ afterEach(() => {
 function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-observation-recovery-'));
   roots.push(dataRoot);
-  const store = new FsStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
   const workspace = store.createWorkspace('Recovery');
   const thread = store.createThread(workspace.id, 'Recovery');
   const turn = store.createTurn(

@@ -22,7 +22,6 @@ import {
   createRuntimeConfigManager,
 } from '../config/runtime-config.js';
 import { openAssistantTimeline } from '../internal-agents/assistant-timeline.js';
-import { FsStore } from '../lib/store.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import type { KnowledgeRetrievalAccess } from '../retrieval-knowledge-adapter.js';
@@ -39,6 +38,7 @@ import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { createTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { askKnowledgeAgent, type KnowledgeAgentDependencies } from './knowledge-agent.js';
@@ -62,7 +62,7 @@ type ProviderResponse = Awaited<ReturnType<LLMGatewayProviderDispatcher['createR
 /** Only the external Responses transport is replaced; Core, publication and the retrieval Kernel are real. */
 async function fixture(withServerKnowledge = false, emptyOverview = false) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'km-query-proof-'));
-  const store = new FsStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
   const workspace = store.createWorkspace('Knowledge query proof');
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);

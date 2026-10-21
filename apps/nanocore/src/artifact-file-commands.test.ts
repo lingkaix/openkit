@@ -6,13 +6,14 @@ import { Readable } from 'node:stream';
 import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, expect, it, vi } from 'vitest';
 import { importArtifactFile } from './artifact-file-commands.js';
-import { FsStore } from './lib/store.js';
+import type { FsStore } from './lib/store.js';
 import { OperationError } from './operation-error.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { artifactFilePayloadPath } from './storage/artifacts/file-records.js';
 import { openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
 import { applyScopedMigrations } from './storage/migrate.js';
+import { createTestStore } from './test-support/store.js';
 
 const roots: string[] = [],
   databases: WorkspaceDb[] = [];
@@ -25,7 +26,7 @@ afterEach(() => {
 function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'artifact-file-command-'));
   roots.push(dataRoot);
-  const store = new FsStore({ dataRoot }),
+  const store = createTestStore({ dataRoot }),
     workspace = store.createWorkspace('File authority');
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
   databases.push(workspaceDb);

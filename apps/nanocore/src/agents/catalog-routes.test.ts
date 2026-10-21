@@ -19,12 +19,13 @@ import { createAppWithWorkspaceAuthority as createApp } from '../test-support/ap
 import { createDemoStore } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { createTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { projectAgentCatalogEntries } from './catalog-projection.js';
 
 describe('agent.list and agent.read operations', () => {
   it('opens only the authorized Workspace ids', async () => {
-    const store = new FsStore({
+    const store = createTestStore({
       dataRoot: mkdtempSync(join(tmpdir(), 'openkit-agent-catalog-authorized-')),
     });
     const allowedWorkspace = await store.createWorkspace('Allowed agents');

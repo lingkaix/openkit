@@ -1,3 +1,4 @@
+import { createTestStore } from './test-support/store.js';
 import { captureWorkspaceSourceFixture } from './test-support/workspace-source.js';
 // openkit-test-platform: posix
 
@@ -25,7 +26,7 @@ import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { validateNotebookCandidate } from './knowledge/notebook-validation.js';
 import { parseOkfDocument, stringListFrontmatterField } from './knowledge/okf.js';
-import { FsStore } from './lib/store.js';
+import type { FsStore } from './lib/store.js';
 import {
   collectKnowledgeInventory,
   knowledgeSourceReferencesReadable,
@@ -1058,7 +1059,7 @@ function createFixture(
 ): Fixture {
   const dataRoot = mkdtempSync(join(tmpdir(), `openkit-retrieval-context-${label}-`));
   testRoots.push(dataRoot);
-  const store = new FsStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
   const workspace = importedFrom
     ? store.importWorkspaceSnapshot({
         ...notebookImportFixture({

@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { scopeAdmissionFailures } from '../bootstrap/readiness.js';
 import { FsStore } from '../lib/store.js';
+import { createTestStore } from '../test-support/store.js';
 import { appendWorkspaceTurnEvent, loadWorkspaceFileRecords } from './workspace-file-records.js';
 
 const families = ['Workspace', 'Turn', 'Artifact', 'AgentSession', 'Item', 'stream event'] as const;
@@ -23,7 +24,7 @@ const families = ['Workspace', 'Turn', 'Artifact', 'AgentSession', 'Item', 'stre
 function createRetainedFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-retained-file-formats-'));
   onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
-  const store = new FsStore({ dataRoot });
+  const store = createTestStore({ dataRoot });
   const workspace = store.createWorkspace('Retained formats');
   const thread = store.createThread(workspace.id, 'Retained formats');
   const actor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;

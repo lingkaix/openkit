@@ -21,6 +21,7 @@ import { updateOkfFrontmatter } from '../knowledge/okf.js';
 import { FsStore } from '../lib/store.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { createTestStore } from '../test-support/store.js';
 import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { openCoreDb } from './db.js';
@@ -105,7 +106,7 @@ function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
 describe('descriptive canonical history extensions', () => {
   it('preserves immutable Proposal bytes, ordered Review annotations and Source history on rewrite', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-history-'));
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     const workspace = store.createWorkspace('Knowledge');
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -331,7 +332,7 @@ describe('descriptive canonical history extensions', () => {
   });
   it('reads, updates and reopens Workspace, Actor, Item, Artifact and AgentSession history', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-history-extensions-'));
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     const workspace = store.createWorkspace('History');
     const thread = store.createThread(workspace.id, 'History');
     const turn = store.createTurn(workspace.id, thread.id, 'Request', {
