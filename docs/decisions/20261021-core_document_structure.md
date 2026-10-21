@@ -7,90 +7,62 @@ decider: Engineer
 
 ## Decision
 
-Consolidate `docs/core/` into a 20-document set organized around deep modules with clear conceptual ownership, retiring `audit.md` and `metering.md` into `docs/core/evidence.md`, retiring `deployment-modes.md` and `app-api.md` from `docs/core/` while keeping `docs/deployment.md` and `docs/app-api.md` as calibrated platform references, renaming `agent-capability.md` to `docs/core/mediation.md` and `permissions.md` to `docs/core/policy.md`, structuring `docs/core/storage.md` into two explicit layers, and sharpening the cross-document boundaries across runtime, supply, knowledge, communication, and protocol.
+The engineer approved a target of 20 Core aspect documents, organized around mechanisms with one owner for each canonical concept. Changes may land incrementally; the Core README records the current required set, term index and reading order. This decision records the approved target, not a claim that every change is already implemented.
 
-The final 20-document `docs/core/` set (plus `contract-evolution.md` as cross-aspect evolution rules and `README.md` as the directory guide) is:
+The final 20-document set and architectural grouping are:
+- Doctrine: `doctrine.md`, `core-concepts.md`, `architecture.md`, `fault-tolerance.md`, `contract-evolution.md`.
+- Work: `work-model.md`, `knowledge.md`, `generative-apps.md`.
+- Execution: `runtime-model.md`, `agent-session.md`, `sandbox.md`, `agent-supply.md`.
+- Authority: `identity.md`, `policy.md`, `mediation.md`, `vault.md`.
+- State and Evidence: `storage.md`, `evidence.md`.
+- Interfaces: `protocol.md`, `communication.md`.
 
-1. `foundation.md`
-2. `core-concepts.md`
-3. `work-model.md`
-4. `architecture.md`
-5. `fault-tolerance.md`
-6. `runtime-model.md`
-7. `agent-supply.md`
-8. `agent-session.md`
-9. `agent-workflow.md`
-10. `protocol.md`
-11. `communication.md`
-12. `storage.md`
-13. `identity.md`
-14. `vault.md`
-15. `mediation.md`
-16. `policy.md`
-17. `sandbox.md`
-18. `knowledge.md`
-19. `evidence.md`
-20. `contract-evolution.md`
-21. `generative-apps.md`
+The approved changes are:
+- **C1 — Evidence, narrowed.** `evidence.md` owns what is recorded and with which authority: Audit, Usage/metering, Capture Coverage and Telemetry. It receives `audit.md`, `metering.md`, UsageRecord and usage attribution from Mediation, and the capture switch from Protocol; it gathers existing telemetry predicates. Audit is accountability, Usage measures consumption, Capture Coverage records capture intent, and Telemetry is diagnostic, non-authoritative and lossy. Default-on Capture Coverage is the decided target; implementation defaults remain off until activation. Persistence, retention and deletion stay in Storage Layer 1. Workflow Evidence, EvidenceBundle and `decision-evidence` keep their owners. Retire `audit.md` and `metering.md` after the no-loss audit.
+- **C2 — Mediation and Policy.** Rename `agent-capability.md` to `mediation.md`, the single interception base for Operation definition and invocation, operation-by-stage mediation points, CapabilityCall, gateway projection, routing, transformers, advice, gates, invocation evidence, budgets and rate limits. Move Enforcement Points from Permissions and the Capability Mediation Boundary from Communication. Communication keeps its transport projection. Rename `permissions.md` to `policy.md`; Policy owns authorization and governance, including principals, statements, decisions, approvals, administration and disclosure.
+- **C3 — One Work module.** `work-model.md` absorbs `agent-workflow.md`, then the latter retires after the no-loss audit. One owner covers Intent, Objective, Plan, Goal, modes and recipes, internal-role collaboration, planning, gates, human attention and deliverables. Add the canonical Judgement and Candidate Set concepts for human-ground-truth evaluation.
+- **C4 — Durable execution.** `fault-tolerance.md` receives Runtime's Durable Execution section and owns the effect-uncertainty rule. `runtime-model.md` retains scheduling, placement through the Execution Backend Port and substrate lifecycle, with a projection of the durable-execution owner.
+- **C5 — Protocol depth.** Move identifier-prefix registries and derivations, Item Delta Kinds inventories, canonical enum/status tables and internal-role Tool alias detail into their receiving specifications. Core retains semantics and grammar principles. Core Concepts owns Thread, Turn and Item definitions rather than repeated definitions in Protocol.
+- **C6 — Leakage and staleness.** Keep effect uncertainty in `fault-tolerance.md`, later subscription and `since` semantics in `protocol.md`, gateway-managed supply in `mediation.md`, and Shared-Sandbox audience rules in `policy.md`; replace their repeated rules with references. Correct the README Storage description, the superseded conditional agent-principal wording in Foundation, and the AgentSession invariant's missing Core-local service-Turn qualifier.
+- **C7 — Navigation.** Use the architectural grouping above. Update the required set, canonical term index and reading order with each structural change rather than leaving them for a later cleanup.
+- **C8 — Generative Kernel and Generative UI.** Keep `generative-apps.md`. Define the form, scope and authority of Generative Kernel and Generative UI, how Light App composes them, what AI generates and manages, and what remains with humans and Core. Ground the model in accepted Light App decisions and specifications: one SQLite file per Light App, kernel-format and definition-version markers, PocketBase-style schema, one-way migration after an automatic snapshot, agent-first access and presentation over admitted commands. This is not a traditional low-code/no-code builder.
+- **C9 — Two Storage layers.** Keep one persistence module. Layer 1 owns system state and work data: scope stores and control authority, immutable content, source of truth per data class, item log, retention and deletion classes including retained agent work data and Worker working volumes, format markers and portability. Layer 2 covers user data and the Storage Service: locations and byte operations, local storage now with S3-compatible, NAS and cloud-drive backends later, digest and locator references, leases under Policy grants, package bytes and the external Git/object-storage boundary.
 
-The structural changes C1 through C9 and their receivers are:
+Rename only when a name collides with another system term, no longer names its owned mechanism after restructuring, or names a category instead of the canonical term. Naming style alone does not justify link churn and reader-memory cost. Rename `foundation.md` to `doctrine.md`: Foundation already names base layers in specification titles, while this document owns cross-aspect doctrine. The other approved renames are Agent Capability to Mediation and Permissions to Policy. The doctrine rename also updates the single root AGENTS.md path reference to that document; no AGENTS rule changes.
 
-- **C1 (`evidence.md` narrowed; retire `audit.md` and `metering.md`)**: Create `docs/core/evidence.md` to own what is recorded and with which authority across four record classes—`Audit` (accountability and `AuditEvent`, relocated from `audit.md`), `Usage and metering` (`UsageRecord`, capability usage units, attribution, `System-wide measurement`, `Non-gateway measurement`, `Aggregation`, and `Cost projection`, relocated from `metering.md` and `docs/core/mediation.md`), `Capture Coverage` (the capture switch, admission-time fixing, decided default-on target, and current default-off implementation state with explicit gaps, grounded in `docs/core/protocol.md` and `docs/decisions/20261019-work_data_retention_completeness.md`), and `Telemetry` (diagnostic, non-authoritative, and lossy operational signals, gathered from `docs/core/fault-tolerance.md`, `docs/core/architecture.md`, `docs/core/core-concepts.md`, `docs/core/runtime-model.md`, and `docs/decisions/20261019-telemetry_as_internal_logs.md`). Persistence, retention windows, deletion, and storage classes remain in `docs/core/storage.md` Layer 1. `Workflow Evidence`, `EvidenceBundle`, and `decision-evidence` keep their existing owners.
-- **C2 (retire `deployment-modes.md` from `docs/core/`)**: Relocate the deployment-semantic invariant to `docs/core/architecture.md`, runtime placement and the four-projection decomposition to `docs/core/runtime-model.md`, transport-mode selection to `docs/core/communication.md`, and degraded single-host isolation rules to `docs/core/sandbox.md`. Retain `docs/deployment.md` as a calibrated platform reference.
-- **C3 (retire `app-api.md` from `docs/core/`)**: Relocate the App-and-Channel boundary to `docs/core/architecture.md` and the public surface projection rules to `docs/core/communication.md`. Retain `docs/app-api.md` as a calibrated platform reference.
-- **C4 (rename `agent-capability.md` to `mediation.md`; sharpen `agent-supply.md`)**: Rename the capability document to `docs/core/mediation.md` so the filename matches its actual scope: operation definition and invocation, `<operation>@<stage>` mediation points, the Capability Mediation Boundary, `CapabilityCall`, gateway routing, internal-role Tool admission, and rate-limit hooks. Relocate the authored-to-resolved-to-materialized agent supply pipeline to `docs/core/agent-supply.md`, keeping runtime execution and substrate placement in `docs/core/runtime-model.md`.
-- **C5 (rename `permissions.md` to `policy.md`)**: Rename the permissions document to `docs/core/policy.md` because Policy in OpenKit covers access control, scope and disclosure rules, approval gates, and delegated goal domains rather than only an allow/deny check.
-- **C6 (sharpen `knowledge.md` around three layers)**: Organize `docs/core/knowledge.md` around `Personal Memory` (user-scoped), `Knowledge Store` (Server, User, and Workspace scopes, Notebook, pages, sources, proposals, and reviews), and `Agent-Near Context` (`Context Package` assembly and delivery), while keeping the Knowledge Manager role definition in `docs/core/architecture.md`.
-- **C7 (deduplicate `fault-tolerance.md` and `runtime-model.md`)**: Keep `Durable Execution`, `Safe Point`, `Danger Window`, and fault-source rules in `docs/core/fault-tolerance.md`, with `docs/core/runtime-model.md` cross-referencing `fault-tolerance.md` rather than restating durable-execution definitions.
-- **C8 (sharpen `protocol.md` and `communication.md`)**: Keep wire records, identifiers, lifecycle states, replay cursors, and directional validation in `docs/core/protocol.md`, and keep client/Core and Core/agent communication planes, transport projections, and `Proven Non-Receipt` in `docs/core/communication.md`.
-- **C9 (`storage.md` in two explicit layers)**: Organize `docs/core/storage.md` into Layer 1 (`System State And Work Data`: scope stores and control authority, immutable content, source of truth per data class, item log, retention and deletion classes including retained agent work data and Worker working volumes, format markers, and portability) and Layer 2 (`User Data And The Storage Service`: locations and byte operations, local-now and later non-current backends, `contentRef` digest and locator references, leases under Policy grants with host-side mounts and never sandbox FUSE, Knowledge package byte layout, and the external Git and object-storage boundary).
+The engineer approved Policy because it expresses OpenKit's governance and authorization of agents, not only a permission question. The sole approved Core AGENTS wording change is: “Split policy and sandbox into separate docs. Policy is governance, authorization and decision semantics; sandbox is execution isolation and runtime environment design.”
+
+The proposed rename from `generative-apps.md` to `light-apps.md` is withdrawn. “Generative” expresses that both the application data core and the UI are dynamically generated and managed by AI in an agent-native system, distinct from traditional low-code/no-code tools.
+
+The retirements of Audit, Metering and Agent Workflow require an auditor's complete disposition of terms, principles, invariants and inbound current-guidance links before the final transition. Historical retention is unnecessary because Git history suffices; no Core archive directory is created. The mediation and policy renames preserve authority continuously.
 
 ## Reason
 
-OpenKit's Core documentation must follow the deep-module principle: each Core document should own one coherent conceptual boundary with a small interface and deep internal semantics, rather than splitting a single boundary across thin files or keeping implementation projections inside `docs/core/`.
-
-1. **`evidence.md` (C1)**: `audit.md` and `metering.md` were thin documents that split closely related post-hoc observation and accounting records across three files (`audit.md`, `metering.md`, and the `UsageRecord` tail of `mediation.md`), while Capture Coverage and Telemetry rules were scattered across `protocol.md`, `fault-tolerance.md`, `architecture.md`, `core-concepts.md`, and `runtime-model.md`. Grouping Audit, Usage/metering, Capture Coverage, and Telemetry into `docs/core/evidence.md` establishes a single owner for what is recorded and with which authority, while keeping physical persistence, retention classes, and deletion in `docs/core/storage.md` Layer 1.
-2. **Retiring `deployment-modes.md` and `app-api.md` from `docs/core/` (C2, C3)**: Deployment topologies and the HTTP/SSE App API surface are projections of deeper Core owners (`architecture.md`, `runtime-model.md`, `communication.md`, and `sandbox.md`), not independent Core aspects. Moving their normative Core invariants to those owners and keeping `docs/deployment.md` and `docs/app-api.md` as calibrated platform references removes downward projection detail from `docs/core/`.
-3. **Renaming `agent-capability.md` to `mediation.md` and `permissions.md` to `policy.md` (C4, C5)**: A Core document is renamed only when its old filename misstates its scope and invites readers to look in the wrong owner. `agent-capability.md` had grown to own the unified `<operation>@<stage>` mediation model and internal-role Tool admission in addition to worker capabilities, making `mediation.md` the accurate name. `permissions.md` owned Policy statements, NGAC-aligned Policy Kernel semantics, disclosure audiences, approval gates, and delegated goal domains, which is broader than a binary permission check and is accurately named `policy.md`.
-4. **Two layers in `storage.md` (C9)**: OpenKit persistence has two distinct conceptual layers within one persistence module—system control state and work data (Layer 1) and user file/content bytes served through the Storage Service (Layer 2). Making both layers explicit inside `docs/core/storage.md` integrates the accepted layered file storage and Knowledge package decisions without splitting persistence ownership across two Core files.
-5. **Preserving `generative-apps.md`**: `docs/core/generative-apps.md` keeps its filename, with `Generative Kernel` and `Generative UI` framed inside the document and an explicit non-goal stating that OpenKit is not a low-code or no-code platform.
+A reader needing one mechanism should obtain its stable interface, authority, invariants and failure meaning from one Core owner. Deep modules hide detail behind a small interface. Duplicated rules leak information between owners and drift; audience-based splits divide one mechanism; inventories widen an interface without deepening it. Consolidate the scattered record classes, interception mechanism and Work model, give durable execution and telemetry clear homes, and keep implementation inventories in specifications. Storage remains one persistence module with two explicit layers rather than moving retention into Evidence.
 
 ## Rejected Alternatives
 
-- **Merge `core-concepts.md`, `work-model.md`, `agent-session.md`, `vault.md`, or `sandbox.md` into neighboring files**: Rejected because each of these documents already owns a distinct, high-leverage boundary (`core-concepts.md` for shared object identity and single-flight cardinalities; `work-model.md` for user-facing work projection and human intervention; `agent-session.md` for hidden runtime continuity, exact reconnect, and replacement; `vault.md` for secret references and zero-prompt-exposure injection; `sandbox.md` for containment and isolation areas). Merging them would create overloaded documents with mixed abstraction levels.
-- **Move retention classes, deletion rules, and physical storage of evidence records into `evidence.md`**: Rejected because retention classes (`ephemeral-diagnostic`, `turn-evidence`, `workspace-audit`, `restricted-raw`, `legal-hold`), deletion closure, and control-store/blob placement are persistence invariants that apply across work history, Knowledge, and evidence alike and belong in `docs/core/storage.md` Layer 1.
-- **Split `storage.md` into two separate Core files for control databases and file storage**: Rejected because control-store publication and content-addressed file storage share one acknowledgement, backup, and retention boundary; two explicit layers inside `docs/core/storage.md` express the distinction without fracturing persistence authority.
-- **Rename `generative-apps.md` to `light-apps.md` or `generative-kernel.md`**: Rejected by engineer ruling; `generative-apps.md` remains the filename while framing `Light App`, `Generative Kernel`, and `Generative UI` together and stating explicitly that it is not a low-code or no-code builder.
-- **Keep `audit.md` and `metering.md` as separate files**: Rejected because both are post-hoc record projections whose separation from each other and from Capture Coverage and Telemetry hid the unified authority boundary between authoritative governance/usage records, coverage intent, and non-authoritative diagnostics.
+- Merge Foundation and Architecture: doctrine and structural architecture are distinct seams; remove duplication instead.
+- Merge Protocol and Communication: semantic independence from transport is the purpose of their boundary.
+- Merge AgentSession into Runtime: native continuity has its own identity and lifecycle, separate from compute placement.
+- Rename Runtime Model to Execution: the link and reader-memory cost buys little and blurs Runtime with durable execution in Fault Tolerance.
+- Split Protocol into two Core documents: moving implementation inventories to specifications is sufficient.
+- Change AGENTS rules generally: only the exact policy/sandbox sentence above is approved. Knowledge/AgentSession and Policy/Sandbox remain separate.
+- Rename Generative Apps to Light Apps: the engineer retains the Generative Kernel/UI framing and the filename.
+- Move record persistence, retention and deletion into Evidence: the narrowed C1 ruling keeps them in Storage Layer 1.
+
+Keep `core-concepts.md` because it names the root vocabulary; `runtime-model.md` because it owns Runtime; `work-model.md` because it still names the merged module; `communication.md` because channels, notifications and planes exceed transport alone; and `fault-tolerance.md` because durable execution is narrower than its property doctrine. Other names already identify their mechanism or term.
 
 ## Revisit When
 
-- A future accepted architecture change introduces a genuinely new top-level Core aspect that cannot fit within the 21 aspect documents without violating single-owner boundaries.
-- The Storage Service or Evidence record classes undergo a fundamental authority split accepted by a new engineer decision.
+Revisit when concrete evidence shows that the resulting boundaries still duplicate authority, leave a stable concept without an owner, split one mechanism by audience, or expose implementation inventories as Core interfaces. Apply the same mechanism and rename criteria rather than renaming for style.
 
 ## Affected Owners
 
-- `docs/core/README.md`
-- `docs/core/foundation.md`
-- `docs/core/core-concepts.md`
-- `docs/core/work-model.md`
-- `docs/core/architecture.md`
-- `docs/core/fault-tolerance.md`
-- `docs/core/runtime-model.md`
-- `docs/core/agent-supply.md`
-- `docs/core/agent-session.md`
-- `docs/core/agent-workflow.md`
-- `docs/core/protocol.md`
-- `docs/core/communication.md`
-- `docs/core/storage.md`
-- `docs/core/identity.md`
-- `docs/core/vault.md`
-- `docs/core/mediation.md`
-- `docs/core/policy.md`
-- `docs/core/sandbox.md`
-- `docs/core/knowledge.md`
-- `docs/core/evidence.md`
-- `docs/core/contract-evolution.md`
-- `docs/core/generative-apps.md`
-- `docs/deployment.md`
-- `docs/app-api.md`
+- `docs/core/README.md` and `docs/core/AGENTS.md`.
+- `docs/core/foundation.md`, `docs/core/core-concepts.md`, `docs/core/architecture.md`, `docs/core/fault-tolerance.md` and `docs/core/contract-evolution.md`.
+- `docs/core/work-model.md`, `docs/core/agent-workflow.md`, `docs/core/knowledge.md` and `docs/core/generative-apps.md`.
+- `docs/core/runtime-model.md`, `docs/core/agent-session.md`, `docs/core/sandbox.md` and `docs/core/agent-supply.md`.
+- `docs/core/identity.md`, `docs/core/policy.md`, `docs/core/mediation.md` and `docs/core/vault.md`.
+- `docs/core/storage.md`, `docs/core/evidence.md`, `docs/core/protocol.md` and `docs/core/communication.md`.
+- `docs/specs/20261021-protocol_identifiers_and_enums.md` and `docs/specs/20260909-internal_agent_resource_integration.md` receive the implementation inventories.
