@@ -73,7 +73,7 @@ import { parseWorkerContextPackageTrace } from '../context/worker-context-packag
 import { readStrictWorkerContextPackageDigest } from '../context/worker-context-projection.js';
 import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
-import { FsStore } from '../lib/store.js';
+import { commandRequestExpiresAt, commandRequestKey, FsStore } from '../lib/store.js';
 import type {
   LLMGatewayDispatchContext,
   LLMGatewayProviderDispatcher,
@@ -140,6 +140,7 @@ import {
   commandInputHash,
   conversationTaskThreadId,
   conversationTaskTurnId,
+  type IdempotentCommandReceipt,
 } from './idempotent-command.js';
 import {
   acceptNanoHostAttemptHeartbeat,
@@ -360,6 +361,25 @@ function runTestGit(cwd: string, args: readonly string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8' });
 }
 
+/** Builds original command facts for the fixture's single native Turn admission. */
+function turnStartFixtureReceipt(
+  requestId: string,
+  scope: IdempotentCommandReceipt['scope'],
+  inputHash: string
+): IdempotentCommandReceipt {
+  const createdAt = new Date().toISOString();
+  return {
+    key: commandRequestKey('turn.start', requestId, scope),
+    command: 'turn.start',
+    requestId,
+    scope,
+    inputHash,
+    responseKind: 'turn',
+    createdAt,
+    expiresAt: commandRequestExpiresAt(createdAt),
+  };
+}
+
 /**
  * Creates one worker turn with an explicit test-manifest agent assignment.
  *
@@ -368,6 +388,7 @@ function runTestGit(cwd: string, args: readonly string[]): string {
  * @param threadId Thread that owns the turn.
  * @param input User-facing turn input.
  * @param turnId Optional exact Turn identity.
+ * @param commandReceipt Original receipt committed with this Turn admission.
  * @returns Persisted turn with its exact agent assignment.
  */
 async function createAssignedTurn(
@@ -375,7 +396,8 @@ async function createAssignedTurn(
   workspaceId: string,
   threadId: string,
   input: string,
-  turnId?: string
+  turnId?: string,
+  commandReceipt?: IdempotentCommandReceipt
 ) {
   const turn = await store.createTurn(
     workspaceId,
@@ -386,7 +408,7 @@ async function createAssignedTurn(
       id: 'usr_00000000-0000-7000-8000-000000000001',
     },
     null,
-    turnId ? { turnId } : {}
+    { ...(turnId ? { turnId } : {}), ...(commandReceipt ? { commandReceipt } : {}) }
   );
   return await store.updateTurn(turn.id, {
     agentId: 'agent_codex_host',
@@ -519,6 +541,8 @@ async function createWorkerContextExecutorFixture(
     readonly turnId?: string;
     readonly originatingThreadId?: string;
     readonly workerRequest?: string;
+    /** Original turn.start input whose replay is exercised after native admission. */
+    readonly turnStartReceipt?: { readonly input: string; readonly profileId: string };
   } = {}
 ) {
   const dataRoot = mkdtempSync(join(tmpdir(), `openkit-governance-context-${name}-`));
@@ -572,7 +596,20 @@ async function createWorkerContextExecutorFixture(
     'ws_00000000-0000-7000-8000-000000000001',
     threadId,
     'Prepare worker context',
-    options.turnId
+    options.turnId,
+    options.turnStartReceipt
+      ? turnStartFixtureReceipt(
+          requestId,
+          { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId },
+          commandInputHash({
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId,
+            requestId,
+            input: options.turnStartReceipt.input,
+            profileId: options.turnStartReceipt.profileId,
+          })
+        )
+      : undefined
   );
   const contextItemId = testEntityId('it', `it_context_${name}`);
   const maxContextTokens = options.maxContextTokens ?? 12000;
@@ -1595,13 +1632,27 @@ describe('WorkerGovernanceTurnExecutor', () => {
   ] as const)('settles only proved unassigned planned successor preparation: %s', async (proof) => {
     const coreDb = openCommitFixtureCore();
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const requestId = '00000000-0000-4000-8000-000000000292';
     const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Prepare planned successor',
       { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       undefined,
-      { status: 'pending', agentId: 'agent_codex_host', executorKind: 'worker' }
+      {
+        status: 'pending',
+        agentId: 'agent_codex_host',
+        executorKind: 'worker',
+        commandReceipt: turnStartFixtureReceipt(
+          requestId,
+          {
+            actorId: LOCAL_USER_ID,
+            workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            threadId: 'th_00000000-0000-7000-8000-000000000001',
+          },
+          commandInputHash('fixture:planned-successor')
+        ),
+      }
     );
     const predecessor = await store.createAgentSession({
       id: testEntityId('as', 'as_planned_predecessor'),
@@ -1633,25 +1684,13 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const entry = createSchedulerAdmissionEntry(coreDb, {
       backendId: 'nanohost',
       queueEntryId: 'queue_planned_successor',
-      requestId: '00000000-0000-4000-8000-000000000292',
+      requestId,
       workspaceId: workspaceIdForOwner(turn.owner),
       threadId: turn.threadId,
       turnId: turn.id,
       turnInput: 'Prepare planned successor',
       requestedAgentId: 'agent_codex_host',
       triggerActor: turn.triggerActor,
-    });
-    store.recordCommandRequest({
-      command: 'turn.start',
-      requestId: entry.requestId,
-      inputHash: 'fixture:planned-successor',
-      scope: {
-        actorId: 'usr_00000000-0000-7000-8000-000000000001',
-        workspaceId: entry.workspaceId,
-        threadId: entry.threadId,
-      },
-      response: { kind: 'turn', id: entry.turnId },
-      createdAt: new Date().toISOString(),
     });
     const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
     let unreadableDir: string | null = null;
@@ -2016,9 +2055,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
       };
       let refusal: unknown;
       try {
-        (
+        await (
           executor as unknown as {
-            requireMaterializationCapacity(id: string, preparation: typeof input): void;
+            requireMaterializationCapacity(id: string, preparation: typeof input): Promise<void>;
           }
         ).requireMaterializationCapacity(input.freshAgentSessionId, input);
       } catch (error) {
@@ -4689,7 +4728,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const materialize = backend.materialize.bind(backend);
     backend.materialize = async (...args) => ({ ...(await materialize(...args)), retainedStorage });
     let record:
-      | ((digest: string, retainedStorage: { storageRef: string; workSlotRef: string }) => void)
+      | ((
+          digest: string,
+          retainedStorage: { storageRef: string; workSlotRef: string }
+        ) => void | Promise<void>)
       | null = null;
     Object.assign(backend, {
       bindNativeHandleRecorder: (
@@ -4697,7 +4739,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         recorder: (
           digest: string,
           retainedStorage: { storageRef: string; workSlotRef: string }
-        ) => void
+        ) => void | Promise<void>
       ) => {
         record = recorder;
       },
@@ -4708,7 +4750,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
           testEntityId('as', 'as_attachment_before_open')
         )
       ).toMatchObject({ retainedStorage });
-      record?.('d'.repeat(64), retainedStorage);
+      await record?.('d'.repeat(64), retainedStorage);
       // A ready proof precedes baseline collection; collection need never complete.
       throw new Error('baseline failed after ready proof');
     });
@@ -4970,20 +5012,17 @@ describe('WorkerGovernanceTurnExecutor', () => {
         status: 'pending',
         agentId: entry.requestedAgentId,
         executorKind: 'worker',
+        commandReceipt: turnStartFixtureReceipt(
+          entry.requestId,
+          {
+            actorId: LOCAL_USER_ID,
+            workspaceId: entry.workspaceId,
+            threadId: entry.threadId,
+          },
+          commandInputHash('fixture:binding-change')
+        ),
       }
     );
-    store.recordCommandRequest({
-      command: 'turn.start',
-      requestId: entry.requestId,
-      inputHash: 'fixture:binding-change',
-      scope: {
-        actorId: 'usr_00000000-0000-7000-8000-000000000001',
-        workspaceId: entry.workspaceId,
-        threadId: entry.threadId,
-      },
-      response: { kind: 'turn', id: entry.turnId },
-      createdAt: new Date().toISOString(),
-    });
     const dispatch = {
       coreDb,
       store,
@@ -5069,7 +5108,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const digest = 'a'.repeat(64);
     let record:
-      | ((digest: string, retainedStorage: { storageRef: string; workSlotRef: string }) => void)
+      | ((
+          digest: string,
+          retainedStorage: { storageRef: string; workSlotRef: string }
+        ) => void | Promise<void>)
       | null = null;
     const backend = Object.assign(new FakeWorkerGovernanceBackend(), {
       bindNativeHandleRecorder: (
@@ -5077,7 +5119,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         recorder: (
           digest: string,
           retainedStorage: { storageRef: string; workSlotRef: string }
-        ) => void
+        ) => void | Promise<void>
       ) => {
         record = recorder;
       },
@@ -5090,7 +5132,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       awaitWorkerCompletion: async () => {
         // The backend accepts the ready proof during the Turn, after materialization.
-        record?.(digest, {
+        await record?.(digest, {
           storageRef: 'wst_00000000-0000-7ac8-9f6c-13552db6aa87',
           workSlotRef: workerStorageDefaultWorkSlotRef(
             'ws_00000000-0000-7000-8000-000000000001',
@@ -5172,7 +5214,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const digest = 'c'.repeat(64);
     let record:
-      | ((digest: string, retainedStorage: { storageRef: string; workSlotRef: string }) => void)
+      | ((
+          digest: string,
+          retainedStorage: { storageRef: string; workSlotRef: string }
+        ) => void | Promise<void>)
       | null = null;
     const backend = Object.assign(new FakeWorkerGovernanceBackend(), {
       bindNativeHandleRecorder: (
@@ -5180,7 +5225,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         recorder: (
           digest: string,
           retainedStorage: { storageRef: string; workSlotRef: string }
-        ) => void
+        ) => void | Promise<void>
       ) => {
         record = recorder;
       },
@@ -5188,7 +5233,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     backend.prepareLaunch = vi.fn(async () => {
       backend.calls.push('prepareLaunch');
       // The backend accepts the open proof, then a later import fails the launch.
-      record?.(digest, {
+      await record?.(digest, {
         storageRef: 'wst_00000000-0000-7ac8-9f6c-13552db6aa87',
         workSlotRef: workerStorageDefaultWorkSlotRef(
           'ws_00000000-0000-7000-8000-000000000001',
@@ -8606,6 +8651,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const triggerInput = 'Receive pending request outcomes.';
     const fixture = await createWorkerContextExecutorFixture(`pending-${cause}`, {
       workerRequest: triggerInput,
+      ...(cause === 'carried'
+        ? { turnStartReceipt: { input: triggerInput, profileId: 'profile_worker' } }
+        : {}),
     });
     const workspaceDb = openTestWorkspaceDb(fixture.coreDb);
     const pendingRequestId = 'pending_context_question';
@@ -8653,24 +8701,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
       triggerInput
     );
     const app = createApp({ coreDb: fixture.coreDb, mode: 'local', store: fixture.store });
-    if (cause === 'carried') {
-      fixture.store.recordCommandRequest({
-        command: 'turn.start',
-        requestId: fixture.requestId,
-        scope: {
-          workspaceId: workspaceIdForOwner(fixture.turn.owner),
-          threadId: fixture.turn.threadId,
-        },
-        inputHash: commandInputHash({
-          workspaceId: workspaceIdForOwner(fixture.turn.owner),
-          threadId: fixture.turn.threadId,
-          requestId: fixture.requestId,
-          input: triggerInput,
-          profileId: 'profile_worker',
-        }),
-        response: { kind: 'turn', id: fixture.turn.id },
-      });
-    }
     const backend = new FakeWorkerGovernanceBackend();
     const nativeLaunch = backend.submit.bind(backend);
     const launch = vi.spyOn(backend, 'submit').mockImplementation(async (...args) => {
