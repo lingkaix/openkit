@@ -1,59 +1,83 @@
-import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, unlinkSync, writeFileSync } from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import { mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
-import { workspaceIdForOwner } from '@openkit/protocol';
 import {
+  allocateEntityId,
+  RequestIdSchema,
+  workspaceIdForOwner,
+  writeRetainedV1,
+} from '@openkit/protocol';
+import {
+  buildWorkerCanonicalTerminalEventRecord,
   type WorkerLineage,
   type WorkerRuntimeNativeOriginIndexEntry,
   WorkerRuntimeNativeOriginIndexEntrySchema,
   WorkerRuntimeRawStreamManifestSchema,
 } from '@openkit/worker-protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ALREADY_DECIDED_PUBLICATION_ADMISSION } from '../lib/store.js';
+import { createDefaultWorkerControlGateway } from '../app.js';
+import { loadRuntimeConfig } from '../config/runtime-config.js';
+import { commandRequestExpiresAt, commandRequestKey } from '../lib/store.js';
+import { GatewayUnsupportedFeatureError } from '../llm/pi-ai-client.js';
+import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from '../mode-entry-routes.js';
 import { OperationError } from '../operation-error.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import {
+  ControlStoreWorkerError,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
+import { publishImmutableProductJson } from '../storage/immutable-content.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { nativeProductScope } from '../storage/workspace-file-records.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import { createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import {
+  admitTestNativeEnvironment,
+  recordTestNativeRuntimeTarget,
+} from '../test-support/native-environment.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import {
-  acceptSchedulerExecutionObservation,
-  bindSchedulerExecutionAttemptSession,
-  closeSchedulerExecutionAttemptWithFence,
-  createSchedulerExecutionAttempt,
-  finalizeSchedulerExecutionAttemptInput,
-  markSchedulerExecutionAttemptClosing,
-  recordSchedulerExecutionOperation,
-  schedulerExecutionCorrelation,
-} from './execution-attempt-records.js';
+  recordAgentEnvironmentPackageSnapshot,
+  requireAgentEnvironmentPackageSnapshot,
+} from './aep-snapshot-ledger.js';
+import { requireSchedulerExecutionAttempt } from './execution-attempt-records.js';
+import { commandInputHash } from './idempotent-command.js';
+import {
+  dispatchNanoHostHarnessOperation,
+  settleNanoHostHarnessOperation,
+} from './nanohost-harness-records.js';
+import type { NanoHostSessionEffectRequest } from './nanohost-session-dispatch.js';
+import { createConfiguredWorkerLifecycleRuntime } from './turn-executor-factory.js';
 import {
   getWorkerCheckpoint,
   listRecoverableWorkerCheckpoints,
   upsertWorkerCheckpoint,
 } from './worker-checkpoints.js';
+import * as workerControlRecords from './worker-control-records.js';
 import {
   classifyClosedWorkerApprovalGate,
   clearWorkerCheckpointAfterTerminalState,
   recoverWorkerCheckpointStopReason,
 } from './worker-recovery.js';
 import { importWorkerRuntimeProvenance } from './worker-runtime-provenance.js';
-import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
 
 /**
- * Builds closeout tuples through real terminal publications and released attempt owners.
- * @param outcome Original decided worker outcome.
- * @param retained Whether failure closeout keeps its reusable Session idle.
- * @param options Optional publication fault/retry, execution observation, and App request identity.
- * @returns Retained owner tuple and database cleanup callback.
+ * Runs the real native Worker owners against one fixed-effect receiver double.
+ * @param outcome Original decided Worker outcome.
+ * @param retained Whether the receiver proves a reusable native binding.
+ * @param options Native terminal fault and publication-order interventions.
+ * @returns Original admitted package, released attempt, retained products and cleanup.
  */
 async function createCheckpointCloseoutFixture(
   outcome: 'failed' | 'completed' | 'interrupted',
@@ -68,189 +92,558 @@ async function createCheckpointCloseoutFixture(
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
+  const store = await createDemoStore({ dataRoot });
+  const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
   recordWorkspaceOwnerMembership({
     coreDb,
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    workspaceId,
   });
-  const store = await createDemoStore({ dataRoot });
-  const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+  const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
   applyScopedMigrations(workspaceDb);
+  recordTestNativeRuntimeTarget(coreDb);
+  const setup = createTestAgentSetup({ requiredCapabilities: ['trusted-worker-inference-relay'] });
+  admitTestNativeEnvironment(coreDb, setup.manifest);
   const requestId = options.requestId ?? '00000000-0000-4000-8000-000000000501';
+  const input = 'Recover exact worker closeout';
+  const turnId = allocateEntityId('tu');
+  const threadId = 'th_00000000-0000-7000-8000-000000000001';
+  const inputHash = commandInputHash({ requestId, workspaceId, threadId, input });
+  const scope = {
+    actorId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId,
+    threadId,
+  };
+  const createdAt = new Date().toISOString();
   const turn = await store.createTurn(
-    'ws_00000000-0000-7000-8000-000000000001',
-    'th_00000000-0000-7000-8000-000000000001',
-    'Recover exact worker closeout',
+    workspaceId,
+    threadId,
+    input,
     {
       kind: 'user',
       id: 'usr_00000000-0000-7000-8000-000000000001',
+    },
+    null,
+    {
+      turnId,
+      // Retained runtime correlation does not assert a current public command receipt.
+      ...(RequestIdSchema.safeParse(requestId).success
+        ? {
+            commandReceipt: {
+              key: commandRequestKey('conversation.submit', requestId, scope),
+              command: 'conversation.submit',
+              requestId,
+              scope,
+              inputHash: inputHash,
+              responseKind: 'turn',
+              createdAt,
+              expiresAt: commandRequestExpiresAt(createdAt),
+            },
+            commandReceiptResponse: {
+              kind: 'turn',
+              id: turnId,
+              conversationMetadata: {
+                targetRef: 'new-task-worker',
+                logicalModelId: null,
+                receivingWorkspaceId: workspaceId,
+                receivingThreadId: threadId,
+                downstream: { kind: 'task', turnId },
+                resultKind: 'worker-turn',
+                status: 202,
+              },
+            },
+          }
+        : {}),
     }
   );
+  await store.updateTurn(turn.id, { agentId: setup.manifest.id });
   const agentSessionId = 'as_00000000-0000-73c3-bedd-d6971f391e97';
-  await store.updateTurn(turn.id, { agentId: 'agent_codex_host', agentSessionId });
-  const createdAt = new Date().toISOString();
-  const environmentPackage = resolveAgentEnvironmentPackage({
-    agentSetup: createTestAgentSetup(),
-    agentSessionId,
-    backend: { kind: 'openshell' },
-    createdAt,
-    requestId,
-    triggerActor: turn.triggerActor,
-    turn: store.getTurnById(turn.id),
-    turnInput: 'Recover exact worker closeout',
-    workspaceRoots: [],
-  });
-  recordAgentEnvironmentPackageSnapshot(workspaceDb, { environmentPackage, createdAt });
-  await store.createAgentSession({
-    id: agentSessionId,
-    agentId: 'agent_codex_host',
-    workspaceId: workspaceIdForOwner(turn.owner),
-    threadId: turn.threadId,
-    status: 'busy',
-    message: null,
-    createdAt,
-    updatedAt: createdAt,
-    environmentPackageSnapshotId: environmentPackage.snapshotId,
-  });
+  const attemptId = testEntityId('attempt', `checkpoint:${turn.id}`);
+  const snapshotId = `aepsnap_${turn.id}_${agentSessionId}`;
+  const bindingRef = `binding:${turn.id}`;
   const entry = createSchedulerAdmissionEntry(coreDb, {
     backendId: 'nanohost',
     queueEntryId: 'queue_checkpoint_closeout',
     requestId,
     triggerActor: turn.triggerActor,
-    requestedAgentId: 'agent_codex_host',
-    workspaceId: workspaceIdForOwner(turn.owner),
+    requestedAgentId: setup.manifest.id,
+    workspaceId,
     threadId: turn.threadId,
     turnId: turn.id,
-    turnInput: 'Recover exact worker closeout',
+    turnInput: input,
   });
-  const attempt = createSchedulerExecutionAttempt(coreDb, {
+  recordTestExecutionAttempt(coreDb, {
     entry,
-    preparationInput: { admission: entry },
-  });
-  bindSchedulerExecutionAttemptSession(coreDb, { attemptId: attempt.attemptId, agentSessionId });
-  finalizeSchedulerExecutionAttemptInput(coreDb, {
-    attemptId: attempt.attemptId,
-    inputRef: environmentPackage.snapshotId,
-    bindingRef: 'binding_checkpoint_closeout',
-  });
-  const submitted = recordSchedulerExecutionOperation(coreDb, {
-    attemptId: attempt.attemptId,
-    operationId: 'operation_checkpoint_closeout',
-    submission: true,
-  });
-  const correlation = schedulerExecutionCorrelation(submitted);
-  acceptSchedulerExecutionObservation(coreDb, {
-    ...correlation,
-    disposition: 'accepted',
-    execution: 'terminal',
-    outcomeRef: `turn:${turn.id}:${outcome}`,
-    fenceRef: null,
-  });
-  markSchedulerExecutionAttemptClosing(coreDb, {
-    attemptId: attempt.attemptId,
-    cause: 'worker-final-status',
-  });
-  const completedAt = new Date().toISOString();
-  const executionSession = store.getAgentSession(agentSessionId);
-  const emit = store.emitTurnEvent.bind(store);
-  /** Publishes the captured execution observation without changing the durable Session owner. */
-  const publishExecution = () =>
-    emit(
-      turn.id,
-      {
-        event: 'agent.session.updated',
-        data: { type: 'agent-session-updated', agentSession: executionSession },
-        requestId,
-        workspaceId: workspaceIdForOwner(turn.owner),
-        threadId: turn.threadId,
-        turnId: turn.id,
-      },
-      ALREADY_DECIDED_PUBLICATION_ADMISSION
-    );
-  if (options.executionPublication === 'before-closeout') publishExecution();
-  if (outcome === 'completed')
-    await store.updateTurn(turn.id, { status: 'completed', completedAt });
-  // Success uses the same production helper's completed-outcome publication repair path.
-  const terminalization = {
+    attemptId,
     agentSessionId,
-    agentSessionRetained: retained,
-    completedAt,
-    outcome: outcome === 'interrupted' ? ('interrupted' as const) : ('failed' as const),
-    errorCode: 'unsupported_gateway_feature',
-    message: 'Choose a compatible model route and start a new Task.',
-    requestId,
-    store,
+    inputRef: snapshotId,
+    bindingRef,
+    sessionCompatibilityKey: 'fixture-compatibility',
+    now: () => new Date().toISOString(),
+  });
+  const gateway = createDefaultWorkerControlGateway(coreDb);
+  const lineage = {
+    workspaceId,
+    threadId: turn.threadId,
     turnId: turn.id,
+    agentSessionId,
+    packageSnapshotId: snapshotId,
+    requestId,
   };
-  if (options.repairSessionPublication) {
-    const injectedFailure = new Error('Injected first AgentSession publication failure.');
-    const publication = vi
-      .spyOn(store, 'emitTurnEvent')
-      .mockImplementation((id, event, admission) => {
-        if (event.event === 'agent.session.updated') throw injectedFailure;
-        return emit(id, event, admission);
-      });
-    try {
-      await expect(terminalizeGovernedWorkerTurn(terminalization)).rejects.toThrow(
-        expect.objectContaining({ errors: [injectedFailure] })
-      );
-      const partialEvents = store.getTurnEvents(turn.id);
-      expect(partialEvents.map((event) => event.event)).toEqual(
-        options.executionPublication === 'before-closeout'
-          ? ['agent.session.updated', 'turn.completed']
-          : ['turn.completed']
-      );
-      const terminalBytes = JSON.stringify(partialEvents.at(-1));
-      publication.mockRestore();
-      await terminalizeGovernedWorkerTurn(terminalization);
-      expect(
-        JSON.stringify(
-          store.getTurnEvents(turn.id).find((event) => event.event === 'turn.completed')
-        )
-      ).toBe(terminalBytes);
-    } finally {
-      publication.mockRestore();
-    }
-  } else if (options.executionPublication === 'before-terminal') {
-    // Insert the contradictory observation after the owner's idle write but before its terminal write.
-    const publication = vi
-      .spyOn(store, 'emitTurnEvent')
-      .mockImplementation((id, event, admission) => {
-        if (event.event === 'turn.completed') publishExecution();
-        return emit(id, event, admission);
-      });
-    try {
-      await terminalizeGovernedWorkerTurn(terminalization);
-    } finally {
-      publication.mockRestore();
-    }
-  } else {
-    await terminalizeGovernedWorkerTurn(terminalization);
-  }
-  closeSchedulerExecutionAttemptWithFence(coreDb, {
-    correlation,
-    fenceRef: 'worker-backend:checkpoint-closeout',
-    proof: {
-      terminalHandoff: true,
-      output: true,
-      evidence: true,
-      outsideWorkspaceCollection: true,
-      integrationDrain: true,
-      routesRevoked: true,
+  const commit = 'e'.repeat(40);
+  const peerProcessKey = randomBytes(32);
+  let terminalRecord: ReturnType<typeof buildWorkerCanonicalTerminalEventRecord> | undefined;
+  let finalWaitEntered = false;
+  let signalFinalWait!: () => void;
+  const finalWaitReady = new Promise<void>((resolve) => {
+    signalFinalWait = resolve;
+  });
+  const waitForFinalStatus = workerControlRecords.waitForWorkerControlFinalStatus;
+  const observingFinalWait = vi
+    .spyOn(workerControlRecords, 'waitForWorkerControlFinalStatus')
+    .mockImplementation((...args) => {
+      finalWaitEntered = true;
+      signalFinalWait();
+      return waitForFinalStatus(...args);
+    });
+  const runtime = createConfiguredWorkerLifecycleRuntime({
+    fileAdmission: new FileStorageAdmission(dataRoot, () => 0n),
+    readRuntimeConfig: () => loadRuntimeConfig(dataRoot),
+    coreDb,
+    store,
+    env: {},
+    workerControlGateway: gateway,
+    nanoHostSessionDispatch: {
+      async effect(first, second) {
+        const request = second ?? (first as NanoHostSessionEffectRequest);
+        switch (request.kind) {
+          case 'image.acquire':
+            return { digest: `sha256:${'a'.repeat(64)}` };
+          case 'image.inspect':
+            return {
+              digest: request.input.imageDigest,
+              environmentDefaults: {
+                defaultsDigest:
+                  'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
+                values: {},
+              },
+              platform: { architecture: 'amd64', os: 'linux' },
+              storageLayout: {
+                family: 'openkit-worker',
+                uid: 1000,
+                gid: 1000,
+                version: '1',
+                workingDirectory: '/tmp/openkit-bootstrap',
+                targets: [
+                  { target: '/openkit/threads' },
+                  { target: '/sandbox' },
+                  { target: '/workspace' },
+                ],
+              },
+            };
+          case 'sandbox.create': {
+            const storage = request.input.storage as { targets: readonly object[] };
+            return {
+              sandboxId: request.input.sandboxId,
+              state: 'created',
+              storage: {
+                ...storage,
+                targets: storage.targets.map((target) => ({ ...target, initialized: true })),
+              },
+            };
+          }
+          case 'bridge.open':
+            return { accepted: true, integrationReady: true, state: 'open' };
+          case 'reference.import':
+            return { state: 'imported' };
+          case 'workspace.collect':
+            return request.input.mode === 'baseline'
+              ? {
+                  requestId: request.requestId,
+                  outcome: 'baseline',
+                  head: {
+                    tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
+                    manifest: 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391',
+                  },
+                }
+              : { requestId: request.requestId, outcome: 'no_new_head', unstable: false };
+          case 'file.export': {
+            if (!terminalRecord)
+              throw new Error('Transcript export preceded accepted terminal evidence.');
+            const bytes = Buffer.from(
+              String(request.input.relativePath).endsWith('events.jsonl')
+                ? `${JSON.stringify(terminalRecord)}\n`
+                : ''
+            );
+            // The collector removes the complete private parent directory after consumption.
+            const stagingPath = join(mkdtempSync(join(dataRoot, 'receiver-export-')), 'content');
+            writeFileSync(stagingPath, bytes);
+            return { stagingPath, byteLength: bytes.length, sha256: runtimeSha256(bytes) };
+          }
+          case 'bridge.close':
+          case 'sandbox.delete':
+            return { state: 'deleted' };
+          default:
+            throw new Error(`Unexpected receiver effect ${request.kind}.`);
+        }
+      },
+      async poll() {
+        return null;
+      },
+      async result() {},
+      async route() {
+        throw new Error('Unexpected receiver route.');
+      },
     },
   });
+  const complete = store.completeTurn.bind(store);
+  let publicationStart = 0;
+  let terminalFaultObserved = false;
+  let retainedTerminal: { path: string; bytes: Buffer } | undefined;
+  const publishing = vi
+    .spyOn(store, 'completeTurn')
+    .mockImplementation(async (id, patch, publication) => {
+      if (id !== turn.id || publicationStart) return complete(id, patch, publication);
+      publicationStart = (store.getTurnEvents(id).at(-1)?.sequence ?? 0) + 1;
+      const busy = store.getAgentSession(agentSessionId);
+      const event = {
+        event: 'agent.session.updated' as const,
+        data: { type: 'agent-session-updated' as const, agentSession: busy },
+        requestId,
+        workspaceId,
+        threadId: turn.threadId,
+        turnId: id,
+      };
+      if (options.executionPublication === 'before-closeout') {
+        const acknowledged = await store.persistTurnEvent(id, event);
+        store.emitTurnEvent(id, acknowledged);
+      }
+      if (options.executionPublication === 'before-terminal') {
+        publication = {
+          ...publication,
+          precedingEvents: [...(publication?.precedingEvents ?? []), event],
+        };
+      }
+      if (options.repairSessionPublication) {
+        // Capture every committed row, including revisions, receipts, Audit and execution steps.
+        const committedTuple = () =>
+          JSON.stringify({
+            turn: store.getTurnById(id),
+            session: store.getAgentSession(agentSessionId),
+            events: store.getTurnEvents(id),
+            databases: [workspaceDb, coreDb].map((db) =>
+              (
+                db.sqlite
+                  .prepare(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+                  )
+                  .all() as { name: string }[]
+              ).map(({ name }) => ({
+                name,
+                rows: db.sqlite
+                  .prepare(`SELECT * FROM "${name.replaceAll('"', '""')}"`)
+                  .all()
+                  .map((row) => JSON.stringify(row))
+                  .sort(),
+              }))
+            ),
+          });
+        const before = committedTuple();
+        const trigger = `CREATE TRIGGER fixture_terminal_refusal BEFORE UPDATE ON control_turns WHEN NEW.id = '${id}' AND NEW.status IN ('completed','failed','interrupted') BEGIN SELECT RAISE(ABORT, 'fixture-terminal-refusal'); END`;
+        workspaceDb.sqlite.exec(trigger);
+        const installedTrigger = workspaceDb.sqlite.prepare(
+          "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'fixture_terminal_refusal'"
+        );
+        expect(installedTrigger.get()).toEqual({ sql: trigger });
+        try {
+          const refused = await complete(id, patch, publication).then(
+            () => {
+              throw new Error('The installed terminal SQL trigger must refuse publication.');
+            },
+            (error: unknown) => error
+          );
+          expect(refused).toBeInstanceOf(ControlStoreWorkerError);
+          expect(refused).toMatchObject({ code: 'constraint', commit: 'not-committed' });
+          expect(committedTuple()).toBe(before);
+          terminalFaultObserved = true;
+        } finally {
+          workspaceDb.sqlite.exec('DROP TRIGGER fixture_terminal_refusal');
+        }
+        expect(installedTrigger.get()).toBeUndefined();
+      }
+      const committed = await complete(id, patch, publication);
+      if (options.repairSessionPublication) {
+        const terminalEvents = store
+          .getTurnEvents(id)
+          .filter((entry) => entry.event === 'turn.completed');
+        expect(terminalEvents).toHaveLength(1);
+        expect(store.getCommandRequest('conversation.submit', requestId, scope)).toMatchObject({
+          response: { kind: 'turn', id },
+          inputHash: inputHash,
+        });
+      }
+      return committed;
+    });
+  let done = false;
+  let failure: unknown;
+  let cancellation: Promise<void> | undefined;
+  let finalAuthorization = '';
+  const running = runtime.turnExecutor
+    .startTurn(store, turn.id, input, {
+      attemptId,
+      agentSessionId,
+      agentSetup: setup,
+      requestId,
+      sandboxBindingRef: bindingRef,
+      triggerActor: turn.triggerActor,
+      workspaceRoots: [
+        {
+          id: 'repo',
+          access: 'read-write',
+          sourceKind: 'remote-git',
+          sourceCommit: commit,
+          workerPath: '/workspace/openkit',
+        },
+      ],
+      workspaceSourceRefs: { repo: 'repo' },
+      workspaceDataSourceCatalog: {
+        schemaVersion: 1,
+        sources: [
+          {
+            id: 'repo',
+            displayName: 'Repository',
+            kind: 'git',
+            locator: { commit, url: 'https://example.invalid/repo.git' },
+            access: 'read-write',
+            allowedSlotKinds: ['worktree'],
+            sensitivity: 'internal',
+            status: 'active',
+          },
+        ],
+      },
+    })
+    .catch((error: unknown) => {
+      failure = error;
+    })
+    .finally(() => {
+      done = true;
+    });
+  try {
+    const deadline = Date.now() + 25_000;
+    while (!done && Date.now() < deadline) {
+      const integrations = coreDb.sqlite
+        .prepare('SELECT sandbox_integration_binding_ref AS ref FROM sandbox_runtime_records')
+        .all() as { ref: string }[];
+      for (const integration of integrations) {
+        const queued = dispatchNanoHostHarnessOperation(coreDb, {
+          sandboxIntegrationBindingRef: integration.ref,
+        });
+        if (!queued) continue;
+        const command = runtime.acceptNanoHostHarnessCommand(queued);
+        const native = { nativeHandleState: 'ready', nativeHandleDigest: 'c'.repeat(64) };
+        const body =
+          command.operation === 'session.close'
+            ? { state: 'closed', privateState: 'absent', childState: 'absent' }
+            : command.operation === 'session.open'
+              ? {
+                  state: 'open',
+                  maxActiveTurns: command.body.maxActiveTurns,
+                  ...native,
+                  workspaceGitBaseline: {
+                    commit,
+                    tree: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
+                  },
+                }
+              : command.operation === 'turn.start'
+                ? { state: 'started', ...native }
+                : command.operation === 'turn.interrupt'
+                  ? { state: 'interrupted', childState: 'absent' }
+                  : {
+                      state: retained || outcome === 'completed' ? 'open' : 'failed',
+                      childState: 'absent',
+                      cleanupState: 'clean',
+                      ...native,
+                    };
+        const result = {
+          disposition: 'succeeded' as const,
+          body,
+          harnessInstanceId: command.harnessInstanceId,
+          operationId: command.operationId,
+          schemaVersion: 2 as const,
+          sequence: command.sequence,
+        };
+        settleNanoHostHarnessOperation(coreDb, {
+          result,
+          sandboxIntegrationBindingRef: integration.ref,
+          timestamp: new Date().toISOString(),
+        });
+        runtime.acceptNanoHostHarnessResult(result);
+        if (command.operation === 'turn.start') {
+          // The real final waiter follows native deliver-start and delivery-prove ACKs.
+          await Promise.race([
+            finalWaitReady,
+            running,
+            delay(Math.max(1, deadline - Date.now()), undefined, { ref: false }),
+          ]);
+          if (failure) throw failure;
+          expect(finalWaitEntered).toBe(true);
+          const authorization = `Bearer ${command.body.workerControlToken}`;
+          finalAuthorization = authorization;
+          gateway.recordHeartbeat({
+            authorization,
+            lineage,
+            schemaVersion: 2,
+            sequence: 0,
+            operation: 'heartbeat',
+            body: {
+              status: 'starting',
+              message: null,
+              processKeyHash: createHash('sha256').update(peerProcessKey).digest('base64url'),
+            },
+          });
+          if (outcome === 'failed') {
+            const app = createApp({
+              coreDb,
+              store,
+              turnExecutor: runtime.turnExecutor,
+              workerControlGateway: gateway,
+              llmGatewayDispatcher: {
+                async createResponses(
+                  ...args: Parameters<LLMGatewayProviderDispatcher['createResponses']>
+                ) {
+                  const source = args[2]!.transport!.rawOutput!;
+                  // The modeled upstream settles its error frame before Gateway closeout.
+                  const settled = source.sourceStarted();
+                  source.sourceEvent();
+                  settled();
+                  throw new GatewayUnsupportedFeatureError('Modeled receiver refusal.');
+                },
+              } as unknown as LLMGatewayProviderDispatcher,
+            });
+            const refusal = await app.request('/api/worker-inference/v1/responses', {
+              method: 'POST',
+              headers: {
+                authorization: `Bearer ${command.body.inferenceToken}`,
+                'content-type': 'application/json',
+              },
+              body: JSON.stringify({ model: setup.logicalModels.preferredLogicalModelId, input }),
+            });
+            expect(refusal.status).toBe(400);
+            expect(await refusal.json()).toMatchObject({
+              error: { code: 'unsupported_gateway_feature' },
+            });
+          }
+          if (outcome === 'interrupted') {
+            cancellation = runtime.turnExecutor.interruptTurn!(store, turn.id, { requestId });
+            continue;
+          }
+        }
+        // An interrupted final follows the actual dispatched and accepted interrupt result.
+        if (command.operation === 'turn.start' || command.operation === 'turn.interrupt') {
+          const status =
+            outcome === 'completed' ? 'completed' : outcome === 'failed' ? 'failed' : 'interrupted';
+          const stopReason =
+            outcome === 'completed' ? 'completed' : outcome === 'failed' ? 'error' : 'aborted';
+          terminalRecord = buildWorkerCanonicalTerminalEventRecord({
+            lineage,
+            sequence: 1,
+            data: { status, stopReason, evidenceManifestDigests: {} },
+          });
+          gateway.recordFinalStatus({
+            authorization: finalAuthorization,
+            lineage,
+            sequence: 1,
+            status,
+            stopReason,
+          });
+        }
+      }
+      if (!done) await Promise.race([running, delay(1)]);
+    }
+    expect(done, 'Native Worker lifecycle must settle inside the existing test bound.').toBe(true);
+    await running;
+    await cancellation;
+    if (failure) throw failure;
+    expect(terminalFaultObserved).toBe(Boolean(options.repairSessionPublication));
+    expect(publicationStart).toBeGreaterThan(0);
+  } finally {
+    publishing.mockRestore();
+    observingFinalWait.mockRestore();
+  }
+  const attempt = requireSchedulerExecutionAttempt(coreDb, attemptId);
+  expect(attempt).toMatchObject({ phase: 'closed', fenceRef: expect.any(String) });
+  const environmentPackage = requireAgentEnvironmentPackageSnapshot(
+    workspaceDb,
+    workspaceId,
+    snapshotId
+  ).snapshot;
   const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
-    workspaceId: workspaceIdForOwner(turn.owner),
+    workspaceId,
     threadId: turn.threadId,
     turnId: turn.id,
     workerSessionId: agentSessionId,
     requestId,
-    requestInputHash: 'sha256:checkpoint-closeout',
+    requestInputHash: inputHash,
+    iteration: 0,
     stage:
       outcome === 'failed' ? 'failed' : outcome === 'interrupted' ? 'aborted' : 'running_worker',
     stopReason: outcome === 'failed' ? 'error' : outcome === 'interrupted' ? 'aborted' : null,
-    iteration: 0,
   });
+  if (options.repairSessionPublication) {
+    // A stopped retained repair is separate from the real atomic fault/retry above.
+    // Preserve terminal bytes and actual release; only historical Session projections move.
+    const events = store.getTurnEvents(turn.id);
+    const terminal = events.find((event) => event.data.type === 'turn-completed')!;
+    const closeout = events.findLast((event) => event.data.type === 'agent-session-updated')!;
+    const busy = events.findLast(
+      (event) =>
+        event.sequence < publicationStart &&
+        event.data.type === 'agent-session-updated' &&
+        event.data.agentSession.status === 'busy'
+    );
+    if (!busy || closeout.data.type !== 'agent-session-updated')
+      throw new Error('Retained repair requires actual busy and decided Session observations.');
+    const scope = nativeProductScope(dataRoot, { kind: 'workspace', workspaceId });
+    const terminalEntry = workspaceDb.sqlite.prepare(
+      "SELECT * FROM control_product_entries WHERE kind = 'event' AND turn_id = ? AND sequence = ?"
+    );
+    const descriptor = terminalEntry.get(turn.id, terminal.sequence) as { content_json: string };
+    const path = join(
+      scope.contentMount.root,
+      JSON.parse(descriptor.content_json).reference.locator.path
+    );
+    const bytes = readFileSync(path);
+    retainedTerminal = { path, bytes };
+    await shutdownControlStoreWorkerClient();
+    for (const event of [
+      { ...busy, sequence: closeout.sequence },
+      { ...closeout, sequence: terminal.sequence + 1 },
+    ]) {
+      const content = await publishImmutableProductJson(
+        scope.contentMount,
+        scope.owner,
+        join(dataRoot, 'fixture-staging'),
+        writeRetainedV1(event)
+      );
+      workspaceDb.sqlite
+        .prepare(
+          "INSERT INTO control_product_entries (kind,turn_id,sequence,id,revision,schema_version,content_json,identity_json) VALUES ('event',?,?,?,1,1,?,?) ON CONFLICT(kind,turn_id,sequence) DO UPDATE SET content_json = excluded.content_json"
+        )
+        .run(
+          turn.id,
+          event.sequence,
+          `${turn.id}:${event.sequence}`,
+          JSON.stringify(content),
+          JSON.stringify({ threadId: turn.threadId, turnId: turn.id })
+        );
+    }
+    expect(terminalEntry.get(turn.id, terminal.sequence)).toEqual(descriptor);
+    expect(readFileSync(path).equals(bytes)).toBe(true);
+    expect(store.getTurnEvents(turn.id).find((event) => event.event === 'turn.completed')).toEqual(
+      terminal
+    );
+    expect(store.getTurnEvents(turn.id).at(-1)?.data).toEqual(closeout.data);
+  }
   return {
     coreDb,
     workspaceDb,
@@ -259,6 +652,10 @@ async function createCheckpointCloseoutFixture(
     attempt,
     environmentPackage,
     agentSessionId,
+    publicationStart,
+    retainedTerminal,
+    closeoutEvents: (reader = store) =>
+      reader.getTurnEvents(turn.id).filter((event) => event.sequence >= publicationStart),
     close: () => {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
@@ -266,12 +663,18 @@ async function createCheckpointCloseoutFixture(
   };
 }
 
-/** Records the existing outer command receipt required by conversation checkpoint recovery. */
-function recordCloseoutConversationReceipt(
-  f: ReturnType<typeof createCheckpointCloseoutFixture>
-): void {
+/** Verifies the original native admission receipt required by conversation checkpoint recovery. */
+async function verifyCloseoutConversationReceipt(
+  f: Awaited<ReturnType<typeof createCheckpointCloseoutFixture>>
+): Promise<void> {
   const { checkpoint, store } = f;
-  store.recordCommandRequest({
+  expect(
+    store.getCommandRequest('conversation.submit', checkpoint.requestId, {
+      actorId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: checkpoint.workspaceId,
+      threadId: checkpoint.threadId,
+    })
+  ).toMatchObject({
     command: 'conversation.submit',
     requestId: checkpoint.requestId,
     inputHash: checkpoint.requestInputHash,
@@ -521,10 +924,28 @@ describe('worker recovery materialization', () => {
           id: 'usr_00000000-0000-7000-8000-000000000001',
         }
       );
-      await f.store.updateTurn(turn.id, {
+      // This stopped import supplies only competing retained-package selection history.
+      // It claims no later native execution, terminal publication or release proof.
+      await shutdownControlStoreWorkerClient();
+      const retainedTurn = {
+        ...turn,
         agentId: 'agent_codex_host',
         agentSessionId: f.agentSessionId,
-      });
+        status: 'completed' as const,
+      };
+      const retainedRow = f.workspaceDb.sqlite
+        .prepare('SELECT record_json FROM control_turns WHERE id = ?')
+        .get(turn.id) as { record_json: string };
+      f.workspaceDb.sqlite
+        .prepare(
+          'UPDATE control_turns SET status = ?, agent_session_id = ?, record_json = ?, revision = revision + 1 WHERE id = ?'
+        )
+        .run(
+          retainedTurn.status,
+          f.agentSessionId,
+          JSON.stringify({ ...JSON.parse(retainedRow.record_json), ...retainedTurn }),
+          turn.id
+        );
       const environmentPackage = resolveAgentEnvironmentPackage({
         agentSetup: createTestAgentSetup(),
         agentSessionId: f.agentSessionId,
@@ -532,7 +953,7 @@ describe('worker recovery materialization', () => {
         createdAt: new Date().toISOString(),
         requestId: '00000000-0000-4000-8000-000000000502',
         triggerActor: turn.triggerActor,
-        turn: f.store.getTurnById(turn.id),
+        turn: retainedTurn,
         turnInput: 'Later package',
         workspaceRoots: [],
       });
@@ -633,11 +1054,16 @@ describe('worker recovery materialization', () => {
       repairSessionPublication: true,
     });
     try {
+      const retainedEvents = f.store.getTurnEvents(f.checkpoint.turnId);
+      const descriptors = f.workspaceDb.sqlite.prepare(
+        'SELECT * FROM control_product_entries WHERE turn_id = ? ORDER BY kind, sequence'
+      );
+      const retainedDescriptors = descriptors.all(f.checkpoint.turnId);
       expect(
-        f.store
-          .getTurnEvents(f.checkpoint.turnId)
-          .map((event) => `${event.sequence}:${event.event}`)
-      ).toEqual(['1:turn.completed', '2:agent.session.updated']);
+        f
+          .closeoutEvents()
+          .map((event) => `${event.sequence - f.publicationStart + 1}:${event.event}`)
+      ).toEqual(['1:agent.session.updated', '2:turn.completed', '3:agent.session.updated']);
       expect(
         recoverWorkerCheckpointStopReason(f.coreDb, f.store, f.workspaceDb, f.checkpoint)
       ).toBe(stopReason);
@@ -645,6 +1071,9 @@ describe('worker recovery materialization', () => {
       expect(
         recoverWorkerCheckpointStopReason(f.coreDb, reloaded, f.workspaceDb, f.checkpoint)
       ).toBe(stopReason);
+      expect(reloaded.getTurnEvents(f.checkpoint.turnId)).toEqual(retainedEvents);
+      expect(descriptors.all(f.checkpoint.turnId)).toEqual(retainedDescriptors);
+      expect(readFileSync(f.retainedTerminal!.path).equals(f.retainedTerminal!.bytes)).toBe(true);
     } finally {
       f.close();
     }
@@ -664,41 +1093,59 @@ describe('worker recovery materialization', () => {
       if (!beforeTerminal) {
         const session = store
           .getTurnEvents(checkpoint.turnId)
-          .find((event) => event.data.type === 'agent-session-updated')!;
+          .findLast((event) => event.data.type === 'agent-session-updated')!;
         if (session.data.type !== 'agent-session-updated')
           throw new Error('Missing fixture closeout publication.');
-        store.emitTurnEvent(
-          checkpoint.turnId,
-          {
-            event: 'agent.session.updated',
-            data: {
-              type: 'agent-session-updated',
-              agentSession: { ...session.data.agentSession, status: 'busy' },
-            },
-            requestId: checkpoint.requestId,
-            workspaceId: checkpoint.workspaceId,
-            threadId: checkpoint.threadId,
-            turnId: checkpoint.turnId,
+        // A live native publication correctly refuses this contradiction. Import only
+        // stopped retained corruption so the cold recovery reader remains the subject.
+        await shutdownControlStoreWorkerClient();
+        const contradictoryEvent = {
+          ...session,
+          sequence: store.getTurnEvents(checkpoint.turnId).at(-1)!.sequence + 1,
+          timestamp: new Date().toISOString(),
+          data: {
+            type: 'agent-session-updated' as const,
+            agentSession: { ...session.data.agentSession, status: 'busy' as const },
           },
-          ALREADY_DECIDED_PUBLICATION_ADMISSION
+        };
+        const scope = nativeProductScope(f.workspaceDb.dataRoot, {
+          kind: 'workspace',
+          workspaceId: checkpoint.workspaceId,
+        });
+        const content = await publishImmutableProductJson(
+          scope.contentMount,
+          scope.owner,
+          join(f.workspaceDb.dataRoot, 'fixture-staging'),
+          writeRetainedV1(contradictoryEvent)
         );
+        f.workspaceDb.sqlite
+          .prepare(
+            "INSERT INTO control_product_entries (kind,turn_id,sequence,id,revision,schema_version,content_json,identity_json) VALUES ('event',?,?,?,1,1,?,?)"
+          )
+          .run(
+            checkpoint.turnId,
+            contradictoryEvent.sequence,
+            `${checkpoint.turnId}:${contradictoryEvent.sequence}`,
+            JSON.stringify(content),
+            JSON.stringify({ threadId: checkpoint.threadId, turnId: checkpoint.turnId })
+          );
       }
-      recordCloseoutConversationReceipt(f);
+      await verifyCloseoutConversationReceipt(f);
       const cold = await createDemoStore({ dataRoot: f.workspaceDb.dataRoot });
       expect(cold.getAgentSession(f.agentSessionId).status).toBe('idle');
       expect(
-        cold
-          .getTurnEvents(checkpoint.turnId)
+        f
+          .closeoutEvents(cold)
           .map((event) =>
             event.data.type === 'agent-session-updated'
-              ? `${event.sequence}:${event.data.agentSession.status}`
-              : `${event.sequence}:${event.event}`
+              ? `${event.sequence - f.publicationStart + 1}:${event.data.agentSession.status}`
+              : `${event.sequence - f.publicationStart + 1}:${event.event}`
           )
       ).toEqual(
-        repairSessionPublication
-          ? ['1:turn.completed', '2:idle', '3:busy']
-          : beforeTerminal
-            ? ['1:idle', '2:busy', '3:turn.completed']
+        beforeTerminal
+          ? ['1:idle', '2:busy', '3:turn.completed']
+          : repairSessionPublication
+            ? ['1:busy', '2:turn.completed', '3:idle', '4:busy']
             : ['1:idle', '2:turn.completed', '3:busy']
       );
       const result = await classifyDirectTaskCheckpointAfterSchedulerRecovery({
@@ -735,16 +1182,16 @@ describe('worker recovery materialization', () => {
     try {
       const cold = await createDemoStore({ dataRoot: f.workspaceDb.dataRoot });
       expect(
-        cold
-          .getTurnEvents(f.checkpoint.turnId)
+        f
+          .closeoutEvents(cold)
           .map((event) =>
             event.data.type === 'agent-session-updated'
-              ? `${event.sequence}:${event.data.agentSession.status}`
-              : `${event.sequence}:${event.event}`
+              ? `${event.sequence - f.publicationStart + 1}:${event.data.agentSession.status}`
+              : `${event.sequence - f.publicationStart + 1}:${event.event}`
           )
       ).toEqual(
         repairSessionPublication
-          ? ['1:busy', '2:turn.completed', '3:idle']
+          ? ['1:busy', '2:busy', '3:turn.completed', '4:idle']
           : ['1:busy', '2:idle', '3:turn.completed']
       );
       expect(recoverWorkerCheckpointStopReason(f.coreDb, cold, f.workspaceDb, f.checkpoint)).toBe(
@@ -768,8 +1215,9 @@ describe('worker recovery materialization', () => {
     });
     try {
       const events = structuredClone(f.store.getTurnEvents(f.checkpoint.turnId));
-      const terminal = events[0]!;
-      const session = events[1]!;
+      const terminal = events.find((event) => event.data.type === 'turn-completed')!;
+      const session = events.findLast((event) => event.data.type === 'agent-session-updated')!;
+      // The fixture already supplies valid retained repair order before this contradiction.
       if (terminal.data.type !== 'turn-completed' || session.data.type !== 'agent-session-updated')
         throw new Error('Missing repaired fixture publications.');
       switch (scenario) {
@@ -823,7 +1271,7 @@ describe('worker recovery materialization', () => {
       expect(() =>
         recoverWorkerCheckpointStopReason(f.coreDb, f.store, f.workspaceDb, f.checkpoint)
       ).toThrow('Worker product terminal event contradicts its command owner.');
-      recordCloseoutConversationReceipt(f);
+      await verifyCloseoutConversationReceipt(f);
       await expect(
         classifyDirectTaskCheckpointAfterSchedulerRecovery({
           coreDb: f.coreDb,
@@ -869,7 +1317,7 @@ describe('worker recovery materialization', () => {
     const f = await createCheckpointCloseoutFixture('completed');
     try {
       const events = structuredClone(f.store.getTurnEvents(f.checkpoint.turnId));
-      const session = events.find((event) => event.data.type === 'agent-session-updated')!;
+      const session = events.findLast((event) => event.data.type === 'agent-session-updated')!;
       if (session.data.type !== 'agent-session-updated')
         throw new Error('Missing fixture AgentSession publication.');
       session.data.agentSession.status = 'busy';
@@ -920,7 +1368,7 @@ describe('worker recovery materialization', () => {
           status: 'closed',
           updatedAt: new Date(Date.parse(terminal.timestamp) + 1000).toISOString(),
         });
-      recordCloseoutConversationReceipt(f);
+      await verifyCloseoutConversationReceipt(f);
       const before = JSON.stringify({
         turn: store.getTurnById(checkpoint.turnId),
         session: store.getAgentSession(f.agentSessionId),
@@ -994,7 +1442,7 @@ describe('worker recovery materialization', () => {
     const f = await createCheckpointCloseoutFixture('failed');
     const events = structuredClone(f.store.getTurnEvents(f.checkpoint.turnId));
     const terminal = events.find((event) => event.data.type === 'turn-completed')!;
-    const session = events.find((event) => event.data.type === 'agent-session-updated')!;
+    const session = events.findLast((event) => event.data.type === 'agent-session-updated')!;
     if (terminal.data.type !== 'turn-completed' || session.data.type !== 'agent-session-updated')
       throw new Error('Fixture lacks production terminal publications.');
     let checkpoint = f.checkpoint;
@@ -1201,7 +1649,7 @@ describe('worker recovery materialization', () => {
       completedAt: '2026-09-04T00:01:00.000Z',
       status: turnStatus,
     });
-    store.emitTurnEvent(turn.id, {
+    const terminalEvent = await store.persistTurnEvent(turn.id, {
       data: { stopReason, turn: closedTurn, type: 'turn-completed' },
       event: 'turn.completed',
       requestId: '00000000-0000-4000-8000-000000000401',
@@ -1209,6 +1657,7 @@ describe('worker recovery materialization', () => {
       turnId: turn.id,
       workspaceId: workspaceIdForOwner(turn.owner),
     });
+    store.emitTurnEvent(turn.id, terminalEvent);
 
     expect(classifyClosedWorkerApprovalGate(store, closedTurn)).toEqual({
       requestItemId: request.id,

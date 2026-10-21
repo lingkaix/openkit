@@ -6,11 +6,15 @@ import { deriveEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { workerInputWithKnowledgeOverview } from '../context/worker-overview-input.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
-import { FsStore } from '../lib/store.js';
+import { commandRequestKey, FsStore } from '../lib/store.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from '../mode-entry-routes.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import {
+  ControlStoreWorkerError,
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
+import { openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
@@ -49,18 +53,47 @@ function retainedFileBytes(dataRoot: string) {
     .map((path) => [path, readFileSync(join(dataRoot, path), 'base64')]);
 }
 
-/** Runs the real executor through its post-binding failure, interrupting product publication before restart. */
+/** Refuses one actual SQLite mutation; the native savepoint must roll back its whole transition. */
+function refuseNativeWrite(workspaceDb: WorkspaceDb, edge: string) {
+  workspaceDb.sqlite.exec(
+    `CREATE TRIGGER failed_start_native_refusal ${edge} BEGIN SELECT RAISE(ABORT, 'Controlled native publication rollback.'); END`
+  );
+  return () => workspaceDb.sqlite.exec('DROP TRIGGER failed_start_native_refusal');
+}
+
+/** Captures exact SQL payloads for every member of the local terminal transition. */
+function nativeTerminalRows(workspaceDb: WorkspaceDb) {
+  return Object.fromEntries(
+    [
+      'control_turns',
+      'control_agent_sessions',
+      'control_product_entries',
+      'control_work_observations',
+      'task_turn_terminal_facts',
+      'control_executions',
+      'control_execution_steps',
+      'runtime_evidence',
+      'idempotency_requests',
+      'audit_events',
+    ].map((table) => [
+      table,
+      workspaceDb.sqlite.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(),
+    ])
+  );
+}
+
+/** Runs the real executor through its post-binding failure, rolling back native publication before restart. */
 async function failedStart(entry: 'conversation' | 'direct', provenance = false) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-d8-checkpoint-'));
   let coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
+  let store: FsStore = await createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({
     coreDb,
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
-  let store: FsStore = await createDemoStore({ dataRoot });
   const target = recordTestNativeRuntimeTarget(coreDb);
   const execution = new SimulatedTurnExecutor({ coreDb });
   const materialized = Promise.withResolvers<void>();
@@ -97,7 +130,7 @@ async function failedStart(entry: 'conversation' | 'direct', provenance = false)
     }),
     prepareAgentSessionContinuity: async () => 'absent',
     materialize: async (_pkg, context) => {
-      context!.beforeMaterialization!();
+      await context!.beforeMaterialization!();
       materialized.resolve();
       await fail.promise;
       throw new Error('Controlled post-binding pre-operation failure.');
@@ -150,38 +183,66 @@ async function failedStart(entry: 'conversation' | 'direct', provenance = false)
   const body = await accepted.json();
   const turnId = body.turn.id as string;
   await materialized.promise;
-  const updateTurn = store.updateTurn.bind(store);
-  const updateSession = store.updateAgentSession.bind(store);
-  const emit = store.emitTurnEvent.bind(store);
-  const turnFailure = vi
-    .spyOn(store, 'updateTurn')
-    .mockImplementation(async (id, patch, authority) => {
-      if (id === turnId && patch.status === 'failed')
-        throw new Error('Controlled product publication interruption.');
-      return await updateTurn(id, patch, authority);
-    });
-  const sessionFailure = vi
-    .spyOn(store, 'updateAgentSession')
-    .mockImplementation(async (id, patch) => {
-      if (patch.status === 'failed')
-        throw new Error('Controlled product publication interruption.');
-      return await updateSession(id, patch);
-    });
-  const eventFailure = vi
-    .spyOn(store, 'emitTurnEvent')
-    .mockImplementation((id, event, authority) => {
-      if (event.event === 'turn.completed')
-        throw new Error('Controlled product publication interruption.');
-      return emit(id, event, authority);
-    });
+  const publicationDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+  // This late journal write follows all local terminal products inside the same native transaction.
+  const removeRefusal = refuseNativeWrite(
+    publicationDb,
+    `BEFORE UPDATE OF phase ON control_executions WHEN NEW.work_id = '${turnId}' AND NEW.phase = 'closing'`
+  );
+  const client = getControlStoreWorkerClient();
+  const terminal = client.terminal.bind(client);
+  let nativeRefusals = 0;
+  const publication = vi.spyOn(client, 'terminal').mockImplementation(async (database, input) => {
+    try {
+      return await terminal(database, input);
+    } catch (error) {
+      if (database === `workspace:${publicationDb.sqlite.name}`) {
+        expect(error).toMatchObject({ code: 'constraint', commit: 'not-committed' });
+        nativeRefusals++;
+      }
+      throw error;
+    }
+  });
   const log = vi.spyOn(console, 'error').mockImplementation(() => {});
-  fail.resolve();
-  await vi.waitFor(() => expect(executor.isTurnExecutionActive(turnId)).toBe(false));
-  await setImmediate();
-  turnFailure.mockRestore();
-  sessionFailure.mockRestore();
-  eventFailure.mockRestore();
-  log.mockRestore();
+  try {
+    fail.resolve();
+    await vi.waitFor(() => expect(executor.isTurnExecutionActive(turnId)).toBe(false));
+    await setImmediate();
+    // Executor inactivity precedes the surrounding scheduler's final native publication attempt.
+    const claims = getSchedulerPreparationClaims(coreDb);
+    const admission = coreDb.sqlite
+      .prepare('SELECT queue_entry_id AS id FROM scheduler_admission_entries WHERE turn_id = ?')
+      .get(turnId) as { id: string };
+    const dispatch = claims.get(admission.id);
+    if (dispatch) await expect(dispatch).rejects.toBeInstanceOf(AggregateError);
+    expect(claims.has(admission.id)).toBe(false);
+    expect(nativeRefusals).toBeGreaterThan(0);
+    expect(store.getTurnEvents(turnId).filter((event) => event.event === 'turn.completed')).toEqual(
+      []
+    );
+    expect(
+      publicationDb.sqlite
+        .prepare('SELECT phase FROM control_executions WHERE work_id = ?')
+        .all(turnId)
+    ).toEqual([{ phase: 'open' }]);
+    expect(
+      publicationDb.sqlite
+        .prepare('SELECT * FROM task_turn_terminal_facts WHERE turn_id = ?')
+        .all(turnId)
+    ).toEqual([]);
+    expect(
+      publicationDb.sqlite
+        .prepare(
+          "SELECT * FROM control_work_observations WHERE turn_id = ? AND json_extract(record_json, '$.type') = 'turn.reap'"
+        )
+        .all(turnId)
+    ).toEqual([]);
+  } finally {
+    publication.mockRestore();
+    log.mockRestore();
+    removeRefusal();
+    publicationDb.sqlite.close();
+  }
   const attemptRow = coreDb.sqlite
     .prepare('SELECT attempt_id AS id FROM scheduler_execution_attempts WHERE turn_id = ?')
     .get(turnId) as { id: string };
@@ -208,6 +269,7 @@ async function failedStart(entry: 'conversation' | 'direct', provenance = false)
   expect(getWorkerBackendSession(coreDb, attempt.attemptId)!.workspaceHandoffState).toBe('pending');
   expect(store.getTurnById(turnId).status).toBe('running');
   expect(store.getAgentSession(attempt.agentSessionId!).status).toBe('created');
+  await shutdownControlStoreWorkerClient();
   coreDb.sqlite.close();
   coreDb = openCoreDb(dataRoot);
   store = new FsStore({ dataRoot });
@@ -300,7 +362,8 @@ async function failedStart(entry: 'conversation' | 'direct', provenance = false)
     backend,
     dataRoot,
     turnId,
-    cleanup: () => {
+    cleanup: async () => {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
@@ -351,7 +414,7 @@ describe('checkpoint-owned never-submitted failed start', () => {
       expect(f.coreDb.sqlite.serialize().equals(core)).toBe(true);
       expect(f.backend.submit).not.toHaveBeenCalled();
     } finally {
-      f.cleanup();
+      await f.cleanup();
     }
   });
 
@@ -485,7 +548,7 @@ describe('checkpoint-owned never-submitted failed start', () => {
       }
       expect(f.backend.submit).not.toHaveBeenCalled();
     } finally {
-      f.cleanup();
+      await f.cleanup();
     }
   }, 60_000);
 
@@ -499,7 +562,7 @@ describe('checkpoint-owned never-submitted failed start', () => {
         ...(entry === 'direct' ? ['receipt-write'] : ['item-write']),
       ].map((partial) => ({ entry, partial }))
     )
-  )('repairs partial $entry $partial publication without replacing decided bytes', async ({
+  )('keeps atomic $entry $partial publication and retries without replacing decided bytes', async ({
     entry,
     partial,
   }) => {
@@ -517,42 +580,22 @@ describe('checkpoint-owned never-submitted failed start', () => {
           errorCode: 'worker_governance_turn_failed',
           message: 'The worker attempt failed to start.',
         });
-      const spies: Array<{ mockRestore(): void }> = [];
-      if (partial === 'turn-only' || partial === 'terminal-event')
-        spies.push(
-          vi.spyOn(f.store, 'updateAgentSession').mockImplementation(() => {
-            throw new Error('Partial Session write.');
-          })
-        );
-      if (partial === 'session-only' || partial === 'session-event')
-        spies.push(
-          vi.spyOn(f.store, 'updateTurn').mockImplementation(() => {
-            throw new Error('Partial Turn write.');
-          })
-        );
-      const emit = f.store.emitTurnEvent.bind(f.store);
-      if (partial !== 'receipt-write' && partial !== 'item-write')
-        spies.push(
-          vi.spyOn(f.store, 'emitTurnEvent').mockImplementation((id, event, authority) => {
-            if (
-              partial === 'turn-only' ||
-              partial === 'session-only' ||
-              (partial === 'terminal-event' && event.event !== 'turn.completed') ||
-              (partial === 'session-event' && event.event === 'turn.completed')
-            )
-              throw new Error('Partial event write.');
-            return emit(id, event, authority);
-          })
-        );
       if (partial === 'receipt-write') {
         f.workspaceDb.sqlite
           .prepare("DELETE FROM idempotency_requests WHERE command_name = 'task.start'")
           .run();
-        const receiptFailure = vi.spyOn(f.store, 'recordCommandRequest').mockImplementation(() => {
-          throw new Error('Partial receipt write.');
-        });
-        await expect(f.classify()).rejects.toThrow('Partial receipt write.');
-        receiptFailure.mockRestore();
+        const removeRefusal = refuseNativeWrite(
+          f.workspaceDb,
+          "BEFORE INSERT ON idempotency_requests WHEN NEW.command_name = 'task.start'"
+        );
+        try {
+          await expect(f.classify()).rejects.toMatchObject({
+            code: 'constraint',
+            commit: 'not-committed',
+          });
+        } finally {
+          removeRefusal();
+        }
         expect(
           getWorkerCheckpoint(
             f.workspaceDb,
@@ -561,17 +604,27 @@ describe('checkpoint-owned never-submitted failed start', () => {
             f.turnId
           )
         ).toMatchObject({ stage: 'failed', stopReason: 'error' });
+        expect(
+          f.store.listCommandRequests().filter((receipt) => receipt.command === 'task.start')
+        ).toEqual([]);
       } else if (partial === 'item-write') {
-        const update = f.store.updateItem.bind(f.store);
-        const failure = vi
-          .spyOn(f.store, 'updateItem')
-          .mockImplementation(async (id, patch, authority) => {
-            if (id === deriveEntityId('it', ['worker-result', f.turnId]))
-              throw new Error('Partial Item write.');
-            return await update(id, patch, authority);
+        const resultId = deriveEntityId('it', ['worker-result', f.turnId]);
+        const result = f.store.getTurnById(f.turnId).items.find((item) => item.id === resultId);
+        const removeRefusal = refuseNativeWrite(
+          f.workspaceDb,
+          `BEFORE INSERT ON control_product_entries WHEN NEW.kind = 'item' AND NEW.id = '${resultId}'`
+        );
+        try {
+          await expect(f.classify()).rejects.toMatchObject({
+            code: 'constraint',
+            commit: 'not-committed',
           });
-        await expect(f.classify()).rejects.toThrow('Partial Item write.');
-        failure.mockRestore();
+        } finally {
+          removeRefusal();
+        }
+        expect(f.store.getTurnById(f.turnId).items.find((item) => item.id === resultId)).toEqual(
+          result
+        );
         expect(
           getWorkerCheckpoint(
             f.workspaceDb,
@@ -580,9 +633,92 @@ describe('checkpoint-owned never-submitted failed start', () => {
             f.turnId
           )
         ).not.toBeNull();
+      } else if (partial === 'terminal-event') {
+        // Both terminal events share the commit. Lose the native result at its caller boundary,
+        // not a post-COMMIT observer notification, then inspect that exact committed identity.
+        const originalExclusion = f.workspaceDb.sqlite
+          .prepare('SELECT exclusion_refs_json FROM control_executions WHERE work_id = ?')
+          .get(f.turnId);
+        const originalRelease = f.workspaceDb.sqlite
+          .prepare(
+            "SELECT * FROM control_execution_steps WHERE json_extract(control_json, '$.workId') = ? AND json_extract(control_json, '$.kind') = 'release'"
+          )
+          .all(f.turnId);
+        expect(originalExclusion).not.toEqual({ exclusion_refs_json: '[]' });
+        expect(originalRelease).toEqual([expect.objectContaining({ state: 'intent' })]);
+        const client = getControlStoreWorkerClient();
+        const terminal = client.terminal.bind(client);
+        let lostAcknowledgements = 0;
+        const acknowledgement = vi
+          .spyOn(client, 'terminal')
+          .mockImplementation(async (database, input) => {
+            const result = await terminal(database, input);
+            if (database === `workspace:${f.workspaceDb.sqlite.name}`) {
+              lostAcknowledgements++;
+              throw new ControlStoreWorkerError('unavailable', 'unknown');
+            }
+            return result;
+          });
+        try {
+          await expect(terminalize()).rejects.toMatchObject({
+            errors: [expect.objectContaining({ commit: 'unknown' })],
+          });
+          expect(lostAcknowledgements).toBe(1);
+        } finally {
+          acknowledgement.mockRestore();
+        }
+        expect(f.store.getTurnById(f.turnId).status).toBe('failed');
+        expect(f.store.getAgentSession(f.attempt.agentSessionId!).status).toBe('failed');
+        expect(
+          f.store.getTurnEvents(f.turnId).filter((event) => event.event === 'turn.completed')
+        ).toHaveLength(1);
+        expect(
+          f.store
+            .getTurnEvents(f.turnId)
+            .filter(
+              (event) =>
+                event.data.type === 'agent-session-updated' &&
+                event.data.agentSession.status === 'failed'
+            )
+        ).toHaveLength(1);
+        expect(
+          f.workspaceDb.sqlite
+            .prepare('SELECT phase FROM control_executions WHERE work_id = ?')
+            .all(f.turnId)
+        ).toEqual([{ phase: 'closing' }]);
+        expect(
+          f.workspaceDb.sqlite
+            .prepare('SELECT exclusion_refs_json FROM control_executions WHERE work_id = ?')
+            .get(f.turnId)
+        ).toEqual(originalExclusion);
+        expect(
+          f.workspaceDb.sqlite
+            .prepare(
+              "SELECT * FROM control_execution_steps WHERE json_extract(control_json, '$.workId') = ? AND json_extract(control_json, '$.kind') = 'release'"
+            )
+            .all(f.turnId)
+        ).toEqual(originalRelease);
       } else {
-        expect(terminalize).toThrow();
-        for (const spy of spies) spy.mockRestore();
+        // These historical partial-write windows now prove that one SQL refusal leaves no local terminal member.
+        const before = nativeTerminalRows(f.workspaceDb);
+        const edge =
+          partial === 'turn-only'
+            ? `BEFORE UPDATE OF status ON control_agent_sessions WHEN NEW.id = '${f.attempt.agentSessionId}' AND NEW.status = 'failed'`
+            : partial === 'session-only'
+              ? `BEFORE UPDATE OF status ON control_turns WHEN NEW.id = '${f.turnId}' AND NEW.status = 'failed'`
+              : `BEFORE INSERT ON control_product_entries WHEN NEW.turn_id = '${f.turnId}' AND NEW.kind = 'event' AND NEW.sequence = ${(beforeEvents.at(-1)?.sequence ?? 0) + 1}`;
+        const removeRefusal = refuseNativeWrite(f.workspaceDb, edge);
+        try {
+          await expect(terminalize()).rejects.toMatchObject({
+            errors: [expect.objectContaining({ code: 'constraint', commit: 'not-committed' })],
+          });
+          expect(nativeTerminalRows(f.workspaceDb)).toEqual(before);
+          expect(f.store.getTurnById(f.turnId).status).toBe('running');
+          expect(f.store.getAgentSession(f.attempt.agentSessionId!).status).toBe('created');
+          expect(f.store.getTurnEvents(f.turnId)).toEqual(beforeEvents);
+        } finally {
+          removeRefusal();
+        }
       }
       const decidedTurn = f.store.getTurnById(f.turnId);
       const decidedSession = f.store.getAgentSession(f.attempt.agentSessionId!);
@@ -601,6 +737,14 @@ describe('checkpoint-owned never-submitted failed start', () => {
         );
       expect(events.filter((event) => event.event === 'turn.completed')).toHaveLength(1);
       expect(
+        events.filter(
+          (event) =>
+            event.data.type === 'agent-session-updated' &&
+            event.data.agentSession.id === f.attempt.agentSessionId &&
+            event.data.agentSession.status === 'failed'
+        )
+      ).toHaveLength(1);
+      expect(
         getWorkerCheckpoint(
           f.workspaceDb,
           'ws_00000000-0000-7000-8000-000000000001',
@@ -609,9 +753,10 @@ describe('checkpoint-owned never-submitted failed start', () => {
         )
       ).toBeNull();
       expect(f.backend.submit).not.toHaveBeenCalled();
+      expect(f.backend.release).not.toHaveBeenCalled();
     } finally {
       vi.restoreAllMocks();
-      f.cleanup();
+      await f.cleanup();
     }
   });
 
@@ -792,20 +937,8 @@ describe('checkpoint-owned never-submitted failed start', () => {
           f.attempt.queueEntryId,
           Promise.withResolvers<never>().promise
         );
-      if (gap === 'terminal-conflict')
-        f.store.emitTurnEvent(f.turnId, {
-          event: 'turn.completed',
-          data: {
-            type: 'turn-completed',
-            stopReason: 'completed',
-            turn: f.store.getTurnById(f.turnId),
-          },
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          threadId: f.checkpoint.threadId,
-          turnId: f.turnId,
-          requestId: f.checkpoint.requestId,
-        });
       if (
+        gap === 'terminal-conflict' ||
         gap === 'terminal-item-text' ||
         gap === 'terminal-item-identity' ||
         gap === 'terminal-item-order'
@@ -821,10 +954,13 @@ describe('checkpoint-owned never-submitted failed start', () => {
           message: 'The worker attempt failed to start.',
         });
         const getEvents = f.store.getTurnEvents.bind(f.store);
-        // Inject a contradiction only at the retained-event observation boundary, preserving the accepted input.
+        // Native publication cannot create a conflicting terminal tuple. Corrupt its retained-read
+        // observation to retain the recovery refusal guard without bypassing the terminal writer.
         vi.spyOn(f.store, 'getTurnEvents').mockImplementation((id) =>
           getEvents(id).map((event) => {
             if (id !== f.turnId || event.data.type !== 'turn-completed') return event;
+            if (gap === 'terminal-conflict')
+              return { ...event, data: { ...event.data, stopReason: 'completed' as const } };
             const items = event.data.turn.items.map((item) => {
               if (item.type !== 'user-message') return item;
               return gap === 'terminal-item-text'
@@ -851,8 +987,10 @@ describe('checkpoint-owned never-submitted failed start', () => {
             f.checkpoint.requestId,
             f.attempt.createdAt
           );
-      if (gap === 'gate-receipt')
-        f.store.recordCommandRequest({
+      if (gap === 'gate-receipt') {
+        await shutdownControlStoreWorkerClient();
+        // Stopped private-history fault only; the real native admission must already own the original receipt.
+        const record = {
           command: 'approval.respond',
           requestId: 'gate-response',
           inputHash: 'a'.repeat(64),
@@ -864,7 +1002,19 @@ describe('checkpoint-owned never-submitted failed start', () => {
           },
           response: { kind: 'approval', id: 'missing-gate' },
           createdAt: f.attempt.createdAt,
-        });
+        };
+        expect(
+          f.workspaceDb.sqlite
+            .prepare(
+              `INSERT INTO idempotency_requests (request_key,command_name,request_id,scope_json,input_hash,response_kind,response_id,response_json,created_at,expires_at,schema_version) SELECT @key,json_extract(@record,'$.command'),json_extract(@record,'$.requestId'),json_extract(@record,'$.scope'),json_extract(@record,'$.inputHash'),json_extract(@record,'$.response.kind'),json_extract(@record,'$.response.id'),NULL,json_extract(@record,'$.createdAt'),expires_at,schema_version FROM idempotency_requests WHERE command_name='conversation.submit' AND request_id=@source`
+            )
+            .run({
+              key: commandRequestKey('approval.respond', record.requestId, record.scope),
+              record: JSON.stringify(record),
+              source: f.checkpoint.requestId,
+            }).changes
+        ).toBe(1);
+      }
       if (gap === 'unclean-anchor')
         sql
           .prepare(
@@ -926,7 +1076,7 @@ describe('checkpoint-owned never-submitted failed start', () => {
     } finally {
       vi.restoreAllMocks();
       getSchedulerPreparationClaims(f.coreDb).delete(f.attempt.queueEntryId);
-      f.cleanup();
+      await f.cleanup();
     }
   }, 60_000);
 });
