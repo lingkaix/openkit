@@ -245,6 +245,20 @@ function files(root: string): string[] {
       if (stat.isDirectory()) walk(p);
       else {
         if (!stat.isFile() || stat.nlink !== 1) refuse('unsafe-path');
+        // Opaque MCP state has no installed SQLite format owner, whatever its filename.
+        if (p.startsWith('catalog/mcp-data/')) {
+          const fd = openSync(join(root, p), constants.O_RDONLY | constants.O_NOFOLLOW);
+          try {
+            const header = Buffer.alloc(16);
+            if (
+              readSync(fd, header, 0, 16, 0) === 16 &&
+              header.equals(Buffer.from('SQLite format 3\0'))
+            )
+              refuse('unsupported-format');
+          } finally {
+            closeSync(fd);
+          }
+        }
         if (!/(?:-wal|-shm)$/.test(p)) result.push(p);
       }
       if (result.length > 200_000) refuse('capacity-exceeded');
