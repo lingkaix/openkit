@@ -246,15 +246,10 @@ const TURN_CHILD_B_NATIVE_ID = '019f1000-0000-7000-8000-000000000003';
 const TURN_NATIVE_SESSION_ID = '019f1000-0000-7000-8000-000000000010';
 const TURN_CHILD_RAW_MESSAGE = 'private child raw answer must not become a canonical item';
 
-/** Applies Core migrations plus the Demo Workspace authority shared by this executor fixture. */
+/** Initializes Core and local User authority before native Workspace fixture publication. */
 function applyMigrations(coreDb: CoreDb): void {
   applyCoreMigrations(coreDb);
   ensureLocalUser(coreDb);
-  recordWorkspaceOwnerMembership({
-    coreDb,
-    ownerUserId: LOCAL_USER_ID,
-    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-  });
 }
 
 /**
@@ -563,6 +558,11 @@ async function createWorkerContextExecutorFixture(
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const store = await createDemoStore({ dataRoot });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: LOCAL_USER_ID,
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+  });
   const requestId = '00000000-0000-4000-8000-000000000270';
   const threadId = options.originatingThreadId
     ? conversationTaskThreadId(
@@ -1647,6 +1647,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
   ] as const)('settles only proved unassigned planned successor preparation: %s', async (proof) => {
     const coreDb = openCommitFixtureCore();
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const requestId = '00000000-0000-4000-8000-000000000292';
     const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
@@ -2255,6 +2260,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
   it('reuses compatible continuity without previewing a fresh AgentSession target', async () => {
     const coreDb = openCommitFixtureCore();
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -2333,6 +2343,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
   it('previews a fresh target before closing runtime-incompatible continuity', async () => {
     const coreDb = openCommitFixtureCore();
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -2392,6 +2407,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
   it('commits replacement only after fresh compatibility and runtime revalidation', async () => {
     const coreDb = openCommitFixtureCore();
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -2475,6 +2495,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
   it('selects a fresh AgentSession without local close for restart-unproved Sandbox continuity', async () => {
     const coreDb = openCommitFixtureCore();
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -2575,6 +2600,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
   ] as const)('retires a %s predecessor binding after admission without rewriting Core history', async (status) => {
     const coreDb = openCommitFixtureCore();
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -2725,6 +2755,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
   }) => {
     const coreDb = openCommitFixtureCore();
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const predecessorTurn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -2942,6 +2977,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     try {
       const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: LOCAL_USER_ID,
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
       const turnInput = 'Start from the pre-lease preview key';
       const turn = await createAssignedTurn(
         store,
@@ -3172,6 +3212,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
   it('delegates exactly one same-attempt interrupt to the backend without owning terminal lifecycle', async () => {
     const coreDb = openCommitFixtureCore();
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -3321,6 +3366,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     );
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -3610,6 +3660,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -3701,6 +3756,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const fixture = await createWorkspaceChangeIngressFixture(`publication_${mode}`, 'git');
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const publicationDb = openWorkspaceDb(dataRoot, fixture.workspaceId);
     applyScopedMigrations(publicationDb);
     publicationDb.sqlite.close();
@@ -3759,6 +3819,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -3818,6 +3883,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-provenance-admission-')));
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -3885,6 +3955,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     applyMigrations(coreDb);
 
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -4088,6 +4163,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-failure-log-')));
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -4189,6 +4269,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-failed-status-')));
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -4358,6 +4443,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-command-id-')));
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -4428,6 +4518,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-retained-')));
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -4491,6 +4586,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
   ] as const)('continues a pre-fact predecessor with no proof and no backend binding: %s', async (status) => {
     const coreDb = openCommitFixtureCore();
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -4595,6 +4695,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-retained-selection-')));
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     coreDb.sqlite
       .prepare(
         `INSERT INTO nanohost_runtime_targets (target_id, identity_id, deployment_id, connection_generation, predecessor_fenced, ready, fresh_empty, observed_at, slot_count) VALUES ('target_retained', 'identity_retained', 'deployment_retained', 1, 1, 1, 1, ?, 1)`
@@ -4773,6 +4878,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-attachment-before-open-')));
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const retainedStorage = {
       storageRef: 'wst_00000000-0000-75ec-bb52-9171c38651e9',
       workSlotRef: 'actual-nondefault',
@@ -4873,6 +4983,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
   ])('refuses continuation before planning or effects when attachment choice is $0', async (violation) => {
     const coreDb = openCommitFixtureCore();
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const predecessor = await store.createAgentSession({
       id: testEntityId('as', 'as_choice_predecessor'),
       agentId: 'agent_codex_host',
@@ -4949,6 +5064,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
   ])('keeps the triggering Turn queued through predecessor refusal, retirement failure=%s', async (retirementFails) => {
     const coreDb = openCommitFixtureCore();
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const target = recordTestNativeRuntimeTarget(coreDb);
     const binding = createWorkerStorageBinding(coreDb, {
       deploymentId: target.deploymentId,
@@ -5159,6 +5279,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-resume-pair-')));
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const digest = 'a'.repeat(64);
     let record:
       | ((
@@ -5265,6 +5390,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-open-proof-')));
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const digest = 'c'.repeat(64);
     let record:
       | ((
@@ -5404,6 +5534,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-predecessor-')));
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     for (const session of sessions) {
       await store.createAgentSession({
         agentId: 'agent_codex_host',
@@ -5543,6 +5678,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-completion-gate-')));
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -5846,6 +5986,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -6228,6 +6373,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -6336,6 +6486,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-missing-capture-')));
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -6389,6 +6544,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-admitted-')));
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -6623,6 +6783,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const workspace = store.listWorkspaces().find((candidate) => candidate.kind === 'code');
     if (!workspace) {
       throw new Error('Demo workspace was not created.');
@@ -7145,6 +7310,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-failed-closeout-')));
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -7268,6 +7438,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     applyMigrations(coreDb);
 
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -7347,6 +7522,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-primary-fetch-failure-')));
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -7494,6 +7674,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     applyMigrations(coreDb);
 
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -7556,6 +7741,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     applyMigrations(coreDb);
 
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -7625,6 +7815,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     applyMigrations(coreDb);
 
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const setupDb = openTestWorkspaceDb(coreDb);
     const sqlitePrototype = Object.getPrototypeOf(setupDb.sqlite) as {
       close: typeof setupDb.sqlite.close;
@@ -7706,6 +7901,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     applyMigrations(coreDb);
 
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -7802,6 +8002,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const setupDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     const sqlitePrototype = Object.getPrototypeOf(setupDb.sqlite) as {
       exec: typeof setupDb.sqlite.exec;
@@ -7883,6 +8088,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-close-fail-')));
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const setupDb = openTestWorkspaceDb(coreDb);
     const sqlitePrototype = Object.getPrototypeOf(setupDb.sqlite) as {
       close: typeof setupDb.sqlite.close;
@@ -7950,6 +8160,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-admitted-')));
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -8018,6 +8233,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-admitted-')));
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -8080,6 +8300,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -8147,6 +8372,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -8251,20 +8481,28 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Fail worker setup'
     );
-    const createItem = store.createItem.bind(store);
-    const createItemSpy = vi.spyOn(store, 'createItem').mockImplementation(async (item) => {
-      const created = await createItem(item);
-      if (item.id === deriveEntityId('it', ['task-user', turn.id])) {
-        throw new Error('worker setup failed after item persistence');
-      }
-      return created;
-    });
+    const persistTurnEvent = store.persistTurnEvent.bind(store);
+    const persistTurnEventSpy = vi
+      .spyOn(store, 'persistTurnEvent')
+      .mockImplementation(async (...args) => {
+        const persisted = await persistTurnEvent(...args);
+        // The initiating Item now precedes Session binding; fail at the actual post-Session boundary.
+        if (args[0] === turn.id && args[1].event === 'turn.started') {
+          throw new Error('worker setup failed after start persistence');
+        }
+        return persisted;
+      });
     const executor = new WorkerGovernanceTurnExecutor({
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       coreDb,
@@ -8295,7 +8533,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     } catch (error) {
       failure = error;
     } finally {
-      createItemSpy.mockRestore();
+      persistTurnEventSpy.mockRestore();
     }
 
     const durableStore = await createDemoStore({ dataRoot });
@@ -8337,6 +8575,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     applyMigrations(coreDb);
 
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-governance-source-ref-repo-'));
     seedWritableGitRepository(repositoryPath);
     const turn = await createAssignedTurn(
@@ -9909,6 +10152,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-live-closeout-race-')));
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -10051,6 +10299,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     applyMigrations(coreDb);
 
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -10122,6 +10375,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
       workspaceIds: [],
     });
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const actor = { kind: 'user', id: 'usr_00000000-0000-7916-9acc-f85082f95261' } as const;
     const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
@@ -10183,6 +10441,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     );
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -10252,6 +10515,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-anchor-order-')));
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -10323,6 +10591,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     );
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -10402,6 +10675,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-prelaunch-gate-')));
     applyMigrations(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -10508,6 +10786,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
       now: () => timestamp,
     });
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const backend = new FakeWorkerGovernanceBackend();
     // Each Turn has its own backend session record even when it reuses the AgentSession binding.
     const planSession = backend.planSession.bind(backend);
@@ -10619,6 +10902,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
 
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -10757,6 +11045,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
 
     const store = await createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -10865,6 +11158,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
 
     const store = await createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -12287,6 +12585,11 @@ async function launchFinalReviewWorker(suffix: string) {
   const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-final-review-')));
   applyMigrations(coreDb);
   const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: LOCAL_USER_ID,
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+  });
   const turn = await createAssignedTurn(
     store,
     'ws_00000000-0000-7000-8000-000000000001',

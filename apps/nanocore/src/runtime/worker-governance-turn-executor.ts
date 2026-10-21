@@ -2236,6 +2236,21 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         if (materializationPublished)
           throw new Error('Worker materialization publication may occur only once.');
         materializationPublished = true;
+        // Recovery must have the exact initiating Item before its checkpoint names a Session.
+        const userItem = await store.createItem({
+          actor: outcomeInitiated
+            ? pendingRequestSystemActor(responsibleUserIdForActor(launchContext.triggerActor))
+            : launchContext.triggerActor,
+          completedAt: timestamp,
+          createdAt: timestamp,
+          id: deriveEntityId('it', ['task-user', turnId]),
+          status: 'completed',
+          text: contextRequest,
+          threadId: turn.threadId,
+          turnId,
+          type: 'user-message',
+          owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
+        });
         if (workspaceDb)
           bindWorkerCheckpointToPreparedSession({
             coreDb: this.coreDb!,
@@ -2291,20 +2306,6 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           { journalIntents }
         );
         journalAdmitted = true;
-        const userItem = await store.createItem({
-          actor: outcomeInitiated
-            ? pendingRequestSystemActor(responsibleUserIdForActor(launchContext.triggerActor))
-            : launchContext.triggerActor,
-          completedAt: timestamp,
-          createdAt: timestamp,
-          id: deriveEntityId('it', ['task-user', turnId]),
-          status: 'completed',
-          text: contextRequest,
-          threadId: turn.threadId,
-          turnId,
-          type: 'user-message',
-          owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
-        });
 
         await this.emitTurnStarted(store, launchPackage, requestId);
         await this.emitItemCreatedAndCompleted(store, launchPackage, requestId, userItem);
