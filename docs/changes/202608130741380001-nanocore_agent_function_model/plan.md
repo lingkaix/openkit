@@ -35,11 +35,11 @@ Absorption is distillation, not copying. `[DOC-015]` binds it: no criterion that
 - [`docs/core/work-model.md`](../../core/work-model.md)
 - [`docs/core/agent-session.md`](../../core/agent-session.md)
 - [`docs/core/agent-workflow.md`](../../core/agent-workflow.md)
-- [`docs/core/agent-capability.md`](../../core/agent-capability.md)
+- [docs/core/agent-capability.md](../../core/mediation.md)
 - [`docs/core/sandbox.md`](../../core/sandbox.md)
 - [`docs/core/runtime-model.md`](../../core/runtime-model.md)
 - [`docs/core/communication.md`](../../core/communication.md)
-- [`docs/core/permissions.md`](../../core/permissions.md)
+- [docs/core/permissions.md](../../core/policy.md)
 - [`docs/core/storage.md`](../../core/storage.md)
 - [`docs/core/knowledge.md`](../../core/knowledge.md)
 - [`docs/specs/20260529-test_strategy.md`](../../specs/20260529-test_strategy.md)
@@ -122,8 +122,8 @@ The accepted Chat-subordinate Gate identity carries forward unchanged — a non-
 | Surface | Files |
 | --- | --- |
 | Conversation record model | `docs/core/work-model.md`, `docs/core/agent-session.md` |
-| Agent mechanism and Tool boundary | `docs/core/agent-workflow.md`, `docs/core/agent-capability.md` |
-| Assistant and interaction semantics | `docs/specs/20260704-chat_mode_assistant.md`, `docs/specs/20260709-quick_chat_workspace.md`, `docs/core/communication.md`, `docs/core/permissions.md` |
+| Agent mechanism and Tool boundary | `docs/core/agent-workflow.md`, `docs/core/mediation.md` |
+| Assistant and interaction semantics | `docs/specs/20260704-chat_mode_assistant.md`, `docs/specs/20260709-quick_chat_workspace.md`, `docs/core/communication.md`, `docs/core/policy.md` |
 | Goal orchestration | `docs/specs/superseded/20260704-goal_mode_coordination.md`, `docs/specs/20260704-workflow_coordinator_internal_agent.md`, `docs/specs/20260704-knowledge_manager_internal_agent_runtime.md` |
 | Runtime topology | `docs/core/sandbox.md`, `docs/core/runtime-model.md`, `docs/specs/20260802-nanohost_runtime_and_transport.md`, `docs/specs/20260703-runtime_scheduling_scale.md`, `docs/specs/20260703-worker_control_protocol.md` |
 | Continuity, materialization, retention | `docs/specs/20260704-agent_session_continuity.md`, `docs/specs/20260704-session_static_workspace_materialization.md`, `docs/specs/20260703-workspace_synchronization.md`, `docs/specs/20260704-workspace_data_source_catalog.md`, `docs/core/storage.md`, `docs/specs/20260703-audit_usage_evidence_records.md` |
@@ -248,7 +248,7 @@ Non-authorizing until a later change record admits it. Each names an owner and a
 | Runtime Phase 2, concurrent Turns across AgentSessions | `docs/specs/20260703-runtime_scheduling_scale.md` | WP-10 verified and one Harness adapter proves safe native multiplexing under real-runtime test |
 | Runtime Phase 3, multiple Harness instances and families | `docs/specs/20260802-nanohost_runtime_and_transport.md` | A review requiring agent-runtime-family independence, which same-family review may not silently satisfy |
 | Runtime Phase 4, eviction policy, read-only cache sharing, placement heuristics | `docs/specs/20260703-runtime_scheduling_scale.md` | Measured latency or memory need from production traces |
-| Deferred `tool.find` progressive discovery | `docs/core/agent-capability.md` | Measured catalog scale or representative model selection errors that role routing cannot fix |
+| Deferred `tool.find` progressive discovery | `docs/core/mediation.md` | Measured catalog scale or representative model selection errors that role routing cannot fix |
 | Parallel Tool execution, dynamic Tool registration, generic hook pipelines, exact Turn replay | `docs/core/agent-workflow.md` | A concrete accepted need; none exists |
 | Unattended administration without per-action human approval | A separately accepted durable owner | An accepted requirement for an unattended, event-triggered administration lifecycle with its own budgets, breakers, evidence, and recovery |
 | Unversioned object-source manifests and large-data lazy access | `docs/specs/20260704-workspace_data_source_catalog.md` and its source adapters | One real source requires it |
@@ -257,7 +257,7 @@ Non-authorizing until a later change record admits it. Each names an owner and a
 | Off-peak Sandbox rebuild as drift control: close an idle aged Sandbox, discard local state, re-materialize from the current desired setup generation | `docs/specs/20260703-runtime_scheduling_scale.md` with `docs/specs/20260704-session_static_workspace_materialization.md` | Measured residency traces exist to set the idle and age thresholds. Accepted 2026-08-13 as a cost and hygiene mechanism only; per-Turn freshness is already guaranteed by the freshness barrier, so a stale resident Sandbox makes a Turn slower and never wrong |
 | Layered autonomous cost and human-attention policy: deployment, user, Goal, and runtime-capacity ceilings; what is metered; attention severity, deduplication, rate limiting, and quiet periods | Deployment policy and `docs/core/metering.md` for the ceilings; `docs/specs/20260531-human_attention_intervention_model.md` for attention | WP-11 verified, so unattended progression exists to bound. The per-Goal `budget` field is the one member already admitted, to WP-4, because the Orchestrator cannot be built without it |
 | Product acceptance definition as five end-to-end journeys: Assistant, Task, Goal, portfolio, and channel parity | A product-surface specification | WP-7 through WP-11 and WP-13 are verified and each proposed journey independently satisfies current L6 admission, so product journeys are layered over settled lower-level owners rather than over the discarded WP-14 trajectory |
-| Owner-private Side Chat, direct addressing, and typed promotion | A new accepted Side Chat specification grounded in `docs/core/communication.md`, `docs/core/permissions.md`, and `docs/specs/20260704-chat_mode_assistant.md` | An accepted owner defines the exact Side Thread and subject binding, read and disclosure authority, creation through termination and restart, stale, replay, conflict, transport-uncertain, and terminal failure semantics, typed promotion causation and exactly-once outcome, and externally observable acceptance predicates; only a later change record may then admit implementation |
+| Owner-private Side Chat, direct addressing, and typed promotion | A new accepted Side Chat specification grounded in `docs/core/communication.md`, `docs/core/policy.md`, and `docs/specs/20260704-chat_mode_assistant.md` | An accepted owner defines the exact Side Thread and subject binding, read and disclosure authority, creation through termination and restart, stale, replay, conflict, transport-uncertain, and terminal failure semantics, typed promotion causation and exactly-once outcome, and externally observable acceptance predicates; only a later change record may then admit implementation |
 | The forty-eight remaining `validate` and `freeze-before-slice` triage items | Their named owners in the input's Question Triage | The feature slice that needs each one pulls it; unrelated slices proceed |
 
 ### Inherited Debt
@@ -407,9 +407,9 @@ Each line names a decision and its owner. The argument for each lives in the inp
 
 ### WP-2 — Internal Agent Mechanism And Tool Boundary
 
-- **Authority:** `AGENTS.md`; `docs/change-execution.md`; `docs/core/architecture.md`; `docs/core/agent-workflow.md`; `docs/core/agent-capability.md`; `docs/core/core-concepts.md` as amended by WP-1
+- **Authority:** `AGENTS.md`; `docs/change-execution.md`; `docs/core/architecture.md`; `docs/core/agent-workflow.md`; `docs/core/mediation.md`; `docs/core/core-concepts.md` as amended by WP-1
 - **Seam:** the boundary between a role and the mechanism it runs on, and between the model and the environment
-- **Artifact inventory:** one new narrow specification under `docs/specs/` owning the internal Agent runtime; `docs/core/agent-capability.md`; `docs/core/agent-workflow.md` and `docs/core/architecture.md` as pointers only
+- **Artifact inventory:** one new narrow specification under `docs/specs/` owning the internal Agent runtime; `docs/core/mediation.md`; `docs/core/agent-workflow.md` and `docs/core/architecture.md` as pointers only
 - **Scope:** the fourteen admitted WP-2 decisions plus the explicit rejection list. Excludes every role contract and every runtime placement decision
 - **Mode and permitted writes:** implementation
 - **Risk tier:** Tier 3. This package changes governing documentation for the mechanism and Tool contract but does not enforce authorization, handle credentials, alter containment, delete data, or cause an irreversible external effect; WP-7 and WP-8 own enforcement and carry their own current tiers. New evidence may raise this classification under `[TIER-005]`, but the entry gate does not delegate tier discovery to the reviewer
@@ -424,7 +424,7 @@ Each line names a decision and its owner. The argument for each lives in the inp
 
 An earlier freeze assigned the loop to `docs/core/agent-workflow.md`. That document states at line 8 that it does **not** own agent runtime substrate, agent session continuity, agent supply, or agent capability routing, and the role-agnostic bounded loop is exactly agent runtime substrate. `docs/core/architecture.md` owns the internal role definitions for Core Assistant, Workflow Coordinator, and Knowledge Manager, which this package's role assemblies sit under.
 
-The correction is therefore not to widen `agent-workflow.md`'s scope but to create the narrow specification the disclaimer already anticipates and to align the Core owners without a forbidden direct Core-to-spec dependency path. `[QUALITY-003]` asked whether that specification is needed at all; the disclaimer answers yes, because no existing owner may hold it. The accepted result now observed in `docs/specs/20260813-internal_agent_runtime.md`, `docs/core/agent-capability.md`, `docs/core/agent-workflow.md`, and `docs/core/architecture.md` settles the former placement question: the specification owns the loop, `agent-capability.md` owns capability admission and projection, and the two other Core documents preserve their boundaries without downward links.
+The correction is therefore not to widen `agent-workflow.md`'s scope but to create the narrow specification the disclaimer already anticipates and to align the Core owners without a forbidden direct Core-to-spec dependency path. `[QUALITY-003]` asked whether that specification is needed at all; the disclaimer answers yes, because no existing owner may hold it. The accepted result now observed in `docs/specs/20260813-internal_agent_runtime.md`, `docs/core/mediation.md`, `docs/core/agent-workflow.md`, and `docs/core/architecture.md` settles the former placement question: the specification owns the loop, `agent-capability.md` owns capability admission and projection, and the two other Core documents preserve their boundaries without downward links.
 
 #### Expected magnitude
 
@@ -451,12 +451,12 @@ One new specification of roughly 200 to 300 lines, plus 40 to 80 lines across `a
 
 ### WP-3 — Assistant Contract And Interaction Semantics
 
-- **Authority:** `AGENTS.md`; `docs/change-execution.md`; `docs/specs/20260704-chat_mode_assistant.md`; `docs/specs/20260709-quick_chat_workspace.md`; `docs/core/communication.md`; `docs/core/permissions.md`; `docs/core/agent-capability.md` as amended by WP-2
+- **Authority:** `AGENTS.md`; `docs/change-execution.md`; `docs/specs/20260704-chat_mode_assistant.md`; `docs/specs/20260709-quick_chat_workspace.md`; `docs/core/communication.md`; `docs/core/policy.md`; `docs/core/mediation.md` as amended by WP-2
 - **Seam:** what the Assistant may read, what it may disclose, and what counts as a command
-- **Artifact inventory:** `docs/specs/20260704-chat_mode_assistant.md`; `docs/specs/20260709-quick_chat_workspace.md`; `docs/core/communication.md`; `docs/core/permissions.md`
+- **Artifact inventory:** `docs/specs/20260704-chat_mode_assistant.md`; `docs/specs/20260709-quick_chat_workspace.md`; `docs/core/communication.md`; `docs/core/policy.md`
 - **Scope:** the nine admitted WP-3 decisions. Excludes Web Search, Personal and Deployment Knowledge, the Work Overview surface, and realtime voice, all of which are backlog
 - **Mode and permitted writes:** implementation
-- **Risk tier:** Tier 4. The recorded WP-3 escalation observed that `docs/core/permissions.md` now carries binding Assistant read-scope, output-audience, publication, and authorization-failure rules, so authorization is the highest touched surface; this package does not touch credentials, sandbox containment, irreversible external effects, or data deletion
+- **Risk tier:** Tier 4. The recorded WP-3 escalation observed that `docs/core/policy.md` now carries binding Assistant read-scope, output-audience, publication, and authorization-failure rules, so authorization is the highest touched surface; this package does not touch credentials, sandbox containment, irreversible external effects, or data deletion
 - **Dependencies:** WP-2 verified
 - **Predicate, decided half:** as WP-1, over this package's decision list
 - **Predicate, bounded comparison:** the accepted Quick Chat boundary is unchanged in capability and changed only in that a work request can no longer terminate in a bare refusal. This claim is quantified over one named document rather than over the corpus, so it is decided here — but by a clause-by-clause comparison against the pre-change revision, never by a reviewer's impression of the finished text
@@ -477,7 +477,7 @@ Four files, roughly 250 to 400 added lines.
 - **Mode and permitted writes:** implementation
 - **Risk tier:** Tier 3. This package changes governing documentation for Goal delegation and narrows existing permission through autonomy fields but does not itself enforce authorization, run an unattended effect, handle credentials, alter containment, delete data, or cause an irreversible external effect; WP-11 owns enforcement at Tier 4. New evidence may raise this classification under `[TIER-005]`, but the entry gate does not delegate tier discovery to the reviewer
 - **Dependencies:** WP-2 verified
-- **Predicate, decided half:** as WP-1, over this package's decision list; additionally, the three autonomy fields narrow existing permissions and can never widen them, checked against `docs/core/permissions.md` and the Goal owner named in the artifact inventory
+- **Predicate, decided half:** as WP-1, over this package's decision list; additionally, the three autonomy fields narrow existing permissions and can never widen them, checked against `docs/core/policy.md` and the Goal owner named in the artifact inventory
 - **Predicate, open obligation:** that no accepted document anywhere lets model confidence close a Goal is quantified over the whole corpus, is an unbounded search, and is **not** decided by this package's oracle. It is carried openly under Verification and discharged by the coherence verifier at program exit, which owns the accumulated-corpus question
 - **Oracle:** `strong`; same instrument as WP-1, over the decided half only. The named predicate failure is that the reviewer identifies one missing, misowned, incomplete, or contradictory Goal decision, one autonomy field that widens existing permission, one unresolved routed finding, or one Goal repeated-work breaker without a closed trigger set, threshold, and comparison window, or that a named command reports its own documentation-model, lifecycle, index, or test assertion failure; corpus-wide model-confidence wording outside the finite inventory remains the separately named verifier obligation rather than a gate failure
 - **Failure disposition:** an autonomy field that would widen an existing permission stops and escalates
@@ -534,7 +534,7 @@ Six files, roughly 200 to 300 added lines. `agent_session_continuity.md` is wher
 
 ### WP-7 — Internal Agent Loop And Tool Contract
 
-- **Authority:** `AGENTS.md`; `docs/change-execution.md`; `docs/core/agent-workflow.md` and `docs/core/agent-capability.md` as amended by WP-2; `docs/specs/20260529-test_strategy.md`
+- **Authority:** `AGENTS.md`; `docs/change-execution.md`; `docs/core/agent-workflow.md` and `docs/core/mediation.md` as amended by WP-2; `docs/specs/20260529-test_strategy.md`
 - **Seam:** one NanoCore-local module implementing the accepted loop and Tool contract, with no product surface consuming it yet
 - **Artifact inventory:** new modules under `apps/nanocore/src/internal-agents/`; `apps/nanocore/src/internal-agents/README.md`
 - **Scope:** the loop, the Tool contract, the fuses, the typed exits, the truncated-call refusal, the sanitized error path, the discardable increment observer, and the alias mapping. Excludes every role assembly and every Tool implementation that reaches a real owner
@@ -552,7 +552,7 @@ Six files, roughly 200 to 300 added lines. `agent_session_continuity.md` is wher
 
 ### WP-8 — Assistant Role Assembly
 
-- **Authority:** `docs/specs/20260704-chat_mode_assistant.md` and `docs/specs/20260709-quick_chat_workspace.md` as amended by WP-3; `docs/core/agent-capability.md` as amended by WP-2
+- **Authority:** `docs/specs/20260704-chat_mode_assistant.md` and `docs/specs/20260709-quick_chat_workspace.md` as amended by WP-3; `docs/core/mediation.md` as amended by WP-2
 - **Seam:** the Assistant entry path, from `mode-entry-routes.ts` through the loop to a finalized Item
 - **Artifact inventory:** `apps/nanocore/src/mode-entry-routes.ts`; new role-assembler modules under `apps/nanocore/src/internal-agents/`; Tool implementations binding `knowledge.search`, `work.search`, `work.read`, `workspace.create`, `task.start`, and `goal.start` to their existing owners; `apps/nanocore/README.md`
 - **Scope:** true multi-turn Thread context assembly, the fixed seed Tool set in deterministic order, per-call reauthorization, typed refusal returned to the model, and the Quick Chat handoff path that resolves or creates the executing Workspace inside one confirmation. Excludes `web.search`, administration Tools, and the Work Overview surface

@@ -39,10 +39,10 @@ Core Agent Supply owns the authored `AgentManifest` concept. This specification 
 
 - `docs/core/agent-supply.md`
 - `docs/core/agent-session.md`
-- `docs/core/agent-capability.md`
+- `docs/core/mediation.md`
 - `docs/core/sandbox.md`
 - `docs/core/vault.md`
-- `docs/core/permissions.md`
+- `docs/core/policy.md`
 - `docs/core/storage.md`
 
 ## Related Docs
@@ -636,7 +636,7 @@ Verification should start with a regression whose expected failure is loss or re
 - `docs/specs/20260907-agent_plugin_packaging_and_worker_supply.md`
 - `docs/core/agent-supply.md`
 - `docs/core/agent-session.md`
-- `docs/core/agent-capability.md`
+- `docs/core/mediation.md`
 - `docs/specs/20260616-agent_environment_package.md`
 - `docs/specs/20260704-session_static_workspace_materialization.md`
 - `docs/specs/20260704-workspace_data_source_catalog.md`

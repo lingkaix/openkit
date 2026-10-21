@@ -32,9 +32,9 @@ The clean target is simple: normal config, manifests, item logs, knowledge, arti
 ## Core References
 
 - `docs/core/vault.md`
-- `docs/core/permissions.md`
+- `docs/core/policy.md`
 - `docs/core/sandbox.md`
-- `docs/core/agent-capability.md`
+- `docs/core/mediation.md`
 - `docs/core/agent-session.md`
 - `docs/core/storage.md`
 - `docs/core/audit.md`
@@ -382,8 +382,8 @@ The existing Server reference/grant scope supports only the bounded shared-MCP a
 ## Links
 
 - `docs/core/vault.md`
-- `docs/core/permissions.md`
-- `docs/core/agent-capability.md`
+- `docs/core/policy.md`
+- `docs/core/mediation.md`
 - `docs/core/storage.md`
 - `docs/specs/20260616-agent_environment_package.md`
 - `docs/specs/20260629-openkit_policy_model.md`

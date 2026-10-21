@@ -26,6 +26,6 @@ Agent membership or the Orchestrator's granting of permissions is designed.
 ## Affected Owners
 
 - docs/core/identity.md
-- docs/core/permissions.md
+- docs/core/policy.md
 - docs/specs/20260715-multi_user_workspace_system.md
 - docs/specs/20260704-goal_mode_coordination.md

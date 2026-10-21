@@ -275,6 +275,41 @@ describe('documentation model validator', () => {
     );
   }
 
+  for (const [legacyPath, currentPath] of [
+    ['docs/core/agent-capability.md', 'docs/core/mediation.md'],
+    ['docs/core/permissions.md', 'docs/core/policy.md'],
+  ]) {
+    it(`resolves a frozen archive or audit link to ${legacyPath} when ${currentPath} exists`, () => {
+      const root = createFixture();
+      writeFileSync(join(root, currentPath), '---\nstatus: Accepted\n---\n# Current\n');
+      mkdirSync(join(root, 'docs/specs/superseded'), { recursive: true });
+      writeFileSync(
+        join(root, 'docs/specs/superseded/20260101-frozen_design.md'),
+        `# Frozen Design\n\nSee \`${legacyPath}\`.\n`
+      );
+      writeFileSync(
+        join(root, 'docs/audits/20260102-sample_reading.md'),
+        `${readFileSync(join(root, 'docs/audits/20260102-sample_reading.md'), 'utf8')}\nSee \`${legacyPath}\`.\n`
+      );
+
+      assert.deepEqual(validateDocModel(root), []);
+    });
+
+    it(`rejects an active spec link to ${legacyPath}`, () => {
+      const root = createFixture();
+      writeFileSync(join(root, currentPath), '---\nstatus: Accepted\n---\n# Current\n');
+      const specPath = 'docs/specs/20260101-sample_design.md';
+      writeFileSync(
+        join(root, specPath),
+        `${readFileSync(join(root, specPath), 'utf8')}\nSee \`${legacyPath}\`.\n`
+      );
+
+      assert.deepEqual(validateDocModel(root), [
+        `${specPath}: documentation link target does not exist: \`${legacyPath}\`.`,
+      ]);
+    });
+  }
+
   it('preserves repeated link diagnostics across whole-document rules', () => {
     const root = createFixture();
     writeFileSync(

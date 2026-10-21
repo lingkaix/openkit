@@ -59,9 +59,9 @@ This guide does not own the semantic contracts, executable route facts, package 
 - `docs/core/work-model.md`
 - `docs/core/agent-workflow.md`
 - `docs/core/agent-supply.md`
-- `docs/core/agent-capability.md`
+- `docs/core/mediation.md`
 - `docs/core/identity.md`
-- `docs/core/permissions.md`
+- `docs/core/policy.md`
 - `docs/core/knowledge.md`
 - `docs/core/vault.md`
 - `docs/specs/20260526-llm_gateway_responses_api.md`

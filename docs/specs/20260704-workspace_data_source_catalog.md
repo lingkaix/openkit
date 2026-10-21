@@ -29,7 +29,7 @@ updated: 2026-08-22
 - `docs/core/storage.md`
 - `docs/core/agent-supply.md`
 - `docs/core/vault.md`
-- `docs/core/permissions.md`
+- `docs/core/policy.md`
 - `docs/core/audit.md`
 
 ## Related Docs

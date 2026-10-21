@@ -53,7 +53,7 @@ Independent review of the retained source found and closed two introduced defect
 - `docs/specs/20260531-worker_turn_reliability_envelope.md` owns the supported worker-turn terminal projection, checkpoints, restart handoff, and truthful fallback.
 - `docs/specs/20260629-worker_runtime_communication_model.md` owns adapter mode admission and transport, while `docs/specs/20260716-opencode_worker_adapter.md` owns the supported OpenCode bounded-turn boundary.
 - `docs/specs/20260616-agent_environment_package.md` owns the preferred and exact non-empty allowed logical-model set carried by AEP v4, while the shared Worker Shim owns selecting the unique preferred route before passing one route to a native adapter.
-- `docs/core/agent-capability.md` owns `CapabilityCall` terminal meaning; `docs/specs/20260703-audit_usage_evidence_records.md` owns its durable ledger and linked AuditEvent projection.
+- `docs/core/mediation.md` owns `CapabilityCall` terminal meaning; `docs/specs/20260703-audit_usage_evidence_records.md` owns its durable ledger and linked AuditEvent projection.
 - `docs/specs/20260703-durable_scheduler_design.md` owns lease takeover, terminal transition, and capacity release.
 - `docs/verification-instruments.md` owns Harness Admission, real-use environment identity, and deciding evidence quality; `docs/specs/20260529-test_strategy.md` owns proof layers.
 - `docs/toolchain.md` owns setup and dependency procedure plus check placement, including its CI projection; `docs/verification-instruments.md` owns Harness Admission and deciding evidence quality.

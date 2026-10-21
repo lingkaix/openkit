@@ -31,7 +31,6 @@ and are not listed here.
 
 ## Core Model
 
-- `docs/core/agent-capability.md` — This document defines OpenKit agent capability semantics for worker capability supply and internal-role Tool projection.
 - `docs/core/agent-session.md` — This document defines the Core identity and continuity rules for `AgentSession`.
 - `docs/core/agent-supply.md` — This document defines OpenKit agent supply semantics.
 - `docs/core/agent-workflow.md` — This document owns the Core workflow mechanisms used to coordinate worker-agent work.
@@ -45,8 +44,9 @@ and are not listed here.
 - `docs/core/generative-apps.md` — This document owns Light App, Light App Catalog, Generative Kernel, and Generative UI: their purpose, agent-first relationship, durable authority, lifecycle, f…
 - `docs/core/identity.md` — This document defines OpenKit identity semantics.
 - `docs/core/knowledge.md` — This document defines OpenKit knowledge semantics.
+- `docs/core/mediation.md` — This document defines OpenKit mediation semantics for operation definition and invocation, worker capability supply, and internal-role Tool projection.
 - `docs/core/metering.md` — This document owns the system-wide principles for measuring resource consumption, including runtime, storage, and network usage that is not naturally defined b…
-- `docs/core/permissions.md` — This document defines OpenKit permission semantics.
+- `docs/core/policy.md` — This document defines OpenKit policy and permission semantics.
 - `docs/core/protocol.md` — This document defines stable OpenKit core protocol semantics.
 - `docs/core/runtime-model.md` — This document defines OpenKit runtime semantics.
 - `docs/core/sandbox.md` — This document defines OpenKit sandbox semantics.

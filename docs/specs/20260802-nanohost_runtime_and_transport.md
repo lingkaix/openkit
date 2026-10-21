@@ -92,7 +92,7 @@ Retained-volume mounting and environment preparation/activation are implemented 
 - `docs/core/sandbox.md`
 - `docs/core/identity.md`
 - `docs/core/vault.md`
-- `docs/core/agent-capability.md`
+- `docs/core/mediation.md`
 - `docs/core/audit.md`
 
 ## Related Specifications

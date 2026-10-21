@@ -8,7 +8,7 @@ branch: lane/ga-p22-combined
 
 ## Intent Revision 1
 
-Source: P22 inventory #159/R049 and D53, coordinator dispatch on 2026-10-16. Implement the accepted equal active-member eligibility in [Core Permissions](../../core/permissions.md) and [Multi-User Workspace System](../../specs/20260715-multi_user_workspace_system.md#active-member-authorization-target). Remove obsolete editor/viewer fields and access-changing surfaces consistently. Preserve Policy, credential intersection, exact human gates, private audiences, owner-transfer integrity and deletion recovery. The release-coupled deletion attribution and narrow private recovery export predicates are frozen in the existing owner before production edits. No new membership tier, recovery owner, bypass, workflow or external effect is authorized.
+Source: P22 inventory #159/R049 and D53, coordinator dispatch on 2026-10-16. Implement the accepted equal active-member eligibility in [Core Permissions](../../core/policy.md) and [Multi-User Workspace System](../../specs/20260715-multi_user_workspace_system.md#active-member-authorization-target). Remove obsolete editor/viewer fields and access-changing surfaces consistently. Preserve Policy, credential intersection, exact human gates, private audiences, owner-transfer integrity and deletion recovery. The release-coupled deletion attribution and narrow private recovery export predicates are frozen in the existing owner before production edits. No new membership tier, recovery owner, bypass, workflow or external effect is authorized.
 
 ## Intent Revision 2
 

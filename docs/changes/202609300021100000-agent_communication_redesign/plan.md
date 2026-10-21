@@ -114,7 +114,7 @@ The redesign touches these accepted owners, with amendments still to be drafted:
   - [AgentSession](../../core/agent-session.md);
   - [Communication](../../core/communication.md);
   - [Protocol](../../core/protocol.md);
-  - [Permissions](../../core/permissions.md), only if the approver definition changes;
+  - [Permissions](../../core/policy.md), only if the approver definition changes;
   - [Foundation](../../core/foundation.md), where the agent-native principle is already drafted.
 - **Lifecycle and runtime:**
   - [AgentSession continuity](../../specs/20260704-agent_session_continuity.md);

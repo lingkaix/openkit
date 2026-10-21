@@ -47,7 +47,7 @@ Metering does not store secret values, raw provider payloads, unrestricted file 
 - Every measurement MUST use an explicit unit and MUST preserve its producer and available work attribution.
 - Measurements with incompatible units MUST NOT be summed as one quantity.
 - Coarse measurements MUST NOT be presented as duration, compute, traffic, or retained-storage measurements they did not observe.
-- `UsageRecord` and capability-call producer semantics MUST remain canonically defined by `agent-capability.md`; Metering MUST own cross-producer measurement policy and aggregation.
+- `UsageRecord` and capability-call producer semantics MUST remain canonically defined by `mediation.md`; Metering MUST own cross-producer measurement policy and aggregation.
 - Metering MUST remain separate from Audit, authorization, budget enforcement, and billing.
 - Cost projections MUST derive from measured usage plus explicit pricing or allocation inputs; provider-reported monetary values MUST NOT be presented as a full pricing or allocation projection on their own.
 - Metering records MUST NOT store secret values, raw provider payloads, unrestricted file contents, or backend-private runtime handles.
@@ -56,7 +56,7 @@ Metering does not store secret values, raw provider payloads, unrestricted file 
 
 ## Relationships To Other Core Aspects
 
-`agent-capability.md` owns `UsageRecord`, capability-call attribution, provider and tool usage, and gateway usage semantics. Metering owns their system-wide aggregation with other producers and every cost projection derived from them.
+`mediation.md` owns `UsageRecord`, capability-call attribution, provider and tool usage, and gateway usage semantics. Metering owns their system-wide aggregation with other producers and every cost projection derived from them.
 
 `audit.md` owns accountability projections and action history rather than resource quantities.
 
@@ -64,9 +64,9 @@ Metering does not store secret values, raw provider payloads, unrestricted file 
 
 `storage.md` owns storage semantics and retention; Metering owns only measured storage consumption.
 
-`communication.md` and `agent-capability.md` own network and external-call semantics; Metering owns only measured consumption derived from those effects.
+`communication.md` and `mediation.md` own network and external-call semantics; Metering owns only measured consumption derived from those effects.
 
-`permissions.md` owns authority, while budget enforcement remains a policy projection over measured usage rather than a Metering decision.
+`policy.md` owns authority, while budget enforcement remains a policy projection over measured usage rather than a Metering decision.
 
 ## Abstract Realization Notes
 

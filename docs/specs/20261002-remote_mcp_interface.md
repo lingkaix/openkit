@@ -33,7 +33,7 @@ Where a rule below names another owner, that owner keeps the rule. This specific
 ## Core References
 
 - `docs/core/identity.md`
-- `docs/core/permissions.md`
+- `docs/core/policy.md`
 - `docs/core/audit.md`
 - `docs/core/communication.md`
 
@@ -107,7 +107,7 @@ A credential limit stays in force. A `workspace-readonly` Token that calls a mut
 
 An operation that returns a one-time secret stays unreachable. [Operation Definition](20261002-operation_definition.md) owns that exclusion. This endpoint does not dispatch the operation. The refusal is a tool result.
 
-When an operation's owner does not admit a bearer actor, the call returns that owner's typed refusal as a tool result. The endpoint does not substitute a session, change the actor, or hide the refusal. That refusal remains the result until the owner admits a bearer actor. A currently usable administrator bearer is admitted under the Administrator Eligibility rule in `docs/core/permissions.md`; ordinary users' bearer eligibility for session-only operations stays with each operation's owner.
+When an operation's owner does not admit a bearer actor, the call returns that owner's typed refusal as a tool result. The endpoint does not substitute a session, change the actor, or hide the refusal. That refusal remains the result until the owner admits a bearer actor. A currently usable administrator bearer is admitted under the Administrator Eligibility rule in `docs/core/policy.md`; ordinary users' bearer eligibility for session-only operations stays with each operation's owner.
 
 ### Protocol errors and product refusals
 

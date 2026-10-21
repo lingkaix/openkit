@@ -80,7 +80,7 @@ branch: main
 - `docs/core/agent-session.md` owns one-Thread continuity, AgentSession replacement, and the boundary between a current AgentSession and its sequential Turns.
 - `docs/core/runtime-model.md` and `docs/core/sandbox.md` own runtime placement, Harness/Sandbox topology, containment, co-residency, and process lifecycle.
 - `docs/core/vault.md` owns secret references and grants; `docs/specs/20260703-vault_secret_injection.md` owns concrete binding, injection, replacement, and receipt behavior.
-- `docs/core/agent-capability.md` owns governed Skills, MCP, and Gateway-mediated capability projection.
+- `docs/core/mediation.md` owns governed Skills, MCP, and Gateway-mediated capability projection.
 - `docs/core/work-model.md`, `docs/core/agent-workflow.md`, `docs/specs/20260704-chat_mode_assistant.md`, and `docs/specs/20260704-task_mode_worker_delegation.md` own Chat-versus-Task meaning, internal-role routing, worker delegation, and the transition produced by choosing a new worker.
 - `docs/specs/20260831-unified_conversation_composer.md` owns observable Composer behavior, the target catalog, structured submission, dispatch branch, exact replay boundary, and failure recovery; `docs/specs/20260628-web_product_surface_projection.md` owns publication through Web, and `docs/specs/20260710-web_ui_rebuild_stack.md` owns component and client-state placement and Core Client integration. Root `DESIGN.md` is a non-authoritative visual projection.
 - `docs/specs/20260713-work_resource_interaction_model.md` and the existing Artifact owners govern reference selection and upload rather than the Composer creating another resource authority.

@@ -8,7 +8,7 @@ branch: v010/retrieval-kernel-r2
 
 ## Intent Revision 1
 
-Source: the engineer's R2 builder dispatch on 2026-10-15. Complete the accepted [Retrieval Kernel](../../specs/20261014-retrieval_kernel.md) beyond R1: required owner amendments, supervised local service, current authorized product adapters, direct Knowledge lexical replacement, packaged Linux amd64 and arm64 supply, and focused evidence. Preserve [Storage](../../core/storage.md), [Knowledge](../../core/knowledge.md), and [Permissions](../../core/permissions.md). R1 is merged at the branch base `ba79e4e0`. Do not push, merge, contact deployment hosts, change publication job blocks, or write WP1-owned paths. Commits use the engineer's requested attribution without co-author trailers. Package/crate fetches, toolchain installation, and the recorded IPADIC archive are the only network grant.
+Source: the engineer's R2 builder dispatch on 2026-10-15. Complete the accepted [Retrieval Kernel](../../specs/20261014-retrieval_kernel.md) beyond R1: required owner amendments, supervised local service, current authorized product adapters, direct Knowledge lexical replacement, packaged Linux amd64 and arm64 supply, and focused evidence. Preserve [Storage](../../core/storage.md), [Knowledge](../../core/knowledge.md), and [Permissions](../../core/policy.md). R1 is merged at the branch base `ba79e4e0`. Do not push, merge, contact deployment hosts, change publication job blocks, or write WP1-owned paths. Commits use the engineer's requested attribution without co-author trailers. Package/crate fetches, toolchain installation, and the recorded IPADIC archive are the only network grant.
 
 ## Intent Revision 2
 

@@ -21,9 +21,9 @@ This specification owns agent-native declarative presentation and interaction ac
 - `docs/core/architecture.md`
 - `docs/core/protocol.md`
 - `docs/core/communication.md`
-- `docs/core/permissions.md`
+- `docs/core/policy.md`
 - `docs/core/identity.md`
-- `docs/core/agent-capability.md`
+- `docs/core/mediation.md`
 - `docs/core/storage.md`
 - `docs/core/contract-evolution.md`
 
@@ -159,7 +159,7 @@ If the browser disconnects after submission, Core's owning command or execution 
 
 Only audience-authorized data reaches the browser or an agent. Renderer-only metadata is not a place for secrets; hidden controls and model-invisible payloads are not access control. Passing a view back to an agent requires the existing context-selection and disclosure rules, with only the needed fields and provenance; do not automatically inject the entire UI data model. A surface containing a PluginWidget MUST keep A2UI `sendDataModel` disabled; only schema-admitted necessary fields may reach agent context through the explicit interaction/context boundary. Revoking access prevents subsequent reads and effects, without pretending already delivered bytes can be recalled from a client.
 
-`OutputAudience` and source-to-destination disclosure remain owned by `docs/core/permissions.md`; human reader identity and Workspace membership remain owned by [Multi-User Workspace System](20260715-multi_user_workspace_system.md). Permission to read a private result does not imply permission to save it into a shared view or Thread. Saving and publishing recheck the exact destination audience, including retained historical result content.
+`OutputAudience` and source-to-destination disclosure remain owned by `docs/core/policy.md`; human reader identity and Workspace membership remain owned by [Multi-User Workspace System](20260715-multi_user_workspace_system.md). Permission to read a private result does not imply permission to save it into a shared view or Thread. Saving and publishing recheck the exact destination audience, including retained historical result content.
 
 Saved definitions and any canonical accepted UI payloads require explicit portability coverage under [Workspace Backup, Export, And Import](20260704-workspace_backup_export_import.md). Import preserves immutable declaration content and rewrites internal references consistently, while external bindings remain unbound where access cannot be proven. It does not import credentials, grants, host-renderer executable code, or cached authority. Digest-pinned Plugin UI resource bytes may be transported only as explicitly classified inert presentation content; import verifies them but does not install a Plugin, register a capability, or enable execution. Re-admit the resource and bind its tools under current target authority before mounting it. Unavailable catalogs or bindings disable interaction while retaining safe inspectable content. Export success must be verified with real saved and reopened views, not inferred from generic Item export.
 

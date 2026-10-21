@@ -31,7 +31,7 @@ date: 2026-07-15
 - `docs/core/communication.md`
 - `docs/core/storage.md`
 - `docs/core/identity.md`
-- `docs/core/permissions.md`
+- `docs/core/policy.md`
 - `docs/core/vault.md`
 - `docs/core/audit.md`
 - `docs/core/contract-evolution.md`
@@ -312,7 +312,7 @@ None. A future independently released API consumer or legal-isolation deployment
 - [Core Concepts](../core/core-concepts.md)
 - [Storage Model](../core/storage.md)
 - [Identity Model](../core/identity.md)
-- [Permissions Model](../core/permissions.md)
+- [Permissions Model](../core/policy.md)
 - [Audit Model](../core/audit.md)
 - [Core Protocol](../core/protocol.md)
 - [Core Client Boundary](./20260528-core_client_boundary.md)

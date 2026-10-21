@@ -46,11 +46,11 @@ The clean target is one policy truth and many enforcement points. `@openkit/poli
 
 ## Core References
 
-- `docs/core/permissions.md`
+- `docs/core/policy.md`
 - `docs/core/identity.md`
 - `docs/core/audit.md`
 - `docs/core/sandbox.md`
-- `docs/core/agent-capability.md`
+- `docs/core/mediation.md`
 - `docs/core/vault.md`
 - `docs/core/agent-session.md`
 
@@ -75,7 +75,7 @@ The clean target is one policy truth and many enforcement points. `@openkit/poli
 
 NanoCore product vocabulary is adapter input, not kernel truth. Subjects, actions, resources, and context MUST be translated into the standard-aligned NGAC subset owned by `docs/specs/20260629-openkit_policy_model.md`. Product actions may remain stable API names, but the policy-kernel request must evaluate the required NGAC access rights and restrictions rather than treating product actions as association rights.
 
-[Permissions](../core/permissions.md#subject) owns principal and actor semantics. Agent principals use their own human-domain-derived grants; a User-principal call by an agent intersects User rights with agent restrictions. Direct human calls record no process when none exists; agent work records its actual Turn. These identities remain distinct in the retained subject below.
+[Policy](../core/policy.md#subject) owns principal and actor semantics. Agent principals use their own human-domain-derived grants; a User-principal call by an agent intersects User rights with agent restrictions. Direct human calls record no process when none exists; agent work records its actual Turn. These identities remain distinct in the retained subject below.
 
 Subjects:
 
@@ -153,7 +153,7 @@ Context:
 
 ## Unified Policy Statements And Revisions
 
-[Permissions](../core/permissions.md#policy-statements-and-administration) owns the shared authority and administration rules. Permission, binding, and envelope/delegation statements use one versioned Policy store and snapshot. A revision MUST identify its author, delegation source, scope, lifetime, and activation. One snapshot pins all three statement kinds for an evaluation. [The accepted decision](../decisions/20261018-unified_mediation_and_policy.md) records the reason for this shared base.
+[Policy](../core/policy.md#policy-statements-and-administration) owns the shared authority and administration rules. Permission, binding, and envelope/delegation statements use one versioned Policy store and snapshot. A revision MUST identify its author, delegation source, scope, lifetime, and activation. One snapshot pins all three statement kinds for an evaluation. [The accepted decision](../decisions/20261018-unified_mediation_and_policy.md) records the reason for this shared base.
 
 A binding MUST retain:
 
@@ -174,7 +174,7 @@ Selected `allowedTools` is a supply boundary, not a new allow statement requirem
 
 ## Point And Evaluation Contract
 
-[Permissions](../core/permissions.md#enforcement-points) owns the point dimensions and pipeline. Retain the actual registered operation ID and stage once; derive `<operation>@<stage>` for the point identifier, `PermissionDecision.enforcementPoint` and display. Do not retain a second point string or create a point registry. The retained stage is exactly `propose`, `decide`, `commit`, or `completed`.
+[Mediation](../core/mediation.md#enforcement-points) owns the point dimensions and pipeline. Retain the actual registered operation ID and stage once; derive `<operation>@<stage>` for the point identifier, `PermissionDecision.enforcementPoint` and display. Do not retain a second point string or create a point registry. The retained stage is exactly `propose`, `decide`, `commit`, or `completed`.
 
 Extend the existing [Operation Definition](20261002-operation_definition.md) registry to Core-mediated Tool dispatch, model requests, context delivery, and result ingress. A non-API entry does not acquire a public endpoint or another primary admission by registration. It keeps the exact owning effect, target, audience, and required access-right checks. The existing operation-to-access-right mapping below remains the unique primary mapping; a new family still requires its owning registration before publication.
 
@@ -230,9 +230,9 @@ An active agent binding must first have the same shadow binding and its complete
 
 The pre-v0.1.0 `policy.write` administration path MUST carry the same governed proposal, decision, and commit boundary as other effects. The proposal retains the proposer, rationale, exact proposed collection with its scope and lifetime, and expected Policy revision. Compute its diff and narrowing/widening classification from the pinned candidate and base; do not retain them as independent facts. Validation MUST check the closed required shape, conflicts, current author/delegation authority, input disclosure, and whether the change narrows or widens authority.
 
-The deciding authority follows [Permissions](../core/permissions.md#policy-statements-and-administration): an authorized author may narrow directly; a delegated supervising agent may widen within its envelope; the owning human decides outside-envelope changes, envelope/delegation changes, and agent-approver activation. Observe and advise additions count as disclosure widening. A Worker may submit only a suggestion, retained as a proposal through the existing candidate owner. No principal approves a change that widens its own authority.
+The deciding authority follows [Policy](../core/policy.md#policy-statements-and-administration): an authorized author may narrow directly; a delegated supervising agent may widen within its envelope; the owning human decides outside-envelope changes, envelope/delegation changes, and agent-approver activation. Observe and advise additions count as disclosure widening. A Worker may submit only a suggestion, retained as a proposal through the existing candidate owner. No principal approves a change that widens its own authority.
 
-Agent-principal creation and domain-grant administration MUST retain the creator, responsible human, and responsibility-chain references. Validation and evaluation use the [Permissions accountability contract](../core/permissions.md#subject), including agent-creator propagation, explicit human assignment, and finite acyclic termination. The current terminal human's domain authority is a mandatory evaluation fact; missing or invalid chain facts suspend the agent's grants until human reassignment. This does not map the responsible human's rights into the agent's grants.
+Agent-principal creation and domain-grant administration MUST retain the creator, responsible human, and responsibility-chain references. Validation and evaluation use the [Policy accountability contract](../core/policy.md#subject), including agent-creator propagation, explicit human assignment, and finite acyclic termination. The current terminal human's domain authority is a mandatory evaluation fact; missing or invalid chain facts suspend the agent's grants until human reassignment. This does not map the responsible human's rights into the agent's grants.
 
 The decision MUST retain the approver or delegated author and validation outcome. The commit MUST identify the activation revision. Proposal saved, validation failed, commit failed, and active revision are distinct outcomes. Saving a proposal does not activate it. Stale expected revisions, conflicting scope, revoked delegation, or missing mandatory facts block activation. After a lost response or restart, inspect the exact recorded outcome and current revision before a new authorized request; an unknown write MUST NOT be repeated automatically.
 
@@ -246,7 +246,7 @@ Within the envelope, a missing-grant reason `not_granted` maps to `require_escal
 
 The native Goal/Task projection marks only a missing Task association inside the current admitted Goal domain while the current responsible-human Kernel allows. Its transient destination names that domain's Workspace, Goal and Coordinator. The actual Kernel evaluation remains last and its denial stays in the existing PermissionDecision evidence. An unresolved human-only approval or participant failure keeps its existing result and destination instead of being redirected to the Coordinator. Missing or contradictory current facts fail closed. The destination authorizes no dispatch, consumes no finite use and creates no retained field or store; routing and wake-up remain with the Goal owner and require a new full current evaluation after any grant.
 
-[Permissions](../core/permissions.md#delegated-goal-domain-and-statement-lifetime) owns lifetime semantics. The retained attribute is `lifetime = { anchor, notAfter?, uses? }`; `anchor` references any container, not a closed lifetime enum. Scope and lifetime remain independent: Worker W's Tool X grant may be anchored on Task T or bounded by time or uses. An unknown required anchor or bound fails closed under the existing authority-bearing shape rule.
+[Policy](../core/policy.md#delegated-goal-domain-and-statement-lifetime) owns lifetime semantics. The retained attribute is `lifetime = { anchor, notAfter?, uses? }`; `anchor` references any container, not a closed lifetime enum. Scope and lifetime remain independent: Worker W's Tool X grant may be anchored on Task T or bounded by time or uses. An unknown required anchor or bound fails closed under the existing authority-bearing shape rule.
 
 Anchor closure, `notAfter`, use exhaustion, or loss of the author's authority ends the statement. `uses: 1` means once, consumed atomically by the allowing decision; that one approval creates no Policy change. An anchor on the scope owner with neither optional bound means persistent authority. A Coordinator's chosen lifetime MUST remain within its Goal domain and end with it at the latest. Longer authority needs the domain owner's human-approved promotion. These are authorization predicates, not cleanup jobs.
 
@@ -402,7 +402,7 @@ Acceptance requires an exact failed-Turn/Agent/package/repository lineage, immut
 
 ## PermissionDecision
 
-`docs/core/permissions.md` owns the `PermissionDecision` definition and closed result categories. This specification projects that concept with these exact fields:
+`docs/core/policy.md` owns the `PermissionDecision` definition and closed result categories. This specification projects that concept with these exact fields:
 
 - decision id
 - policy engine version
@@ -602,7 +602,7 @@ Minimum facts:
 
 If any required membership fact is unavailable to the ordinary centralized Workspace resolver, it denies the request. `defer` is available only to an already accepted governed workflow whose owning specification defines how the missing fact becomes available; it is not a request-authorization fallback. Server mode must not silently fall back to local implicit-owner assumptions for Workspace policy.
 
-Invitation state is not active membership and must never satisfy a Workspace access request. A `server-admin` credential does not synthesize Workspace membership or an owner/editor/viewer role. A currently usable administrator credential is eligible for Workspace content operations under the Administrator Eligibility rule in `docs/core/permissions.md`, which records the administrator as the actor.
+Invitation state is not active membership and must never satisfy a Workspace access request. A `server-admin` credential does not synthesize Workspace membership or an owner/editor/viewer role. A currently usable administrator credential is eligible for Workspace content operations under the Administrator Eligibility rule in `docs/core/policy.md`, which records the administrator as the actor.
 
 The active-member association is adapter vocabulary for full Workspace operation eligibility. Ownership remains a lifecycle and recovery identity. The centralized resolver converts the authenticated actor, current membership, owner relationship, token intersection, action, resource, and request context into one policy-kernel request. Handlers consume that decision and must not reimplement role tables or rely on route path/body heuristics.
 
@@ -617,7 +617,7 @@ The active-member association is adapter vocabulary for full Workspace operation
 - Policy changes during an active worker session should update future gateway checks, including the re-evaluation of a captured call before it executes; mark the session stale when setup or resource assumptions changed, so a successor applies them at the next Turn; and interrupt or recycle the session only when a newly denied high-risk external action would otherwise remain possible. A change to in-Sandbox tools is not a reason to interrupt a Turn.
 - Server mode requires explicit actor, responsible user, Workspace membership, exact principal, grant or restriction, request-origin, policy snapshot, assurance, and time facts before enforcing Workspace policy. Missing required facts deny ordinary requests; only an owning governed workflow may use its explicitly accepted `defer` outcome.
 - Current active membership supplies the full Workspace operation association through the NGAC-aligned kernel; finer constraints use that same owner rather than a second authorization engine.
-- Deployment-administrator authority and Workspace content authority are separate rights in this registry, and this registry does not treat `server-admin` as a content right. Credential eligibility is not decided here; an administrator's eligibility for content operations comes from the Administrator Eligibility rule in `docs/core/permissions.md`, not from this registry.
+- Deployment-administrator authority and Workspace content authority are separate rights in this registry, and this registry does not treat `server-admin` as a content right. Credential eligibility is not decided here; an administrator's eligibility for content operations comes from the Administrator Eligibility rule in `docs/core/policy.md`, not from this registry.
 
 ## Deferred / Future Work
 
@@ -671,11 +671,11 @@ Routing all remaining producers, impact simulation, adaptive or cached review, e
 
 ## Links
 
-- `docs/core/permissions.md`
+- `docs/core/policy.md`
 - `docs/specs/20261002-operation_definition.md`
 - `docs/core/audit.md`
 - `docs/core/sandbox.md`
-- `docs/core/agent-capability.md`
+- `docs/core/mediation.md`
 - `docs/core/vault.md`
 - `docs/specs/20260629-openkit_policy_model.md`
 - `docs/specs/20260703-worker_agent_capability.md`

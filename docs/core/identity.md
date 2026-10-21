@@ -161,7 +161,7 @@ The canonical owner must also have active membership. Ownership is stored once a
 ## Invariants
 
 - Identity records MUST NOT be treated as permission decisions.
-- Workspace content access MUST come from current permission evaluation of active membership or a currently usable administrator credential under the administrator eligibility rule in `docs/core/permissions.md`. Filesystem presence, a user-owned link, an invitation, or an administrator Token that is neither the administrator's current Web session nor a presented administrator bearer supplies no authority. Private conversation ownership stays with the original owner for attribution and does not exclude that credential.
+- Workspace content access MUST come from current permission evaluation of active membership or a currently usable administrator credential under the administrator eligibility rule in `docs/core/policy.md`. Filesystem presence, a user-owned link, an invitation, or an administrator Token that is neither the administrator's current Web session nor a presented administrator bearer supplies no authority. Private conversation ownership stays with the original owner for attribution and does not exclude that credential.
 - Deployment recovery authority MAY change ownership or membership through an explicit audited recovery operation. The administrator eligibility rule is owned by the Permissions Model. When the operation recovers a resource another user deleted, it records the administrator as the actor and that recovered resource returns to its original owner. An explicit access-recovery operation may still add or transfer membership to the administrator, and that operation records the administrator as the actor.
 - Workspace owner transfer MUST preserve workspace identity and history.
 - Workspace-scoped human, agent, automation, and integration actions MUST preserve an `ActorRef` when attribution is required to explain who or what caused them.
@@ -174,6 +174,6 @@ The canonical owner must also have active membership. Ownership is stored once a
 ## Related Docs
 
 - `docs/core/core-concepts.md`
-- `docs/core/permissions.md`
+- `docs/core/policy.md`
 - `docs/core/protocol.md`
 - `docs/core/audit.md`

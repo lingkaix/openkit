@@ -744,7 +744,7 @@ Acceptance requires submission precedence and composed Agent-default fallthrough
 - `docs/core/communication.md`
 - `docs/core/storage.md`
 - `docs/core/identity.md`
-- `docs/core/agent-capability.md`
+- `docs/core/mediation.md`
 - `docs/core/audit.md`
 - `docs/core/contract-evolution.md`
 - `docs/app-api.md`

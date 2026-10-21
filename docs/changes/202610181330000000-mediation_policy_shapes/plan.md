@@ -10,7 +10,7 @@ Coordinator GO on 2026-10-18 at 13:30Z authorizes the shape-bearing portion of t
 
 ## Owners And Scope
 
-[Permissions](../../core/permissions.md), [Policy Enforcement](../../specs/20260703-policy_enforcement_mapping.md), [Unified Mediation](../../specs/20261018-nanocore_interception_and_information_consolidation.md) and [Retained Formats](../../specs/20261017-retained_format_register.md) own the contracts. Reuse the existing operation registry, authored Server configuration, candidate Artifacts, sole CAS writer, Pending Request, PermissionDecision and Audit. No store, provider adapter, converter, predecessor reader, Web change or host action is added.
+[Permissions](../../core/policy.md), [Policy Enforcement](../../specs/20260703-policy_enforcement_mapping.md), [Unified Mediation](../../specs/20261018-nanocore_interception_and_information_consolidation.md) and [Retained Formats](../../specs/20261017-retained_format_register.md) own the contracts. Reuse the existing operation registry, authored Server configuration, candidate Artifacts, sole CAS writer, Pending Request, PermissionDecision and Audit. No store, provider adapter, converter, predecessor reader, Web change or host action is added.
 
 ## Intent Revision 2
 

@@ -104,7 +104,7 @@ Agent workflow does not own:
 - agent, runtime, turn assignment, and runtime lifecycle semantics, which belong to `runtime-model.md`
 - current AgentSession continuity, exact reconnect, interruption, and fresh-session fallback, which belong to `agent-session.md`
 - agent catalogs, setup contracts, and profile supply, which belong to `agent-supply.md`
-- LLM, MCP, tool, network, credential, context, usage, and rate-limit supply for worker agents, which belongs to `agent-capability.md`
+- LLM, MCP, tool, network, credential, context, usage, and rate-limit supply for worker agents, which belongs to `mediation.md`
 - protocol schemas, commands, events, and lifecycle enum definitions, which belong to `protocol.md` and `communication.md`
 - Action Center response fields, channel operation arguments, Skill file contents, Web UI components, database tables, or route paths
 - agent-private planning, hidden chain-of-thought, tool retry traces, runtime-native task graphs, or provider-native workflow representations
@@ -320,13 +320,13 @@ Agent-private task graphs should stay private unless Core needs to schedule, ret
 
 `agent-supply.md` explains which agents, profiles, and setup contracts are available for a workflow.
 
-`agent-capability.md` explains the capability supply used by worker agents during bounded steps.
+`mediation.md` explains the capability supply used by worker agents during bounded steps.
 
 `knowledge.md` explains Knowledge Manager responsibilities and context package semantics.
 
 `protocol.md` and `communication.md` define the stable records, commands, events, and communication semantics that project workflow changes.
 
-`permissions.md`, `sandbox.md`, and `vault.md` define important constraints that workflow orchestration must respect.
+`policy.md`, `sandbox.md`, and `vault.md` define important constraints that workflow orchestration must respect.
 
 `audit.md` defines durable projections that explain workflow-relevant events after the fact.
 

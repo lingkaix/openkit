@@ -49,7 +49,7 @@ The unique first-release criterion is: for every class of information that will 
 - `docs/core/core-concepts.md`
 - `docs/core/work-model.md`
 - `docs/core/agent-session.md`
-- `docs/core/agent-capability.md`
+- `docs/core/mediation.md`
 - `docs/core/contract-evolution.md`
 
 ## Related Docs
@@ -481,7 +481,7 @@ Missing evidence stays unknown.
 
 1. Observation `cert`: omitted = direct; `"inferred"` = inference or model/ASR generation.
 2. Observation `outcome: "unknown"` on rows that describe an external-effect terminal.
-3. Effect owner and recovery owner: CapabilityCall `unknown` in `docs/core/agent-capability.md:70-84`; recovery requirements on the recovery owner. Interruption MUST NOT infer that an effect did not happen.
+3. Effect owner and recovery owner: CapabilityCall `unknown` in `docs/core/mediation.md:70-84`; recovery requirements on the recovery owner. Interruption MUST NOT infer that an effect did not happen.
 
 **Exclusions.** `unknown` is not a Turn status. Turn terminals are `completed`, `interrupted`, `cancelled`, `failed`, as corrected in Core by commit `968f5a4e`. `cancelled` means authorization to continue that Turn was withdrawn, including by the owning workflow when it determines the work is superseded; the specific reason is an Item, not another terminal value. `turn.reap` is normalized evidence of a recovery decision (why this Turn's execution is gone, on what basis), not a Turn `unknown` status. Command-outcome `unknown` and operation/transfer `unknown` stay with their owners.
 
@@ -702,7 +702,7 @@ Storage/schema migrations remain with their owners. Retained records keep their 
 
 ### Evidence Strength
 
-The following citations preserve the earlier source verification at `968f5a4e0af0938b8237c05ac044cc754fcf4f8e`, not a current completeness verdict. Current claims are limited to the named source boundaries above; inspected test files are not executed acceptance. Opened in this tree: `apps/nanocore/src/storage/workspace-file-records.ts:846-870`, `:2450-2488`, and `writeFileAtomic` at `:2498-2512`; `apps/nanocore/src/storage/workspace-import.ts:2347-2365` (`createWorkerRuntimeProvenanceEvidenceId`); `apps/nanocore/src/llm/gateway-routes.ts:137-145` and `:152-168`; `apps/nanocore/src/llm/gateway-converters.ts:63-74` (`convertChatCompletionToResponsesRequest`); `apps/nanocore/src/llm/pi-ai-client.ts:284-300` and `:802-808`; `apps/nanocore/src/runtime/session-id.ts:9-28`; `packages/protocol/src/models/turn.ts:21-29`; `packages/app-api-schemas/src/workspace-sync.ts:448`; `packages/app-api-schemas/src/evidence-bundles.ts:26-31`; `docs/core/protocol.md` Turn terminals; `docs/core/storage.md:123-131`, `:133-149`, and `:173-185`; `docs/core/core-concepts.md:81`, `:113`, and `:117`; `docs/core/agent-session.md:87`; `docs/core/agent-capability.md:70-84`; `docs/core/work-model.md:26`; `docs/core/core-concepts.md:151`; `docs/specs/20260703-storage_layout_record_ownership.md:16-24`, `:277-279`, `:287`, `:335`, and `:347-352`; `docs/specs/20260703-schema_evolution_record_envelope.md:165-173`; `docs/specs/20260703-runtime_scheduling_scale.md:126`; `docs/specs/20260704-workspace_backup_export_import.md:81` and `:141`; `docs/specs/20260908-generative_kernel_data_operations.md:122` and `:211`; `docs/specs/20260704-goal_mode_coordination.md:183`. The discussion record's facts were originally pinned at baseline `c1a8b6ad` and were not all re-verified at that commit. Carried without independent confirmation in this tree: third-party grep-first percentage claims; external-harness comparison tables; the note.md §10 inventory as of `c1a8b6ad`; `workerRequestDigest` internals; the AEP assembler writing `instructions: []`.
+The following citations preserve the earlier source verification at `968f5a4e0af0938b8237c05ac044cc754fcf4f8e`, not a current completeness verdict. Current claims are limited to the named source boundaries above; inspected test files are not executed acceptance. Opened in this tree: `apps/nanocore/src/storage/workspace-file-records.ts:846-870`, `:2450-2488`, and `writeFileAtomic` at `:2498-2512`; `apps/nanocore/src/storage/workspace-import.ts:2347-2365` (`createWorkerRuntimeProvenanceEvidenceId`); `apps/nanocore/src/llm/gateway-routes.ts:137-145` and `:152-168`; `apps/nanocore/src/llm/gateway-converters.ts:63-74` (`convertChatCompletionToResponsesRequest`); `apps/nanocore/src/llm/pi-ai-client.ts:284-300` and `:802-808`; `apps/nanocore/src/runtime/session-id.ts:9-28`; `packages/protocol/src/models/turn.ts:21-29`; `packages/app-api-schemas/src/workspace-sync.ts:448`; `packages/app-api-schemas/src/evidence-bundles.ts:26-31`; `docs/core/protocol.md` Turn terminals; `docs/core/storage.md:123-131`, `:133-149`, and `:173-185`; `docs/core/core-concepts.md:81`, `:113`, and `:117`; `docs/core/agent-session.md:87`; `docs/core/mediation.md:70-84`; `docs/core/work-model.md:26`; `docs/core/core-concepts.md:151`; `docs/specs/20260703-storage_layout_record_ownership.md:16-24`, `:277-279`, `:287`, `:335`, and `:347-352`; `docs/specs/20260703-schema_evolution_record_envelope.md:165-173`; `docs/specs/20260703-runtime_scheduling_scale.md:126`; `docs/specs/20260704-workspace_backup_export_import.md:81` and `:141`; `docs/specs/20260908-generative_kernel_data_operations.md:122` and `:211`; `docs/specs/20260704-goal_mode_coordination.md:183`. The discussion record's facts were originally pinned at baseline `c1a8b6ad` and were not all re-verified at that commit. Carried without independent confirmation in this tree: third-party grep-first percentage claims; external-harness comparison tables; the note.md §10 inventory as of `c1a8b6ad`; `workerRequestDigest` internals; the AEP assembler writing `instructions: []`.
 
 ## Required Owner Alignments
 
@@ -730,7 +730,7 @@ Listing an alignment is not approval of a change to another owner's document. Ea
 
 **What the early record wanted.** Add Turn `unknown`, or an orthogonal certainty field.
 
-**Disposition.** Resolved differently. Turn `unknown` was withdrawn. Commit `968f5a4e` corrected the documents: Turn terminals are `completed`, `interrupted`, `cancelled`, `failed` (`docs/core/protocol.md`); `docs/core/agent-session.md:87` (`Replacement`) now keeps the Turn's truthful lifecycle result and leaves effect/recovery uncertainty with those owners. CapabilityCall `unknown` remains (`docs/core/agent-capability.md:70-84`).
+**Disposition.** Resolved differently. Turn `unknown` was withdrawn. Commit `968f5a4e` corrected the documents: Turn terminals are `completed`, `interrupted`, `cancelled`, `failed` (`docs/core/protocol.md`); `docs/core/agent-session.md:87` (`Replacement`) now keeps the Turn's truthful lifecycle result and leaves effect/recovery uncertainty with those owners. CapabilityCall `unknown` remains (`docs/core/mediation.md:70-84`).
 
 ### C4 — `_ext/` reserved namespace
 
@@ -876,4 +876,4 @@ The target is proved at each actual collector and Storage boundary, not by metad
 - `docs/specs/20260703-storage_layout_record_ownership.md`
 - `docs/specs/20260703-schema_evolution_record_envelope.md`
 - `docs/core/protocol.md`
-- `docs/core/agent-capability.md`
+- `docs/core/mediation.md`

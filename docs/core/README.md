@@ -125,8 +125,8 @@ The current required core aspect set contains 22 documents. Future merge or reti
 
 ### Capability, Governance, And Control
 
-- `agent-capability.md` — runtime capability supply, gateway projection, transformer, vault injection, usage, audit metadata, and rate-limit boundary for worker agents.
-- `permissions.md` — authorization, policy, roles, attributes, grants, and enforcement.
+- `mediation.md` — operation definition and invocation, `<operation>@<stage>` mediation points, Capability Mediation Boundary, `CapabilityCall`, gateway projection and routing, transformer/advice/gate ordering, invocation evidence, vault injection, usage, and rate-limit boundary.
+- `policy.md` — Policy authority model: principals, statements, decisions, approval, administration, workspace and administrator eligibility, and disclosure authorization.
 - `sandbox.md` — execution isolation, runtime environments, containment, and resource boundaries.
 - `audit.md` — stable audit projections over items, permission decisions, capability calls, vault use, and runtime events.
 - `metering.md` — system-wide measurement principles, attribution, aggregation, and cost projection boundaries.
@@ -155,11 +155,11 @@ This index routes readers to the owner of each canonical term family. The owner 
 | SecretVault, VaultReference, VaultGrant, VaultInjection, VaultInjectionPlan, VaultInjectionReceipt, VaultUse, future VaultAudit | `vault.md` |
 | Personal Memory, Knowledge Store, Knowledge Page, Knowledge Source, Knowledge Proposal, Knowledge Review, Knowledge Manager, Notebook, Agent-Near Context, Context Package | `knowledge.md` |
 | AgentManifest, AgentProfile, AgentCatalog, AgentCatalogEntry, catalog readiness, setup materialization | `agent-supply.md` |
-| Permission, Subject, Action, Resource, Context, PermissionDecision, enforcement point | `permissions.md` |
+| Policy, Subject, Action, Resource, Context, PermissionDecision, policy statements and administration, delegated goal domain, approval gates, disclosure authorization | `policy.md` |
 | Sandbox, sandbox scope, isolation area, sandbox summary, backend containment | `sandbox.md` |
-| AgentCapability, CapabilityCall, gateway projection, gateway routing, transformer pipeline, capability traffic, rate limits | `agent-capability.md` |
+| Operation, mediation point, enforcement point, Capability Mediation Boundary, AgentCapability, CapabilityCall, gateway projection, gateway routing, transformer pipeline, capability traffic, rate limits | `mediation.md` |
 | AuditEvent, audit projection, audit producer boundary | `audit.md` |
-| UsageRecord, capability-call usage units and attribution | `agent-capability.md` |
+| UsageRecord, capability-call usage units and attribution | `mediation.md` |
 | System-wide measurement policy, non-gateway runtime, storage and network consumption, cross-producer aggregation, Cost projection | `metering.md` |
 | AgentSession, continuity, exact reconnect, interruption, fresh-session fallback | `agent-session.md` |
 | Agent Workflow, Workflow Mechanism, Workflow Mode, Workflow Recipe, Default Workflow Setup, Goal Mode, Intent, Objective, Phase, Plan, Planning Phase, Plan Approval, Bounded Step, Workflow Loop, Gate, Human Attention Gate, Review Gate, Decision, Checkpoint, Context Compaction, Stop Condition, Workflow Evidence | `agent-workflow.md` |
@@ -183,8 +183,8 @@ Discuss and promote the core docs in this order:
 12. `storage.md`
 13. `identity.md`
 14. `vault.md`
-15. `agent-capability.md`
-16. `permissions.md`
+15. `mediation.md`
+16. `policy.md`
 17. `sandbox.md`
 18. `knowledge.md`
 19. `audit.md`
