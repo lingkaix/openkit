@@ -1418,7 +1418,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const backend = new FakeWorkerGovernanceBackend();
     const refusal = new Error('NanoHost effect image.acquire already has a pending command.');
     backend.materialize = async (pkg, context) => {
-      context?.beforeMaterialization?.();
+      await context?.beforeMaterialization?.();
       backend.calls.push('materialize');
       const intent = attempts.recordSchedulerExecutionOperation(f.coreDb, {
         attemptId: testEntityId('attempt', `lease_${f.turn.id}`),
@@ -3656,6 +3656,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       publish.mockRestore();
       fixture.workspaceDb.sqlite.close();
       coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { force: true, recursive: true });
     }
   });
@@ -3716,6 +3717,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       });
     } finally {
       coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { force: true, recursive: true });
     }
   });
@@ -6236,19 +6238,17 @@ describe('WorkerGovernanceTurnExecutor', () => {
       'th_00000000-0000-7000-8000-000000000001',
       'Reject missing binding'
     );
-    const turnPath = join(
-      coreDb.dataRoot,
-      'workspaces',
-      workspaceIdForOwner(turn.owner),
-      'threads',
-      turn.threadId,
-      'turns',
-      turn.id,
-      'turn.json'
-    );
-    const record = JSON.parse(readFileSync(turnPath, 'utf8'));
-    delete record.captureCoverage;
-    writeFileSync(turnPath, JSON.stringify(record));
+    await shutdownControlStoreWorkerClient();
+    const retainedDb = openTestWorkspaceDb(coreDb);
+    try {
+      retainedDb.sqlite
+        .prepare(
+          "UPDATE control_turns SET revision=revision+1, record_json=json_remove(record_json, '$.captureCoverage') WHERE id=?"
+        )
+        .run(turn.id);
+    } finally {
+      retainedDb.sqlite.close();
+    }
     store.setLiveCaptureCoverage({ scope: 'server', value: 'on' });
     const backend = new FakeWorkerGovernanceBackend();
     const executor = new WorkerGovernanceTurnExecutor({
@@ -6667,14 +6667,16 @@ describe('WorkerGovernanceTurnExecutor', () => {
   it('retains a complete Artifact for exact retry when later ingress persistence fails', async () => {
     const fixture = await createWorkspaceChangeIngressFixture('artifact_compensation', 'git');
     const createArtifact = fixture.store.createArtifact.bind(fixture.store);
-    fixture.store.createArtifact = (artifact) => {
-      const created = createArtifact(artifact);
+    const publication = vi
+      .spyOn(fixture.store, 'createArtifact')
+      .mockImplementation(async (artifact) => {
+        const created = await createArtifact(artifact);
 
-      if (artifact.id === fixture.artifactId) {
-        throw new Error('artifact persistence failed after write');
-      }
-      return created;
-    };
+        if (artifact.id === fixture.artifactId) {
+          throw new Error('artifact persistence failed after write');
+        }
+        return created;
+      });
 
     recordTestWorkspaceReviewMaterialization(fixture.workspaceDb, {
       artifactId: fixture.artifactId,
@@ -6696,7 +6698,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     expect(listWorkspaceChangeSets(fixture.workspaceDb, fixture.workspaceId)).toEqual([]);
     expect(listWorkspaceSyncReviews(fixture.workspaceDb, fixture.workspaceId)).toEqual([]);
 
-    fixture.store.createArtifact = createArtifact;
+    publication.mockRestore();
     await new Promise((resolve) => setTimeout(resolve, 1_100));
     await ingestWorkspaceChangeFixture(fixture, fixture.record);
 
@@ -7615,6 +7617,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       threadId: turn.threadId,
       turnId: turn.id,
     });
+    await shutdownControlStoreWorkerClient();
     rmSync(workspaceDbPath(dataRoot, 'ws_00000000-0000-7000-8000-000000000001'), { force: true });
     mkdirSync(workspaceDbPath(dataRoot, 'ws_00000000-0000-7000-8000-000000000001'), {
       recursive: true,
@@ -10077,7 +10080,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const backend = new FakeWorkerGovernanceBackend();
     const materialize = backend.materialize.bind(backend);
     const materializeSpy = vi.spyOn(backend, 'materialize').mockImplementation(async (...args) => {
-      args[1]?.beforeMaterialization?.();
+      await args[1]?.beforeMaterialization?.();
       expect(
         getWorkerBackendSession(coreDb, testEntityId('attempt', `lease_${turn.id}`))
       ).toMatchObject({
@@ -11222,7 +11225,7 @@ class FakeWorkerGovernanceBackend implements WorkerGovernanceBackend {
     environmentPackage: AgentEnvironmentPackage,
     context?: Parameters<WorkerGovernanceBackend['materialize']>[1]
   ): Promise<WorkerGovernanceMaterializationRecord> {
-    context?.beforeMaterialization?.();
+    await context?.beforeMaterialization?.();
     this.calls.push('materialize');
     this.lastContext = context ?? null;
     this.lastPackage = environmentPackage;
@@ -11567,15 +11570,17 @@ describe('retained-record failure publication', () => {
         expect(backend.calls).toContain('cleanupSession');
         expect(backend.calls).not.toContain('submit');
         const turn = fixture.store.getTurnById(fixture.turn.id);
-        const disk = readFileSync(
-          join(
-            fixture.coreDb.dataRoot,
-            'workspaces/ws_00000000-0000-7000-8000-000000000001/threads/th_00000000-0000-7000-8000-000000000001/turns',
-            fixture.turn.id,
-            'turn.json'
-          ),
-          'utf8'
-        );
+        const retainedDb = openTestWorkspaceDb(fixture.coreDb);
+        let disk: string;
+        try {
+          disk = (
+            retainedDb.sqlite
+              .prepare('SELECT record_json FROM control_turns WHERE id=?')
+              .get(fixture.turn.id) as { record_json: string }
+          ).record_json;
+        } finally {
+          retainedDb.sqlite.close();
+        }
         expect(turn).toMatchObject({
           status: 'failed',
           error: {

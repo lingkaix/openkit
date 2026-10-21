@@ -1436,6 +1436,7 @@ describe('SimulatedTurnExecutor', () => {
       await new Promise<void>((resolve) => setImmediate(resolve));
       executions.mockRestore();
       coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(coreDb.dataRoot, { recursive: true, force: true });
     }
   });
