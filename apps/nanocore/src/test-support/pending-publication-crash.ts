@@ -100,7 +100,7 @@ if (retainedRoot) {
       createdAt: now,
       completedAt: now,
     });
-    raiseRecordedPendingRequest(store, db.sqlite, {
+    await raiseRecordedPendingRequest(store, db.sqlite, {
       requestId,
       requestItemId: pendingRequestItemId(requestId, 'request'),
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
