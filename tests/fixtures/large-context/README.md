@@ -12,7 +12,7 @@ Expected observations come from accepted owners at commit `254648075222463bccbee
 - [Context Package](https://github.com/lingkaix/openkit/blob/254648075222463bccbee7f7ef9db71c5c38d7bd/docs/specs/20260703-worker_context_package.md): Personal Scope Projection; Selection Pipeline; bounded representation and replay requirements.
 - [Retrieval Kernel](https://github.com/lingkaix/openkit/blob/254648075222463bccbee7f7ef9db71c5c38d7bd/docs/specs/20261014-retrieval_kernel.md): source ownership, scope filtering before ranking, representation coverage and failure semantics.
 
-The engineer's #190 ruling and delegation are in `/home/simonx/AI/temp/backlog-20261015/engineer-rulings-20261015.md`. Independent corrections and the required scenario additions are in `/home/simonx/AI/temp/research/2026-10-15-large-context/consultant.md`. Consultant corrections govern the synthesis. Planning files in `/home/simonx/AI/temp/backlog-20261015/large-context-impl/` supplied context, not authority. Accepted owner text must be read at the pinned commit when the local implementation branch has not integrated it.
+The engineer's #190 ruling and delegation are in `~/AI/temp/backlog-20261015/engineer-rulings-20261015.md`. Independent corrections and the required scenario additions are in `~/AI/temp/research/2026-10-15-large-context/consultant.md`. Consultant corrections govern the synthesis. Planning files in `~/AI/temp/backlog-20261015/large-context-impl/` supplied context, not authority. Accepted owner text must be read at the pinned commit when the local implementation branch has not integrated it.
 
 Small originals were specified as literal byte patterns. Their SHA-256 values were computed once with Python's standard `hashlib`, independently of the Node fixture functions. ZIP bytes were generated once with Python's standard `zipfile`, fixed timestamps, Unix mode fields, and no extraction. Truncation removes seven end-record bytes. The CRC fault changes both stored CRC fields to zero. The size fault changes both advertised expanded sizes to one while retaining nine actual body bytes. `cases.json` retains frozen base64 bytes, sizes, SHA-256 values, body digests, and exact local/central offsets. Node's built-in SHA-256, CRC-32 and bounded raw inflation check those bytes. Compression output is frozen; regeneration with another zlib version is not required.
 
@@ -21,8 +21,8 @@ Small originals were specified as literal byte patterns. Their SHA-256 values we
 Run from the repository root with the existing pinned Node installation. No install, service, network, container, provider, or archive extraction is required.
 
 ```bash
-export PATH=/home/simonx/.local/share/mise/installs/node/24.18.0/bin:$PATH
-/home/simonx/AI/temp/backlog-20261015/bin/run-slot.sh node --test --test-concurrency=1 tests/large-context-fixtures.test.mjs
+export PATH=$HOME/.local/share/mise/installs/node/24.18.0/bin:$PATH
+$HOME/AI/temp/backlog-20261015/bin/run-slot.sh node --test --test-concurrency=1 tests/large-context-fixtures.test.mjs
 ```
 
 The deliberate negative control flips one original byte and uses the same SHA-256 comparison as the positive check. The test must observe that mismatch. Invalid UTF-8 also must fail strict decoding, and replacing its bytes through text decoding must change its digest. These checks prove that the fixture oracle can detect byte damage. They are not production failure tests.

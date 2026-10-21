@@ -28,7 +28,7 @@ The branch is rebased onto origin/main `0d6eee79667c3124d8b06ea5ae267d41a47cb7eb
 
 ## Evidence And Closeout
 
-[Builder report](#builder-report) records exact observed checks, blocked owner decisions, pre-existing gaps, WP1 changes, deferred patch, changed paths and residual risks. The independent Grok review at `/home/simonx/AI/temp/research/2026-10-14-retrieval-kernel/r2-review.md` returned `CHANGES REQUIRED` against `ef1bb84b`. The correction evidence is recorded below; renewed acceptance and the coordinator's post-rc.6 merge decision remain pending. Builder verification does not approve the owner amendments or publication.
+[Builder report](#builder-report) records exact observed checks, blocked owner decisions, pre-existing gaps, WP1 changes, deferred patch, changed paths and residual risks. The independent Grok review at `~/AI/temp/research/2026-10-14-retrieval-kernel/r2-review.md` returned `CHANGES REQUIRED` against `ef1bb84b`. The correction evidence is recorded below; renewed acceptance and the coordinator's post-rc.6 merge decision remain pending. Builder verification does not approve the owner amendments or publication.
 
 ## Intent Revision 3
 
@@ -52,7 +52,7 @@ Source: the coordinator's two-phase dispatch on 2026-10-15, carrying the enginee
 
 ## Intent Revision 8
 
-Source: the coordinator's 2026-10-15 Phase A acceptance dispatch. The coordinator and Consultant agreed items 1–9 and Round 1 A/B/C in `/home/simonx/AI/temp/research/2026-10-14-retrieval-kernel/r2-phase-a-consultant.md`, ending `ROUND 1: AGREED`, under the engineer's delegation. Insert the accepted path grammar, one immutable file per trace, narrowing request type, qualified results, current-access export and remint rules, and threadless direct User App exception. Remove the review holds without changing the quotation records. Commit the documentation revision separately, run the same checks, then continue directly into Phase B from those owners. Do not amend the prior commit or push. One writer per path; no Claude-family agent, compatibility reader, second writer or weakened check is authorized.
+Source: the coordinator's 2026-10-15 Phase A acceptance dispatch. The coordinator and Consultant agreed items 1–9 and Round 1 A/B/C in `~/AI/temp/research/2026-10-14-retrieval-kernel/r2-phase-a-consultant.md`, ending `ROUND 1: AGREED`, under the engineer's delegation. Insert the accepted path grammar, one immutable file per trace, narrowing request type, qualified results, current-access export and remint rules, and threadless direct User App exception. Remove the review holds without changing the quotation records. Commit the documentation revision separately, run the same checks, then continue directly into Phase B from those owners. Do not amend the prior commit or push. One writer per path; no Claude-family agent, compatibility reader, second writer or weakened check is authorized.
 
 ## Intent Revision 9
 
@@ -294,7 +294,7 @@ The pre-commit `publicationInputsAt` comparison returned `publicationInputsChang
 
 ## Scope Correction Checkpoint
 
-An independent Consultant checked this narrower route against the base and owners. Git pinning, v4 scopes and expanded history traces already existed as unimplemented targets before R2. The existing file-backed owner and one-Workspace content-digest trace remain during this bounded lexical replacement. Exact observed canonical digests identify internal kernel source versions only; they are not notebook commits, retained history or ABA protection. Current source/destination authorization, complete lexical enumeration, dispositions, digest checks, one trace and shared tokenizer remain necessary retrieval work. All earlier notebook editing and portability WIP is preserved in `/home/simonx/AI/temp/rc6/r2-deferred/20261015-knowledge-notebook-cutover.patch` (361884 bytes; SHA-256 `9ff2668082d155755f9f58055c2aaf5d4fc841993c3da58f4739c3c665e367fb`). It is incomplete and unreviewed. The committed notebook primitive slice is removed by a later coherent commit rather than rewritten from history.
+An independent Consultant checked this narrower route against the base and owners. Git pinning, v4 scopes and expanded history traces already existed as unimplemented targets before R2. The existing file-backed owner and one-Workspace content-digest trace remain during this bounded lexical replacement. Exact observed canonical digests identify internal kernel source versions only; they are not notebook commits, retained history or ABA protection. Current source/destination authorization, complete lexical enumeration, dispositions, digest checks, one trace and shared tokenizer remain necessary retrieval work. All earlier notebook editing and portability WIP is preserved in `~/AI/temp/rc6/r2-deferred/20261015-knowledge-notebook-cutover.patch` (361884 bytes; SHA-256 `9ff2668082d155755f9f58055c2aaf5d4fc841993c3da58f4739c3c665e367fb`). It is incomplete and unreviewed. The committed notebook primitive slice is removed by a later coherent commit rather than rewritten from history.
 
 The bounded current-file lexical replacement is complete. The real CJK answer, full enumeration/disposition and canonical-change regressions passed as recorded below. Pre-existing notebook and portability implementation is not a deciding oracle for this slice.
 
@@ -381,7 +381,7 @@ Current coordinator status: items 1 (union pins) and 2 (combined trace ledger) a
 - Private-Thread deletion recovery export has a pre-existing admission limitation: its current export guard requires separate administrator eligibility, while the deletion caller does not supply that flag. [Multi-User Workspace:533](../../specs/20260715-multi_user_workspace_system.md:533) requires the exact internal recovery export, and [Thread Visibility:85](../../specs/20260909-thread_visibility_and_sharing.md:85) preserves private ownership on recovery. The R2 trace correction preserves that existing private-Thread guard and changes only trace admission under the already verified deletion request; broader recovery behavior remains a separate Workspace owner follow-up.
 - The pre-existing Server maintenance configuration is outside this replacement: [scoped learning:88](../../specs/20260909-personal_memory_and_knowledge_learning.md:88) and the notebook delegation owner. It is no longer an R2 WP1 dependency after the scope correction.
 
-The removed WIP is saved at `/home/simonx/AI/temp/rc6/r2-deferred/20261015-knowledge-notebook-cutover.patch`: 361884 bytes; SHA-256 `9ff2668082d155755f9f58055c2aaf5d4fc841993c3da58f4739c3c665e367fb`. It is incomplete and unreviewed. Commit `730e59a4` removes the earlier notebook primitive slice without rewriting history. No notebook implementation file remains in the final net diff.
+The removed WIP is saved at `~/AI/temp/rc6/r2-deferred/20261015-knowledge-notebook-cutover.patch`: 361884 bytes; SHA-256 `9ff2668082d155755f9f58055c2aaf5d4fc841993c3da58f4739c3c665e367fb`. It is incomplete and unreviewed. Commit `730e59a4` removes the earlier notebook primitive slice without rewriting history. No notebook implementation file remains in the final net diff.
 
 ### WP1-owned Follow-up
 

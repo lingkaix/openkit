@@ -21,7 +21,7 @@ import urllib.parse
 import urllib.request
 import uuid
 
-PRIVATE_BASE = Path("/home/simonx/.cache/openkit-tmp/lrt")
+PRIVATE_BASE = Path.home() / ".cache/openkit-tmp/lrt"
 GUEST = "lrt-p14-rehearsal"
 CARRIER = "lrt-p14-network"
 APP = "lrt-p14-upgrade"
