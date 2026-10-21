@@ -150,8 +150,10 @@ export async function terminalizeGovernedWorkerTurn(
       if (composeSession) {
         terminalSessionPublication = projection;
         terminalSession = { ...terminalSession, ...projection };
-      } else
-        terminalSession = await input.store.updateAgentSession(input.agentSessionId, projection);
+      } else {
+        const { id: _id, ...patch } = projection;
+        terminalSession = await input.store.updateAgentSession(input.agentSessionId, patch);
+      }
     } catch (error) {
       errors.push(error);
       terminalSession = readAgentSession(input.store, input.agentSessionId);
