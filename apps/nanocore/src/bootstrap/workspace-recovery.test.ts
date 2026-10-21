@@ -44,6 +44,11 @@ import {
   type WorkspaceRecoveryCliReport,
   WorkspaceRecoveryError,
 } from '../storage/workspace-recovery-cli.js';
+import {
+  admitWorkspaceBackup,
+  finishWorkspaceRecovery,
+  type WorkspaceTargetRecoveryInput,
+} from '../storage/workspace-restore.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -1070,5 +1075,371 @@ describe('D0 12:49Z recurring-history ruling / WM 182–188, 382, 431–432', ()
     await server.stop();
     expect(schedulingState(targetRoot, f.badId)).toEqual(before);
     expect(readFileSync(historyPath, 'utf8')).toBe(history);
+  }, 120_000);
+});
+
+/** Copies each retained SQLite directory before observing the target's crash transaction. */
+function crashTargetState(dataRoot: string, workspaceId: string, requestId: string) {
+  const observer = mkdtempSync(join(tmpdir(), 'd0-target-observer-'));
+  try {
+    const read = (path: string, name: string, query: (db: Database.Database) => unknown) => {
+      const copy = join(observer, name);
+      cpSync(dirname(path), copy, { recursive: true });
+      const db = new Database(join(copy, basename(path)), { readonly: true, fileMustExist: true });
+      try {
+        expect(db.pragma('integrity_check', { simple: true })).toBe('ok');
+        return query(db);
+      } finally {
+        db.close();
+      }
+    };
+    const core = read(coreDbPath(dataRoot), 'core', (db) => ({
+      admission: db
+        .prepare('SELECT * FROM workspace_recovery_admissions WHERE admission_id=?')
+        .get(requestId),
+      registry: db
+        .prepare('SELECT * FROM workspace_registry WHERE workspace_id=?')
+        .all(workspaceId),
+      members: db
+        .prepare('SELECT * FROM workspace_members WHERE workspace_id=? ORDER BY user_id')
+        .all(workspaceId),
+      queued: db
+        .prepare('SELECT * FROM scheduler_admission_entries WHERE workspace_id=?')
+        .all(workspaceId),
+      attempts: db
+        .prepare('SELECT * FROM scheduler_execution_attempts WHERE workspace_id=?')
+        .all(workspaceId),
+    })) as {
+      admission: { state: string; backup_id: string; candidate_ref: string; proof_json: string };
+      registry: Record<string, unknown>[];
+      members: Record<string, unknown>[];
+      queued: unknown[];
+      attempts: unknown[];
+    };
+    const final = join(dataRoot, 'workspaces', workspaceId);
+    const placed = existsSync(final);
+    const candidatePresent = existsSync(core.admission.candidate_ref);
+    const workspaceRoot = placed ? final : core.admission.candidate_ref;
+    const workspace = read(join(workspaceRoot, 'db/workspace.sqlite'), 'workspace', (db) => ({
+      authority: db.prepare('SELECT * FROM control_workspaces WHERE id=?').get(workspaceId),
+      turns: db.prepare('SELECT * FROM control_turns ORDER BY id').all(),
+      calls: db.prepare('SELECT * FROM capability_calls ORDER BY call_id').all(),
+      pending: db.prepare('SELECT * FROM pending_requests ORDER BY request_id').all(),
+      audit: db.prepare('SELECT * FROM audit_events ORDER BY rowid').all(),
+    })) as {
+      authority: { record_json: string };
+      turns: unknown[];
+      calls: Record<string, unknown>[];
+      pending: unknown[];
+      audit: unknown[];
+    };
+    return { core, workspace, placed, candidatePresent };
+  } finally {
+    rmSync(observer, { recursive: true, force: true });
+  }
+}
+
+const targetCrashPoints: readonly WorkspaceRecoveryBoundary[] = [
+  'before-target-rename',
+  'after-target-rename',
+  'before-registration-commit',
+  'after-registration-commit',
+];
+
+/** Crashes the real admission call without running its catch/finally or an injected storage double. */
+async function crashTargetAdmission(
+  input: WorkspaceTargetRecoveryInput,
+  point: WorkspaceRecoveryBoundary
+) {
+  const child = spawn(
+    process.execPath,
+    [
+      '--import',
+      'tsx',
+      '--input-type=module',
+      '-e',
+      `
+    import { writeSync } from 'node:fs';
+    import { admitWorkspaceBackup } from ${JSON.stringify(new URL('../storage/workspace-restore.ts', import.meta.url).href)};
+    const visited = [];
+    try {
+      await admitWorkspaceBackup(${JSON.stringify(input)}, {
+        atBoundary(point) {
+          visited.push(point);
+          if (point === ${JSON.stringify(point)}) {
+            writeSync(1, JSON.stringify({ point, visited }));
+            process.exit(73);
+          }
+        },
+      });
+      writeSync(1, JSON.stringify({ returnedWithoutCrash: true, visited }));
+      process.exit(74);
+    } catch (error) {
+      writeSync(1, JSON.stringify({ code: error.code, visited }));
+      process.exit(75);
+    }
+  `,
+    ],
+    {
+      cwd: fileURLToPath(new URL('../../', import.meta.url)),
+      env: { PATH: process.env.PATH, TMPDIR: tmpdir() },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }
+  );
+  let output = '';
+  for (const stream of [child.stdout, child.stderr])
+    stream.on('data', (chunk) => {
+      output = (output + String(chunk)).slice(-8192);
+    });
+  let exited = false;
+  const done = new Promise<number | null>((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', (code) => {
+      exited = true;
+      resolve(code);
+    });
+  });
+  const deadline = setTimeout(() => child.kill('SIGKILL'), 30_000);
+  deadline.unref();
+  disposals.push(async () => {
+    if (!exited) child.kill('SIGKILL');
+    await done.catch(() => undefined);
+    clearTimeout(deadline);
+  });
+  try {
+    expect(await done, output).toBe(73);
+    expect(JSON.parse(output)).toEqual({
+      point,
+      visited: targetCrashPoints.slice(0, targetCrashPoints.indexOf(point) + 1),
+    });
+  } finally {
+    clearTimeout(deadline);
+  }
+}
+
+describe('D0 RED-3 target crash boundaries / WM 434–441', () => {
+  it.each(
+    targetCrashPoints
+  )('%s: cold publication, isolated boot and explicit same-request finish', async (point) => {
+    const source = await fixture(true);
+    // Use a new source identity so the target can retain its ordinary demo Workspace as a healthy sibling.
+    const workspaceId = source.goodId;
+    const commandRoot = mkdtempSync(join(tmpdir(), 'd0-target-crash-'));
+    disposals.push(() => rmSync(commandRoot, { recursive: true, force: true }));
+    const bundleRoot = join(commandRoot, 'bundle');
+    const releaseIdentityPath = join(commandRoot, 'release-identity.json');
+    const expectedRelease = { version: 'v0.1.0-rc.11', buildId: '1'.repeat(40) };
+    writeFileSync(
+      releaseIdentityPath,
+      JSON.stringify({ releaseTag: expectedRelease.version, sourceCommit: expectedRelease.buildId })
+    );
+    const backupId = allocateEntityId('wsbak');
+    const capture = await runCli(
+      [
+        'capture',
+        '--source-data-root',
+        source.dataRoot,
+        '--workspace-id',
+        workspaceId,
+        '--expected-source-deployment-id',
+        readDataRootLayoutMarker(source.dataRoot).deploymentId,
+        '--bundle-root',
+        bundleRoot,
+        '--purpose',
+        'move',
+        '--backup-id',
+        backupId,
+      ],
+      () => {},
+      { releaseIdentityPath }
+    );
+    await expect(
+      moveOutWorkspace({
+        dataRoot: source.dataRoot,
+        workspaceId,
+        backupId,
+        bundleRoot,
+        expectedRelease,
+        expectedRevision: capture.capture!.capturedRevision,
+      })
+    ).resolves.toMatchObject({ disposition: 'moved-out' });
+    const sealedBytes = bytes(bundleRoot);
+    const sourceState = crashSourceState({ ...source, badId: workspaceId }, backupId);
+    const targetRoot = join(commandRoot, 'target');
+    await createDemoStore({ dataRoot: targetRoot });
+    const core = openCoreDb(targetRoot);
+    const ownerId = ensureLocalUser(core);
+    const memberId = allocateEntityId('usr');
+    core.sqlite
+      .prepare(
+        "INSERT INTO users (id,kind,display_name,email,email_verified,created_at,updated_at,status) VALUES (?,'human','Crash probe member',?,0,?,?,'active')"
+      )
+      .run(memberId, `${memberId}@example.invalid`, Date.now(), Date.now());
+    recordWorkspaceOwnerMembership({
+      coreDb: core,
+      workspaceId: DEMO_WORKSPACE_ID,
+      ownerUserId: ownerId,
+    });
+    const credential = createOpenKitAccessTokenRecord(core, {
+      ownerUserId: ownerId,
+      scope: 'workspace',
+      workspaceIds: [DEMO_WORKSPACE_ID, workspaceId],
+      expiresAt: '2999-01-01T00:00:00.000Z',
+    });
+    core.sqlite.close();
+    const sibling = openWorkspaceDb(targetRoot, DEMO_WORKSPACE_ID);
+    const siblingCall = allocateEntityId('cap');
+    startCapabilityCall({
+      workspaceDb: sibling,
+      workspaceId: DEMO_WORKSPACE_ID,
+      callId: siblingCall,
+      authorityActor: { kind: 'user', id: ownerId },
+      family: 'llm',
+      operation: 'responses.create',
+      capabilityId: 'llm.responses',
+      requestId: randomUUID(),
+      redactionClass: 'metadata-only',
+    });
+    sibling.sqlite.close();
+    await shutdownControlStoreWorkerClient();
+    const requestId = randomUUID();
+    const input: WorkspaceTargetRecoveryInput = {
+      command: 'move-in',
+      dataRoot: targetRoot,
+      bundleRoot,
+      requestId,
+      targetOwnerId: ownerId,
+      memberMappings: [{ sourceAccountId: source.ownerId, targetAccountId: memberId }],
+      expectedRelease,
+    };
+    await crashTargetAdmission(input, point);
+    const placed = point !== 'before-target-rename';
+    const committed = point === 'after-registration-commit';
+    const cold = crashTargetState(targetRoot, workspaceId, requestId);
+    expect.soft(cold.placed).toBe(placed);
+    expect.soft(cold.candidatePresent).toBe(!placed);
+    expect.soft(cold.core.admission).toMatchObject({
+      state: committed ? 'finished' : 'prepared',
+      backup_id: backupId,
+    });
+    const proof = JSON.parse(cold.core.admission.proof_json);
+    expect
+      .soft(proof.capture)
+      .toMatchObject({ backupId, workspaceId, manifestDigest: capture.capture!.manifestDigest });
+    expect
+      .soft(proof.result)
+      .toMatchObject({ disposition: committed ? 'imported' : 'quarantined', workspaceId });
+    const expectedRegistry = [
+      expect.objectContaining({
+        workspace_id: workspaceId,
+        owner_user_id: ownerId,
+        status: 'active',
+      }),
+    ];
+    const expectedMembers = [ownerId, memberId]
+      .sort()
+      .map((user_id) =>
+        expect.objectContaining({ workspace_id: workspaceId, user_id, status: 'active' })
+      );
+    expect.soft(cold.core.registry).toEqual(committed ? expectedRegistry : []);
+    expect.soft(cold.core.members).toEqual(committed ? expectedMembers : []);
+    expect.soft(JSON.parse(cold.workspace.authority.record_json)).toMatchObject({
+      id: workspaceId,
+      importedFrom: {
+        sourceWorkspaceId: workspaceId,
+        sourceDeploymentId: capture.capture!.sourceDeploymentId,
+        manifestDigest: capture.capture!.manifestDigest,
+      },
+    });
+    expect
+      .soft(cold.workspace.calls)
+      .toEqual([expect.objectContaining({ call_id: source.callId, status: 'unknown' })]);
+    expect.soft(cold.workspace.pending).toEqual([]);
+    expect.soft(cold.core.queued).toEqual([]);
+    expect.soft(cold.core.attempts).toEqual([]);
+    expect.soft(bytes(bundleRoot)).toEqual(sealedBytes);
+
+    const starting = boot(targetRoot);
+    await expect.soft(starting).resolves.toMatchObject({ call: expect.any(Function) });
+    const server = await starting.catch(() => undefined);
+    if (server) {
+      const healthy = await server.call(
+        'thread.create',
+        {
+          workspaceId: DEMO_WORKSPACE_ID,
+          name: 'Healthy beside target crash',
+          requestId: randomUUID(),
+        },
+        credential.secret
+      );
+      expect.soft(healthy.status, await healthy.clone().text()).toBe(200);
+      const affected = committed
+        ? await server.call('thread.list', { workspaceId }, credential.secret)
+        : await server.call(
+            'thread.create',
+            { workspaceId, name: 'Must not publish unfinished target', requestId: randomUUID() },
+            credential.secret
+          );
+      expect
+        .soft(committed ? [200] : [403, 409], await affected.clone().text())
+        .toContain(affected.status);
+      await server.stop();
+      expect.soft(callStatus(targetRoot, DEMO_WORKSPACE_ID, siblingCall)).toBe('unknown');
+    }
+    expect.soft(crashTargetState(targetRoot, workspaceId, requestId)).toEqual(cold);
+    expect.soft(bytes(bundleRoot)).toEqual(sealedBytes);
+    expect.soft(crashSourceState({ ...source, badId: workspaceId }, backupId)).toEqual(sourceState);
+
+    const selection = { kind: 'admission' as const, requestId };
+    await expect
+      .soft(
+        runCli(
+          [
+            'inspect',
+            '--data-root',
+            targetRoot,
+            '--workspace-id',
+            workspaceId,
+            '--request-id',
+            requestId,
+          ],
+          () => {},
+          { releaseIdentityPath }
+        )
+      )
+      .resolves.toMatchObject({
+        disposition: committed ? 'imported' : 'quarantined',
+        workspaceId,
+        selection,
+        capture: { backupId, manifestDigest: capture.capture!.manifestDigest },
+      });
+    const recovering = finishWorkspaceRecovery({ dataRoot: targetRoot, workspaceId, selection });
+    await expect.soft(recovering).resolves.toMatchObject({
+      command: 'finish',
+      disposition: 'imported',
+      workspaceId,
+      selection,
+      nextAction: 'none',
+      capture: { backupId, manifestDigest: capture.capture!.manifestDigest },
+    });
+    const recovered = await recovering.catch(() => undefined);
+    // The required result assertion already failed; do not mask it with dependent retry errors.
+    if (!recovered) return;
+    const finished = crashTargetState(targetRoot, workspaceId, requestId);
+    expect.soft(finished.core.admission.state).toBe('finished');
+    expect.soft(finished.placed).toBe(true);
+    expect.soft(finished.candidatePresent).toBe(false);
+    expect.soft(finished.core.registry).toEqual(expectedRegistry);
+    expect.soft(finished.core.members).toEqual(expectedMembers);
+    expect.soft(finished.workspace).toEqual(cold.workspace);
+    expect.soft(finished.core.queued).toEqual([]);
+    expect.soft(finished.core.attempts).toEqual([]);
+    const retry = await admitWorkspaceBackup(input);
+    expect.soft(retry).toEqual(JSON.parse(finished.core.admission.proof_json).result);
+    await expect
+      .soft(finishWorkspaceRecovery({ dataRoot: targetRoot, workspaceId, selection }))
+      .resolves.toEqual(recovered);
+    expect.soft(crashTargetState(targetRoot, workspaceId, requestId)).toEqual(finished);
+    expect.soft(bytes(bundleRoot)).toEqual(sealedBytes);
   }, 120_000);
 });
