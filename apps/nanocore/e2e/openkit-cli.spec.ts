@@ -38,7 +38,7 @@ afterEach(async () => {
 describe('OpenKit administrator CLI e2e', () => {
   it('diagnoses NanoCore and persists one public mutation', async () => {
     const dataRoot = await mkdtemp(join(tmpdir(), 'openkit-cli-admin-'));
-    seedDemoWorkspaceDataRoot(dataRoot);
+    await seedDemoWorkspaceDataRoot(dataRoot);
     await seedDemoWorkspaceAuthority(dataRoot);
     const { openCoreDb } = await import('../dist/storage/db.js');
     const { createOpenKitAccessTokenRecord } = await import('../dist/auth/access-token-store.js');

@@ -1,19 +1,12 @@
 // openkit-test-platform: posix
 // The refusal helper preserves raw symbolic-link targets under the POSIX contract.
 import { createHash } from 'node:crypto';
-import {
-  cpSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  readlinkSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { cpSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { KnowledgeBaseIdSchema } from '@openkit/protocol';
-import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
+import Database from 'better-sqlite3';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   seedDemoWorkspaceAuthority,
   seedDemoWorkspaceDataRoot,
@@ -23,13 +16,17 @@ import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { readWorkspaceNotebookIndexSource } from '../knowledge/notebook-index-source.js';
 import { parseOkfDocument } from '../knowledge/okf.js';
 import { FsStore } from '../lib/store.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { workspaceDbPath } from '../storage/fs-layout.js';
 import { readWorkspaceKnowledgeDerivedIndexes } from '../storage/index-rebuild.js';
 import { DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from './demo-store.js';
+import { createTestStore } from './store.js';
 
 const workspaceIds = [DEMO_WORKSPACE_ID, 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28'];
 const roots: string[] = [];
 
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -50,13 +47,20 @@ function dataRoot(): string {
  * @param workspaceId Owning Workspace that must be quarantined.
  * @returns Reopened Store and isolated root for additional native readback checks.
  */
-function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
+async function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
+  await shutdownControlStoreWorkerClient();
   const restartRoot = mkdtempSync(join(tmpdir(), 'openkit-local-refusal-'));
-  onTestFinished(() => rmSync(restartRoot, { recursive: true, force: true }));
-  const seed = new FsStore({ dataRoot: restartRoot });
-  const sibling = seed.createWorkspace('Healthy refusal control');
-  const siblingThread = seed.createThread(sibling.id, 'Retained sibling thread');
+  roots.push(restartRoot);
+  const seed = createTestStore({ dataRoot: restartRoot });
+  const sibling = await seed.createWorkspace('Healthy refusal control');
+  const siblingThread = await seed.createThread(sibling.id, 'Retained sibling thread');
   const siblingBefore = seed.getWorkspace(sibling.id);
+  await shutdownControlStoreWorkerClient();
+  // Initialize readonly SQLite sidecars before cloning; preserve the original database bytes.
+  const authorityPath = workspaceDbPath(dataRoot, workspaceId);
+  const authorityBeforeRead = readFileSync(authorityPath);
+  readWorkspaceMetadata(dataRoot, workspaceId);
+  expect(readFileSync(authorityPath).equals(authorityBeforeRead)).toBe(true);
   cpSync(dataRoot, restartRoot, { recursive: true, verbatimSymlinks: true });
 
   /** Records every directory, link target and file byte, including the absence of deleted entries. */
@@ -87,24 +91,53 @@ function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
   expect(() => reopened.getWorkspace(workspaceId)).toThrow(
     expect.objectContaining({ code: 'recovery_required' })
   );
-  expect(() => reopened.createThread(workspaceId, 'Must remain refused')).toThrow(
+  await expect(reopened.createThread(workspaceId, 'Must remain refused')).rejects.toThrow(
     expect.objectContaining({ code: 'recovery_required' })
   );
   expect(reopened.getWorkspace(sibling.id)).toEqual(siblingBefore);
   expect(reopened.getThread(sibling.id, siblingThread.id)).toEqual(siblingThread);
-  const progress = reopened.createThread(sibling.id, 'Healthy sibling progress');
+  const progress = await reopened.createThread(sibling.id, 'Healthy sibling progress');
+  await shutdownControlStoreWorkerClient();
   expect(new FsStore({ dataRoot: restartRoot }).getThread(sibling.id, progress.id)).toEqual(
     progress
   );
-  expect(snapshot(refusedRoot)).toEqual(before);
-  expect(snapshot(join(dataRoot, 'workspaces', workspaceId))).toEqual(before);
+  for (const root of [refusedRoot, join(dataRoot, 'workspaces', workspaceId)]) {
+    const after = snapshot(root);
+    expect(Object.keys(after).sort()).toEqual(Object.keys(before).sort());
+    for (const [key, expected] of Object.entries(before)) {
+      const actual = after[key];
+      // Compare every byte without expanding a whole database into the failure log.
+      if (Buffer.isBuffer(expected)) {
+        expect(Buffer.isBuffer(actual) && actual.equals(expected), `${root}:${key}`).toBe(true);
+      } else {
+        expect(actual, `${root}:${key}`).toBe(expected);
+      }
+    }
+  }
   return { store: reopened, dataRoot: restartRoot };
+}
+
+/** Reads raw retained JSON without initialization, migration, decoding or repair. */
+function readWorkspaceMetadata(dataRoot: string, workspaceId: string): string {
+  const sqlite = new Database(workspaceDbPath(dataRoot, workspaceId), {
+    readonly: true,
+    fileMustExist: true,
+  });
+  try {
+    const row = sqlite
+      .prepare('SELECT record_json FROM control_workspaces WHERE id = ?')
+      .get(workspaceId) as { record_json: string } | undefined;
+    if (!row) throw new Error('The retained Workspace metadata row is missing.');
+    return row.record_json;
+  } finally {
+    sqlite.close();
+  }
 }
 
 describe('shared black-box demo fixture contract', () => {
   it('loads both current Workspace records and the starter Thread through the native store', async () => {
     const root = dataRoot();
-    seedDemoWorkspaceDataRoot(root);
+    await seedDemoWorkspaceDataRoot(root);
     await seedDemoWorkspaceAuthority(root);
 
     const store = new FsStore({ dataRoot: root });
@@ -133,7 +166,7 @@ describe('shared black-box demo fixture contract', () => {
 
   it('rebuilds canonical Git pages and preserves each scope default across seed retry and reopen', async () => {
     const root = dataRoot();
-    seedDemoWorkspaceDataRoot(root);
+    await seedDemoWorkspaceDataRoot(root);
     await seedDemoWorkspaceAuthority(root);
 
     const bindings = new Map<string, string>();
@@ -159,7 +192,7 @@ describe('shared black-box demo fixture contract', () => {
       'Drive the workspace protocol through a real Codex-backed local agent adapter.'
     );
 
-    seedDemoWorkspaceDataRoot(root);
+    await seedDemoWorkspaceDataRoot(root);
     await seedDemoWorkspaceAuthority(root);
     const reopened = new FsStore({ dataRoot: root });
     const pages = reopened.listKnowledge(DEMO_WORKSPACE_ID);
@@ -198,31 +231,40 @@ describe('shared black-box demo fixture contract', () => {
     999,
   ])('refuses retained Workspace marker %s without rewriting it on seed retry', async (schemaVersion) => {
     const root = dataRoot();
-    seedDemoWorkspaceDataRoot(root);
+    await seedDemoWorkspaceDataRoot(root);
     await seedDemoWorkspaceAuthority(root);
     const siblingId = workspaceIds[1]!;
     const sibling = new FsStore({ dataRoot: root }).getWorkspace(siblingId);
-    const path = join(root, 'workspaces', DEMO_WORKSPACE_ID, 'workspace-record.json');
-    const record = JSON.parse(readFileSync(path, 'utf8'));
+    await shutdownControlStoreWorkerClient();
+    const record = JSON.parse(readWorkspaceMetadata(root, DEMO_WORKSPACE_ID));
     delete record.schemaVersion;
     if (schemaVersion !== undefined) record.schemaVersion = schemaVersion;
     const bytes = `${JSON.stringify(record)}\n`;
-    writeFileSync(path, bytes);
+    const sqlite = new Database(workspaceDbPath(root, DEMO_WORKSPACE_ID), {
+      fileMustExist: true,
+    });
+    try {
+      const result = sqlite
+        .prepare('UPDATE control_workspaces SET record_json = ? WHERE id = ?')
+        .run(bytes, DEMO_WORKSPACE_ID);
+      expect(result.changes).toBe(1);
+    } finally {
+      sqlite.close();
+    }
 
-    seedDemoWorkspaceDataRoot(root);
+    await seedDemoWorkspaceDataRoot(root);
     await seedDemoWorkspaceAuthority(root);
-    const restarted = expectLocalWorkspaceRefusal(root, DEMO_WORKSPACE_ID);
+    const restarted = await expectLocalWorkspaceRefusal(root, DEMO_WORKSPACE_ID);
     expect(restarted.store.getWorkspace(siblingId)).toEqual(sibling);
-    const progress = restarted.store.createThread(siblingId, 'Other demo Workspace progresses');
+    const progress = await restarted.store.createThread(
+      siblingId,
+      'Other demo Workspace progresses'
+    );
+    await shutdownControlStoreWorkerClient();
     expect(new FsStore({ dataRoot: restarted.dataRoot }).getThread(siblingId, progress.id)).toEqual(
       progress
     );
-    expect(
-      readFileSync(
-        join(restarted.dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'workspace-record.json'),
-        'utf8'
-      )
-    ).toBe(bytes);
-    expect(readFileSync(path, 'utf8')).toBe(bytes);
+    expect(readWorkspaceMetadata(restarted.dataRoot, DEMO_WORKSPACE_ID)).toBe(bytes);
+    expect(readWorkspaceMetadata(root, DEMO_WORKSPACE_ID)).toBe(bytes);
   });
 });

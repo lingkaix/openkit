@@ -1,182 +1,138 @@
-import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
- * Writes the explicit Demo Workspace fixture used by black-box tests.
+ * Writes the explicit native Demo Workspace fixture used by black-box tests.
  *
  * @param {string} dataRoot NanoCore data root to seed.
- * @returns {void}
+ * @returns {Promise<void>} Resolves after native fixture publication and writer shutdown.
  */
-export function seedDemoWorkspaceDataRoot(dataRoot) {
-  const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
-  const quickChatRoot = join(dataRoot, 'workspaces', 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28');
-  const workspacePath = join(workspaceRoot, 'workspace-record.json');
-  const quickChatPath = join(quickChatRoot, 'workspace-record.json');
-
-  if (existsSync(workspacePath) && existsSync(quickChatPath)) {
-    return;
-  }
-  if (existsSync(workspacePath) || existsSync(quickChatPath)) {
+export async function seedDemoWorkspaceDataRoot(dataRoot) {
+  const demoExists = existsSync(
+    join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001')
+  );
+  const personalExists = existsSync(
+    join(dataRoot, 'workspaces', 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28')
+  );
+  if (demoExists !== personalExists) {
     throw new Error('Demo workspace fixture is partially initialized.');
   }
-
-  const timestamp = new Date().toISOString();
-  const workspace = {
-    schemaVersion: 1,
-    id: 'ws_00000000-0000-7000-8000-000000000001',
-    kind: 'code',
-    status: 'active',
-    createdAt: timestamp,
-    updatedAt: timestamp,
-  };
-  const quickChatWorkspace = {
-    schemaVersion: 1,
-    id: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
-    kind: 'personal',
-    status: 'active',
-    createdAt: timestamp,
-    updatedAt: timestamp,
-  };
-  const thread = {
-    id: 'th_00000000-0000-7000-8000-000000000001',
-    owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
-    name: 'Protocol design review',
-    preview: 'Review the UI-first workspace protocol slice and tighten payload boundaries.',
-    status: 'active',
-    entryPath: 'conversation',
-    visibility: 'workspace',
-    createdAt: timestamp,
-    updatedAt: timestamp,
-  };
-  const threadRoot = join(workspaceRoot, 'threads', 'th_00000000-0000-7000-8000-000000000001');
-  for (const root of [workspaceRoot, quickChatRoot]) {
-    for (const relativePath of [
-      'artifacts',
-      'config',
-      'knowledge/proposals',
-      'knowledge/reviews',
-      'runtime/agent-sessions',
-      'sources/derived',
-      'sources/materials',
-      'sources/registry',
-      'threads',
-    ]) {
-      mkdirSync(join(root, relativePath), { recursive: true });
-    }
-  }
-
-  mkdirSync(join(threadRoot, 'turns'), { recursive: true });
-  writeFileSync(workspacePath, `${JSON.stringify(workspace, null, 2)}\n`);
-  writeFileSync(quickChatPath, `${JSON.stringify(quickChatWorkspace, null, 2)}\n`);
-  // Declare each fixed base's managed mount, as native creation does, so portable reads remain valid.
-  writeFileSync(
-    join(workspaceRoot, 'config', 'workspace.jsonc'),
-    `${JSON.stringify({ schemaVersion: 1, workspace: { name: 'Demo Workspace', defaultAgentId: 'agent_codex_host', defaultKnowledgeBaseId: 'kb_00000000-0000-7000-8000-000000000001', knowledgeMounts: [{ name: 'managed', backend: 'local', root: 'raw', default: true, knowledgeBaseId: 'kb_00000000-0000-7000-8000-000000000001' }] } }, null, 2)}\n`
-  );
-  writeFileSync(
-    join(quickChatRoot, 'config', 'workspace.jsonc'),
-    `${JSON.stringify({ schemaVersion: 1, workspace: { name: 'Personal', defaultAgentId: null, defaultKnowledgeBaseId: 'kb_00000000-0000-7000-8000-000000000002', knowledgeMounts: [{ name: 'managed', backend: 'local', root: 'raw', default: true, knowledgeBaseId: 'kb_00000000-0000-7000-8000-000000000002' }] } }, null, 2)}\n`
-  );
-  writeFileSync(
-    join(threadRoot, 'thread.json'),
-    `${JSON.stringify(
+  if (demoExists && personalExists) return;
+  const [{ FsStore }, { createDemoWorkspaceForUser }, { shutdownControlStoreWorkerClient }] =
+    await Promise.all([
+      import('../../apps/nanocore/dist/lib/store.js'),
+      import('../../apps/nanocore/dist/test-support/demo-store.js'),
+      import('../../apps/nanocore/dist/storage/control-store-worker-client.js'),
+    ]);
+  try {
+    await seedDemoWorkspaceAuthority(dataRoot);
+    const userId = 'usr_00000000-0000-7000-8000-000000000001';
+    const demo = createDemoWorkspaceForUser(userId);
+    const store = new FsStore({ dataRoot });
+    const timestamp = demo.workspace.createdAt;
+    for (const fixture of [
       {
-        ...thread,
-        schemaVersion: 1,
-        recordType: 'thread',
-        ownerScope: 'workspace',
-        lineage: { workspaceId: thread.owner.workspaceId, threadId: thread.id },
-        contentDigest: `sha256:${createHash('sha256').update(JSON.stringify(thread)).digest('hex')}`,
-        redactionLevel: 'none',
-        sensitivity: 'workspace',
-        requiredFeatures: ['openkit.thread-entry.v1', 'openkit.thread-visibility.v1'],
-        extensions: {},
+        workspace: demo.workspace,
+        threads: [demo.thread],
+        knowledge: demo.knowledge,
+        knowledgeBaseId: 'kb_00000000-0000-7000-8000-000000000001',
+        defaultAgentId: 'agent_codex_host',
       },
-      null,
-      2
-    )}\n`
-  );
+      {
+        workspace: {
+          id: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+          name: 'Personal',
+          kind: 'personal',
+          status: 'active',
+          counts: { threadCount: 0, artifactCount: 0, knowledgeEntryCount: 0 },
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        },
+        threads: [],
+        knowledge: [],
+        knowledgeBaseId: 'kb_00000000-0000-7000-8000-000000000002',
+        defaultAgentId: null,
+      },
+    ]) {
+      await store.importWorkspaceSnapshot({
+        workspace: fixture.workspace,
+        defaultKnowledgeBaseId: fixture.knowledgeBaseId,
+        threads: fixture.threads,
+        knowledge: fixture.knowledge,
+        turns: [],
+        itemRevisions: [],
+        artifacts: [],
+        agentSessions: [],
+        turnEvents: [],
+        notebookInitialization: {
+          requestId: randomUUID(),
+          producer: { kind: 'user', id: userId },
+          instructionReference: 'test-fixture:demo-workspace',
+        },
+        initialNotebookFiles: Object.fromEntries(
+          fixture.knowledge.map((page) => [page.path, page.content])
+        ),
+        stageWorkspace: ({ workspaceRoot }) => {
+          writeFileSync(
+            join(workspaceRoot, 'config', 'workspace.jsonc'),
+            `${JSON.stringify(
+              {
+                schemaVersion: 1,
+                workspace: {
+                  name: fixture.workspace.name,
+                  defaultAgentId: fixture.defaultAgentId,
+                  defaultKnowledgeBaseId: fixture.knowledgeBaseId,
+                  knowledgeMounts: [
+                    {
+                      name: 'managed',
+                      backend: 'local',
+                      root: 'raw',
+                      default: true,
+                      knowledgeBaseId: fixture.knowledgeBaseId,
+                    },
+                  ],
+                },
+              },
+              null,
+              2
+            )}\n`
+          );
+        },
+      });
+    }
+  } finally {
+    await shutdownControlStoreWorkerClient();
+  }
 }
 
 /**
- * Records the canonical local owner membership for the demo Workspace files.
+ * Records the canonical local owner memberships for both native fixture Workspaces.
  *
- * @param {string} dataRoot NanoCore data root containing the demo Workspace files.
+ * @param {string} dataRoot NanoCore data root containing the native demo Workspace.
  * @returns {Promise<void>} Resolves after Core membership authority is durable.
  */
 export async function seedDemoWorkspaceAuthority(dataRoot) {
   const [
     { ensureLocalUser: ensureFixtureLocalUser },
-    { openCoreDb, openWorkspaceDb },
-    { applyMigrations, applyScopedMigrations },
+    { openCoreDb },
+    { applyMigrations },
     { recordWorkspaceOwnerMembership },
-    { initializeWorkspaceNotebook },
-    { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT },
-    { createDemoWorkspaceForUser },
-    { readDefaultKnowledgeBaseId },
   ] = await Promise.all([
     import('../../apps/nanocore/dist/test-support/local-user.js'),
     import('../../apps/nanocore/dist/storage/db.js'),
     import('../../apps/nanocore/dist/storage/migrate.js'),
     import('../../apps/nanocore/dist/workspace-membership.js'),
-    import('../../apps/nanocore/dist/knowledge/notebook-initialization.js'),
-    import('../../apps/nanocore/dist/knowledge/okf.js'),
-    import('../../apps/nanocore/dist/test-support/demo-store.js'),
-    import('../../apps/nanocore/dist/config/knowledge-base.js'),
   ]);
   const coreDb = openCoreDb(dataRoot);
-
   try {
     applyMigrations(coreDb);
     const localUserId = ensureFixtureLocalUser(coreDb);
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: localUserId,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    // Publish this explicit fresh fixture through the same Git owner as authored native pages.
-    // No retained page directory is read or converted.
-    const demo = createDemoWorkspaceForUser(localUserId);
-    for (const workspaceId of [demo.workspace.id, 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28']) {
-      const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
-      if (
-        !existsSync(join(workspaceRoot, 'workspace-record.json')) ||
-        existsSync(join(workspaceRoot, 'knowledge', 'notebook.git'))
-      )
-        continue;
-      const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
-      try {
-        applyScopedMigrations(workspaceDb);
-        const knowledgeBaseId = readDefaultKnowledgeBaseId({
-          dataRoot,
-          scope: { kind: 'workspace', workspaceId },
-        });
-        initializeWorkspaceNotebook({
-          workspaceRoot,
-          workspaceId,
-          workspaceDb,
-          initialization: {
-            requestId: randomUUID(),
-            producer: { kind: 'user', id: localUserId },
-            instructionReference: 'test-fixture:demo-workspace',
-          },
-          ...(workspaceId === demo.workspace.id
-            ? {
-                files: Object.fromEntries(demo.knowledge.map((page) => [page.path, page.content])),
-              }
-            : {}),
-          revalidate: () => ({
-            pageScopeId: `page/workspace/${workspaceId}/${knowledgeBaseId}`,
-            scopeSchemaText: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
-            reviewRequiredPageIds: [],
-            registeredSources: new Map(),
-            resolvedReferences: new Map(),
-          }),
-        });
-      } finally {
-        workspaceDb.sqlite.close();
-      }
+    for (const workspaceId of [
+      'ws_00000000-0000-7000-8000-000000000001',
+      'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+    ]) {
+      recordWorkspaceOwnerMembership({ coreDb, ownerUserId: localUserId, workspaceId });
     }
   } finally {
     coreDb.sqlite.close();

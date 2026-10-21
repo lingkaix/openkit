@@ -63,7 +63,7 @@ async function runSource(outputDir: string): Promise<void> {
   let harness: NanoCoreHarness | null = null;
 
   try {
-    seedDemoWorkspaceDataRoot(dataRoot);
+    await seedDemoWorkspaceDataRoot(dataRoot);
     await seedDemoWorkspaceAuthority(dataRoot);
     await seedSourceHistory(dataRoot);
     await seedSourceVaultReference(dataRoot);

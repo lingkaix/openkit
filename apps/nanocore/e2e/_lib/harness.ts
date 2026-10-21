@@ -8,6 +8,7 @@ import {
   seedDemoWorkspaceAuthority,
   seedDemoWorkspaceDataRoot as seedSharedDemoWorkspaceDataRoot,
 } from '../../../../tests/support/demo-data.mjs';
+import { shutdownControlStoreWorkerClient } from '../../dist/storage/control-store-worker-client.js';
 
 export interface NanoCoreHarness {
   baseUrl: string;
@@ -60,7 +61,7 @@ export async function startNanoCoreHarness(
   };
 
   if (options.seedDemoWorkspace ?? coreMode === 'local') {
-    seedSharedDemoWorkspaceDataRoot(dataRoot);
+    await seedSharedDemoWorkspaceDataRoot(dataRoot);
     await seedDemoWorkspaceAuthority(dataRoot);
   }
 
@@ -70,6 +71,7 @@ export async function startNanoCoreHarness(
     delete env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR;
   }
 
+  await shutdownControlStoreWorkerClient();
   const child = spawn(process.execPath, [join(nanoCoreRoot, 'dist', 'index.js')], {
     cwd: nanoCoreRoot,
     env,

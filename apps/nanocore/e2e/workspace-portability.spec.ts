@@ -440,7 +440,7 @@ function administratorArchiveCall(
 
 /** Seeds explicit administrator authority before the process starts; transfer assertions use only public bindings. */
 async function seedArchiveAdministrator(dataRoot: string): Promise<string> {
-  seedDemoWorkspaceDataRoot(dataRoot);
+  await seedDemoWorkspaceDataRoot(dataRoot);
   await seedDemoWorkspaceAuthority(dataRoot);
   const { openCoreDb } = await import('../dist/storage/db.js');
   const { createOpenKitAccessTokenRecord } = await import('../dist/auth/access-token-store.js');

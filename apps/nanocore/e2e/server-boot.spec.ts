@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { lstat, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -70,19 +70,32 @@ describe('nanocore e2e server boot', () => {
         requestId: randomUUID(),
       });
       expect(thread.status).toBe(200);
-      workspaces.push({ ...workspace, threadId: ((await thread.json()) as { id: string }).id });
+      const threadId = ((await thread.json()) as { id: string }).id;
+      const retained = await api('thread.read', { workspaceId: workspace.id, threadId });
+      expect(retained.status).toBe(200);
+      await expect(retained.json()).resolves.toMatchObject({ id: threadId });
+      workspaces.push({ ...workspace, threadId });
     }
     const [damaged, sibling] = workspaces;
     const { dataRoot } = harness;
     await harness.stop();
-    const databasePath = join(dataRoot, 'workspaces', damaged.id, 'db', 'workspace.sqlite');
-    const recordPath = join(dataRoot, 'workspaces', damaged.id, 'workspace-record.json');
-    const retainedRecord = await readFile(recordPath);
+    const workspaceRoot = join(dataRoot, 'workspaces', damaged.id);
+    const databasePath = join(workspaceRoot, 'db', 'workspace.sqlite');
+    expect((await readFile(databasePath)).length).toBeGreaterThan(0);
     const corruptBytes = Buffer.from('Damaged Workspace authority: do not replace or repair.');
     if (fault === 'missing') await rm(databasePath);
     else await writeFile(databasePath, corruptBytes);
 
-    // The first start and real writes above establish that the injected fault, not setup, caused RED.
+    // Quarantine must preserve the native fault and all remaining bytes in this scope.
+    const retainedPaths = (await readdir(workspaceRoot, { recursive: true })).sort();
+    const retainedBytes = new Map<string, Buffer>();
+    for (const relativePath of retainedPaths) {
+      const path = join(workspaceRoot, relativePath);
+      const entry = await lstat(path);
+      if (entry.isDirectory()) continue;
+      expect(entry.isFile()).toBe(true);
+      retainedBytes.set(relativePath, await readFile(path));
+    }
     harness = await startNanoCoreHarness({
       coreMode: 'server',
       dataRoot,
@@ -131,7 +144,10 @@ describe('nanocore e2e server boot', () => {
       expect(diagnosis.code).toMatch(/recovery|quarantin/);
     }
     await harness.stop();
-    expect(await readFile(recordPath)).toEqual(retainedRecord);
+    expect((await readdir(workspaceRoot, { recursive: true })).sort()).toEqual(retainedPaths);
+    for (const [relativePath, bytes] of retainedBytes) {
+      expect(await readFile(join(workspaceRoot, relativePath))).toEqual(bytes);
+    }
     if (fault === 'missing') {
       await expect(readFile(databasePath)).rejects.toMatchObject({ code: 'ENOENT' });
       expect(await readdir(dirname(databasePath))).toEqual([]);

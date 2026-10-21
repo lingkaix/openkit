@@ -15,7 +15,7 @@ import {
  * @throws When fixture files or authority persistence fails.
  */
 export async function seedDemoWorkspaceDataRoot(dataRoot: string): Promise<void> {
-  seedSharedDemoWorkspaceDataRoot(dataRoot);
+  await seedSharedDemoWorkspaceDataRoot(dataRoot);
   await seedSimulatorInferenceConfig(dataRoot);
   await seedDemoWorkspaceAuthority(dataRoot);
   await seedSimulatorAgent(dataRoot);
