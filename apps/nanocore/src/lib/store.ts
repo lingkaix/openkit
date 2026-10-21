@@ -1284,6 +1284,8 @@ export class FsStore {
   private approvals = new Map<string, ApprovalRequest>();
   private agentSessions = new Map<string, AgentSession>();
   private artifacts = new Map<string, Artifact>();
+  /** Durable file heads awaiting the native submission acknowledgement; readers cannot expose them. */
+  private pendingArtifactSubmissions = new Set<string>();
   private artifactVersions = new Map<string, ArtifactVersionRecord[]>();
   private knowledgeProposals = new Map<string, KnowledgeProposalRecord>();
   private knowledgeProposalReviews = new Map<string, KnowledgeProposalReviewRecord[]>();
@@ -1999,7 +2001,10 @@ export class FsStore {
       workspaceRoot,
       {
         workspace: this.getWorkspace(workspaceId),
-        artifacts: this.listArtifacts(workspaceId),
+        // Pending SQL acknowledgement must hide a head from readers, never from its file writer.
+        artifacts: [...this.artifacts.values()].filter(
+          (artifact) => artifact.workspaceId === workspaceId
+        ),
         knowledgeProposals: [...this.knowledgeProposals.values()].filter(
           (proposal) => proposal.workspaceId === workspaceId
         ),
@@ -5060,8 +5065,7 @@ export class FsStore {
     submission: ArtifactSubmissionPublication
   ): Promise<Artifact> {
     // The common file owner has published durable bytes. Keep the unacknowledged head out of caches.
-    this.artifacts.delete(artifact.id);
-    this.artifactVersions.delete(artifact.id);
+    this.pendingArtifactSubmissions.add(artifact.id);
     this.refreshWorkspaceCounts(artifact.workspaceId);
     let submitted = false;
     let acknowledged = false;
@@ -5147,6 +5151,7 @@ export class FsStore {
         transition: { products: [], entries },
       });
       acknowledged = true;
+      this.pendingArtifactSubmissions.delete(artifact.id);
       this.artifacts.set(artifact.id, artifact);
       this.artifactVersions.set(artifact.id, [version]);
       this.refreshWorkspaceCounts(artifact.workspaceId);
@@ -5202,6 +5207,7 @@ export class FsStore {
           'Artifact rollback cannot erase an acknowledged native Item revision.'
         );
     }
+    this.pendingArtifactSubmissions.delete(artifactId);
     this.artifacts.delete(artifactId);
     this.artifactVersions.delete(artifactId);
     this.itemRevisions = this.itemRevisions.filter(
@@ -5368,14 +5374,21 @@ export class FsStore {
 
   public listArtifacts(workspaceId: string): Artifact[] {
     this.assertWorkspacePublicationAcknowledged(workspaceId);
-    return [...this.artifacts.values()].filter((artifact) => artifact.workspaceId === workspaceId);
+    return [...this.artifacts.values()].filter(
+      (artifact) =>
+        artifact.workspaceId === workspaceId && !this.pendingArtifactSubmissions.has(artifact.id)
+    );
   }
 
   public getArtifact(workspaceId: string, artifactId: string): Artifact {
     this.assertWorkspacePublicationAcknowledged(workspaceId);
     const artifact = this.artifacts.get(artifactId);
 
-    if (!artifact || artifact.workspaceId !== workspaceId) {
+    if (
+      !artifact ||
+      artifact.workspaceId !== workspaceId ||
+      this.pendingArtifactSubmissions.has(artifactId)
+    ) {
       throw new StoreRecordNotFoundError(`Artifact not found: ${artifactId}`);
     }
 
