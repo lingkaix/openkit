@@ -45,7 +45,10 @@ export function isThreadVisible(
         resource: { family: 'thread', id: thread.id },
         operation,
         policy:
-          thread.visibility === 'workspace'
+          thread.visibility === 'workspace' ||
+          (thread.visibility === 'private' &&
+            workspace.importedFrom !== undefined &&
+            !administratorEligible)
             ? store.getWorkspaceResourceAccess(workspaceIdForOwner(thread.owner))
             : EMPTY_POLICY_DOCUMENT,
       }).effect === 'allow'

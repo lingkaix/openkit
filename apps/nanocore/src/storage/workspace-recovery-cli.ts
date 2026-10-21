@@ -1,4 +1,4 @@
-import { lstatSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { allocateEntityId, isEntityId } from '@openkit/protocol';
 import { RELEASE_IDENTITY_PATH, readReleaseIdentity } from '../diagnostics/release-identity.js';
@@ -19,12 +19,12 @@ import {
   reactivateWorkspace,
 } from './workspace-move.js';
 import type { WorkspaceMoveMemberMapping } from './workspace-move-mapping.js';
+import { recoveryReport } from './workspace-recovery-admissions.js';
 import {
-  openRecoveryDatabase,
-  recoveryReport,
-  refuseRecovery,
-  withRecoveryRoot,
-} from './workspace-recovery-admissions.js';
+  abandonWorkspaceRecovery,
+  admitWorkspaceBackup,
+  finishWorkspaceRecovery,
+} from './workspace-restore.js';
 
 export { WorkspaceRecoveryError, type WorkspaceRecoveryErrorCode } from './workspace-backup.js';
 
@@ -288,11 +288,12 @@ export async function runWorkspaceRecoveryCli(
 ): Promise<WorkspaceRecoveryCliReport> {
   const args = parseWorkspaceRecoveryArgs(argv);
   if (args.command !== 'capture' && args.command !== 'verify') {
-    if (args.command === 'restore' || args.command === 'move-in')
-      installedRelease(deps.releaseIdentityPath ?? RELEASE_IDENTITY_PATH);
     const result =
       args.command === 'move-out'
-        ? await moveOutWorkspace(args)
+        ? await moveOutWorkspace({
+            ...args,
+            expectedRelease: installedRelease(deps.releaseIdentityPath ?? RELEASE_IDENTITY_PATH),
+          })
         : args.command === 'reactivate'
           ? await reactivateWorkspace(args)
           : args.command === 'inspect'
@@ -301,36 +302,16 @@ export async function runWorkspaceRecoveryCli(
               ? await finishWorkspaceMove(args)
               : args.command === 'abandon' && args.selection.kind === 'capture'
                 ? await abandonWorkspaceMove(args)
-                : await withRecoveryRoot(args.dataRoot, async () => {
-                    if (args.command === 'restore') {
-                      const path = join(
-                        args.dataRoot,
-                        'workspaces',
-                        args.workspaceId,
-                        'db/workspace.sqlite'
-                      );
-                      if (lstatSync(path, { throwIfNoEntry: false })) {
-                        const db = openRecoveryDatabase(path);
-                        try {
-                          if (
-                            db
-                              .prepare(
-                                "SELECT json_extract(record_json, '$.movedOut') FROM control_workspaces WHERE id=?"
-                              )
-                              .pluck()
-                              .get(args.workspaceId)
-                          )
-                            refuseRecovery('workspace-moved-out');
-                        } finally {
-                          db.close();
-                        }
-                      }
-                    }
-                    throw new WorkspaceRecoveryError(
-                      'not-implemented',
-                      'This Workspace recovery decision is not implemented.'
-                    );
-                  });
+                : args.command === 'restore' || args.command === 'move-in'
+                  ? await admitWorkspaceBackup({
+                      ...args,
+                      expectedRelease: installedRelease(
+                        deps.releaseIdentityPath ?? RELEASE_IDENTITY_PATH
+                      ),
+                    })
+                  : args.command === 'finish'
+                    ? await finishWorkspaceRecovery(args)
+                    : await abandonWorkspaceRecovery(args);
     write(`${JSON.stringify(result)}\n`);
     return result;
   }

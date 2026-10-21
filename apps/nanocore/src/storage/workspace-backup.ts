@@ -1131,3 +1131,88 @@ export async function stageWorkspaceBackup(
     reserved?.release();
   }
 }
+
+/** Proves an H1 cut still equals the stopped source before its first local MOVE ownership binding. */
+export function assertWorkspaceBackupCut(
+  dataRoot: string,
+  candidate: string,
+  manifest: WorkspaceBackupManifest,
+  core: ReturnType<typeof bindCoreSqlite>
+): void {
+  const root = join(dataRoot, 'workspaces', manifest.workspaceId);
+  const facts = graph(dataRoot, manifest.workspaceId, manifest.capturedRevision);
+  const expected = manifest.inventory.filter(
+    (entry) => !recurringPaths.some((path) => path === entry.path)
+  );
+  if (!isDeepStrictEqual(files(root).sort(), expected.map((entry) => entry.path).sort()))
+    refuse('request-conflict');
+  const databaseDigest = (path: string) => {
+    const db = database(path);
+    try {
+      const hash = createHash('sha256');
+      const tables = db
+        .prepare(
+          "SELECT name,sql FROM sqlite_schema WHERE type='table' AND name <> 'workspace_capture_records' ORDER BY name"
+        )
+        .all() as { name: string; sql: string }[];
+      for (const table of tables) {
+        hash.update(JSON.stringify(table));
+        const columns = (
+          db.pragma(`table_info(${quoteIdent(table.name)})`) as { name: string }[]
+        ).map((column) => quoteIdent(column.name));
+        for (const row of db
+          .prepare(`SELECT * FROM ${quoteIdent(table.name)} ORDER BY ${columns.join(',')}`)
+          .safeIntegers()
+          .iterate())
+          hash.update(
+            JSON.stringify(row, (_key, value) =>
+              typeof value === 'bigint' ? { int64: value.toString() } : value
+            )
+          );
+      }
+      return hash.digest('hex');
+    } finally {
+      db.close();
+    }
+  };
+  for (const entry of expected) {
+    const path = join(root, entry.path);
+    if ((lstatSync(path).mode & 0o777) !== entry.mode) refuse('request-conflict');
+    const currentDatabase =
+      entry.path === 'db/workspace.sqlite' || /^light-apps\/[^/]+\/data.sqlite$/.test(entry.path);
+    if (
+      currentDatabase
+        ? databaseDigest(path) !== databaseDigest(join(candidate, entry.path))
+        : copyBytes(path) !== entry.sha256
+    )
+      refuse('request-conflict');
+  }
+  const owner = core.sqlite
+    .prepare('SELECT owner_user_id FROM workspace_registry WHERE workspace_id=?')
+    .pluck()
+    .get(manifest.workspaceId);
+  const members = core.sqlite
+    .prepare(
+      "SELECT user_id FROM workspace_members WHERE workspace_id=? AND status='active' ORDER BY user_id"
+    )
+    .pluck()
+    .all(manifest.workspaceId);
+  if (
+    owner !== manifest.accounts.ownerId ||
+    !isDeepStrictEqual(members, [...manifest.accounts.memberIds].sort())
+  )
+    refuse('request-conflict');
+  const recurring = exportRecurringPortableHistory(
+    core,
+    manifest.workspaceId,
+    facts.inheritedRecurring,
+    [...facts.references.turns].map(([id, threadId]) => ({ id, threadId }))
+  );
+  for (const [family, path] of Object.entries(RECURRING_PORTABLE_PATHS)) {
+    const rows = recurring[family as keyof typeof RECURRING_PORTABLE_PATHS];
+    const text = existsSync(join(candidate, path))
+      ? readFileSync(join(candidate, path), 'utf8')
+      : '';
+    if (rows.map((row) => `${JSON.stringify(row)}\n`).join('') !== text) refuse('request-conflict');
+  }
+}
