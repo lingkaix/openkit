@@ -17,11 +17,12 @@ import {
 } from './artifact-reviews.js';
 import { FsStore } from './lib/store.js';
 import { ProviderRegistry } from './providers/registry.js';
+import { listSchedulerExecutionAttemptsForTurn } from './runtime/execution-attempt-records.js';
 import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
   upsertNanoHostRuntimeTarget,
 } from './runtime/nanohost-runtime-target.js';
-import * as schedulerDispatch from './runtime/scheduler-dispatch-loop.js';
+import * as productTurnStart from './runtime/product-turn-start.js';
 import { getWorkerCheckpoint } from './runtime/worker-checkpoints.js';
 import {
   recordWorkspaceSyncReview,
@@ -541,20 +542,18 @@ describe('Core artifact routes', () => {
     await store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(workspaceDb);
-    const reviews = (
-      [
-        ['ar_00000000-0000-71cf-a641-bd9c6acde17b', 'Review the first Artifact.'],
-        ['ar_00000000-0000-7c49-98d1-47c5d31a3268', 'Review the second Artifact.'],
-      ] as const
-    ).map(
-      async ([artifactId, content]) =>
-        await createReviewFixture(store, workspaceDb, artifactId, content, turn.id)
-    );
+    const reviews: Awaited<ReturnType<typeof createReviewFixture>>[] = [];
+    for (const [artifactId, content] of [
+      ['ar_00000000-0000-71cf-a641-bd9c6acde17b', 'Review the first Artifact.'],
+      ['ar_00000000-0000-7c49-98d1-47c5d31a3268', 'Review the second Artifact.'],
+    ] as const) {
+      reviews.push(await createReviewFixture(store, workspaceDb, artifactId, content, turn.id));
+    }
     const backing = store.getArtifact(
       'ws_00000000-0000-7000-8000-000000000001',
       'ar_00000000-0000-71cf-a641-bd9c6acde17b'
     );
-    store.createArtifact({ ...backing, id: 'ar_00000000-0000-7f70-84f9-64a58b07cc9f' });
+    await store.createArtifact({ ...backing, id: 'ar_00000000-0000-7f70-84f9-64a58b07cc9f' });
     await store.updateTurn(turn.id, {
       status: 'completed',
       completedAt,
@@ -1072,42 +1071,20 @@ describe('Core artifact routes', () => {
       feedback: 'Rework the response with the missing evidence.',
     } as const;
 
+    const executions = vi.spyOn(productTurnStart, 'startProductTurn');
     try {
-      const dispatch = vi.spyOn(schedulerDispatch, 'runSchedulerDispatchLoop');
       let responseSettled = false;
       const pendingResponse = postJson(app, decisionPath, request).then((response) => {
         responseSettled = true;
         return response;
       });
-      try {
-        // This local command must publish its receipt before waiting for the follow-up execution.
-        await vi.waitFor(() =>
-          expect(
-            responseSettled,
-            'Artifact review acknowledgement must not wait for a worker whose dispatch requires that receipt.'
-          ).toBe(true)
-        );
-      } finally {
-        const ownCalls = dispatch.mock.calls
-          .map(([input], index) => ({ input, index }))
-          .filter(({ input }) => input.store === store);
-        for (const { index } of ownCalls) {
-          const result = dispatch.mock.results[index];
-          if (result?.type === 'return') {
-            console.info('artifact_redo_dispatch_observation', JSON.stringify(await result.value));
-          }
-        }
-        console.info(
-          'artifact_redo_admission_observation',
-          JSON.stringify(
-            listSchedulerAdmissionEntriesForWorkspace(coreDb, {
-              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-              statuses: ['queued', 'admitted', 'denied', 'cancelled'],
-            })
-          )
-        );
-        dispatch.mockRestore();
-      }
+      // This local command must publish its receipt before waiting for the follow-up execution.
+      await vi.waitFor(() =>
+        expect(
+          responseSettled,
+          'Artifact review acknowledgement must not wait for a worker whose dispatch requires that receipt.'
+        ).toBe(true)
+      );
       const response = await pendingResponse;
       const responseBody = await response.json();
       expect(response.status, JSON.stringify(responseBody)).toBe(200);
@@ -1119,6 +1096,19 @@ describe('Core artifact routes', () => {
         request.requestId
       );
       expect(decided).toMatchObject({ decision: 'redo', followUpTurnId });
+      const ownExecutions = executions.mock.calls
+        .map(([input], index) => ({ input, result: executions.mock.results[index] }))
+        .filter(({ input }) => input.store === store);
+      expect(ownExecutions).toHaveLength(1);
+      const original = ownExecutions[0]!;
+      expect(original.input).toMatchObject({
+        reservedTurnId: followUpTurnId,
+        input: { requestId: request.requestId, threadId: thread.id },
+      });
+      expect(original.result?.type).toBe('return');
+      if (original.result?.type !== 'return') throw new Error('Missing original worker execution.');
+      // The native owner joins the original dispatch through its terminal ACK and backend closeout.
+      await original.result.value;
       await vi.waitFor(() =>
         expect(
           store.getTurn('ws_00000000-0000-7000-8000-000000000001', thread.id, followUpTurnId).status
@@ -1234,7 +1224,16 @@ describe('Core artifact routes', () => {
       } finally {
         verificationDb.sqlite.close();
       }
+      expect(executions.mock.calls.filter(([input]) => input.store === store)).toHaveLength(1);
+      expect(
+        listSchedulerExecutionAttemptsForTurn(coreDb, {
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+          threadId: thread.id,
+          turnId: followUpTurnId,
+        })
+      ).toEqual([expect.objectContaining({ phase: 'closed', turnId: followUpTurnId })]);
     } finally {
+      executions.mockRestore();
       coreDb.sqlite.close();
     }
   });

@@ -724,7 +724,7 @@ export function createArtifactOperationImplementations(
               const sourceThreadId = review.sourceThreadId;
               const sourceAgentId = review.sourceAgentId;
               let accepted = false;
-              await new Promise<void>((resolve, reject) => {
+              const committedValue = await new Promise<typeof result>((resolve, reject) => {
                 void startModeWorkerTurn({
                   store,
                   triggerActor: actor,
@@ -735,9 +735,35 @@ export function createArtifactOperationImplementations(
                   requestId: workerRequestId,
                   requestedAgentId: sourceAgentId,
                   reservedTurnId: followUpTurnId,
-                  onTurnCreated: () => {
+                  onTurnCreated: async () => {
+                    assertArtifactReviewFollowUpProof({
+                      coreDb,
+                      decisionRequestId: input.requestId,
+                      expectedPrompt: prompt,
+                      response: result,
+                      review,
+                      store,
+                    });
+                    const committed = await executeControlReviewCommand(
+                      workspaceDb,
+                      ControlReviewCommandInputSchema.parse({
+                        mode: 'decision-receipt',
+                        input: {
+                          actorId,
+                          artifactId,
+                          artifactVersion,
+                          decision,
+                          feedback,
+                          rangeFeedback,
+                          requestId: input.requestId,
+                        },
+                        receipt,
+                      })
+                    );
+                    if (committed.mode !== 'decision-receipt')
+                      throw recoveryRequired('Review decision returned the wrong native result.');
                     accepted = true;
-                    resolve();
+                    resolve(committed.value);
                   },
                 })
                   .then((followUpTurn) => {
@@ -769,33 +795,7 @@ export function createArtifactOperationImplementations(
                     else reject(error);
                   });
               });
-              assertArtifactReviewFollowUpProof({
-                coreDb,
-                decisionRequestId: input.requestId,
-                expectedPrompt: prompt,
-                response: result,
-                review,
-                store,
-              });
-              const committed = await executeControlReviewCommand(
-                workspaceDb,
-                ControlReviewCommandInputSchema.parse({
-                  mode: 'decision-receipt',
-                  input: {
-                    actorId,
-                    artifactId,
-                    artifactVersion,
-                    decision,
-                    feedback,
-                    rangeFeedback,
-                    requestId: input.requestId,
-                  },
-                  receipt,
-                })
-              );
-              if (committed.mode !== 'decision-receipt')
-                throw recoveryRequired('Review decision returned the wrong native result.');
-              return committed.value;
+              return committedValue;
             },
           });
         } else {
