@@ -33,7 +33,7 @@ import {
 import { z } from 'zod';
 
 import { StoredArtifactReviewV1Schema } from './artifact-review-v1.js';
-import { commandRequestKey } from './lib/store.js';
+import { commandRequestKey, projectTurnEventRequestId } from './lib/store.js';
 import { IdempotencyKeyConflictError } from './runtime/idempotent-command.js';
 import { readArtifactVersionRecord } from './storage/artifacts/artifact-version-records.js';
 import {
@@ -1510,7 +1510,12 @@ export function prepareControlReviewCommand(
     };
     if (
       event.event !== names[index] ||
-      event.requestId !== input.receipt.requestId ||
+      event.requestId !==
+        projectTurnEventRequestId(
+          input.receipt.requestId,
+          db.workspaceId,
+          artifact.origin.threadId
+        ) ||
       event.threadId !== artifact.origin.threadId ||
       event.turnId !== artifact.origin.turnId ||
       event.workspaceId !== db.workspaceId ||
