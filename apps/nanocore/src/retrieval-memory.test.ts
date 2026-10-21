@@ -113,7 +113,8 @@ async function fixture(imported = false) {
   applyScopedMigrations(workspaceDb);
   const runtimeConfigManager = createRuntimeConfigManager({ dataRoot });
   const inflightCommands = new WeakMap();
-  const users = [aliceId, bobId].map(async (userId) => {
+  const users = [];
+  for (const userId of [aliceId, bobId]) {
     if (userId === aliceId)
       recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: userId });
     else
@@ -174,8 +175,8 @@ async function fixture(imported = false) {
         summary: 'Save personal search evidence',
       });
     };
-    return { writer, access, query, save, timeline, baseRevision };
-  });
+    users.push({ writer, access, query, save, timeline, baseRevision });
+  }
   onTestFinished(async () => {
     await closeRetrievalServices();
     for (const user of users) user.writer.userDb.sqlite.close();

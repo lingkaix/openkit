@@ -29,7 +29,7 @@ import {
 const nativeFactoryModule = './managed-source-access.js';
 
 /** Real current human memberships and scoped KBs; no Policy statement, lease or host mount is created. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-managed-source-authority-'));
   const coreDb = openCoreDb(dataRoot);
   let storage: LocalStorage | undefined;
@@ -44,67 +44,69 @@ function fixture() {
   });
   applyMigrations(coreDb);
   const store = new FsStore({ dataRoot });
-  const subjects = ['A', 'B'].map(async (name) => {
-    const userId = allocateEntityId('usr');
-    coreDb.sqlite
-      .prepare(
-        "INSERT INTO users (id, kind, display_name, email, email_verified, created_at, updated_at, status) VALUES (?, 'human', ?, ?, 0, ?, ?, 'active')"
-      )
-      .run(userId, name, `${userId}@example.invalid`, Date.now(), Date.now());
-    const workspaceId = (
-      await store.createWorkspace(`Source owner ${name}`, {
-        requestId: randomUUID(),
-        producer: { kind: 'user', id: userId },
-        instructionReference: 'test:managed-source-authority',
-      })
-    ).id;
-    recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: userId });
-    const ownerScope = { kind: 'workspace', workspaceId } as const;
-    const knowledgeBaseId = readDefaultKnowledgeBaseId({ dataRoot, scope: ownerScope });
-    const mount: KnowledgeMount = {
-      name: 'managed',
-      backend: 'local',
-      root: 'raw',
-      default: true,
-      knowledgeBaseId,
-    };
-    const root = join(dataRoot, 'workspaces', workspaceId, 'knowledge', 'raw');
-    mkdirSync(join(root, 'sources'), { recursive: true });
-    const bytes = Buffer.from(`Exact original for ${name}.\n`);
-    writeFileSync(join(root, 'sources', 'original.bin'), bytes);
-    const content: StorageContent = {
-      reference: {
+  const subjects = await Promise.all(
+    ['A', 'B'].map(async (name) => {
+      const userId = allocateEntityId('usr');
+      coreDb.sqlite
+        .prepare(
+          "INSERT INTO users (id, kind, display_name, email, email_verified, created_at, updated_at, status) VALUES (?, 'human', ?, ?, 0, ?, ?, 'active')"
+        )
+        .run(userId, name, `${userId}@example.invalid`, Date.now(), Date.now());
+      const workspaceId = (
+        await store.createWorkspace(`Source owner ${name}`, {
+          requestId: randomUUID(),
+          producer: { kind: 'user', id: userId },
+          instructionReference: 'test:managed-source-authority',
+        })
+      ).id;
+      recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: userId });
+      const ownerScope = { kind: 'workspace', workspaceId } as const;
+      const knowledgeBaseId = readDefaultKnowledgeBaseId({ dataRoot, scope: ownerScope });
+      const mount: KnowledgeMount = {
+        name: 'managed',
+        backend: 'local',
+        root: 'raw',
+        default: true,
         knowledgeBaseId,
-        contentDigest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
-        locator: { ownerScope, mount: 'managed', path: 'sources/original.bin' },
-        range: null,
-        availability: 'available',
-      },
-      byteLength: bytes.byteLength,
-      mediaType: 'application/octet-stream',
-    };
-    const access: KnowledgeRetrievalAccess = {
-      coreDb,
-      store,
-      actor: { kind: 'user', id: userId },
-      requestActor: { kind: 'session', userId },
-    };
-    return {
-      userId,
-      workspaceId,
-      root,
-      bytes,
-      content,
-      input: {
-        owner: { dataRoot, ownerScope },
-        knowledgeBaseId,
-        mount,
-        access,
-        consumer: 'native' as const,
-        mode: 'read-only' as const,
-      },
-    };
-  });
+      };
+      const root = join(dataRoot, 'workspaces', workspaceId, 'knowledge', 'raw');
+      mkdirSync(join(root, 'sources'), { recursive: true });
+      const bytes = Buffer.from(`Exact original for ${name}.\n`);
+      writeFileSync(join(root, 'sources', 'original.bin'), bytes);
+      const content: StorageContent = {
+        reference: {
+          knowledgeBaseId,
+          contentDigest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+          locator: { ownerScope, mount: 'managed', path: 'sources/original.bin' },
+          range: null,
+          availability: 'available',
+        },
+        byteLength: bytes.byteLength,
+        mediaType: 'application/octet-stream',
+      };
+      const access: KnowledgeRetrievalAccess = {
+        coreDb,
+        store,
+        actor: { kind: 'user', id: userId },
+        requestActor: { kind: 'session', userId },
+      };
+      return {
+        userId,
+        workspaceId,
+        root,
+        bytes,
+        content,
+        input: {
+          owner: { dataRoot, ownerScope },
+          knowledgeBaseId,
+          mount,
+          access,
+          consumer: 'native' as const,
+          mode: 'read-only' as const,
+        },
+      };
+    })
+  );
   const [a, b] = subjects as [(typeof subjects)[number], (typeof subjects)[number]];
   const externalRoot = join(dataRoot, 'external-originals');
   mkdirSync(join(externalRoot, 'sources'), { recursive: true });
@@ -160,7 +162,7 @@ function fixture() {
 
 describe('request-local managed Source authority', () => {
   it('admits current Knowledge bytes on an explicitly managed Storage mount without a lease', async () => {
-    const f = fixture();
+    const f = await fixture();
     await expect(
       f.storage.read({ access: f.knowledgeAccess, content: f.a.content, offset: 0, length: 64 })
     ).resolves.toEqual({
@@ -188,7 +190,7 @@ describe('request-local managed Source authority', () => {
 
   it('derives native A authority without lease facts and cannot use it for KB B', async () => {
     const { deriveManagedSourceAccess } = await import(nativeFactoryModule);
-    const f = fixture();
+    const f = await fixture();
     const access = deriveManagedSourceAccess(f.a.input);
     expect(access).toMatchObject(f.knowledgeAccess);
     for (const field of ['grantId', 'expiresAt', 'revoked'])
@@ -207,7 +209,7 @@ describe('request-local managed Source authority', () => {
 
   it('denies the next native read admission after current Workspace membership is removed', async () => {
     const { deriveManagedSourceAccess } = await import(nativeFactoryModule);
-    const f = fixture();
+    const f = await fixture();
     const invitation = f.coreDb.sqlite.transaction(() =>
       createWorkspaceInvitation({
         coreDb: f.coreDb,
@@ -247,14 +249,14 @@ describe('request-local managed Source authority', () => {
 
   it('does not turn responsible human Knowledge authority into Worker raw exposure', async () => {
     const { deriveManagedSourceAccess } = await import(nativeFactoryModule);
-    const f = fixture();
+    const f = await fixture();
     expect(deriveManagedSourceAccess(f.a.input)).toMatchObject(f.knowledgeAccess);
     expect(deriveManagedSourceAccess({ ...f.a.input, consumer: 'worker' })).toBeNull();
   });
 
   it('does not extend current Knowledge authority to a declared external local mount', async () => {
     const { deriveManagedSourceAccess } = await import(nativeFactoryModule);
-    const f = fixture();
+    const f = await fixture();
     expect(deriveManagedSourceAccess(f.a.input)).toMatchObject(f.knowledgeAccess);
     expect(deriveManagedSourceAccess({ ...f.a.input, mount: f.externalMount })).toBeNull();
   });

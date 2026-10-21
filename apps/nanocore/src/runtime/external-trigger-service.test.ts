@@ -129,7 +129,7 @@ async function fixture(options: { privateSource?: boolean } = {}) {
       createdAt: instant,
       updatedAt: instant,
     });
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       workspace.id,
       thread.id,
       entry.turnInput,
