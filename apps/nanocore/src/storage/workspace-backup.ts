@@ -109,8 +109,10 @@ export interface WorkspaceBackupStageResult {
 }
 
 /**
- * Captures one Workspace under the existing exclusive source-root lock.
- * All affected writers must be stopped; a verified backup directory stays read-only.
+ * Captures one Workspace; a stopped-data-root source holds the existing exclusive root lock.
+ * A data-root-backup source takes no parent lock and is opened strictly read-only.
+ * Verify that parent before and after copy, and check copied bytes against its manifest.
+ * All affected writers of a stopped-data-root source must be stopped.
  * Opens existing authority only, takes SQLite backup-API snapshots, and verifies full closure.
  * Backup seals only after sync; MOVE preparation remains unsealed for the offline seal owner.
  * @param _input Source selector, exact identities, output, and trusted verification policy.
@@ -125,6 +127,9 @@ export async function createWorkspaceBackup(
 
 /**
  * Verifies sealed input and copies it into a caller-owned private candidate.
+ * Inventory paths are Workspace-relative: bundleRoot/path maps to candidateRoot/path.
+ * The manifest and seal stay bundle metadata; no Workspace or export prefix is stripped.
+ * Native journal markers count the complete applied prefix, starting at one, not journal JSON versions.
  * The offline decision owner holds the target root lock and candidate/capacity ownership.
  * Existing-only database opens must close before return; no boot, migration, or recovery runs.
  * The existing bundle verifier supplies private bytes; its callback-scoped reader cannot escape.
