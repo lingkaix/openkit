@@ -159,6 +159,7 @@ import {
   getControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
 import {
+  bindCoreSqlite,
   type CoreDb,
   openWorkspaceDbAtRoot,
   type UserDb,
@@ -183,6 +184,7 @@ import {
   AgentSessionRecordSchema,
   artifactReferenceItemId,
   assertCanonicalDirectory,
+  assertCanonicalRegularFile,
   assertImmutableItemAttribution,
   assertSafeWorkspacePathSegment,
   assertTurnEventPayloadLineage,
@@ -222,6 +224,7 @@ import {
   writeWorkspaceFileRecords,
 } from '../storage/workspace-file-records.js';
 import { isTargetIssuedEffectAuthority } from '../storage/workspace-import-authority.js';
+import { getWorkspaceRegistryLifecycleFact } from '../workspace-sharing.js';
 
 type WorkspaceRecord = import('zod').infer<typeof WorkspaceRecordSchema>;
 type ProtocolWorkspaceResources = import('zod').infer<typeof WorkspaceResourcesSchema>;
@@ -2942,6 +2945,29 @@ export class FsStore {
   public getWorkspace(workspaceId: string): WorkspaceRecord {
     this.assertWorkspacePublicationAcknowledged(workspaceId);
     if (this.dataRoot) {
+      const root = this.workspaceRootPath(workspaceId);
+      if (!lstatSync(root, { throwIfNoEntry: false })?.isDirectory()) {
+        // An unpublished target has no Workspace authority; known identity still requires recovery.
+        const core = openControlStoreProductReadHandle(
+          join(this.dataRoot, 'server', 'db', 'core.sqlite'),
+          { kind: 'server' }
+        );
+        try {
+          if (
+            this.workspaces.has(workspaceId) ||
+            getWorkspaceRegistryLifecycleFact(
+              bindCoreSqlite(core.sqlite, this.dataRoot),
+              workspaceId
+            )
+          ) {
+            refuseScope(this.dataRoot, { scope: 'workspace', id: workspaceId, check: 'database' });
+            this.assertWorkspacePublicationAcknowledged(workspaceId);
+          }
+        } finally {
+          core.close();
+        }
+        throw new StoreRecordNotFoundError(`Workspace not found: ${workspaceId}`);
+      }
       const scope = this.nativeScope({ kind: 'workspace', workspaceId });
       const native = readNativeProduct(scope, 'workspace', workspaceId);
       if (!native) throw new StoreRecordNotFoundError(`Workspace not found: ${workspaceId}`);
@@ -3669,7 +3695,26 @@ export class FsStore {
           ? join(this.dataRoot, 'server')
           : join(this.dataRoot, 'workspaces', owner.workspaceId);
       const path = join(root, 'db', owner.kind === 'server' ? 'core.sqlite' : 'workspace.sqlite');
-      const reader = openControlStoreProductReadHandle(path, owner);
+      let reader: ReturnType<typeof openControlStoreProductReadHandle> | undefined;
+      try {
+        if (owner.kind === 'workspace') {
+          assertCanonicalDirectory(root);
+          assertCanonicalDirectory(dirname(path));
+          assertCanonicalRegularFile(path);
+        }
+        reader = openControlStoreProductReadHandle(path, owner);
+        if (owner.kind === 'workspace' && !reader.get('workspace', owner.workspaceId))
+          throw new Error('The native Workspace identity is unavailable.');
+      } catch (error) {
+        reader?.close();
+        if (owner.kind === 'server') throw error;
+        refuseScope(this.dataRoot, {
+          scope: 'workspace',
+          id: owner.workspaceId,
+          check: 'database',
+        });
+        continue;
+      }
       try {
         const table = {
           thread: 'control_threads',
@@ -4395,10 +4440,29 @@ export class FsStore {
   /** Reads the committed native Thread in its actual scope; no startup reconstruction or mutable file is authoritative. */
   public getThread(workspaceId: string, threadId: string): Thread {
     this.assertWorkspacePublicationAcknowledged(workspaceId);
-    const thread = this.dataRoot
-      ? (readNativeProduct(this.nativeScope({ kind: 'workspace', workspaceId }), 'thread', threadId)
-          ?.record as Thread | undefined)
-      : this.threads.get(threadId);
+    let thread = this.threads.get(threadId);
+    if (this.dataRoot) {
+      try {
+        thread = readNativeProduct(
+          this.nativeScope({ kind: 'workspace', workspaceId }),
+          'thread',
+          threadId
+        )?.record as Thread | undefined;
+      } catch (error) {
+        if (
+          !lstatSync(this.workspaceRootPath(workspaceId), { throwIfNoEntry: false })?.isDirectory()
+        ) {
+          // Only an unpublished parent is absence; missing registered authority still refuses recovery.
+          try {
+            this.getWorkspace(workspaceId);
+          } catch (workspaceError) {
+            if (!(workspaceError instanceof StoreRecordNotFoundError)) throw workspaceError;
+            throw new StoreRecordNotFoundError(`Thread not found: ${threadId}`);
+          }
+        }
+        throw error;
+      }
+    }
     if (!thread || thread.owner.kind !== 'workspace' || thread.owner.workspaceId !== workspaceId)
       throw new StoreRecordNotFoundError(`Thread not found: ${threadId}`);
     return ThreadSchema.parse(thread);

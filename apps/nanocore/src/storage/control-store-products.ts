@@ -4,6 +4,7 @@ import {
   constants,
   fstatSync,
   fsyncSync,
+  lstatSync,
   openSync,
   readFileSync,
   realpathSync,
@@ -1968,6 +1969,8 @@ export function openControlStoreProductReadHandle(
   owner: ControlProductOwner
 ): ControlStoreProductReadHandle {
   StoredWorkOwnerV1Schema.parse(owner);
+  if (!lstatSync(path).isFile() || realpathSync(dirname(path)) !== resolve(dirname(path)))
+    throw new ControlProductPreconditionError();
   const sqlite = new Database(path, { readonly: true, fileMustExist: true });
   try {
     sqlite.pragma('query_only = ON');

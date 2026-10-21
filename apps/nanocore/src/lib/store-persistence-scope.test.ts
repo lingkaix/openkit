@@ -14,6 +14,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -36,7 +37,7 @@ import { knowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { FsStore } from './store.js';
+import { FsStore, StoreRecordNotFoundError } from './store.js';
 
 /**
  * Computes the canonical S16 digest for exact UTF-8 Artifact content.
@@ -960,5 +961,118 @@ describe('native Thread byte authority', () => {
     expect(
       new FsStore({ dataRoot: f.dataRoot }).getThread(f.workspace.id, f.threads[1].id)
     ).toEqual(f.store.getThread(f.workspace.id, f.threads[1].id));
+  });
+});
+
+describe('native Workspace absence classification', () => {
+  it.each([
+    'never-published',
+    'retained-registered',
+  ] as const)('distinguishes %s absence without changing retained authority or healthy siblings', async (kind) => {
+    const f = await threadPublicationFixture(1);
+    const healthy = await f.store.createWorkspace('Healthy absence sibling');
+    const healthyThread = await f.store.createThread(healthy.id, 'Retained healthy history');
+    const coreDb = openCoreDb(f.dataRoot);
+    onTestFinished(() => coreDb.sqlite.close());
+    ensureLocalUser(coreDb);
+    for (const workspaceId of [f.workspace.id, healthy.id]) {
+      recordWorkspaceOwnerMembership({
+        coreDb,
+        ownerUserId: FIXTURE_LOCAL_USER_ID,
+        workspaceId,
+      });
+    }
+    const absentId =
+      kind === 'never-published'
+        ? testEntityId('ws', 'ws_never_published_absence')
+        : f.workspace.id;
+    const canonicalRoot = join(f.dataRoot, 'workspaces', absentId);
+    const retainedRoot = join(f.dataRoot, 'retained-workspace-root');
+    const healthyBefore = f.store.getWorkspace(healthy.id);
+    const healthyRows = () =>
+      workspaceSql(f.dataRoot, healthy.id, (db) => ({
+        workspaces: db.prepare('SELECT * FROM control_workspaces ORDER BY id').all(),
+        threads: db.prepare('SELECT * FROM control_threads ORDER BY id').all(),
+      }));
+    const serverRows = () => ({
+      registry: coreDb.sqlite
+        .prepare('SELECT * FROM workspace_registry ORDER BY workspace_id')
+        .all(),
+      membership: coreDb.sqlite
+        .prepare('SELECT * FROM workspace_members ORDER BY workspace_id, user_id')
+        .all(),
+    });
+    const healthyAuthority = healthyRows();
+    const serverAuthority = serverRows();
+    expect(serverAuthority.registry).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ workspace_id: f.workspace.id, status: 'active' }),
+        expect.objectContaining({ workspace_id: healthy.id, status: 'active' }),
+      ])
+    );
+    expect(serverAuthority.membership).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          workspace_id: f.workspace.id,
+          user_id: FIXTURE_LOCAL_USER_ID,
+          status: 'active',
+        }),
+        expect.objectContaining({
+          workspace_id: healthy.id,
+          user_id: FIXTURE_LOCAL_USER_ID,
+          status: 'active',
+        }),
+      ])
+    );
+    // Stop the Workspace writer before relocating complete retained authority.
+    await shutdownControlStoreWorkerClient();
+    if (kind === 'retained-registered') renameSync(canonicalRoot, retainedRoot);
+    else {
+      expect(
+        coreDb.sqlite.prepare('SELECT * FROM workspace_registry WHERE workspace_id=?').all(absentId)
+      ).toEqual([]);
+      expect(
+        coreDb.sqlite.prepare('SELECT * FROM workspace_members WHERE workspace_id=?').all(absentId)
+      ).toEqual([]);
+    }
+    expect(existsSync(canonicalRoot)).toBe(false);
+    const retainedFiles = () =>
+      existsSync(retainedRoot)
+        ? readdirSync(retainedRoot, { recursive: true })
+            .map(String)
+            .sort()
+            .filter((path) => lstatSync(join(retainedRoot, path)).isFile())
+            .map((path) => ({ path, bytes: readFileSync(join(retainedRoot, path)) }))
+        : [];
+    const retainedBytes = retainedFiles();
+    const entries = readdirSync(f.dataRoot, { recursive: true }).sort();
+    trace.events.length = 0;
+    const reopened = new FsStore({ dataRoot: f.dataRoot });
+    expect(reopened.getWorkspace(healthy.id)).toEqual(healthyBefore);
+    expect(reopened.getThread(healthy.id, healthyThread.id)).toEqual(healthyThread);
+    for (const reader of [reopened, f.store]) {
+      if (kind === 'never-published') {
+        expect(() => reader.getWorkspace(absentId)).toThrow(StoreRecordNotFoundError);
+        expect(() => reader.getWorkspace(absentId)).toThrow(
+          expect.objectContaining({ message: `Workspace not found: ${absentId}` })
+        );
+      } else {
+        expect(() => reader.getWorkspace(absentId)).toThrow(
+          expect.objectContaining({
+            code: 'recovery_required',
+            status: 409,
+            message: expect.stringContaining(`workspace ${absentId} quarantined`),
+          })
+        );
+      }
+    }
+    expect(reopened.getWorkspace(healthy.id)).toEqual(healthyBefore);
+    expect(reopened.getThread(healthy.id, healthyThread.id)).toEqual(healthyThread);
+    expect(existsSync(canonicalRoot)).toBe(false);
+    expect(serverRows()).toEqual(serverAuthority);
+    expect(healthyRows()).toEqual(healthyAuthority);
+    expect(retainedFiles()).toEqual(retainedBytes);
+    expect(readdirSync(f.dataRoot, { recursive: true }).sort()).toEqual(entries);
+    expect(trace.events).toEqual([]);
   });
 });

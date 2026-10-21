@@ -12,9 +12,9 @@ import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 
 import { createHash } from 'node:crypto';
 import {
-  appendFileSync,
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -25,7 +25,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
 import {
   ItemSchema,
   PROTOCOL_VERSION,
@@ -34,14 +34,113 @@ import {
   WorkspaceRecordSchema,
   writeRetainedV1,
 } from '@openkit/protocol';
-import { describe, expect, it, onTestFinished } from 'vitest';
+import Database from 'better-sqlite3';
+import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { ensureLayout } from '../storage/fs-layout.js';
-import { discardAbandonedWorkspaceStaging } from '../storage/workspace-file-records.js';
+import {
+  discardAbandonedWorkspaceStaging,
+  nativeProductScope,
+  readNativeProductEntries,
+} from '../storage/workspace-file-records.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { knowledgePageFixture } from '../test-support/knowledge-page.js';
 import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { FsStore } from './store.js';
+
+// Reopen and corruption fixtures must not race a retained worker handle.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
+});
+
+/** Reads existing canonical SQL through a separate fixture connection; never initializes storage. */
+function workspaceSql<T>(
+  dataRoot: string,
+  workspaceId: string,
+  inspect: (db: Database.Database) => T
+): T {
+  const db = new Database(join(dataRoot, 'workspaces', workspaceId, 'db', 'workspace.sqlite'), {
+    fileMustExist: true,
+  });
+  try {
+    return inspect(db);
+  } finally {
+    db.close();
+  }
+}
+
+/** Reads raw retained metadata independently of the Store's known-field projection. */
+function metadata(
+  dataRoot: string,
+  workspaceId: string,
+  table: string,
+  id: string
+): Record<string, unknown> {
+  const row = workspaceSql(dataRoot, workspaceId, (db) =>
+    db.prepare(`SELECT record_json FROM ${table} WHERE id=?`).get(id)
+  ) as { record_json: string };
+  return JSON.parse(row.record_json);
+}
+
+/** Changes a retained fixture only with the live native writer stopped. */
+async function replaceMetadata(
+  dataRoot: string,
+  workspaceId: string,
+  table: string,
+  id: string,
+  record: Record<string, unknown>
+): Promise<void> {
+  await shutdownControlStoreWorkerClient();
+  workspaceSql(dataRoot, workspaceId, (db) =>
+    db.prepare(`UPDATE ${table} SET record_json=? WHERE id=?`).run(JSON.stringify(record), id)
+  );
+}
+
+/** Observes the real retained bodies referenced by ordered native entries. */
+function nativeEntries(
+  dataRoot: string,
+  workspaceId: string,
+  turnId: string,
+  kind: 'item' | 'event'
+) {
+  return readNativeProductEntries(
+    nativeProductScope(dataRoot, { kind: 'workspace', workspaceId }),
+    turnId,
+    kind
+  ).map((row) => row.value);
+}
+
+/** Replaces one fixture descriptor with digest-correct corrupted bytes, so the retained decoder is the deciding check. */
+async function replaceEntry(
+  dataRoot: string,
+  workspaceId: string,
+  turnId: string,
+  kind: 'item' | 'event',
+  sequence: number,
+  value: unknown
+): Promise<void> {
+  await shutdownControlStoreWorkerClient();
+  const bytes = Buffer.from(JSON.stringify(value));
+  const digest = createHash('sha256').update(bytes).digest('hex');
+  const path = `sha256/${digest}`;
+  const root = join(dataRoot, 'workspaces', workspaceId, 'evidence', 'backend');
+  mkdirSync(join(root, 'sha256'), { recursive: true });
+  writeFileSync(join(root, path), bytes);
+  workspaceSql(dataRoot, workspaceId, (db) => {
+    const row = db
+      .prepare(
+        'SELECT content_json FROM control_product_entries WHERE kind=? AND turn_id=? AND sequence=?'
+      )
+      .get(kind, turnId, sequence) as { content_json: string };
+    const content = JSON.parse(row.content_json);
+    content.reference.contentDigest = `sha256:${digest}`;
+    content.reference.locator.path = path;
+    content.byteLength = bytes.length;
+    db.prepare(
+      'UPDATE control_product_entries SET content_json=? WHERE kind=? AND turn_id=? AND sequence=?'
+    ).run(JSON.stringify(content), kind, turnId, sequence);
+  });
+}
 
 const timestamp = '2026-07-06T00:00:00.000Z';
 const localActor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
@@ -172,21 +271,77 @@ function workspaceImportPayload(
   };
 }
 
-/** Captures entries and exact bytes without following symbolic links or hiding missing files. */
-function retainedTree(root: string): Record<string, Buffer | string> {
-  return Object.fromEntries(
-    readdirSync(root, { recursive: true, withFileTypes: true }).map((entry) => {
-      const path = join(entry.parentPath, entry.name);
-      return [
-        relative(root, path),
-        entry.isSymbolicLink()
-          ? `symlink:${readlinkSync(path)}`
-          : entry.isDirectory()
-            ? 'directory'
-            : readFileSync(path),
-      ];
-    })
-  );
+/** Preserves canonical SQL values and all other bytes; only its regular WAL/SHM are bookkeeping. */
+function retainedTree(dataRoot: string, root: string): Record<string, Buffer | string> {
+  const entries: Record<string, Buffer | string> = {};
+  const isCanonicalDatabase = (path: string): boolean => {
+    const parts = relative(dataRoot, path).split(sep);
+    if (parts.length === 3)
+      return parts[0] === 'server' && parts[1] === 'db' && parts[2] === 'core.sqlite';
+    return (
+      parts.length === 4 &&
+      parts[1] !== '.staging' &&
+      parts[2] === 'db' &&
+      ((parts[0] === 'users' && parts[3] === 'user.sqlite') ||
+        (parts[0] === 'workspaces' && parts[3] === 'workspace.sqlite'))
+    );
+  };
+  const visit = (directory: string, prefix = '') => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const key = join(prefix, entry.name);
+      const path = join(directory, entry.name);
+      if (entry.isSymbolicLink()) {
+        entries[key] = `symlink:${readlinkSync(path)}`;
+      } else if (entry.isDirectory()) {
+        entries[key] = 'directory';
+        visit(path, key);
+      } else if (entry.isFile()) {
+        if (isCanonicalDatabase(path)) {
+          const sqlite = new Database(path, { readonly: true, fileMustExist: true });
+          try {
+            entries[key] = sqlite.transaction(() => {
+              const schema = sqlite
+                .prepare('SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY type,name')
+                .raw(true)
+                .all();
+              const tables = sqlite
+                .prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name")
+                .all() as { name: string }[];
+              const rows = tables.map(({ name }) => [
+                name,
+                sqlite
+                  .prepare(`SELECT * FROM "${name.replaceAll('"', '""')}"`)
+                  .raw(true)
+                  .safeIntegers(true)
+                  .all()
+                  .map((row) =>
+                    JSON.stringify(row, (_key, value) =>
+                      typeof value === 'bigint' ? { integer: value.toString() } : value
+                    )
+                  )
+                  .sort(),
+              ]);
+              return Buffer.from(JSON.stringify({ schema, rows }));
+            })();
+          } finally {
+            sqlite.close();
+          }
+        } else if (
+          !(
+            (path.endsWith('-wal') || path.endsWith('-shm')) &&
+            isCanonicalDatabase(path.slice(0, -4)) &&
+            lstatSync(path.slice(0, -4), { throwIfNoEntry: false })?.isFile()
+          )
+        ) {
+          entries[key] = readFileSync(path);
+        }
+      } else {
+        throw new Error('Retained snapshot requires a directory, regular file or symbolic link.');
+      }
+    }
+  };
+  visit(root);
+  return entries;
 }
 
 /**
@@ -201,30 +356,32 @@ async function expectScopedReloadRefusal(dataRoot: string, workspaceIds: string[
     rmSync(restartRoot, { recursive: true, force: true });
     rmSync(healthyRoot, { recursive: true, force: true });
   });
+  await shutdownControlStoreWorkerClient();
   cpSync(dataRoot, restartRoot, { recursive: true, verbatimSymlinks: true });
   const control = createTestStore({ dataRoot: healthyRoot });
   const healthy = await control.createWorkspace('Healthy reload sibling');
   const thread = await control.createThread(healthy.id, 'Retained sibling history');
+  await shutdownControlStoreWorkerClient();
   cpSync(join(healthyRoot, 'workspaces', healthy.id), join(restartRoot, 'workspaces', healthy.id), {
     recursive: true,
   });
-  const before = retainedTree(join(restartRoot, 'workspaces'));
+  const before = retainedTree(restartRoot, join(restartRoot, 'workspaces'));
   const restarted = new FsStore({ dataRoot: restartRoot });
   for (const workspaceId of workspaceIds) {
     const refusal = expect.objectContaining({ code: 'recovery_required' });
     expect(() => restarted.getWorkspace(workspaceId)).toThrow(refusal);
     expect(() => restarted.listThreads(workspaceId)).toThrow(refusal);
-    expect(() => restarted.createThread(workspaceId, 'Must not publish')).toThrow(refusal);
+    await expect(restarted.createThread(workspaceId, 'Must not publish')).rejects.toThrow(refusal);
     expect(restarted.listWorkspaces().map(({ id }) => id)).not.toContain(workspaceId);
   }
   expect(restarted.getWorkspace(healthy.id)).toEqual(control.getWorkspace(healthy.id));
   expect(restarted.getThread(healthy.id, thread.id)).toEqual(thread);
-  expect(retainedTree(join(restartRoot, 'workspaces'))).toEqual(before);
+  expect(retainedTree(restartRoot, join(restartRoot, 'workspaces'))).toEqual(before);
   const added = await restarted.createThread(healthy.id, 'New sibling history');
   expect(new FsStore({ dataRoot: restartRoot }).getThread(healthy.id, added.id)).toEqual(added);
   for (const workspaceId of workspaceIds) {
-    expect(retainedTree(join(restartRoot, 'workspaces', workspaceId))).toEqual(
-      retainedTree(join(dataRoot, 'workspaces', workspaceId))
+    expect(retainedTree(restartRoot, join(restartRoot, 'workspaces', workspaceId))).toEqual(
+      retainedTree(dataRoot, join(dataRoot, 'workspaces', workspaceId))
     );
   }
 }
@@ -252,7 +409,7 @@ describe('FsStore canonical reload', () => {
       createdAt: firstTurn.startedAt ?? timestamp,
       completedAt: firstTurn.startedAt ?? timestamp,
     });
-    const updatedFirstItem = store.updateItem(firstItem.id, {
+    const updatedFirstItem = await store.updateItem(firstItem.id, {
       text: 'Latest canonical item text.',
     });
     const secondWorkspace = await store.createWorkspace('Second canonical workspace');
@@ -263,7 +420,7 @@ describe('FsStore canonical reload', () => {
       'Persist the second canonical turn',
       localActor
     );
-    const secondItem = store.createItem({
+    const secondItem = await store.createItem({
       id: testEntityId('it', `it_${secondTurn.id}`),
       owner: { kind: 'workspace', workspaceId: secondWorkspace.id },
       threadId: secondThread.id,
@@ -284,11 +441,12 @@ describe('FsStore canonical reload', () => {
       firstTurn.id,
       'items.jsonl'
     );
-
-    writeFileSync(
-      firstItemsPath,
-      `${JSON.stringify(writeRetainedV1(firstItem))}\n${JSON.stringify(writeRetainedV1(updatedFirstItem))}\n`
-    );
+    mkdirSync(dirname(firstItemsPath), { recursive: true });
+    writeFileSync(firstItemsPath, `${JSON.stringify(writeRetainedV1(firstItem))}\n`);
+    expect(nativeEntries(dataRoot, firstWorkspace.id, firstTurn.id, 'item')).toEqual([
+      writeRetainedV1(firstItem),
+      writeRetainedV1(updatedFirstItem),
+    ]);
     const restarted = new FsStore({ dataRoot });
 
     expect(restarted.getWorkspace(firstWorkspace.id)).toEqual(
@@ -349,7 +507,7 @@ describe('FsStore canonical reload', () => {
     ).toBe(false);
   });
 
-  it('appends item revisions to the canonical item log', async () => {
+  it('appends immutable item revisions in native canonical order', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-item-log-'));
     const store = createTestStore({ dataRoot });
     const workspace = await store.createWorkspace('Append-only item workspace');
@@ -371,30 +529,37 @@ describe('FsStore canonical reload', () => {
       createdAt: turn.startedAt ?? timestamp,
       completedAt: null,
     });
-    const itemsPath = join(
-      dataRoot,
-      'workspaces',
-      workspace.id,
-      'threads',
-      thread.id,
-      'turns',
-      turn.id,
-      'items.jsonl'
+    const initialRows = workspaceSql(dataRoot, workspace.id, (db) =>
+      db
+        .prepare(
+          "SELECT * FROM control_product_entries WHERE kind='item' AND turn_id=? ORDER BY sequence"
+        )
+        .all(turn.id)
     );
-    const turnPath = join(dirname(itemsPath), 'turn.json');
-    const initialLog = readFileSync(itemsPath, 'utf8');
     const updatedItem = await store.updateItem(item.id, {
       status: 'completed',
       text: 'Completed item revision.',
       completedAt: item.createdAt,
     });
-
-    const appendedLog = readFileSync(itemsPath, 'utf8');
-    expect(appendedLog.startsWith(initialLog)).toBe(true);
-    expect(JSON.parse(appendedLog.slice(initialLog.length))).toEqual(writeRetainedV1(updatedItem));
-    const turnRecord = JSON.parse(readFileSync(turnPath, 'utf8')) as { items: unknown[] };
+    const appendedRows = workspaceSql(dataRoot, workspace.id, (db) =>
+      db
+        .prepare(
+          "SELECT * FROM control_product_entries WHERE kind='item' AND turn_id=? ORDER BY sequence"
+        )
+        .all(turn.id)
+    );
+    expect(appendedRows.slice(0, initialRows.length)).toEqual(initialRows);
+    expect(appendedRows).toHaveLength(initialRows.length + 1);
+    expect(nativeEntries(dataRoot, workspace.id, turn.id, 'item')).toEqual([
+      writeRetainedV1(item),
+      writeRetainedV1(updatedItem),
+    ]);
+    const turnRecord = metadata(dataRoot, workspace.id, 'control_turns', turn.id);
     expect(turnRecord.items).toEqual([]);
     expect(JSON.stringify(turnRecord)).not.toContain(updatedItem.text);
+    expect(new FsStore({ dataRoot }).listThreadItems(workspace.id, thread.id)).toEqual([
+      updatedItem,
+    ]);
   });
 
   it('reloads canonical workspace records and event logs without store.json', async () => {
@@ -572,30 +737,27 @@ describe('FsStore canonical reload', () => {
       'files',
       'content.md'
     );
-    const eventLogPath = join(
-      workspaceRoot,
-      'threads',
-      thread.id,
-      'turns',
+    const agentSessionEvent = store.emitTurnEvent(
       turn.id,
-      'runtime',
-      'events.jsonl'
+      await store.persistTurnEvent(turn.id, {
+        event: 'agent.session.updated',
+        workspaceId: workspace.id,
+        threadId: thread.id,
+        turnId: turn.id,
+        data: { type: 'agent-session-updated', agentSession },
+      })
     );
-    const agentSessionEvent = store.emitTurnEvent(turn.id, {
-      event: 'agent.session.updated',
-      workspaceId: workspace.id,
-      threadId: thread.id,
-      turnId: turn.id,
-      data: { type: 'agent-session-updated', agentSession },
-    });
-    const initialEventLog = existsSync(eventLogPath) ? readFileSync(eventLogPath, 'utf8') : '';
-    const artifactEvent = store.emitTurnEvent(turn.id, {
-      event: 'artifact.created',
-      workspaceId: workspace.id,
-      threadId: thread.id,
-      turnId: turn.id,
-      data: { type: 'artifact-created', artifact },
-    });
+    const initialEventLog = nativeEntries(dataRoot, workspace.id, turn.id, 'event');
+    const artifactEvent = store.emitTurnEvent(
+      turn.id,
+      await store.persistTurnEvent(turn.id, {
+        event: 'artifact.created',
+        workspaceId: workspace.id,
+        threadId: thread.id,
+        turnId: turn.id,
+        data: { type: 'artifact-created', artifact },
+      })
+    );
     const completedTurn = await store.updateTurn(turn.id, {
       status: 'completed',
       completedAt: userItem.completedAt,
@@ -610,7 +772,7 @@ describe('FsStore canonical reload', () => {
       string,
       unknown
     >;
-    const finalEventLog = existsSync(eventLogPath) ? readFileSync(eventLogPath, 'utf8') : '';
+    const finalEventLog = nativeEntries(dataRoot, workspace.id, turn.id, 'event');
 
     expect.soft(artifactMetadata).toEqual(
       writeRetainedV1({
@@ -620,10 +782,16 @@ describe('FsStore canonical reload', () => {
     );
     expect.soft(JSON.stringify(artifactMetadata)).not.toContain(artifact.content.body);
     expect.soft(readFileSync(artifactContentPath, 'utf8')).toBe(artifact.content.body);
-    expect.soft(initialEventLog).toBe(`${JSON.stringify(writeRetainedV1(agentSessionEvent))}\n`);
-    expect
-      .soft(finalEventLog)
-      .toBe(`${initialEventLog}${JSON.stringify(writeRetainedV1(artifactEvent))}\n`);
+    expect.soft(initialEventLog).toEqual([writeRetainedV1(agentSessionEvent)]);
+    expect.soft(finalEventLog).toEqual([
+      ...initialEventLog,
+      writeRetainedV1(artifactEvent),
+      expect.objectContaining({
+        event: 'turn.completed',
+        turnId: turn.id,
+        data: expect.objectContaining({ type: 'turn-completed' }),
+      }),
+    ]);
 
     expect(forbiddenLegacyStorePaths.some((path) => existsSync(path))).toBe(false);
 
@@ -650,7 +818,9 @@ describe('FsStore canonical reload', () => {
     );
     expect(restarted.getAgentSession(agentSession.id)).toEqual(agentSession);
     expect(restarted.getArtifact(workspace.id, artifact.id)).toEqual(artifact);
-    expect(restarted.getTurnEvents(turn.id)).toEqual([agentSessionEvent, artifactEvent]);
+    expect(restarted.getTurnEvents(turn.id).map((event) => writeRetainedV1(event))).toEqual(
+      finalEventLog
+    );
   });
 
   it('reloads only the last one hundred appended turn events', async () => {
@@ -666,13 +836,16 @@ describe('FsStore canonical reload', () => {
     );
 
     for (let index = 0; index < 105; index += 1) {
-      store.emitTurnEvent(turn.id, {
-        event: 'turn.started',
-        workspaceId: workspace.id,
-        threadId: thread.id,
-        turnId: turn.id,
-        data: { type: 'turn-started', turnId: turn.id, status: 'running' },
-      });
+      store.emitTurnEvent(
+        turn.id,
+        await store.persistTurnEvent(turn.id, {
+          event: 'turn.started',
+          workspaceId: workspace.id,
+          threadId: thread.id,
+          turnId: turn.id,
+          data: { type: 'turn-started', turnId: turn.id, status: 'running' },
+        })
+      );
     }
 
     const restarted = new FsStore({ dataRoot });
@@ -935,23 +1108,9 @@ describe('FsStore canonical reload', () => {
     );
     expect(recoveredTurn.status).toBe('running');
     expect(recoveredTurn.items.map((item) => item.id)).toContain(requestItem.id);
-    expect(
-      JSON.parse(
-        readFileSync(
-          join(
-            dataRoot,
-            'workspaces',
-            workspace.id,
-            'threads',
-            thread.id,
-            'turns',
-            turn.id,
-            'turn.json'
-          ),
-          'utf8'
-        )
-      )
-    ).toMatchObject({ status: 'running' });
+    expect(metadata(dataRoot, workspace.id, 'control_turns', turn.id)).toMatchObject({
+      status: 'running',
+    });
   });
 
   it('clears a stale approval gate from its canonical decision item', async () => {
@@ -1086,24 +1245,12 @@ describe('FsStore canonical reload', () => {
     expect(() => restarted.getApproval(approvalId)).toThrow(
       `Approval request not found: ${approvalId}`
     );
-    const itemsPath = join(
-      dataRoot,
-      'workspaces',
-      workspace.id,
-      'threads',
-      thread.id,
-      'turns',
-      turn.id,
-      'items.jsonl'
-    );
     const canonicalDenials = () =>
-      readFileSync(itemsPath, 'utf8')
-        .trim()
-        .split('\n')
-        .map((line) => JSON.parse(line))
-        .filter(
-          (item) => item.type === 'approval-decision' && item.approvalRequestId === approvalId
-        );
+      (
+        nativeEntries(dataRoot, workspace.id, turn.id, 'item') as Array<Record<string, unknown>>
+      ).filter(
+        (item) => item.type === 'approval-decision' && item.approvalRequestId === approvalId
+      );
     expect(canonicalDenials()).toEqual([]);
     expect(new FsStore({ dataRoot }).getTurn(workspace.id, thread.id, turn.id).items).toEqual(
       recovered.items
@@ -1111,7 +1258,7 @@ describe('FsStore canonical reload', () => {
     expect(canonicalDenials()).toEqual([]);
   });
 
-  it('repairs only an incomplete final item-log fragment', async () => {
+  it('ignores partial disposable item logs but refuses malformed native canonical records', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-truncated-item-log-'));
     const store = createTestStore({ dataRoot });
     const workspace = await store.createWorkspace('Truncated item log workspace');
@@ -1143,25 +1290,20 @@ describe('FsStore canonical reload', () => {
       turn.id,
       'items.jsonl'
     );
-    const validLog = readFileSync(itemsPath, 'utf8');
-
-    appendFileSync(itemsPath, '{"id":"truncated');
-    const restarted = new FsStore({ dataRoot });
-
-    expect(restarted.listThreadItems(workspace.id, thread.id)).toEqual([item]);
-    expect(readFileSync(itemsPath, 'utf8')).toBe(validLog);
-
-    writeFileSync(
-      itemsPath,
-      `${validLog}{"id":"broken"\n${JSON.stringify(writeRetainedV1(item))}\n`
-    );
-    await expectScopedReloadRefusal(dataRoot, [workspace.id]);
-
-    writeFileSync(itemsPath, `${validLog}not-json`);
+    mkdirSync(dirname(itemsPath), { recursive: true });
+    for (const projection of ['{"id":"truncated', '{"id":"broken"\n', 'not-json']) {
+      writeFileSync(itemsPath, projection);
+      expect(new FsStore({ dataRoot }).listThreadItems(workspace.id, thread.id)).toEqual([item]);
+      expect(readFileSync(itemsPath, 'utf8')).toBe(projection);
+      expect(nativeEntries(dataRoot, workspace.id, turn.id, 'item')).toEqual([
+        writeRetainedV1(item),
+      ]);
+    }
+    await replaceEntry(dataRoot, workspace.id, turn.id, 'item', 1, { id: item.id });
     await expectScopedReloadRefusal(dataRoot, [workspace.id]);
   });
 
-  it('normalizes a valid final item revision before future appends', async () => {
+  it('appends native revisions independently of a stale final JSONL projection', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-item-log-newline-'));
     const store = createTestStore({ dataRoot });
     const workspace = await store.createWorkspace('Item log newline workspace');
@@ -1194,22 +1336,23 @@ describe('FsStore canonical reload', () => {
       'items.jsonl'
     );
 
-    writeFileSync(itemsPath, JSON.stringify(writeRetainedV1(item)));
+    mkdirSync(dirname(itemsPath), { recursive: true });
+    const staleProjection = JSON.stringify(writeRetainedV1(item));
+    writeFileSync(itemsPath, staleProjection);
     const restarted = new FsStore({ dataRoot });
-    const updated = restarted.updateItem(item.id, {
+    const updated = await restarted.updateItem(item.id, {
       status: 'completed',
       completedAt: item.createdAt,
     });
-
-    const normalizedLog = readFileSync(itemsPath, 'utf8');
-    expect(normalizedLog.endsWith('\n')).toBe(true);
-    expect(normalizedLog.trimEnd().split('\n').map(JSON.parse)).toEqual([
+    expect(readFileSync(itemsPath, 'utf8')).toBe(staleProjection);
+    expect(nativeEntries(dataRoot, workspace.id, turn.id, 'item')).toEqual([
       writeRetainedV1(item),
       writeRetainedV1(updated),
     ]);
+    expect(new FsStore({ dataRoot }).listThreadItems(workspace.id, thread.id)).toEqual([updated]);
   });
 
-  it('repairs an incomplete final event-log fragment', async () => {
+  it('replays complete native events independently of an incomplete disposable event log', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-truncated-event-log-'));
     const store = createTestStore({ dataRoot });
     const workspace = await store.createWorkspace('Truncated event log workspace');
@@ -1220,13 +1363,16 @@ describe('FsStore canonical reload', () => {
       'Repair the final event fragment',
       localActor
     );
-    const event = store.emitTurnEvent(turn.id, {
-      event: 'turn.started',
-      workspaceId: workspace.id,
-      threadId: thread.id,
-      turnId: turn.id,
-      data: { type: 'turn-started', turnId: turn.id, status: 'running' },
-    });
+    const event = store.emitTurnEvent(
+      turn.id,
+      await store.persistTurnEvent(turn.id, {
+        event: 'turn.started',
+        workspaceId: workspace.id,
+        threadId: thread.id,
+        turnId: turn.id,
+        data: { type: 'turn-started', turnId: turn.id, status: 'running' },
+      })
+    );
     const eventPath = join(
       dataRoot,
       'workspaces',
@@ -1238,13 +1384,15 @@ describe('FsStore canonical reload', () => {
       'runtime',
       'events.jsonl'
     );
-    const validLog = readFileSync(eventPath, 'utf8');
-
-    appendFileSync(eventPath, '{"event":"truncated');
+    mkdirSync(dirname(eventPath), { recursive: true });
+    const partial = '{"event":"truncated';
+    writeFileSync(eventPath, partial);
     const restarted = new FsStore({ dataRoot });
-
     expect(restarted.getTurnEvents(turn.id)).toEqual([event]);
-    expect(readFileSync(eventPath, 'utf8')).toBe(validLog);
+    expect(readFileSync(eventPath, 'utf8')).toBe(partial);
+    expect(nativeEntries(dataRoot, workspace.id, turn.id, 'event')).toEqual([
+      writeRetainedV1(event),
+    ]);
   });
 
   it('rejects canonical writes through an artifact directory link', async () => {
@@ -1314,23 +1462,18 @@ describe('FsStore canonical reload', () => {
       createdAt: turn.startedAt ?? timestamp,
       completedAt: turn.startedAt ?? timestamp,
     });
-    const itemsPath = join(
-      dataRoot,
-      'workspaces',
-      workspace.id,
-      'threads',
-      thread.id,
-      'turns',
-      turn.id,
-      'items.jsonl'
-    );
 
-    expect(() => store.updateItem(item.id, { createdAt: '2026-07-07T00:00:00.000Z' })).toThrow(
-      /immutable identity/
-    );
-    appendFileSync(
-      itemsPath,
-      `${JSON.stringify(writeRetainedV1({ ...item, type: 'user-message', actor: localActor }))}\n`
+    await expect(
+      store.updateItem(item.id, { createdAt: '2026-07-07T00:00:00.000Z' })
+    ).rejects.toThrow(/immutable identity/);
+    const updated = await store.updateItem(item.id, { text: 'Second item revision.' });
+    await replaceEntry(
+      dataRoot,
+      workspace.id,
+      turn.id,
+      'item',
+      2,
+      writeRetainedV1({ ...updated, type: 'user-message', actor: localActor })
     );
     await expectScopedReloadRefusal(dataRoot, [workspace.id]);
   });
@@ -1380,18 +1523,20 @@ describe('FsStore canonical reload', () => {
       updatedAt: turn.startedAt ?? timestamp,
     });
     const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
-    const turnPath = join(workspaceRoot, 'threads', thread.id, 'turns', turn.id, 'turn.json');
     const artifactPath = join(workspaceRoot, 'artifacts', artifact.id, 'artifact.json');
-    const turnMetadata = JSON.parse(readFileSync(turnPath, 'utf8')) as Record<string, unknown>;
+    const turnMetadata = metadata(dataRoot, workspace.id, 'control_turns', turn.id);
     const artifactMetadata = JSON.parse(readFileSync(artifactPath, 'utf8')) as Record<
       string,
       unknown
     >;
 
-    writeFileSync(turnPath, `${JSON.stringify({ ...turnMetadata, items: [item] }, null, 2)}\n`);
+    await replaceMetadata(dataRoot, workspace.id, 'control_turns', turn.id, {
+      ...turnMetadata,
+      items: [item],
+    });
     await expectScopedReloadRefusal(dataRoot, [workspace.id]);
 
-    writeFileSync(turnPath, `${JSON.stringify(turnMetadata, null, 2)}\n`);
+    await replaceMetadata(dataRoot, workspace.id, 'control_turns', turn.id, turnMetadata);
     writeFileSync(
       artifactPath,
       `${JSON.stringify(
@@ -1414,28 +1559,27 @@ describe('FsStore canonical reload', () => {
       'Reject nested event lineage',
       localActor
     );
-    const event = store.emitTurnEvent(turn.id, {
-      event: 'turn.started',
-      workspaceId: workspace.id,
-      threadId: thread.id,
-      turnId: turn.id,
-      data: { type: 'turn-started', turnId: turn.id, status: 'running' },
-    });
-    const eventPath = join(
-      dataRoot,
-      'workspaces',
-      workspace.id,
-      'threads',
-      thread.id,
-      'turns',
+    const event = store.emitTurnEvent(
       turn.id,
-      'runtime',
-      'events.jsonl'
+      await store.persistTurnEvent(turn.id, {
+        event: 'turn.started',
+        workspaceId: workspace.id,
+        threadId: thread.id,
+        turnId: turn.id,
+        data: { type: 'turn-started', turnId: turn.id, status: 'running' },
+      })
     );
 
-    writeFileSync(
-      eventPath,
-      `${JSON.stringify(writeRetainedV1({ ...event, data: { ...event.data, turnId: 'tu_00000000-0000-7bf1-990f-799cdaa2a481' } }))}\n`
+    await replaceEntry(
+      dataRoot,
+      workspace.id,
+      turn.id,
+      'event',
+      1,
+      writeRetainedV1({
+        ...event,
+        data: { ...event.data, turnId: 'tu_00000000-0000-7bf1-990f-799cdaa2a481' },
+      })
     );
     await expectScopedReloadRefusal(dataRoot, [workspace.id]);
   });
@@ -1447,41 +1591,28 @@ describe('FsStore canonical reload', () => {
     const firstThread = await store.createThread(firstWorkspace.id, 'First collision thread');
     const secondWorkspace = await store.createWorkspace('Second collision workspace');
     await store.createThread(secondWorkspace.id, 'Second collision thread');
-    const duplicateRoot = join(
-      dataRoot,
-      'workspaces',
-      secondWorkspace.id,
-      'threads',
-      firstThread.id
-    );
-
-    mkdirSync(duplicateRoot, { recursive: true });
-    const duplicateThread = ThreadSchema.parse({
-      ...firstThread,
+    await shutdownControlStoreWorkerClient();
+    const source = workspaceSql(dataRoot, firstWorkspace.id, (db) =>
+      db.prepare('SELECT * FROM control_threads WHERE id=?').get(firstThread.id)
+    ) as Record<string, unknown>;
+    const duplicateThread = {
+      ...JSON.parse(source.record_json as string),
       owner: { kind: 'workspace', workspaceId: secondWorkspace.id },
-    });
-    writeFileSync(
-      join(duplicateRoot, 'thread.json'),
-      `${JSON.stringify(
-        {
-          ...duplicateThread,
-          schemaVersion: 1,
-          recordType: 'thread',
-          ownerScope: 'workspace',
-          lineage: { workspaceId: secondWorkspace.id, threadId: firstThread.id },
-          contentDigest: `sha256:${createHash('sha256')
-            .update(JSON.stringify(duplicateThread))
-            .digest('hex')}`,
-          redactionLevel: 'none',
-          sensitivity: 'workspace',
-          requiredFeatures: ['openkit.thread-entry.v1', 'openkit.thread-visibility.v1'],
-          extensions: {},
-        },
-        null,
-        2
-      )}\n`
+    };
+    workspaceSql(dataRoot, secondWorkspace.id, (db) =>
+      db
+        .prepare(
+          'INSERT INTO control_threads (id,workspace_id,status,schema_version,revision,record_json) VALUES (?,?,?,?,?,?)'
+        )
+        .run(
+          firstThread.id,
+          secondWorkspace.id,
+          source.status,
+          source.schema_version,
+          source.revision,
+          JSON.stringify(duplicateThread)
+        )
     );
-
     await expectScopedReloadRefusal(dataRoot, [firstWorkspace.id, secondWorkspace.id]);
   });
 
@@ -1490,7 +1621,7 @@ describe('FsStore canonical reload', () => {
     const store = createTestStore({ dataRoot });
     const workspace = await store.createWorkspace('Duplicate current AgentSession workspace');
     const thread = await store.createThread(workspace.id, 'Duplicate current AgentSession thread');
-    const current = store.createAgentSession({
+    const current = await store.createAgentSession({
       id: 'as_00000000-0000-73d1-9376-f1617050293b',
       agentId: 'agent_codex_host',
       workspaceId: workspace.id,
@@ -1505,21 +1636,19 @@ describe('FsStore canonical reload', () => {
       id: 'as_00000000-0000-750a-a946-095b79c29d9c',
       status: 'ready' as const,
     };
-    const duplicateRoot = join(
-      dataRoot,
-      'workspaces',
-      workspace.id,
-      'runtime',
-      'agent-sessions',
-      duplicate.id
-    );
-
-    mkdirSync(duplicateRoot, { recursive: true });
-    writeFileSync(
-      join(duplicateRoot, 'session.json'),
-      `${JSON.stringify(writeRetainedV1(duplicate), null, 2)}\n`
-    );
-
+    await shutdownControlStoreWorkerClient();
+    workspaceSql(dataRoot, workspace.id, (db) => {
+      db.exec('DROP INDEX control_agent_sessions_current_thread_idx');
+      db.prepare(
+        'INSERT INTO control_agent_sessions (id,workspace_id,thread_id,status,schema_version,revision,record_json) VALUES (?,?,?,?,1,1,?)'
+      ).run(
+        duplicate.id,
+        workspace.id,
+        thread.id,
+        duplicate.status,
+        JSON.stringify(writeRetainedV1(duplicate))
+      );
+    });
     await expectScopedReloadRefusal(dataRoot, [workspace.id]);
   });
 
@@ -1530,7 +1659,7 @@ describe('FsStore canonical reload', () => {
     'Items',
     'Artifact',
     'AgentSession',
-  ] as const)('rejects canonical record directories missing required records (%s)', async (missingRecord) => {
+  ] as const)('rejects canonical stores missing required records (%s)', async (missingRecord) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-missing-identity-'));
     const store = createTestStore({ dataRoot });
     const workspace = await store.createWorkspace('Missing identity workspace');
@@ -1572,22 +1701,47 @@ describe('FsStore canonical reload', () => {
       createdAt: turn.startedAt ?? timestamp,
       updatedAt: turn.startedAt ?? timestamp,
     });
+    await store.updateTurn(turn.id, { agentSessionId: session.id });
     const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
-    const paths = {
-      Workspace: join(workspaceRoot, 'workspace-record.json'),
-      Thread: join(workspaceRoot, 'threads', thread.id, 'thread.json'),
-      Turn: join(workspaceRoot, 'threads', thread.id, 'turns', turn.id, 'turn.json'),
-      Items: join(workspaceRoot, 'threads', thread.id, 'turns', turn.id, 'items.jsonl'),
-      Artifact: join(workspaceRoot, 'artifacts', artifact.id, 'artifact.json'),
-      AgentSession: join(workspaceRoot, 'runtime', 'agent-sessions', session.id, 'session.json'),
-    };
-    const path = paths[missingRecord];
-    const content = readFileSync(path);
-
-    rmSync(path);
-    await expectScopedReloadRefusal(dataRoot, [workspace.id]);
-    expect(existsSync(path)).toBe(false);
-    writeFileSync(path, content);
+    await shutdownControlStoreWorkerClient();
+    if (missingRecord === 'Artifact') {
+      const path = join(workspaceRoot, 'artifacts', artifact.id, 'artifact.json');
+      rmSync(path);
+      await expectScopedReloadRefusal(dataRoot, [workspace.id]);
+      expect(existsSync(path)).toBe(false);
+    } else {
+      const table = {
+        Workspace: 'control_workspaces',
+        Thread: 'control_threads',
+        Turn: 'control_turns',
+        Items: 'control_product_entries',
+        AgentSession: 'control_agent_sessions',
+      }[missingRecord];
+      const id = {
+        Workspace: workspace.id,
+        Thread: thread.id,
+        Turn: turn.id,
+        Items: turn.id,
+        AgentSession: session.id,
+      }[missingRecord];
+      const key = missingRecord === 'Items' ? 'turn_id' : 'id';
+      workspaceSql(dataRoot, workspace.id, (db) => {
+        // Only this stopped corruption fixture bypasses FKs to model missing retained authority.
+        const referencedRecord = missingRecord !== 'Items';
+        try {
+          if (referencedRecord) db.pragma('foreign_keys = OFF');
+          db.prepare(`DELETE FROM ${table} WHERE ${key}=?`).run(id);
+        } finally {
+          if (referencedRecord) db.pragma('foreign_keys = ON');
+        }
+      });
+      await expectScopedReloadRefusal(dataRoot, [workspace.id]);
+      expect(
+        workspaceSql(dataRoot, workspace.id, (db) =>
+          db.prepare(`SELECT count(*) AS count FROM ${table} WHERE ${key}=?`).get(id)
+        )
+      ).toEqual({ count: 0 });
+    }
   });
 
   it.each([
@@ -1657,30 +1811,11 @@ describe('FsStore canonical reload', () => {
     await store.importWorkspaceSnapshot(input);
     const turn = input.turns[0]!;
 
-    const turnRoot = join(
-      dataRoot,
-      'workspaces',
-      workspaceId,
-      'threads',
-      turn.threadId,
-      'turns',
-      turn.id
-    );
-    const recordPath = join(turnRoot, recordKind === 'turn' ? 'turn.json' : 'items.jsonl');
-    if (recordKind === 'turn') {
-      const record = JSON.parse(readFileSync(recordPath, 'utf8')) as Record<string, unknown>;
-      if (invalidValue === undefined) {
-        delete record[field];
-      } else {
-        record[field] = invalidValue;
-      }
-      writeFileSync(recordPath, `${JSON.stringify(record, null, 2)}\n`);
-    } else {
-      const records = readFileSync(recordPath, 'utf8')
-        .trimEnd()
-        .split('\n')
-        .map((line) => JSON.parse(line) as Record<string, unknown>);
-      const record = records[0]!;
+    const record =
+      recordKind === 'turn'
+        ? metadata(dataRoot, workspaceId, 'control_turns', turn.id)
+        : (nativeEntries(dataRoot, workspaceId, turn.id, 'item')[0] as Record<string, unknown>);
+    if (recordKind === 'item') {
       record.type = itemType;
       if (itemType === 'approval-decision') {
         Object.assign(record, {
@@ -1718,11 +1853,11 @@ describe('FsStore canonical reload', () => {
       } else {
         record[field] = invalidValue;
       }
-      writeFileSync(
-        recordPath,
-        `${records.map((candidate) => JSON.stringify(candidate)).join('\n')}\n`
-      );
-    }
+    } else if (invalidValue === undefined) delete record[field];
+    else record[field] = invalidValue;
+    if (recordKind === 'turn')
+      await replaceMetadata(dataRoot, workspaceId, 'control_turns', turn.id, record);
+    else await replaceEntry(dataRoot, workspaceId, turn.id, 'item', 1, record);
 
     await expectScopedReloadRefusal(dataRoot, [workspaceId]);
   });
@@ -1733,7 +1868,7 @@ describe('FsStore canonical reload', () => {
     ['batch duplicate thread', /Duplicate .*thread/i],
     ['null-thread AgentSession', /AgentSession .* invalid lineage/],
     ['orphan turn-bound artifact', /artifact-reference/i],
-  ] as const)('rejects imported workspace history with %s', (violation, expectedError) => {
+  ] as const)('rejects imported workspace history with %s', async (violation, expectedError) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-invalid-import-history-'));
     const store = createTestStore({ dataRoot });
     const workspaceId = testEntityId('ws', `ws_${violation.replaceAll(' ', '_')}`);
@@ -1820,7 +1955,7 @@ describe('FsStore canonical reload', () => {
       }
     }
 
-    expect(() => store.importWorkspaceSnapshot(input)).toThrow(expectedError);
+    await expect(store.importWorkspaceSnapshot(input)).rejects.toThrow(expectedError);
   });
 
   it('preserves imported capture bindings without observations across live reads, restart and eviction', async () => {
@@ -1830,13 +1965,13 @@ describe('FsStore canonical reload', () => {
     const turnId = input.turns[0]!.id;
     const binding = { scope: 'task', value: 'on' } as const;
     const turnCaptureCoverage = new Map([[turnId, binding]]);
-    expect(() =>
+    await expect(
       store.importWorkspaceSnapshot({
         ...input,
         turnCaptureCoverage: new Map([['missing_turn', binding]]),
       })
-    ).toThrow('Capture coverage references missing imported Turn');
-    expect(() =>
+    ).rejects.toThrow('Capture coverage references missing imported Turn');
+    await expect(
       store.importWorkspaceSnapshot({
         ...input,
         turnCaptureCoverage,
@@ -1844,7 +1979,7 @@ describe('FsStore canonical reload', () => {
           throw new Error('staging failed');
         },
       })
-    ).toThrow('staging failed');
+    ).rejects.toThrow('staging failed');
     expect(store.getTurnCaptureCoverage(turnId)).toBeNull();
     await store.importWorkspaceSnapshot({ ...input, turnCaptureCoverage });
     expect(store.getTurnCaptureCoverage(turnId)).toEqual(binding);
@@ -1853,7 +1988,7 @@ describe('FsStore canonical reload', () => {
     expect(store.getTurnCaptureCoverage(turnId)).toBeNull();
   });
 
-  it('rolls back imported records when persistence fails', () => {
+  it('rolls back imported records when persistence fails', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-import-rollback-'));
     const store = createTestStore({ dataRoot });
     const workspaceId = 'ws_00000000-0000-78b7-97e1-b6c5b0981867';
@@ -1863,7 +1998,9 @@ describe('FsStore canonical reload', () => {
     mkdirSync(join(dataRoot, 'workspaces'), { recursive: true });
     writeFileSync(workspacePath, 'not a directory');
 
-    expect(() => store.importWorkspaceSnapshot(workspaceImportPayload(workspaceId))).toThrow();
+    await expect(
+      store.importWorkspaceSnapshot(workspaceImportPayload(workspaceId))
+    ).rejects.toThrow();
 
     expect(() => store.getWorkspace(workspaceId)).toThrow(`Workspace not found: ${workspaceId}`);
     expect(() => store.getWorkspaceResources(workspaceId)).toThrow(
@@ -1875,7 +2012,7 @@ describe('FsStore canonical reload', () => {
     );
   });
 
-  it('stages imported workspace files before publishing the final workspace root', () => {
+  it('stages imported workspace files before publishing the final workspace root', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-import-staging-'));
     const store = createTestStore({ dataRoot });
     const workspaceId = 'ws_00000000-0000-70fa-aca1-3c0855aeb3ab';
@@ -1883,7 +2020,7 @@ describe('FsStore canonical reload', () => {
 
     writeFileSync(stagingPath, 'not a directory');
 
-    expect(() =>
+    await expect(
       store.importWorkspaceSnapshot(
         workspaceImportPayload(
           workspaceId,
@@ -1891,7 +2028,7 @@ describe('FsStore canonical reload', () => {
           'it_00000000-0000-7491-bbe4-7331e38976e9'
         )
       )
-    ).toThrow();
+    ).rejects.toThrow();
 
     expect(existsSync(join(dataRoot, 'workspaces', workspaceId))).toBe(false);
     expect(() => store.getWorkspace(workspaceId)).toThrow(`Workspace not found: ${workspaceId}`);
@@ -1966,12 +2103,12 @@ describe('FsStore canonical reload', () => {
     );
   });
 
-  it('discards staged workspace side effects when import staging fails', () => {
+  it('discards staged workspace side effects when import staging fails', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-import-staged-effects-fail-'));
     const store = createTestStore({ dataRoot });
     const workspaceId = 'ws_00000000-0000-78b3-a616-54d4ff20d1af';
 
-    expect(() =>
+    await expect(
       store.importWorkspaceSnapshot({
         ...workspaceImportPayload(
           workspaceId,
@@ -1983,7 +2120,7 @@ describe('FsStore canonical reload', () => {
           throw new Error('staged effect failed');
         },
       })
-    ).toThrow('staged effect failed');
+    ).rejects.toThrow('staged effect failed');
 
     expect(existsSync(join(dataRoot, 'workspaces', workspaceId))).toBe(false);
     expect(() => store.getWorkspace(workspaceId)).toThrow(`Workspace not found: ${workspaceId}`);
@@ -2007,6 +2144,7 @@ describe('FsStore canonical reload', () => {
     expect(offlineReader.getWorkspace(workspace.id)).toEqual(workspace);
     expect(existsSync(stagingRoot)).toBe(true);
 
+    await shutdownControlStoreWorkerClient();
     discardAbandonedWorkspaceStaging(dataRoot);
     const restarted = new FsStore({ dataRoot });
 
@@ -2020,30 +2158,24 @@ describe('FsStore canonical reload', () => {
     const workspace = await store.createWorkspace('Removed event protocol version');
     const thread = await store.createThread(workspace.id, 'Replay event thread');
     const turn = await store.createTurn(workspace.id, thread.id, 'Replay event turn', localActor);
-    const eventLogPath = join(
-      dataRoot,
-      'workspaces',
-      workspace.id,
-      'threads',
-      thread.id,
-      'turns',
+
+    store.emitTurnEvent(
       turn.id,
-      'runtime',
-      'events.jsonl'
+      await store.persistTurnEvent(turn.id, {
+        event: 'turn.started',
+        workspaceId: workspace.id,
+        threadId: thread.id,
+        turnId: turn.id,
+        data: { type: 'turn-started', turnId: turn.id, status: 'running' },
+      })
     );
 
-    store.emitTurnEvent(turn.id, {
-      event: 'turn.started',
-      workspaceId: workspace.id,
-      threadId: thread.id,
-      turnId: turn.id,
-      data: { type: 'turn-started', turnId: turn.id, status: 'running' },
-    });
-
-    const event = JSON.parse(readFileSync(eventLogPath, 'utf8')) as Record<string, unknown>;
-
+    const event = nativeEntries(dataRoot, workspace.id, turn.id, 'event')[0] as Record<
+      string,
+      unknown
+    >;
     delete event.protocolVersion;
-    writeFileSync(eventLogPath, `${JSON.stringify(event)}\n`);
+    await replaceEntry(dataRoot, workspace.id, turn.id, 'event', 1, event);
 
     await expectScopedReloadRefusal(dataRoot, [workspace.id]);
   });

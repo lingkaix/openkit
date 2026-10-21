@@ -892,7 +892,7 @@ describe('workspace import route handles', () => {
         .all();
       let refusal: unknown;
       try {
-        importVerifiedWorkspace({
+        await importVerifiedWorkspace({
           authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
           coreDb,
           dataRoot,

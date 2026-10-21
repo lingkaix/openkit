@@ -4,8 +4,13 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
-import { afterEach, expect, it } from 'vitest';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { afterEach, expect, it, vi } from 'vitest';
+import {
+  ControlStoreWorkerError,
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
+import { openWorkspaceDb } from '../storage/db.js';
 import { discardAbandonedWorkspaceStaging } from '../storage/workspace-file-records.js';
 import { initializeTestCore } from '../test-support/store.js';
 
@@ -70,7 +75,7 @@ async function withCrashFault(
   point: InterruptPoint,
   faults: { count: number },
   dataRoot: string,
-  run: () => void
+  run: () => void | Promise<void>
 ): Promise<{ snapshot: string; matchedPath: string }> {
   let copying = false;
   let snapshot = '';
@@ -109,7 +114,7 @@ async function withCrashFault(
   }) as typeof nodeFs.mkdirSync;
   syncBuiltinESMExports();
   try {
-    run();
+    await run();
   } finally {
     nodeFs.renameSync = originalRename;
     nodeFs.mkdirSync = originalMkdir;
@@ -133,16 +138,6 @@ function stagedRecordDirectories(dataRoot: string): string[] {
     .map((name) => join(dataRoot, 'workspaces', '.staging', name));
 }
 
-/** Returns whether a Thread directory contains its required file. */
-function threadFilesReady(directory: string): boolean {
-  return existsSync(join(directory, 'thread.json'));
-}
-
-/** Returns whether a Turn directory contains both required files. */
-function turnFilesReady(directory: string): boolean {
-  return existsSync(join(directory, 'turn.json')) && existsSync(join(directory, 'items.jsonl'));
-}
-
 /** Returns whether an Artifact directory contains its metadata and text body. */
 function artifactFilesReady(directory: string): boolean {
   return (
@@ -151,11 +146,6 @@ function artifactFilesReady(directory: string): boolean {
     existsSync(join(directory, 'versions', '1', 'version-record.json')) &&
     existsSync(join(directory, 'versions', '1', 'payload'))
   );
-}
-
-/** Returns whether an AgentSession directory contains its required file. */
-function sessionFilesReady(directory: string): boolean {
-  return existsSync(join(directory, 'session.json'));
 }
 
 /** Creates a private data root. */
@@ -172,39 +162,10 @@ async function reload(dataRoot: string): Promise<InstanceType<FsStoreCtor>> {
   return new FsStore({ dataRoot });
 }
 
-/** Asserts that no canonical directory of one kind is missing its required files. */
-function assertNoTornCanonicalDirectories(
-  dataRoot: string,
-  workspaceId: string,
-  kind: RecordKind
-): void {
-  const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
-  if (kind === 'thread') {
-    for (const threadId of childDirectories(join(workspaceRoot, 'threads'))) {
-      expect(threadFilesReady(join(workspaceRoot, 'threads', threadId))).toBe(true);
-    }
-  }
-  if (kind === 'turn') {
-    for (const threadId of childDirectories(join(workspaceRoot, 'threads'))) {
-      for (const turnId of childDirectories(join(workspaceRoot, 'threads', threadId, 'turns'))) {
-        expect(turnFilesReady(join(workspaceRoot, 'threads', threadId, 'turns', turnId))).toBe(
-          true
-        );
-      }
-    }
-  }
-  if (kind === 'artifact') {
-    for (const artifactId of childDirectories(join(workspaceRoot, 'artifacts'))) {
-      expect(artifactFilesReady(join(workspaceRoot, 'artifacts', artifactId))).toBe(true);
-    }
-  }
-  if (kind === 'session') {
-    for (const sessionId of childDirectories(join(workspaceRoot, 'runtime', 'agent-sessions'))) {
-      expect(sessionFilesReady(join(workspaceRoot, 'runtime', 'agent-sessions', sessionId))).toBe(
-        true
-      );
-    }
-  }
+/** Checks the independent Artifact directory owner's complete immutable version. */
+function assertNoTornArtifactDirectories(dataRoot: string, workspaceId: string): void {
+  const root = join(dataRoot, 'workspaces', workspaceId, 'artifacts');
+  for (const id of childDirectories(root)) expect(artifactFilesReady(join(root, id))).toBe(true);
 }
 
 /** Builds an imported Artifact whose required files are the directory itself. */
@@ -246,7 +207,12 @@ const crashKinds: readonly RecordKind[] = ['thread', 'turn', 'artifact', 'sessio
 
 for (const kind of crashKinds) {
   for (const point of crashPoints) {
-    it(`reloads a ${kind} interrupted at ${point}`, async () => {
+    const nativePoint = {
+      'staging-directory': 'before-native-dispatch',
+      'before-rename': 'native-rollback',
+      'after-rename': 'after-native-commit-before-ack',
+    }[point];
+    it(`reloads a ${kind} interrupted at ${kind === 'artifact' ? point : nativePoint}`, async () => {
       const dataRoot = newDataRoot(`${kind}-${point}`);
       const { FsStore } = await import('./store.js');
       initializeTestCore(dataRoot);
@@ -255,136 +221,145 @@ for (const kind of crashKinds) {
       await store.createThread(kept.id, 'Kept thread');
       const workspace = await store.createWorkspace('Record workspace');
       const thread = await store.createThread(workspace.id, 'Original preview');
-      const faults = { count: 0 };
-      const captured = await withCrashFault(point, faults, dataRoot, () => {
-        expect(() => {
-          if (kind === 'thread') {
-            store.createThread(
-              workspace.id,
-              'Partial thread',
-              'th_00000000-0000-7317-b428-c81ba6501ea3'
-            );
-            return;
-          }
-          if (kind === 'turn') {
-            store.createTurn(
-              workspace.id,
-              thread.id,
-              'partial publication input',
-              localActor,
-              null,
-              {
-                turnId: 'tu_00000000-0000-7097-8c23-6c30c55457e6',
-              }
-            );
-            return;
-          }
-          if (kind === 'artifact') {
-            store.createArtifact(importedArtifact(workspace.id));
-            return;
-          }
-          store.createAgentSession({
-            id: 'as_00000000-0000-77a2-94b7-507e5fd22bf9',
-            agentId: 'agent_codex_host',
-            workspaceId: workspace.id,
-            threadId: thread.id,
-            status: 'busy',
-            message: null,
-            createdAt: timestamp,
-            updatedAt: timestamp,
-          });
-        }).toThrow('publication-fault');
-      });
-
-      expect(faults.count).toBe(1);
-      expect(isRecordStagingDirectory(captured.matchedPath)).toBe(true);
-      const staged = stagedRecordDirectories(captured.snapshot);
-      const canonical =
-        kind === 'thread'
-          ? join(
-              captured.snapshot,
-              'workspaces',
-              workspace.id,
-              'threads',
-              'th_00000000-0000-7317-b428-c81ba6501ea3'
-            )
-          : kind === 'turn'
-            ? join(
-                captured.snapshot,
-                'workspaces',
-                workspace.id,
-                'threads',
-                thread.id,
-                'turns',
-                'tu_00000000-0000-7097-8c23-6c30c55457e6'
-              )
-            : kind === 'artifact'
-              ? join(
-                  captured.snapshot,
-                  'workspaces',
-                  workspace.id,
-                  'artifacts',
-                  'ar_00000000-0000-7191-9414-45fcac2c3cdb'
-                )
-              : join(
-                  captured.snapshot,
-                  'workspaces',
-                  workspace.id,
-                  'runtime',
-                  'agent-sessions',
-                  'as_00000000-0000-77a2-94b7-507e5fd22bf9'
-                );
-      const ready =
-        kind === 'thread'
-          ? threadFilesReady
-          : kind === 'turn'
-            ? turnFilesReady
-            : kind === 'artifact'
-              ? artifactFilesReady
-              : sessionFilesReady;
-      if (point === 'after-rename') {
-        expect(staged).toEqual([]);
-        expect(ready(canonical)).toBe(true);
-      } else {
-        expect(staged).toHaveLength(1);
-        expect(existsSync(canonical)).toBe(false);
-        expect(ready(staged[0] ?? '')).toBe(point === 'before-rename');
+      if (kind === 'artifact') {
+        const faults = { count: 0 };
+        // All SQL setup has settled before the independent Artifact file-owner fault.
+        await shutdownControlStoreWorkerClient();
+        const captured = await withCrashFault(point, faults, dataRoot, () => {
+          expect(() => store.createArtifact(importedArtifact(workspace.id))).toThrow(
+            'publication-fault'
+          );
+        });
+        expect(faults.count).toBe(1);
+        expect(isRecordStagingDirectory(captured.matchedPath)).toBe(true);
+        const staged = stagedRecordDirectories(captured.snapshot);
+        const canonical = join(
+          captured.snapshot,
+          'workspaces',
+          workspace.id,
+          'artifacts',
+          importedArtifact(workspace.id).id
+        );
+        if (point === 'after-rename') {
+          expect(staged).toEqual([]);
+          expect(artifactFilesReady(canonical)).toBe(true);
+        } else {
+          expect(staged).toHaveLength(1);
+          expect(existsSync(canonical)).toBe(false);
+          expect(artifactFilesReady(staged[0]!)).toBe(point === 'before-rename');
+        }
+        const reloaded = await reload(captured.snapshot);
+        expect(reloaded.getWorkspace(kept.id).name).toBe('Kept workspace');
+        expect(reloaded.getWorkspace(workspace.id).name).toBe('Record workspace');
+        expect(existsSync(join(captured.snapshot, 'workspaces', '.staging'))).toBe(false);
+        assertNoTornArtifactDirectories(captured.snapshot, workspace.id);
+        expect(reloaded.listArtifacts(workspace.id).map(({ id }) => id)).toEqual(
+          point === 'after-rename' ? [importedArtifact(workspace.id).id] : []
+        );
+        return;
       }
-
-      const reloaded = await reload(captured.snapshot);
+      const id =
+        kind === 'thread'
+          ? 'th_00000000-0000-7317-b428-c81ba6501ea3'
+          : kind === 'turn'
+            ? 'tu_00000000-0000-7097-8c23-6c30c55457e6'
+            : 'as_00000000-0000-77a2-94b7-507e5fd22bf9';
+      const table =
+        kind === 'thread'
+          ? 'control_threads'
+          : kind === 'turn'
+            ? 'control_turns'
+            : 'control_agent_sessions';
+      const client = getControlStoreWorkerClient();
+      const products = client.products.bind(client);
+      if (point === 'before-rename') {
+        const db = openWorkspaceDb(dataRoot, workspace.id);
+        try {
+          db.sqlite.exec(
+            `CREATE TRIGGER interrupt_native BEFORE INSERT ON ${table} WHEN NEW.id='${id}' BEGIN SELECT RAISE(ABORT, 'publication-fault'); END`
+          );
+        } finally {
+          db.sqlite.close();
+        }
+      }
+      let snapshot = '';
+      let interceptions = 0;
+      const interception = vi.spyOn(client, 'products').mockImplementationOnce(async (...args) => {
+        interceptions++;
+        if (point === 'before-rename') {
+          await expect(products(...args)).rejects.toMatchObject({ commit: 'not-committed' });
+        } else if (point === 'after-rename') await products(...args);
+        await shutdownControlStoreWorkerClient();
+        snapshot = copyDataRoot(dataRoot);
+        throw new ControlStoreWorkerError(
+          'unavailable',
+          point === 'after-rename' ? 'unknown' : 'not-committed'
+        );
+      });
+      try {
+        const mutation =
+          kind === 'thread'
+            ? store.createThread(workspace.id, 'Partial thread', id)
+            : kind === 'turn'
+              ? store.createTurn(
+                  workspace.id,
+                  thread.id,
+                  'partial publication input',
+                  localActor,
+                  null,
+                  { turnId: id }
+                )
+              : store.createAgentSession({
+                  id,
+                  agentId: 'agent_codex_host',
+                  workspaceId: workspace.id,
+                  threadId: thread.id,
+                  status: 'busy',
+                  message: null,
+                  createdAt: timestamp,
+                  updatedAt: timestamp,
+                });
+        await expect(mutation).rejects.toMatchObject({
+          commit: point === 'after-rename' ? 'unknown' : 'not-committed',
+        });
+        expect(interceptions).toBe(1);
+      } finally {
+        interception.mockRestore();
+      }
+      const reloaded = await reload(snapshot);
       expect(reloaded.getWorkspace(kept.id).name).toBe('Kept workspace');
       expect(reloaded.getWorkspace(workspace.id).name).toBe('Record workspace');
-      expect(existsSync(join(captured.snapshot, 'workspaces', '.staging'))).toBe(false);
-      assertNoTornCanonicalDirectories(captured.snapshot, workspace.id, kind);
-      if (kind === 'thread') {
-        const names = reloaded
-          .listThreads(workspace.id)
-          .map((item) => item.name)
-          .sort();
-        expect(names).toEqual(
+      const db = openWorkspaceDb(snapshot, workspace.id);
+      try {
+        expect(db.sqlite.prepare(`SELECT id FROM ${table} WHERE id=?`).all(id)).toEqual(
+          point === 'after-rename' ? [{ id }] : []
+        );
+      } finally {
+        db.sqlite.close();
+      }
+      if (kind === 'thread')
+        expect(
+          reloaded
+            .listThreads(workspace.id)
+            .map(({ name }) => name)
+            .sort()
+        ).toEqual(
           point === 'after-rename'
             ? ['Original preview', 'Partial thread'].sort()
             : ['Original preview']
         );
-      }
       if (kind === 'turn') {
-        expect(
-          reloaded.listThreads(workspace.id).find((item) => item.id === thread.id)?.preview
-        ).toBe('Original preview');
-        expect(reloaded.listThreadTurns(workspace.id, thread.id).map((item) => item.id)).toEqual(
-          point === 'after-rename' ? ['tu_00000000-0000-7097-8c23-6c30c55457e6'] : []
+        expect(reloaded.listThreadTurns(workspace.id, thread.id).map(({ id }) => id)).toEqual(
+          point === 'after-rename' ? [id] : []
+        );
+        expect(reloaded.getThread(workspace.id, thread.id).preview).toBe(
+          point === 'after-rename' ? 'partial publication input' : 'Original preview'
         );
       }
-      if (kind === 'artifact') {
-        expect(reloaded.listArtifacts(workspace.id).map((item) => item.id)).toEqual(
-          point === 'after-rename' ? ['ar_00000000-0000-7191-9414-45fcac2c3cdb'] : []
+      if (kind === 'session')
+        expect(reloaded.listWorkspaceAgentSessions(workspace.id).map(({ id }) => id)).toEqual(
+          point === 'after-rename' ? [id] : []
         );
-      }
-      if (kind === 'session') {
-        expect(reloaded.listWorkspaceAgentSessions(workspace.id).map((item) => item.id)).toEqual(
-          point === 'after-rename' ? ['as_00000000-0000-77a2-94b7-507e5fd22bf9'] : []
-        );
-      }
     });
   }
 }
@@ -399,6 +374,7 @@ it('drops staging left by a real interrupted Artifact write', async () => {
   const workspace = await store.createWorkspace('Staging workspace');
   await store.createThread(workspace.id, 'Original preview');
   const faults = { count: 0 };
+  await shutdownControlStoreWorkerClient();
   const captured = await withCrashFault('before-rename', faults, dataRoot, () => {
     expect(() => store.createArtifact(importedArtifact(workspace.id))).toThrow('publication-fault');
   });
@@ -438,19 +414,21 @@ it('loads a published Turn beside the Thread preview from before that Turn', asy
   const store = new FsStore({ dataRoot });
   const workspace = await store.createWorkspace('Preview workspace');
   const thread = await store.createThread(workspace.id, 'Original preview');
-  const threadPath = join(
-    dataRoot,
-    'workspaces',
-    workspace.id,
-    'threads',
-    thread.id,
-    'thread.json'
-  );
-  const beforeTurn = readFileSync(threadPath);
+  const db = openWorkspaceDb(dataRoot, workspace.id);
+  const beforeTurn = (
+    db.sqlite.prepare('SELECT record_json FROM control_threads WHERE id=?').get(thread.id) as {
+      record_json: string;
+    }
+  ).record_json;
   await store.createTurn(workspace.id, thread.id, 'partial publication input', localActor, null, {
     turnId: 'tu_00000000-0000-7ab2-8211-16142303a54d',
   });
-  writeFileSync(threadPath, beforeTurn);
+  await shutdownControlStoreWorkerClient();
+  // A stale descriptive Thread preview must not erase an independently committed Turn.
+  db.sqlite
+    .prepare('UPDATE control_threads SET record_json=? WHERE id=?')
+    .run(beforeTurn, thread.id);
+  db.sqlite.close();
 
   const reloaded = new FsStore({ dataRoot });
 
@@ -460,16 +438,16 @@ it('loads a published Turn beside the Thread preview from before that Turn', asy
   expect(reloaded.listThreadTurns(workspace.id, thread.id).map((item) => item.id)).toEqual([
     'tu_00000000-0000-7ab2-8211-16142303a54d',
   ]);
-  expect(
-    existsSync(
-      join(dirname(threadPath), 'turns', 'tu_00000000-0000-7ab2-8211-16142303a54d', 'turn.json')
-    )
-  ).toBe(true);
-  expect(
-    existsSync(
-      join(dirname(threadPath), 'turns', 'tu_00000000-0000-7ab2-8211-16142303a54d', 'items.jsonl')
-    )
-  ).toBe(true);
+  const reopened = openWorkspaceDb(dataRoot, workspace.id);
+  try {
+    expect(
+      reopened.sqlite
+        .prepare('SELECT id FROM control_turns WHERE id=?')
+        .get('tu_00000000-0000-7ab2-8211-16142303a54d')
+    ).toEqual({ id: 'tu_00000000-0000-7ab2-8211-16142303a54d' });
+  } finally {
+    reopened.sqlite.close();
+  }
 });
 
 for (const point of ['before-rename', 'after-rename'] as const) {
@@ -495,6 +473,7 @@ for (const point of ['before-rename', 'after-rename'] as const) {
       origin: { ...base.origin, sourceDigest: contentDigest },
     };
     const faults = { count: 0 };
+    await shutdownControlStoreWorkerClient();
     const captured = await withCrashFault(point, faults, dataRoot, () => {
       expect(() =>
         store.createArtifact(artifact, {
