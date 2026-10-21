@@ -337,23 +337,33 @@ it('retains historical Artifact event snapshots and Item deltas after a newer ve
     turnId: turn.id,
     requestId: null,
   };
-  store.emitTurnEvent(turn.id, {
-    ...eventScope,
-    event: 'artifact.created',
-    data: { type: 'artifact-created', artifact },
+  store.emitTurnEvent(
+    turn.id,
+    await store.persistTurnEvent(turn.id, {
+      ...eventScope,
+      event: 'artifact.created',
+      data: { type: 'artifact-created', artifact },
+    })
+  );
+  store.emitTurnEvent(
+    turn.id,
+    await store.persistTurnEvent(turn.id, {
+      ...eventScope,
+      event: 'item.delta',
+      data: {
+        type: 'item-delta',
+        itemId: reference.id,
+        itemType: 'artifact-reference',
+        deltaKind: 'artifact-updated',
+        artifactId: artifact.id,
+      },
+    })
+  );
+  await store.completeTurn(turn.id, {
+    status: 'completed',
+    completedAt: recordedAt,
+    durationMs: 0,
   });
-  store.emitTurnEvent(turn.id, {
-    ...eventScope,
-    event: 'item.delta',
-    data: {
-      type: 'item-delta',
-      itemId: reference.id,
-      itemType: 'artifact-reference',
-      deltaKind: 'artifact-updated',
-      artifactId: artifact.id,
-    },
-  });
-  await store.updateTurn(turn.id, { status: 'completed', completedAt: recordedAt, durationMs: 0 });
   const app = createAppWithWorkspaceAuthority({ coreDb, dataRoot, store });
   const committed = await app.request(
     ...operationRequest(
@@ -451,11 +461,11 @@ it('round trips target-owned judgements, exact range results and candidate choic
       agentId: 'portable-producer',
     }
   );
-  const candidates = ['First original', 'Second original'].map((body, index) => {
+  const candidatePublications = ['First original', 'Second original'].map(async (body, index) => {
     const requestId = `portable-original-${index}`;
     const recordedAt = new Date().toISOString();
     const contentDigest = digest(Buffer.from(body));
-    const artifact = store.createArtifact({
+    const artifact = await store.createArtifact({
       id: allocateEntityId('ar'),
       workspaceId: workspace.id,
       threadId: index === 0 ? thread.id : null,
@@ -490,6 +500,7 @@ it('round trips target-owned judgements, exact range results and candidate choic
     });
     return { artifactId: artifact.id, artifactVersion: 1, contentDigest };
   });
+  const candidates = await Promise.all(candidatePublications);
   await store.updateTurn(turn.id, {
     status: 'completed',
     completedAt: new Date().toISOString(),
