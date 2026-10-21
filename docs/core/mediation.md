@@ -268,11 +268,7 @@ Early implementations may omit some controls, but the capability call model must
 
 ## Usage Metering
 
-Agent-capability-mediated calls are the current owner boundary for producing OpenKit usage records on a `CapabilityCall`.
-
-The gateway projection should be able to explain what resources were consumed by a capability call and which workspace, thread, turn, item, agent, and AgentSession caused that consumption.
-
-[Evidence](evidence.md#usage-and-metering) owns `UsageRecord`, capability usage units, usage attribution, system-wide measurement, and `AuditEvent` governance projections across Core. The agent capability path may emit both usage and audit metadata, while [Evidence](evidence.md#audit) owns the durable governance projection.
+[Evidence](evidence.md#usage-and-metering) owns `UsageRecord`, capability-call usage units, usage attribution, system-wide measurement, and `AuditEvent` governance projections across Core. Mediation carries the capability gateway's obligation to produce usage and audit metadata for a `CapabilityCall`.
 
 ## Invariants
 
