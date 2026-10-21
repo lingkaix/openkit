@@ -6,11 +6,17 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { readWorkObservationBody } from '../evidence-bundles.js';
 import { FsStore } from '../lib/store.js';
 import { ModelCapture, withTurnModelCapture } from '../llm/model-capture.js';
+import { recordAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import { recordWorkerControlAcceptedRecord } from '../runtime/worker-control-records.js';
+import { prepareWorkerTurnJournalIntents } from '../runtime/worker-governance-turn-executor.js';
 import { terminalizeGovernedWorkerTurn } from '../runtime/worker-turn-failure.js';
+import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { testEntityId } from '../test-support/entity-ids.js';
+import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
+import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from './db.js';
@@ -18,8 +24,11 @@ import { applyMigrations, applyScopedMigrations } from './migrate.js';
 import { appendRecoveredTurnObservation } from './work-observation-recovery.js';
 import {
   appendWorkObservation,
+  applyControlWorkObservation,
   parseWorkObservationRecord,
+  prepareControlWorkObservation,
   readWorkObservations,
+  readWorkObservationTurnBinding,
   type WorkObservationDraft,
   type WorkObservationRecord,
 } from './work-observations.js';
@@ -81,15 +90,6 @@ async function fixture() {
   );
   const db = workspaceDb(dataRoot, workspace.id);
   const owner = { threadId: thread.id, turnId: turn.id };
-  const turnRoot = join(
-    dataRoot,
-    'workspaces',
-    workspace.id,
-    'threads',
-    thread.id,
-    'turns',
-    turn.id
-  );
   return {
     dataRoot,
     coreDb,
@@ -97,17 +97,47 @@ async function fixture() {
     db,
     turn,
     owner,
-    turnRoot,
-    ledger: join(turnRoot, 'observations.jsonl'),
   };
 }
 
-/** Reads physical rows without the production parser that is subject to this rename. */
+/** Reads portable archive rows without the production parser that is subject to this rename. */
 function diskRows(path: string): WorkObservationRecord[] {
   return readFileSync(path, 'utf8')
     .trimEnd()
     .split('\n')
     .map((line) => JSON.parse(line));
+}
+
+/** Reads original native metadata bytes without projecting retained observer names. */
+function nativeBytes(db: WorkspaceDb, turnId: string): string[] {
+  return (
+    db.sqlite
+      .prepare(
+        'SELECT record_json FROM control_work_observations WHERE turn_id=? ORDER BY sequence'
+      )
+      .all(turnId) as { record_json: string }[]
+  ).map((row) => row.record_json);
+}
+
+/** Decodes the raw native records independently of the observer-name reader under test. */
+function nativeRows(db: WorkspaceDb, turnId: string): WorkObservationRecord[] {
+  return nativeBytes(db, turnId).map((record) => JSON.parse(record));
+}
+
+/** Installs historical spelling in existing fixture identities only while the native writer is stopped. */
+async function retainHistoricalRows(
+  f: Awaited<ReturnType<typeof fixture>>,
+  rows: readonly (Omit<WorkObservationRecord, 'obs'> & { obs: string })[]
+) {
+  await shutdownControlStoreWorkerClient();
+  f.db.sqlite.transaction(() => {
+    const update = f.db.sqlite.prepare(
+      'UPDATE control_work_observations SET record_json=? WHERE turn_id=? AND id=?'
+    );
+    for (const row of rows) {
+      expect(update.run(` ${JSON.stringify(row)} `, f.turn.id, row.id).changes).toBe(1);
+    }
+  })();
 }
 
 /** Serializes fixture history with visible whitespace that a rewrite would remove. */
@@ -116,9 +146,9 @@ function ledgerBytes(rows: readonly unknown[]): Buffer {
 }
 
 /** Runs the model producer and its actual body-publication path with admitted semantic input. */
-function captureModel(f: Awaited<ReturnType<typeof fixture>>) {
+async function captureModel(f: Awaited<ReturnType<typeof fixture>>) {
   const capture = new ModelCapture({ workspaceDb: f.db, ...f.owner, corr: 'call-one' }, [], 'test');
-  capture.request({
+  await capture.request({
     model: 'test-model',
     messages: [{ role: 'user', content: '  exact original é\n\tfinal  ' }],
     temperature: 0,
@@ -136,9 +166,10 @@ async function captureAllWriters(f: Awaited<ReturnType<typeof fixture>>) {
     },
     async () => captureModel(f)
   );
+  const setup = createTestAgentSetup();
   const session = await f.store.createAgentSession({
     id: testEntityId('as', 'observer-names'),
-    agentId: createTestAgentSetup().manifest.id,
+    agentId: setup.manifest.id,
     workspaceId: f.db.workspaceId,
     threadId: f.owner.threadId,
     status: 'busy',
@@ -146,15 +177,60 @@ async function captureAllWriters(f: Awaited<ReturnType<typeof fixture>>) {
     createdAt: f.turn.startedAt!,
     updatedAt: f.turn.startedAt!,
   });
-  await f.store.updateTurn(f.turn.id, { agentSessionId: session.id });
+  // Admit the original pre-effect Worker graph; terminalization must retain its real journal obligations.
+  const environmentPackage = resolveAgentEnvironmentPackage({
+    coreDb: f.coreDb,
+    captureCoverage: { scope: 'server', value: 'on' },
+    agentSessionId: session.id,
+    agentSetup: setup,
+    backend: { kind: 'openshell' },
+    createdAt: f.turn.startedAt!,
+    requestId: 'observer-names',
+    turn: f.turn,
+    turnInput: 'Retain observations',
+    triggerActor: f.turn.triggerActor,
+    workspaceRoots: [],
+  });
+  recordAgentEnvironmentPackageSnapshot(f.db, {
+    environmentPackage,
+    createdAt: f.turn.startedAt!,
+  });
+  const target = recordTestNativeRuntimeTarget(f.coreDb);
+  const entry = createSchedulerAdmissionEntry(f.coreDb, {
+    backendId: 'nanohost',
+    queueEntryId: 'observer-names',
+    requestId: 'observer-names',
+    triggerActor: f.turn.triggerActor,
+    profileRef: setup.profileId,
+    requestedAgentId: setup.manifest.id,
+    workspaceId: f.db.workspaceId,
+    threadId: f.owner.threadId,
+    turnId: f.turn.id,
+    turnInput: 'Retain observations',
+  });
+  const attempt = recordTestExecutionAttempt(f.coreDb, {
+    entry,
+    attemptId: testEntityId('attempt', 'observer-names'),
+    agentSessionId: session.id,
+    inputRef: environmentPackage.snapshotId,
+    bindingRef: `fixture-native-binding:${session.id}`,
+    sessionCompatibilityKey: 'fixture-observer-names',
+    now: () => f.turn.startedAt!,
+  });
+  const journalIntents = prepareWorkerTurnJournalIntents(f.db, environmentPackage, attempt, {
+    backendKind: 'openshell',
+    targetId: target.targetId,
+    allocationRef: attempt.bindingRef,
+  });
+  await f.store.updateTurn(f.turn.id, { agentSessionId: session.id }, { journalIntents });
   const lineage = {
     workspaceId: f.db.workspaceId,
     ...f.owner,
     agentSessionId: session.id,
-    packageSnapshotId: 'aep_observer_names',
+    packageSnapshotId: environmentPackage.snapshotId,
     requestId: 'observer-names',
   };
-  recordWorkerControlAcceptedRecord(f.coreDb, {
+  await recordWorkerControlAcceptedRecord(f.coreDb, {
     lineage,
     operation: 'event_append',
     recordKey: '1',
@@ -185,7 +261,7 @@ async function captureAllWriters(f: Awaited<ReturnType<typeof fixture>>) {
       },
     },
   });
-  const terminal = terminalizeGovernedWorkerTurn({
+  const terminal = await terminalizeGovernedWorkerTurn({
     agentSessionId: session.id,
     completedAt: new Date().toISOString(),
     errorCode: 'worker_governance_restart_recovery',
@@ -220,7 +296,7 @@ describe('retained observer names', () => {
   it('RET Collection Responsibility: "Each point writes only in its observer value obs" — real writers and publications use the new names', async () => {
     const f = await fixture();
     await captureAllWriters(f);
-    const rows = diskRows(f.ledger);
+    const rows = nativeRows(f.db, f.turn.id);
     expect(rows.map((row) => [row.type, row.obs])).toEqual([
       ['env.bound', 'nanocore'],
       ['model.observed', 'llm-gateway'],
@@ -231,12 +307,12 @@ describe('retained observer names', () => {
     ]);
     expect(rows.every((row) => row.v === 1)).toBe(true);
     expect(rows.map((row) => row.seq)).toEqual([1, 2, 3, 4, 5, 6]);
-    expect(
-      JSON.parse(readFileSync(join(f.turnRoot, 'turn.json'), 'utf8')).requiredFeatures
-    ).toEqual(['openkit.work-observations.v1']);
+    expect(readWorkObservationTurnBinding(f.db, f.owner).turn.requiredFeatures).toEqual([
+      'openkit.work-observations.v1',
+    ]);
   });
 
-  it('RET Observation Ledger Envelope: "Append only" — historical v1 names reopen mapped without changing ledger or manifest bytes', async () => {
+  it('RET Observation Ledger Envelope: "Append only" — historical v1 names reopen mapped without changing native metadata bytes', async () => {
     const f = await fixture();
     await captureAllWriters(f);
     await appendWorkObservation(f.db, {
@@ -244,31 +320,35 @@ describe('retained observer names', () => {
       observation: gap(f, 'nanohost', 'host'),
       bodies: [],
     });
-    const historical = diskRows(f.ledger).map((row) => ({
+    const historical = nativeRows(f.db, f.turn.id).map((row) => ({
       ...row,
       obs: historicalNames[row.obs] ?? row.obs,
       ext: { 'test.annotation': { text: 'retain é', values: [null, 0] } },
     }));
-    const bytes = ledgerBytes(historical);
-    writeFileSync(f.ledger, bytes);
-    const manifest = readFileSync(join(f.turnRoot, 'turn.json'));
+    await retainHistoricalRows(f, historical);
+    const bytes = nativeBytes(f.db, f.turn.id);
+    const manifest = f.db.sqlite
+      .prepare('SELECT record_json FROM control_turns WHERE id=?')
+      .get(f.turn.id);
     f.db.sqlite.close();
     const reopened = workspaceDb(f.dataRoot, f.db.workspaceId);
     const rows = readWorkObservations(reopened, f.owner);
     expect.soft(rows).toEqual(historical.map((row) => ({ ...row, obs: names[row.obs] })));
-    expect(readFileSync(f.ledger)).toEqual(bytes);
-    expect(readFileSync(join(f.turnRoot, 'turn.json'))).toEqual(manifest);
+    expect(nativeBytes(reopened, f.turn.id)).toEqual(bytes);
+    expect(
+      reopened.sqlite.prepare('SELECT record_json FROM control_turns WHERE id=?').get(f.turn.id)
+    ).toEqual(manifest);
   });
 
   it('RET Capture Publication: "Same identity and same content replay is idempotent" — mixed historical/current rows replay without append or rewrite', async () => {
     const f = await fixture();
-    captureModel(f);
-    const [metadata, publication] = diskRows(f.ledger);
-    const bytes = ledgerBytes([
-      { ...metadata, obs: 'gateway' },
-      { ...publication, obs: 'llm-gateway' },
+    await captureModel(f);
+    const [metadata, publication] = nativeRows(f.db, f.turn.id);
+    await retainHistoricalRows(f, [
+      { ...metadata!, obs: 'gateway' },
+      { ...publication!, obs: 'llm-gateway' },
     ]);
-    writeFileSync(f.ledger, bytes);
+    const bytes = nativeBytes(f.db, f.turn.id);
     const ref = publication!.refs![0]!;
     const body = readWorkObservationBody(f.db, {
       ...f.owner,
@@ -299,19 +379,32 @@ describe('retained observer names', () => {
       'llm-gateway',
       'llm-gateway',
     ]);
+    const divergent = {
+      ...input,
+      observation: { ...input.observation, payload: { ...payload, model: 'changed' } },
+    };
+    const owner = { kind: 'workspace' as const, workspaceId: reopened.workspaceId };
+    await shutdownControlStoreWorkerClient();
+    // Confirm the intended identity fault inside the real native body; transport retains only safe refusal facts.
+    const prepared = prepareControlWorkObservation(owner, divergent);
     expect(() =>
-      appendWorkObservation(reopened, {
-        ...input,
-        observation: { ...input.observation, payload: { ...payload, model: 'changed' } },
-      })
+      reopened.sqlite.transaction(() =>
+        applyControlWorkObservation(reopened.sqlite, owner, prepared)
+      )()
     ).toThrow('recovery_required: observation identity conflict');
-    expect(readFileSync(f.ledger)).toEqual(bytes);
+    await expect(appendWorkObservation(reopened, divergent)).rejects.toMatchObject({
+      name: 'ControlStoreWorkerError',
+      code: 'sql-failed',
+      commit: 'not-committed',
+      message: 'Control database writer operation failed.',
+    });
+    expect(nativeBytes(reopened, f.turn.id)).toEqual(bytes);
   });
 
   it('RET References: "A reference MUST NEVER be wrong" — old exports retain bytes, annotations and lineage with mapped observers', async () => {
     const f = await fixture();
-    captureModel(f);
-    const sourceLedger = readFileSync(f.ledger);
+    await captureModel(f);
+    const sourceLedger = nativeBytes(f.db, f.turn.id);
     const exported = createVerifiedWorkspaceExport({
       requestActor: { kind: 'local', userId },
       authorityUserId: userId,
@@ -405,24 +498,11 @@ describe('retained observer names', () => {
       })
     ).toEqual(sourceBody);
     expect
-      .soft(
-        diskRows(
-          join(
-            f.dataRoot,
-            'workspaces',
-            targetWorkspaceId,
-            'threads',
-            thread.id,
-            'turns',
-            turn.id,
-            'observations.jsonl'
-          )
-        ).map((row) => row.obs)
-      )
+      .soft(nativeRows(importedDb, turn.id).map((row) => row.obs))
       .toEqual(['llm-gateway', 'llm-gateway']);
     expect(readFileSync(join(exportRoot, observationPath))).toEqual(bytes);
     expect(readFileSync(manifestPath)).toEqual(manifestBytes);
-    expect(readFileSync(f.ledger)).toEqual(sourceLedger);
+    expect(nativeBytes(f.db, f.turn.id)).toEqual(sourceLedger);
   });
 
   it('RET Observation Ledger Envelope: obs identifies the observer; Contract Evolution: unknown core values fail closed — accepts current names only for writes', async () => {
@@ -433,34 +513,36 @@ describe('retained observer names', () => {
       expect
         .soft(() => parseWorkObservationRecord({ ...observation, v: 1, seq: 1, turnId: f.turn.id }))
         .not.toThrow();
-      expect
-        .soft(() => appendWorkObservation(f.db, { ...f.owner, observation, bodies: [] }))
-        .not.toThrow();
+      await expect
+        .soft(appendWorkObservation(f.db, { ...f.owner, observation, bodies: [] }))
+        .resolves.toMatchObject({ disposition: 'committed' });
     }
     for (const [index, obs] of ['unknown', 'Gateway', null, 1, {}, ['nanocore']].entries()) {
       const observation = gap(f, obs, `invalid-${index}`);
       expect
         .soft(() => parseWorkObservationRecord({ ...observation, v: 1, seq: 1, turnId: f.turn.id }))
         .toThrow();
-      expect
-        .soft(() => appendWorkObservation(f.db, { ...f.owner, observation, bodies: [] }))
-        .toThrow();
+      await expect
+        .soft(appendWorkObservation(f.db, { ...f.owner, observation, bodies: [] }))
+        .rejects.toThrow();
     }
     for (const obs of ['core', 'gateway', 'sidecar']) {
-      expect
-        .soft(() =>
+      await expect
+        .soft(
           appendWorkObservation(f.db, {
             ...f.owner,
             observation: gap(f, obs, `old-write-${obs}`),
             bodies: [],
           })
         )
-        .toThrow();
+        .rejects.toThrow();
     }
-    expect.soft(diskRows(f.ledger).map((row) => row.obs)).toEqual(current);
+    expect.soft(nativeRows(f.db, f.turn.id).map((row) => row.obs)).toEqual(current);
     const typed = await fixture();
     await captureAllWriters(typed);
-    for (const row of diskRows(typed.ledger).filter((row) => row.type !== 'content.published')) {
+    for (const row of nativeRows(typed.db, typed.turn.id).filter(
+      (row) => row.type !== 'content.published'
+    )) {
       const expected =
         row.type === 'model.observed'
           ? 'llm-gateway'

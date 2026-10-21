@@ -6,7 +6,7 @@ import { RESOURCE_POLICY_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas'
 import { WorkspaceConfigSchema } from '@openkit/config-schema';
 import { allocateEntityId, type PolicyDocumentV1 } from '@openkit/protocol';
 import { parse } from 'jsonc-parser';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { isCurrentDeploymentAdministrator } from '../auth/operation-authorizer.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import {
@@ -16,7 +16,6 @@ import {
 import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import { FsStore } from '../lib/store.js';
 import type { AdmittedOperationContext } from '../operation-contract.js';
-import { grantCommandIntentRequest } from '../runtime/pending-requests.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
@@ -132,7 +131,7 @@ async function fixture() {
 }
 
 describe('resource Policy Pending Request commands', () => {
-  it('keeps missing request lineage inspect-only after a first Item publication failure', async () => {
+  it('rolls back failed native Item publication and keeps retained missing lineage inspect-only', async () => {
     const f = await fixture();
     try {
       const turn = await f.store.createTurn(
@@ -160,16 +159,32 @@ describe('resource Policy Pending Request commands', () => {
         expectedRevision: f.files.readFile(`workspaces/${f.workspace.id}/workspace.jsonc`).file
           .revision!,
       };
-      const publish = vi.spyOn(f.store, 'createItem').mockImplementationOnce(() => {
-        throw new Error('Item publication failed');
-      });
-      expect(() =>
+      await shutdownControlStoreWorkerClient();
+      f.workspaceDb.sqlite.exec(`CREATE TRIGGER refuse_request_item BEFORE INSERT ON control_product_entries
+        WHEN NEW.kind = 'item' BEGIN SELECT RAISE(ABORT, 'Item publication failed'); END`);
+      const before = readFileSync(f.configPath, 'utf8');
+      await expect(
         raiseResourcePolicyRequest(f, input, change, { kind: 'public', actor: f.actor })
-      ).toThrow('Item publication failed');
-      publish.mockRestore();
-      expect(() =>
+      ).rejects.toThrow('Control database writer operation failed.');
+      expect(f.workspaceDb.sqlite.prepare('SELECT request_id FROM pending_requests').all()).toEqual(
+        []
+      );
+      expect(f.store.listThreadItems(f.workspace.id, f.thread.id)).toEqual([]);
+      expect(readFileSync(f.configPath, 'utf8')).toBe(before);
+      await shutdownControlStoreWorkerClient();
+      f.workspaceDb.sqlite.exec('DROP TRIGGER refuse_request_item');
+      await raiseResourcePolicyRequest(f, input, change, { kind: 'public', actor: f.actor });
+      await shutdownControlStoreWorkerClient();
+      // A retained partial tuple is inspect-only; retry cannot reconstruct its lost request Item.
+      expect(
+        f.workspaceDb.sqlite
+          .prepare("DELETE FROM control_product_entries WHERE kind = 'item' AND id = ?")
+          .run(input.requestItemId).changes
+      ).toBe(1);
+      await expect(
         raiseResourcePolicyRequest(f, input, change, { kind: 'public', actor: f.actor })
-      ).toThrow('contradictory');
+      ).rejects.toThrow('contradictory');
+      expect(readFileSync(f.configPath, 'utf8')).toBe(before);
       expect(f.store.listThreadItems(f.workspace.id, f.thread.id)).toEqual([]);
     } finally {
       await f.close();
@@ -250,16 +265,18 @@ describe('resource Policy Pending Request commands', () => {
         actor: f.actor,
         confirmation: 'APPLY WORKSPACE RESOURCE POLICY',
       };
-      expect(() => applyResourcePolicyRequest(f, input)).toThrow('unused approval');
+      await expect(applyResourcePolicyRequest(f, input)).rejects.toThrow('unused approval');
       checkResourcePolicyCommandIntent(f, record, f.actor);
-      grantCommandIntentRequest(
-        f.workspaceDb.sqlite,
-        record.requestId,
-        { kind: 'user', id: f.actor.userId },
-        new Date().toISOString(),
-        f.actor
-      );
-      expect(() => applyResourcePolicyRequest(f, { ...input, confirmation: '' })).toThrow(
+      await f.store.applyPendingRequestCommand(f.workspace.id, {
+        action: 'grant-command',
+        workspaceId: f.workspace.id,
+        threadId: f.thread.id,
+        requestId: record.requestId,
+        actor: { kind: 'user', id: f.actor.userId },
+        now: new Date().toISOString(),
+        decisionContext: f.actor,
+      });
+      await expect(applyResourcePolicyRequest(f, { ...input, confirmation: '' })).rejects.toThrow(
         'unused approval'
       );
       const result = await applyResourcePolicyRequest(f, input);
@@ -279,7 +296,7 @@ describe('resource Policy Pending Request commands', () => {
         },
         futureOptional: true,
       });
-      expect(() => applyResourcePolicyRequest(f, input)).toThrow('unused approval');
+      await expect(applyResourcePolicyRequest(f, input)).rejects.toThrow('unused approval');
       const loaded = f.manager
         .current()
         .workspaceConfigs.find((entry) => entry.workspaceId === f.workspace.id)?.config.workspace
@@ -377,15 +394,19 @@ describe('resource Policy Pending Request commands', () => {
       expect(request.change.expectedRevision).toBe(
         f.files.readFile(`workspaces/${f.workspace.id}/workspace.jsonc`).file.revision
       );
-      expect(handlers['workspace.resource-access-request'](input, context).id).toBe(request.id);
-      expect(parse(readFileSync(f.configPath, 'utf8')).workspace.policy).toBeUndefined();
-      grantCommandIntentRequest(
-        f.workspaceDb.sqlite,
-        request.id!,
-        { kind: 'user', id: f.actor.userId },
-        new Date().toISOString(),
-        context.actor
+      expect((await handlers['workspace.resource-access-request'](input, context)).id).toBe(
+        request.id
       );
+      expect(parse(readFileSync(f.configPath, 'utf8')).workspace.policy).toBeUndefined();
+      await f.store.applyPendingRequestCommand(f.workspace.id, {
+        action: 'grant-command',
+        workspaceId: f.workspace.id,
+        threadId: controlThread.id,
+        requestId: request.id!,
+        actor: { kind: 'user', id: f.actor.userId },
+        now: new Date().toISOString(),
+        decisionContext: context.actor,
+      });
       const applyStartedAt = Date.now();
       const result = await handlers['workspace.resource-access-apply'](
         {
@@ -434,13 +455,15 @@ describe('resource Policy Pending Request commands', () => {
       );
       expect(loadedPolicy()).toBe(loaded);
       expect(decide().effect).toBe('allow');
-      grantCommandIntentRequest(
-        f.workspaceDb.sqlite,
-        revoke.id!,
-        { kind: 'user', id: f.actor.userId },
-        new Date().toISOString(),
-        context.actor
-      );
+      await f.store.applyPendingRequestCommand(f.workspace.id, {
+        action: 'grant-command',
+        workspaceId: f.workspace.id,
+        threadId: controlThread.id,
+        requestId: revoke.id!,
+        actor: { kind: 'user', id: f.actor.userId },
+        now: new Date().toISOString(),
+        decisionContext: context.actor,
+      });
       const revoked = await handlers['workspace.resource-access-apply'](
         {
           workspaceId: f.workspace.id,
@@ -478,16 +501,18 @@ describe('resource Policy Pending Request commands', () => {
       let effective: PolicyDocumentV1 = { schemaVersion: 1, statements: [] };
       f.store.setWorkspaceResourcePolicyProjection(() => effective);
       const record = await f.raise();
-      grantCommandIntentRequest(
-        f.workspaceDb.sqlite,
-        record.requestId,
-        { kind: 'user', id: f.actor.userId },
-        new Date().toISOString(),
-        f.actor
-      );
+      await f.store.applyPendingRequestCommand(f.workspace.id, {
+        action: 'grant-command',
+        workspaceId: f.workspace.id,
+        threadId: f.thread.id,
+        requestId: record.requestId,
+        actor: { kind: 'user', id: f.actor.userId },
+        now: new Date().toISOString(),
+        decisionContext: f.actor,
+      });
       const before = readFileSync(f.configPath, 'utf8');
       effective = restrictive;
-      expect(() =>
+      await expect(
         applyResourcePolicyRequest(f, {
           requestId: record.requestId,
           workspaceId: f.workspace.id,
@@ -495,7 +520,7 @@ describe('resource Policy Pending Request commands', () => {
           actor: f.actor,
           confirmation: 'APPLY WORKSPACE RESOURCE POLICY',
         })
-      ).toThrow('authority is required');
+      ).rejects.toThrow('authority is required');
       expect(readFileSync(f.configPath, 'utf8')).toBe(before);
       expect(
         f.workspaceDb.sqlite

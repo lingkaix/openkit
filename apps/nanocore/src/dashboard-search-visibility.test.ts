@@ -5,12 +5,13 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { FsStore } from './lib/store.js';
 import { closeRetrievalServices } from './retrieval-service.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
+import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
@@ -67,7 +68,7 @@ describe('dashboard and search Thread audiences', () => {
       visibility: 'private',
       privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     });
-    const changed = store.updateThread(workspace.id, thread.id, {
+    const changed = await store.updateThread(workspace.id, thread.id, {
       name: 'Renamed',
       visibility: 'workspace',
       privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
@@ -118,13 +119,33 @@ describe('dashboard and search Thread audiences', () => {
   });
 
   it('creates a new shared Goal from a private origin without changing its audience', async () => {
-    const store = new FsStore();
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-goal-inception-audience-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    onTestFinished(async () => {
+      await closeRetrievalServices();
+      await shutdownControlStoreWorkerClient();
+      coreDb.sqlite.close();
+      rmSync(dataRoot, { recursive: true, force: true });
+    });
+    const store = new FsStore({ dataRoot });
     const ws = await store.createWorkspace('Goal inception');
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: ws.id,
+    });
     const origin = await store.createThread(ws.id, 'Private origin', undefined, 'conversation', {
       visibility: 'private',
       privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     });
-    const app = createApp({ store });
+    const app = createApp({
+      store,
+      coreDb,
+      dataRoot,
+      agentManifests: [createTestAgentSetup().manifest],
+    });
     const response = await app.request('/api/app/operations/goal.create', {
       method: 'POST',
       headers: {
@@ -170,17 +191,20 @@ describe('dashboard and search Thread audiences', () => {
     const threads = await Promise.all(
       ['local-private', 'other-private', 'Task', 'Goal', 'missing', 'contradictory'].map(
         async (label) => {
-          const thread = await store.createThread(workspace.id, `${label} needle`);
-          const raw = thread as unknown as Record<string, unknown>;
-          delete raw.privateOwnerUserId;
-          if (label.endsWith('private'))
-            Object.assign(raw, {
-              visibility: 'private',
-              privateOwnerUserId: label.startsWith('local')
-                ? 'usr_00000000-0000-7000-8000-000000000001'
-                : 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
-            });
-          else Object.assign(raw, { visibility: 'workspace' });
+          const thread = await store.createThread(
+            workspace.id,
+            `${label} needle`,
+            undefined,
+            'conversation',
+            label.endsWith('private')
+              ? {
+                  visibility: 'private',
+                  privateOwnerUserId: label.startsWith('local')
+                    ? 'usr_00000000-0000-7000-8000-000000000001'
+                    : 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
+                }
+              : { visibility: 'workspace' }
+          );
           const turn = await store.createTurn(workspace.id, thread.id, `${label} needle`, {
             kind: 'user',
             id: 'usr_00000000-0000-7000-8000-000000000001',
