@@ -29,7 +29,7 @@ A product need requires a node to control work outside its own subtree, or the G
 
 ## Affected Owners
 
-- docs/core/agent-workflow.md
+- docs/core/work-model.md
 - docs/core/communication.md
 - docs/specs/20260704-task_mode_worker_delegation.md
 - docs/specs/20260703-worker_agent_capability.md

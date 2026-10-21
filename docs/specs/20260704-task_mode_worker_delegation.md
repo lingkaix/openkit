@@ -26,7 +26,6 @@ updated: "2026-10-15"
 
 - `docs/core/core-concepts.md`
 - `docs/core/work-model.md`
-- `docs/core/agent-workflow.md`
 - `docs/core/architecture.md`
 - `docs/core/runtime-model.md`
 - `docs/core/agent-session.md`
@@ -59,7 +58,7 @@ Task Mode is heavier than Chat Mode because it starts worker execution. It is li
 
 ## Background
 
-`docs/core/work-model.md` defines Task Mode as delegated work that needs worker-agent execution, progress tracking, artifacts, evidence, or review. `docs/core/agent-workflow.md` says Task Mode should route to Workflow Coordinator and use bounded worker steps when execution is required. Existing worker runtime, control, scheduler, AEP, and workspace sync specs supply the lower-level pieces but do not define the user-facing Task Mode contract.
+`docs/core/work-model.md` defines Task Mode as delegated work that needs worker-agent execution, progress tracking, artifacts, evidence, or review. `docs/core/work-model.md` says Task Mode should route to Workflow Coordinator and use bounded worker steps when execution is required. Existing worker runtime, control, scheduler, AEP, and workspace sync specs supply the lower-level pieces but do not define the user-facing Task Mode contract.
 
 ## Decision
 
@@ -362,7 +361,6 @@ Previously open questions are resolved by accepted V1 defaults: Task Mode perfor
 ## Links
 
 - `docs/core/work-model.md`
-- `docs/core/agent-workflow.md`
 - `docs/specs/20260531-human_attention_intervention_model.md`
 - `docs/specs/20260704-chat_mode_assistant.md`
 - `docs/specs/20261002-goal.md`

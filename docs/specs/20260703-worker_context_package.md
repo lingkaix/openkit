@@ -48,7 +48,7 @@ This spec supersedes `docs/specs/superseded/20260702-worker_context_taxonomy.md`
 ## Core References
 
 - `docs/core/knowledge.md`
-- `docs/core/agent-workflow.md`
+- `docs/core/work-model.md`
 - `docs/core/architecture.md`
 - `docs/core/storage.md`
 - `docs/core/protocol.md`

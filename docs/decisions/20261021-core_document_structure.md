@@ -61,7 +61,7 @@ Revisit when concrete evidence shows that the resulting boundaries still duplica
 
 - `docs/core/README.md` and `docs/core/AGENTS.md`.
 - `docs/core/foundation.md`, `docs/core/core-concepts.md`, `docs/core/architecture.md`, `docs/core/fault-tolerance.md` and `docs/core/contract-evolution.md`.
-- `docs/core/work-model.md`, `docs/core/agent-workflow.md`, `docs/core/knowledge.md` and `docs/core/generative-apps.md`.
+- `docs/core/work-model.md`, [docs/core/agent-workflow.md](../core/work-model.md), `docs/core/knowledge.md` and `docs/core/generative-apps.md`.
 - `docs/core/runtime-model.md`, `docs/core/agent-session.md`, `docs/core/sandbox.md` and `docs/core/agent-supply.md`.
 - `docs/core/identity.md`, `docs/core/policy.md`, `docs/core/mediation.md` and `docs/core/vault.md`.
 - `docs/core/storage.md`, `docs/core/evidence.md`, `docs/core/protocol.md` and `docs/core/communication.md`.

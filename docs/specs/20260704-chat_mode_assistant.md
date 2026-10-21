@@ -38,7 +38,6 @@ The private administration entry may prepare and apply an exact Worker environme
 
 - `docs/core/work-model.md`
 - `docs/core/architecture.md`
-- `docs/core/agent-workflow.md`
 - `docs/core/communication.md`
 - `docs/core/protocol.md`
 - `docs/core/mediation.md`
@@ -98,7 +97,7 @@ Addressing a Worker from Chat requires a confirmed Task handoff that creates a l
 
 ## Background
 
-`docs/core/work-model.md` defines Chat Mode as the lightweight path for simple answers, clarification, and state lookup. `docs/core/architecture.md` defines Core Assistant as the lightweight user-facing entry role. `docs/core/agent-workflow.md` states that the Assistant should hand non-trivial worker-agent work to the Workflow Coordinator.
+`docs/core/work-model.md` defines Chat Mode as the lightweight path for simple answers, clarification, and state lookup. `docs/core/architecture.md` defines Core Assistant as the lightweight user-facing entry role. `docs/core/work-model.md` states that the Assistant should hand non-trivial worker-agent work to the Workflow Coordinator.
 
 The missing V1 contract is the concrete Assistant boundary: which tools it may use, how it decides to answer or hand off, and how its output appears in the durable thread model.
 
@@ -499,7 +498,6 @@ The stateless `chat.quick` operation is removed under [Retire Stateless Quick Ch
 
 - `docs/core/work-model.md`
 - `docs/core/architecture.md`
-- `docs/core/agent-workflow.md`
 - `docs/core/knowledge.md`
 - `docs/specs/20260704-task_mode_worker_delegation.md`
 - `docs/specs/20261002-operation_definition.md`

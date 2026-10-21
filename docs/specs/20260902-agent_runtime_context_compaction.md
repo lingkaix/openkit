@@ -17,7 +17,7 @@ Core Assistant and Goal/Workflow Coordinator default to [rolling context](#inter
 
 ## Does Not Own
 
-- `docs/core/agent-workflow.md` owns the canonical Context Compaction workflow mechanism and its traceability requirement.
+- `docs/core/work-model.md` owns the canonical Context Compaction workflow mechanism and its traceability requirement.
 - `docs/core/work-model.md` owns the distinction between a product-visible Context compact, reusable Knowledge, and runtime continuity.
 - `docs/core/agent-session.md` owns Worker AgentSession identity, native conversation continuity, replacement, and restart behavior.
 - `docs/specs/20260813-internal_agent_runtime.md` owns the role-agnostic Internal Agent Loop, its transient transcript, Tools, fuses, and typed exits.
@@ -28,7 +28,6 @@ Core Assistant and Goal/Workflow Coordinator default to [rolling context](#inter
 
 ## Core References
 
-- `docs/core/agent-workflow.md`
 - `docs/core/work-model.md`
 - `docs/core/agent-session.md`
 - `docs/core/mediation.md`
@@ -228,7 +227,7 @@ The concrete record projection and producer obligations remain with `docs/specs/
 
 Gateway/Worker runtime compaction is not rendered as a user or assistant Thread message. Its product surfaces may show a safe compaction indication, completed-pass count and terminal failure, without exposing raw summaries or private Provider/runtime data. Internal roles instead retain the existing context-summary Item and its authorized source-range display under the contract below; it is not an ordinary user or assistant message.
 
-If a workflow deliberately needs a visible, durable Context compact for handoff, retry, recovery, or a later bounded step, its existing workflow owner creates a traceable product record under `docs/core/agent-workflow.md`. Automatic runtime compaction does not create that record by implication and does not replace its source Items, Artifacts, Evidence, Knowledge, decisions, or checkpoints. If a summary contains reusable learning, it enters Knowledge only through the existing proposal and acceptance path.
+If a workflow deliberately needs a visible, durable Context compact for handoff, retry, recovery, or a later bounded step, its existing workflow owner creates a traceable product record under `docs/core/work-model.md`. Automatic runtime compaction does not create that record by implication and does not replace its source Items, Artifacts, Evidence, Knowledge, decisions, or checkpoints. If a summary contains reusable learning, it enters Knowledge only through the existing proposal and acceptance path.
 
 ## Knowledge Manager Compaction
 

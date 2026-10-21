@@ -29,7 +29,6 @@ It does not define a universal `Resource` entity, feedback framework, locator fr
 - `docs/core/work-model.md`
 - `docs/core/communication.md`
 - `docs/core/knowledge.md`
-- `docs/core/agent-workflow.md`
 - `docs/core/mediation.md`
 - `docs/core/policy.md`
 - `docs/core/evidence.md`

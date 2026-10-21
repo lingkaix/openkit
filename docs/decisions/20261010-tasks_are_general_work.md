@@ -7,7 +7,7 @@ decider: Engineer
 
 ## Decision
 
-Tasks are general work. Make the whole direct-Task default set domain-neutral under [Task Mode](../specs/20260704-task_mode_worker_delegation.md), as an rc.1 blocker fix. Include all domain-neutral product wording and UI corrections in rc.1. The source-readiness qualification is amended in [Agent Workflow](../core/agent-workflow.md). At configuration time, truthfully refuse unsupported sources and name the supported source kinds under [Session Static Workspace Materialization](../specs/20260704-session_static_workspace_materialization.md). Leave Chat routing for the already planned full redesign; that later work must amend [Chat Mode](../specs/20260704-chat_mode_assistant.md). Make directory snapshot import and binary Artifacts the first post-release item; that later work must amend [Session Static Workspace Materialization](../specs/20260704-session_static_workspace_materialization.md) and the [Artifact owner](../specs/20260713-work_resource_interaction_model.md). A neutral Worker identity across Codex, Pi, OpenCode V2 and DeepSeek is post-release and must be disclosed in rc.1; that later work must amend the [Worker environment](../specs/20260721-worker_execution_environment_images.md) and [runtime communication](../specs/20260629-worker_runtime_communication_model.md) owners.
+Tasks are general work. Make the whole direct-Task default set domain-neutral under [Task Mode](../specs/20260704-task_mode_worker_delegation.md), as an rc.1 blocker fix. Include all domain-neutral product wording and UI corrections in rc.1. The source-readiness qualification is amended in [Agent Workflow](../core/work-model.md). At configuration time, truthfully refuse unsupported sources and name the supported source kinds under [Session Static Workspace Materialization](../specs/20260704-session_static_workspace_materialization.md). Leave Chat routing for the already planned full redesign; that later work must amend [Chat Mode](../specs/20260704-chat_mode_assistant.md). Make directory snapshot import and binary Artifacts the first post-release item; that later work must amend [Session Static Workspace Materialization](../specs/20260704-session_static_workspace_materialization.md) and the [Artifact owner](../specs/20260713-work_resource_interaction_model.md). A neutral Worker identity across Codex, Pi, OpenCode V2 and DeepSeek is post-release and must be disclosed in rc.1; that later work must amend the [Worker environment](../specs/20260721-worker_execution_environment_images.md) and [runtime communication](../specs/20260629-worker_runtime_communication_model.md) owners.
 
 ## Reason
 
@@ -48,7 +48,7 @@ No revisit trigger was given by the engineer.
 ## Affected Owners
 
 - [Task Mode](../specs/20260704-task_mode_worker_delegation.md): direct-Task defaults.
-- [Agent Workflow](../core/agent-workflow.md): current source-readiness qualification.
+- [Agent Workflow](../core/work-model.md): current source-readiness qualification.
 - [Session Static Workspace Materialization](../specs/20260704-session_static_workspace_materialization.md): current configuration-stage source refusal.
 - Product wording and UI corrections are non-authoritative projections of the current owning amendments.
 - [Chat Mode](../specs/20260704-chat_mode_assistant.md): owner that the later full Chat redesign must amend; no current amendment.
