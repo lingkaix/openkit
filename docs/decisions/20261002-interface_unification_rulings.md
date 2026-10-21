@@ -58,7 +58,7 @@ Source: change record 202610020440000000-interface_unification.
 
 - docs/core/foundation.md
 - docs/core/identity.md
-- docs/core/permissions.md
+- docs/core/policy.md
 - docs/specs/20260713-openkit_agent_skill_interface.md
 - docs/specs/20260704-app_api_openapi_projection.md
 - docs/specs/20260930-pending_requests.md

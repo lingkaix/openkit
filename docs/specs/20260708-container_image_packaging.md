@@ -35,7 +35,7 @@ updated: 2026-10-13
 - `docs/core/runtime-model.md`
 - `docs/core/sandbox.md`
 - `docs/core/agent-supply.md`
-- `docs/core/agent-capability.md`
+- `docs/core/mediation.md`
 - `docs/core/vault.md`
 - `docs/core/audit.md`
 

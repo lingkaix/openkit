@@ -22,7 +22,7 @@ Artifact versions and Review decisions remain with [Work Resource Interaction](2
 
 - [Work Model](../core/work-model.md)
 - [Knowledge](../core/knowledge.md)
-- [Permissions](../core/permissions.md)
+- [Permissions](../core/policy.md)
 - [Storage](../core/storage.md)
 - [Contract Evolution](../core/contract-evolution.md)
 

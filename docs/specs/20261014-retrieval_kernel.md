@@ -26,7 +26,7 @@ The kernel does not decide whether a retrieved claim is true. It does not publis
 
 - [Storage](../core/storage.md)
 - [Knowledge](../core/knowledge.md)
-- [Permissions](../core/permissions.md)
+- [Permissions](../core/policy.md)
 
 ## Storage Content And Derivation
 
@@ -128,7 +128,7 @@ Before a product query, NanoCore and the source adapters construct readable scop
 
 The adapter reconciles each admitted inventory with its scope generation before asserting freshness. Scope construction must separate distinct read eligibility from creation. If current authorization no longer covers a complete generation, rebuild that scope from current admitted records before opening it. If that cannot complete, fail the affected operation explicitly; do not silently drop a shared scope as the normal query path. A final hit check cannot substitute for this pre-ranking boundary.
 
-For Assistant use, NanoCore resolves both the source read scope and the destination audience under [Permissions](../core/permissions.md#assistant-disclosure-authorization). It excludes sources that cannot reach that audience before the query supplies model context. Every concrete read and later publication retain their current permission checks.
+For Assistant use, NanoCore resolves both the source read scope and the destination audience under [Permissions](../core/policy.md#assistant-disclosure-authorization). It excludes sources that cannot reach that audience before the query supplies model context. Every concrete read and later publication retain their current permission checks.
 
 For every query mode, the kernel resolves the caller's scope set before opening any generation or canonical scan text. BM25 document counts, document frequencies, field lengths, coverage counts, and scans operate only inside those named generations. It merges only their eligible hits. Unauthorized generations cannot become speculative candidates or contribute statistics. A scope Boolean clause over a mixed index and a post-filter over ranked hits are both insufficient.
 

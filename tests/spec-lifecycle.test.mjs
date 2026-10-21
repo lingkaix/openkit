@@ -565,3 +565,20 @@ for (const transitive of [false, true]) {
     );
   });
 }
+
+for (const [legacyPath, currentPath] of [
+  ['docs/core/agent-capability.md', 'docs/core/mediation.md'],
+  ['docs/core/permissions.md', 'docs/core/policy.md'],
+]) {
+  test(`resolves frozen terminal metadata from ${legacyPath} to ${currentPath}`, () => {
+    const root = createRepository();
+    writeHistoricalEvidence(root);
+    writeFixture(root, currentPath, '---\nstatus: Accepted\n---\n# Current\n');
+    writeFixture(
+      root,
+      'docs/specs/superseded/20260711-frozen.md',
+      historicalReferrer(`\`${legacyPath}\``)
+    );
+    assert.deepEqual(validateSpecLifecycle(root), []);
+  });
+}

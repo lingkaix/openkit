@@ -202,9 +202,9 @@ An external, provider-native, or adapter-native runtime identifier must not beco
 - `docs/core/identity.md`
 - `docs/core/knowledge.md`
 - `docs/core/vault.md`
-- `docs/core/agent-capability.md`
+- `docs/core/mediation.md`
 - `docs/core/metering.md`
-- `docs/core/permissions.md`
+- `docs/core/policy.md`
 - `docs/core/sandbox.md`
 - `docs/core/audit.md`
 - `docs/core/contract-evolution.md`

@@ -91,7 +91,7 @@ Local data and external effects are different transaction domains. After an exte
 
 ## Permissions And Accountability
 
-The initial Workspace membership baseline is owned by [Permissions](permissions.md): an active member is eligible for the full Workspace operation set, including its Light Apps. No per-app role hierarchy or collection/field ACL is required. This is an authorization baseline, not a claim that every credential, internal role, or external account has every capability.
+The initial Workspace membership baseline is owned by [Policy](policy.md): an active member is eligible for the full Workspace operation set, including its Light Apps. No per-app role hierarchy or collection/field ACL is required. This is an authorization baseline, not a claim that every credential, internal role, or external account has every capability.
 
 Current identity, membership, credential restrictions, Policy, Vault, disclosure, and required human decisions continue to govern each effect. Future finer rules use the same subject/action/resource/context seam; they should not require redesigning the Kernel or its clients. Sensitive and consequential operations MUST preserve attributable evidence under [Audit](audit.md), including the actor, target, relevant schema or implementation revision, request lineage, and outcome or explicit uncertainty, without recording secrets or creating a second audit authority.
 
@@ -111,6 +111,6 @@ These are normative requirements for a conforming implementation, not claims tha
 
 ## Relationships And Realization
 
-[Architecture](architecture.md) owns placement and App/Core/Agent responsibility; [Agent Supply](agent-supply.md) owns behavior-resource supply; [Agent Capability](agent-capability.md) owns governed invocation and internal Tool admission. [Protocol](protocol.md), [Storage](storage.md), [Permissions](permissions.md), [Vault](vault.md), and [Audit](audit.md) retain their existing authority. This aspect composes them without new identity, policy, storage, execution, or recovery planes.
+[Architecture](architecture.md) owns placement and App/Core/Agent responsibility; [Agent Supply](agent-supply.md) owns behavior-resource supply; [Mediation](mediation.md) owns governed invocation and internal Tool admission. [Protocol](protocol.md), [Storage](storage.md), [Policy](policy.md), [Vault](vault.md), and [Audit](audit.md) retain their existing authority. This aspect composes them without new identity, policy, storage, execution, or recovery planes.
 
 Schema file format, database engine and paths, query syntax, MCP and CLI payloads, Plugin package layout, renderer protocol, widget-resource representation, and concrete internal-role selection are implementation decisions. They MUST preserve this model without being promoted into additional universal business concepts.

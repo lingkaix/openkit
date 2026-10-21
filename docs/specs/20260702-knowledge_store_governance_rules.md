@@ -45,7 +45,7 @@ Generated learning uses the unified notebook publisher under current maintenance
 ## Core References
 
 - `docs/core/knowledge.md`
-- `docs/core/permissions.md`
+- `docs/core/policy.md`
 - `docs/core/audit.md`
 - `docs/core/storage.md`
 

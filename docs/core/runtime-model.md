@@ -228,7 +228,7 @@ An execution substrate can fail while a Turn remains inspectable or eligible for
 
 [Fault Tolerance](fault-tolerance.md) defines safe points and danger windows. A durable admission, preparation intent, dispatch intent, accepted observation or terminal result establishes only its recorded facts. It does not prove that dependent runtime effects have settled. Recovery MUST follow the owning lifecycle above and obtain its required proof before adopting execution or releasing resources.
 
-[Permissions](permissions.md) owns checks at each governed effect boundary. Decisions permitting an effect MUST be recorded before that effect's danger window opens; a separately governed effect within a larger operation retains its own checks. An extension MUST NOT change an already committed decision or the immutable inputs of an effect that may have occurred.
+[Policy](policy.md) owns authorization and [Mediation](mediation.md#enforcement-points) owns checks at each governed effect boundary. Decisions permitting an effect MUST be recorded before that effect's danger window opens; a separately governed effect within a larger operation retains its own checks. An extension MUST NOT change an already committed decision or the immutable inputs of an effect that may have occurred.
 
 The resolved Agent setup and declared execution-environment inputs MUST remain fixed for the prepared Turn; later Agent, Skill or image changes apply to later Turns. This does not freeze mutable working data. Each further governed effect MUST satisfy current authorization at its enforcement point.
 

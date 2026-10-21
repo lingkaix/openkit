@@ -47,7 +47,7 @@ A required provider or harness cannot accept this projection or needs more prefi
 ## Affected Owners
 
 - [Operation Definition](../specs/20261002-operation_definition.md).
-- [Core Agent Capability](../core/agent-capability.md).
+- [Core Agent Capability](../core/mediation.md).
 - [Worker MCP Tool Supply](../specs/20260704-worker_mcp_tool_supply.md).
 - [Remote MCP Interface](../specs/20261002-remote_mcp_interface.md).
 - [Internal Agent Runtime](../specs/20260813-internal_agent_runtime.md).

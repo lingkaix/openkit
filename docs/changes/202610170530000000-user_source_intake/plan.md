@@ -6,7 +6,7 @@ status: in-progress
 
 ## Intent
 
-Continue the accepted [Personal Memory rollout](../../specs/20260909-personal_memory_and_knowledge_learning.md#rollout--migration-plan) after explicit page management with bounded explicit Source registration. [Knowledge Store](../../specs/20260703-knowledge_store_implementation.md), [Storage](../../core/storage.md), [Permissions](../../core/permissions.md) and the [record envelope](../../specs/20260703-schema_evolution_record_envelope.md) own semantics. This plan records execution, not new authority.
+Continue the accepted [Personal Memory rollout](../../specs/20260909-personal_memory_and_knowledge_learning.md#rollout--migration-plan) after explicit page management with bounded explicit Source registration. [Knowledge Store](../../specs/20260703-knowledge_store_implementation.md), [Storage](../../core/storage.md), [Permissions](../../core/policy.md) and the [record envelope](../../specs/20260703-schema_evolution_record_envelope.md) own semantics. This plan records execution, not new authority.
 
 ## Scope
 

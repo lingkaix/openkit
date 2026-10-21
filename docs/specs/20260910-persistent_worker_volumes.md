@@ -22,7 +22,7 @@ NanoCore owns Workspace/Thread/AgentSession, permissions, scheduling, Items, Art
 - `docs/core/agent-session.md`
 - `docs/core/sandbox.md`
 - `docs/core/architecture.md`
-- `docs/core/permissions.md`
+- `docs/core/policy.md`
 
 ## Retained Bytes And Boundaries
 

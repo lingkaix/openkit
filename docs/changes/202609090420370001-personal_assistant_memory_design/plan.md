@@ -16,7 +16,7 @@ User-scoped reusable information is called Memory to emphasize personality. Work
 
 ## Owners And Write Ownership
 
-The primary is the sole writer of this plan and all canonical Core, specification, Roadmap, index and local-guide changes. Claude is read-only consultant in Herdr `personal-consultant`, session `cd1b7369-60f5-4e09-bc95-aba116e8fb85`. Independent reviewer and auditor may write only assigned temporary evidence files and inspect the actual diff. No production paths or Product Vision are assigned. [Knowledge Core](../../core/knowledge.md), [Permissions](../../core/permissions.md), [Assistant](../../specs/20260704-chat_mode_assistant.md), [Thread Visibility](../../specs/20260909-thread_visibility_and_sharing.md), [Scoped Learning](../../specs/20260909-personal_memory_and_knowledge_learning.md), and existing storage, Skill, audit, portability and command owners hold design authority; this record holds none.
+The primary is the sole writer of this plan and all canonical Core, specification, Roadmap, index and local-guide changes. Claude is read-only consultant in Herdr `personal-consultant`, session `cd1b7369-60f5-4e09-bc95-aba116e8fb85`. Independent reviewer and auditor may write only assigned temporary evidence files and inspect the actual diff. No production paths or Product Vision are assigned. [Knowledge Core](../../core/knowledge.md), [Permissions](../../core/policy.md), [Assistant](../../specs/20260704-chat_mode_assistant.md), [Thread Visibility](../../specs/20260909-thread_visibility_and_sharing.md), [Scoped Learning](../../specs/20260909-personal_memory_and_knowledge_learning.md), and existing storage, Skill, audit, portability and command owners hold design authority; this record holds none.
 
 ## Baseline Evidence
 

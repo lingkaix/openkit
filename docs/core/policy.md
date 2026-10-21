@@ -1,33 +1,33 @@
 ---
 status: Accepted
 ---
-# Permissions Model
+# Policy Model
 
-This document defines OpenKit permission semantics.
+This document defines OpenKit policy and permission semantics.
 
-This document owns authorization Policy concepts, evaluation inputs, permission decisions, mediation points, Policy administration, the Assistant disclosure boundary, and approval semantics.
+This document owns authorization Policy concepts, evaluation inputs, permission decisions, Policy administration, the Assistant disclosure boundary, and approval semantics.
 
-This document does not own identity authentication, technical capability declarations, sandbox containment, audit projection shape, App API authorization endpoints, UI permission summaries, vault secret storage, or config-merge policy.
+This document does not own identity authentication, operation definition and mediation points ([Mediation](mediation.md)), technical capability declarations, sandbox containment, audit projection shape, App API authorization endpoints, UI permission summaries, vault secret storage, or config-merge policy.
 
-Permission is authorization. It answers whether a subject may perform an action on a resource under current policy and context.
+Policy is authorization and governance. It answers whether a subject may perform an action on a resource under current policy and context.
 
-Permission is separate from capability and sandbox.
+Policy is separate from mediation and sandbox.
 
-Identity is authentication and actor identity. Permission consumes identity context but does not define users, auth sessions, tokens, or workspace membership.
+Identity is authentication and actor identity. Policy consumes identity context but does not define users, auth sessions, tokens, or workspace membership.
 
 ## Purpose
 
 OpenKit agents may be able to read files, write files, run commands, access network services, call tools, use credentials, query knowledge, create artifacts, or affect external systems.
 
-The permission model gives Core a stable way to decide whether those actions are allowed.
+The policy model gives Core a stable way to decide whether those actions are allowed.
 
 ## Principles
 
-- Permission is separate from identity, capability, sandbox, and audit.
+- Policy is separate from identity, mediation, sandbox, and audit.
 - Authorization decisions should be explainable, immutable, and attributable to a subject, action, resource, context, policy, and enforcement point.
 - Approval may satisfy a Policy requirement; it is not the entire permission model. Human eligibility follows Administrator Eligibility and the responsible-user rule. An accepted automatic Policy grant remains a Policy grant, never a human decision. An agent approver requires separate bounded activation under Policy Administration; this design activates none.
 - Multiple layers may enforce the same decision, but Core should remain able to explain the policy result.
-- Policy details may evolve, but permission vocabulary should remain stable enough for audit, UI summaries, and agent capability control.
+- Policy details may evolve, but permission vocabulary should remain stable enough for audit, UI summaries, and mediation control.
 - OpenKit may implement only a subset of NGAC, but every implemented NGAC concept MUST match NGAC definitions, standard terminology, and described semantics. Product adapters MAY expose friendlier names, but Core policy doctrine MUST preserve NGAC as the long-term standard rather than creating a parallel OpenKit-specific authorization model.
 - Workspace authorization is deny-by-default and uses current identity, membership, credential, and resource facts on every governed request.
 
@@ -83,9 +83,9 @@ The administrator must be an active user, and the credential's scope, ownership,
 
 ## Boundary
 
-Permission owns policy and authorization decisions.
+Policy owns policy and authorization decisions.
 
-Capability describes what an actor can technically do.
+Mediation describes how operations and capabilities are defined, invoked, intercepted, supplied, and routed.
 
 Sandbox constrains what the runtime can actually reach.
 
@@ -248,21 +248,9 @@ Typical record areas include:
 
 Permission decision records should be immutable. A later policy check should create a new decision record rather than rewriting the prior decision.
 
-## Enforcement Points
+## Policy Statements And Administration
 
-A mediation point is an operation at a stage on a Core-controlled effect or content crossing. Core MUST hold proposed effects or crossing content until the required decision permits release. Its identity MUST be `<operation>@<stage>`. The stages are `propose`, `decide`, `commit`, and `completed`. Core MUST extend the existing operation registry to non-API operations rather than create a separate point registry. The [unified mediation and Policy decision](../decisions/20261018-unified_mediation_and_policy.md) records this design.
-
-The access dimensions are subject, operation, and object. The subject follows Subject above; the principal and actual actor MUST remain distinct when an agent acts for a User. Stage, insertion mode, and participant with its acting authority complete the dimensions. Crossing type, effect class, sensitivity, and static risk are attributes, not substitutes for those dimensions. Advice may attach dynamic risk to one exact proposal; an assessment MUST NOT grant authority.
-
-The built-in crossing attributes are `admission`, `disclosure`, `dispatch`, `ingress`, `mutation`, `administration`, and `decision`. An interaction can cross several points. A tool dispatch, its returning result, and disclosure of that result require separate checks at their actual boundaries. Calls inside a wrapper retain their own dispatch checks.
-
-Gate and transform participation MUST have explicit Policy authority. Core MUST order pre-decision work as transform, advise, gate, then the mandatory final Policy Kernel evaluation. Transform retains original and replacement through their existing content owners. Advice supplies proposal attributes. Gate results combine with the mapped Kernel result under Decision's closed precedence. A point with no bindings uses its existing permission check. The Kernel MUST remain pure and synchronous, with only low-level allow or deny results.
-
-Only a final combined `allow` permits the commit stage. Commit obligations include the owner's write or send and Core-only credential injection. Injection MUST bind to the approved target, account, and action after the final allow. Participants MUST NOT receive secrets. Completed-stage observation cannot grant or undo the effect; returned content enters its own ingress point.
-
-Each operation MUST declare permitted modes and provider kinds. Boot admission and centralized Workspace access resolution accept no participant bindings. Participant invocation and a participant's investigative calls use Kernel-only checks without bindings. These exclusions bound mediation depth to one level. The owning human's root decision is not itself mediated by participants.
-
-### Policy Statements And Administration
+[Mediation](mediation.md#enforcement-points) owns mediation points.
 
 Permissions, participant bindings, and envelopes or delegations MUST share one versioned Policy authority and snapshot. One revision pins all three statement kinds for evaluation. A binding is a Policy statement, not a separate hook configuration or grant store. Gateway tool rules and storage leases remain permission statements or grants in that same owner.
 
@@ -274,8 +262,6 @@ Every Policy change MUST retain the proposal diff, proposer, rationale, affected
 
 An agent approver is a gate participant with its own read-only investigative grant. It MUST run in shadow before the owning human explicitly activates a bounded class after inspecting shadow evidence. Its output is allow, deny, or escalation to a human, with risk, authorization assessment, and rationale. It MUST NOT approve its own binding or envelope, increase its authority, recursively request approval, impersonate a human, or satisfy a human-only decision. The [BWM support decision](../decisions/20261018-bwm_support_and_information_consolidation.md) records the preceding agent-native direction.
 
-Timeout, malformed result, unavailability, and an open participant circuit MUST remain explicit failures. The binding selects human escalation by default, continuation only for non-decisive work, or error. Continuation contributes neutral `not_applicable`; it MUST NOT manufacture allow or deny. Retries MUST stay within one bounded deadline. An unresolved required gate MUST NOT release the effect.
-
 ### Delegated Goal Domain And Statement Lifetime
 
 Plan approval creates the Goal's delegated Policy domain: its Workers, resources, and approved rights. The Coordinator administers that domain. A Task's Worker inherits the envelope intersected with the resources on its Task card; the Coordinator may narrow by exception.
@@ -285,26 +271,6 @@ A missing grant with reason `not_granted` inside that envelope escalates to the 
 Scope defines whom and what a statement applies to. Lifetime is a separate attribute with a container anchor, optional expiry, and optional use count. The anchor may reference any container; there is no closed lifetime enum. The statement ends when its anchor closes, expiry passes, uses are consumed, or its author's authority ends. No cleanup job supplies that authorization boundary.
 
 Once means one use, consumed atomically by the allowing decision. A once-only approval creates no Policy change. An unbounded lifetime anchored on the scope owner means persistent authority until revocation or that owner's closure. A Coordinator may choose any lifetime within its Goal domain, but its statements MUST end with that domain at the latest. Longer authority requires promotion approved by the domain's owning human. Choose the narrowest anchor or bounds that cover the reason, rather than only the current call. Repeated same-reason grants across Goals may become a Workspace proposal for the human.
-
-### Mediation Acceptance
-
-An unauthorized transform, participant disclosure, Policy widening, or credential injection MUST be refused before release. Changed proposals, revisions, or participant bindings MUST invalidate prior assessments and approvals. Immutable historical decisions remain evidence, not current grants. Observe and advise MUST never become authorizing results. Deferred post-success Policy reactions do not authorize a present effect.
-
-Permission checks should happen at enforcement points.
-
-Examples:
-
-- centralized Workspace access resolution before a Workspace-addressed handler reads or mutates state
-- app API command handler
-- Core scheduler
-- agent adapter
-- agent capability gateway projection
-- runtime mediation boundary
-- vault access boundary
-- filesystem operation boundary
-- sandbox startup boundary
-
-The same policy decision may be enforced at multiple layers. Sandbox enforcement is still valuable even when permission policy already denies an action. Inside its Sandbox a worker has full permission; approval and audit apply to Gateway-mediated interaction with external systems at the Sandbox boundary and the Gateway, not to in-Sandbox tools or configuration, and native runtime permission prompts are not part of the permission model. Storage and network containment still apply at the Sandbox boundary. External routing follows [Sandbox](sandbox.md). [Agent Capability](agent-capability.md#routing) owns the managed-supply route and REST exception; each crossing still requires its current Policy decision. Admission of that class does not exempt an action from policy-required approval or audit.
 
 ## Approval Gates
 
@@ -390,7 +356,7 @@ Detailed audit semantics belong to `docs/core/audit.md`.
 
 ## Invariants
 
-- Permission MUST NOT be collapsed into capability, sandbox, identity, or approval.
+- Policy MUST NOT be collapsed into mediation, sandbox, identity, or approval.
 - Implemented policy-kernel concepts MUST remain semantically consistent with NGAC. If product vocabulary needs different names, the mapping belongs in adapters rather than in the kernel concept definitions.
 - Permission decisions SHOULD preserve subject, action, resource, context, policy reference, enforcement point, outcome, reason, and request correlation when those fields are available.
 - Permission-sensitive actions SHOULD leave audit records or enough metadata for future audit projection.

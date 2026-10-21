@@ -59,7 +59,7 @@ branch: codex/r058-worker-mcp
 
 ## Owning Documents
 
-- `docs/core/agent-capability.md` owns capability terminal semantics, Item projection, Gateway mediation, and credential boundary.
+- `docs/core/mediation.md` owns capability terminal semantics, Item projection, Gateway mediation, and credential boundary.
 - `docs/core/vault.md` owns injection plans, uses, receipts, uncertainty, revocation, and teardown.
 - `docs/specs/20260704-worker_mcp_tool_supply.md` owns the R058 MCP catalog, transports, tools, schema snapshots, policy, approval, usage, failures, and acceptance.
 - `docs/specs/20260703-worker_agent_capability.md` owns the worker-local capability route and independent credential boundary.

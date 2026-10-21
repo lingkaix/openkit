@@ -17,7 +17,7 @@ kind: mechanism
 - The public LLM gateway HTTP surface, provider capability matrix, prompt-cache key rules, or Codex routing. Those stay owned by `docs/specs/20260526-llm_gateway_responses_api.md`.
 - The pi-ai adapter contract and provider mapping. Those stay owned by `docs/specs/20260708-pi_ai_unified_llm_backend.md`; dependency pinning, catalog reconciliation, and the pi-ai vocabulary boundary stay owned by `docs/specs/20260703-pi_ai_provider_gateway_adoption.md`.
 - Worker MCP catalog shape, server lifecycle, tool schema snapshots, policy binding, or MCP error codes. Those stay owned by `docs/specs/20260704-worker_mcp_tool_supply.md`.
-- The abstract worker capability model. That stays owned by `docs/specs/20260703-worker_agent_capability.md` and `docs/core/agent-capability.md`.
+- The abstract worker capability model. That stays owned by `docs/specs/20260703-worker_agent_capability.md` and `docs/core/mediation.md`.
 - Final table DDL, storage migration details, backup/export format, or non-gateway metering.
 - Budget enforcement, rate-limit policy, billing, invoices, or cost allocation UI.
 - Runtime-internal sub-agent provenance, authenticated worker-inference identity, and worker runtime cache lineage, which are owned by `docs/specs/20260711-worker_runtime_subagent_provenance.md`.
@@ -25,7 +25,7 @@ kind: mechanism
 
 ## Core References
 
-- `docs/core/agent-capability.md`
+- `docs/core/mediation.md`
 - `docs/core/audit.md`
 - `docs/core/metering.md`
 - `docs/core/storage.md`
@@ -137,7 +137,7 @@ The recorder owns a three-step lifecycle:
 
 1. `startCapabilityCall(context)`: persists a pending call row before contacting the upstream provider or MCP server.
 2. `recordUsage(callId, usage[])`: persists zero or more usage rows after the producer has a measured result or partial result.
-3. `finishCapabilityCall(callId, outcome)`: records one terminal status from the closed vocabulary owned by `docs/core/agent-capability.md`, with a stable error code when applicable.
+3. `finishCapabilityCall(callId, outcome)`: records one terminal status from the closed vocabulary owned by `docs/core/mediation.md`, with a stable error code when applicable.
 
 Rules:
 
@@ -379,6 +379,6 @@ Previously open questions are resolved by accepted V1 defaults: worker execution
 - `docs/specs/20260703-storage_layout_record_ownership.md`
 - `docs/specs/20260704-nanocore_bootstrap_readiness.md`
 - `docs/specs/20260711-worker_runtime_subagent_provenance.md`
-- `docs/core/agent-capability.md`
+- `docs/core/mediation.md`
 - `docs/core/audit.md`
 - `docs/core/metering.md`

@@ -27,10 +27,10 @@ This specification owns trusted assembly of selected Skills, internal-capability
 
 ## Core References
 
-- `docs/core/agent-capability.md`
+- `docs/core/mediation.md`
 - `docs/core/architecture.md`
 - `docs/core/generative-apps.md`
-- `docs/core/permissions.md`
+- `docs/core/policy.md`
 - `docs/core/knowledge.md`
 - `docs/core/storage.md`
 

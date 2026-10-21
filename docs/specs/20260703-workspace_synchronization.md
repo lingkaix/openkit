@@ -52,8 +52,8 @@ truth, and host-local staging is not a product Worker Agent runtime.
 - `docs/core/audit.md`
 - `docs/core/agent-workflow.md`
 - `docs/core/agent-session.md`
-- `docs/core/agent-capability.md`
-- `docs/core/permissions.md`
+- `docs/core/mediation.md`
+- `docs/core/policy.md`
 - `docs/core/runtime-model.md`
 
 ## Related Docs

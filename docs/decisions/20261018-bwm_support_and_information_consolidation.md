@@ -41,4 +41,4 @@ Revisit the implementation choice if a real owner boundary cannot retain safe in
 
 ## Affected Owners
 
-[Architecture](../core/architecture.md), [Permissions](../core/permissions.md), [Knowledge](../core/knowledge.md), [Audit](../core/audit.md), [Generative Apps](../core/generative-apps.md), [Agent Capability](../core/agent-capability.md) and [Agent Supply](../core/agent-supply.md) retain their respective responsibilities. The linked specification owns the detailed consolidation and interception contract.
+[Architecture](../core/architecture.md), [Permissions](../core/policy.md), [Knowledge](../core/knowledge.md), [Audit](../core/audit.md), [Generative Apps](../core/generative-apps.md), [Agent Capability](../core/mediation.md) and [Agent Supply](../core/agent-supply.md) retain their respective responsibilities. The linked specification owns the detailed consolidation and interception contract.

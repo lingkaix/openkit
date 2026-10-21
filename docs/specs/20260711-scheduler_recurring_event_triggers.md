@@ -32,7 +32,7 @@ Cadence, trigger identity, overlap, missed occurrences, bounded admission-only r
 - `docs/core/foundation.md`
 - `docs/core/identity.md`
 - `docs/core/runtime-model.md`
-- `docs/core/permissions.md`
+- `docs/core/policy.md`
 - `docs/core/audit.md`
 
 ## Summary

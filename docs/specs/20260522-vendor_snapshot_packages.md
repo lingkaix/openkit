@@ -23,7 +23,7 @@ It does not decide which upstream release an application supports, what evidence
 ## Core References
 
 - `docs/core/protocol.md`
-- `docs/core/agent-capability.md`
+- `docs/core/mediation.md`
 - `docs/core/agent-supply.md`
 
 ## Summary

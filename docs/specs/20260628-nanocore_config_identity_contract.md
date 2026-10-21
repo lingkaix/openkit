@@ -42,7 +42,7 @@ Historical identity and config specs have been moved under `docs/specs/supersede
 - `docs/core/identity.md`
 - `docs/core/communication.md`
 - `docs/core/storage.md`
-- `docs/core/permissions.md`
+- `docs/core/policy.md`
 - `docs/core/vault.md`
 
 ## Goals
@@ -254,7 +254,7 @@ They remain useful for implementation background, but this spec and the core ide
 
 - [Identity Model](../core/identity.md)
 - [Storage Model](../core/storage.md)
-- [Permissions Model](../core/permissions.md)
+- [Permissions Model](../core/policy.md)
 - [Vault Model](../core/vault.md)
 - [Single-Deployment Multi-User Workspace System](./20260715-multi_user_workspace_system.md)
 - [NanoHost Runtime And Transport](./20260802-nanohost_runtime_and_transport.md)

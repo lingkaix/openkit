@@ -25,7 +25,7 @@ updated: 2026-10-17
 - `docs/core/foundation.md`
 - `docs/core/agent-supply.md`
 - `docs/core/storage.md`
-- `docs/core/permissions.md`
+- `docs/core/policy.md`
 - `docs/core/audit.md`
 
 ## Summary

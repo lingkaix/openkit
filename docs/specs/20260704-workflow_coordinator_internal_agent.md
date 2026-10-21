@@ -35,7 +35,7 @@ Goal progression, Goal Plan decisions, Goal stop decisions, and the model Coordi
 - `docs/core/agent-supply.md`
 - `docs/core/agent-session.md`
 - `docs/core/knowledge.md`
-- `docs/core/permissions.md`
+- `docs/core/policy.md`
 
 ## Summary
 

@@ -30,11 +30,11 @@ Authored composition precedes resolution. One Server-supplied Agent Manifest may
 
 Agent catalogs are workspace-visible selection surfaces, not runtime launch manifests.
 
-Skills are independently versioned behavior resources: their exact content and provenance must remain selectable, comparable, and recoverable independently of a distribution package. Agent Plugins supplies a public packaging and declaration format for grouped Skill and MCP installation and management; a package is not another authored setup or runtime authority. Import changes catalog availability, while explicit setup selection and current authorization decide what reaches a worker. Selected internal Core roles may consume these same behavior resources through trusted entry-path assembly; they do not become worker supply or acquire an AgentSession. Loading Skill context and invoking MCP or CLI are distinct, and the latter requires an admitted capability or execution path under [Agent Capability](agent-capability.md). Catalog presence cannot widen a running role's fixed Tool set, scope, or authority. Resolution preserves exact component versions and source membership, and native adaptation cannot activate undeclared package behavior or bypass the governed MCP route.
+Skills are independently versioned behavior resources: their exact content and provenance must remain selectable, comparable, and recoverable independently of a distribution package. Agent Plugins supplies a public packaging and declaration format for grouped Skill and MCP installation and management; a package is not another authored setup or runtime authority. Import changes catalog availability, while explicit setup selection and current authorization decide what reaches a worker. Selected internal Core roles may consume these same behavior resources through trusted entry-path assembly; they do not become worker supply or acquire an AgentSession. Loading Skill context and invoking MCP or CLI are distinct, and the latter requires an admitted capability or execution path under [Mediation](mediation.md). Catalog presence cannot widen a running role's fixed Tool set, scope, or authority. Resolution preserves exact component versions and source membership, and native adaptation cannot activate undeclared package behavior or bypass the governed MCP route.
 
 Agent Manifests should describe required supply without embedding secret values, absolute local paths, provider-native payloads, or adapter-private launch details.
 
-Runtime capability access belongs to `agent-capability.md`; agent supply may declare which capability categories an agent needs, but it does not own agent capability routing, gateway projection, or metering semantics.
+Runtime capability access belongs to `mediation.md`; agent supply may declare which capability categories an agent needs, but it does not own agent capability routing, gateway projection, or metering semantics.
 
 AgentSessions materialize resolved supply into live or resumable runtime continuity; agent supply does not own session lifecycle.
 
@@ -272,15 +272,15 @@ The current manifest schema is validated strictly. Unknown or unsupported author
 - Each launch MUST derive from exactly one `AgentManifest` and one selected setup-local profile; resolution, governance materialization, and runtime adaptation MUST NOT become additional authored supply authorities.
 - Workspace bindings and User preferences MAY participate in authored composition, but they MUST yield one composed authored setup before resolution and MUST NOT turn catalogs, grants, policy, runtime proof, or materialization into authored supply.
 - Launch-time capability availability MUST be the intersection of authored requirements and selected runtime adapter and image proof; missing required proof MUST block readiness, and optional unproven capability MUST remain unavailable.
-- Agent supply MUST NOT create a direct or runtime-native MCP execution route for NanoCore-managed supply; that supply belongs to the governed capability plane owned by `agent-capability.md`. This rule does not govern worker-owned in-Sandbox configuration. External routing follows [Sandbox](sandbox.md). [Agent Capability](agent-capability.md#routing) owns Gateway mediation and the separately authorized REST exception. Such a grant creates no NanoCore-managed supply route.
+- Agent supply MUST NOT create a direct or runtime-native MCP execution route for NanoCore-managed supply; that supply belongs to the governed capability plane owned by `mediation.md`. This rule does not govern worker-owned in-Sandbox configuration. External routing follows [Sandbox](sandbox.md). [Mediation](mediation.md#routing) owns Gateway mediation and the separately authorized REST exception. Such a grant creates no NanoCore-managed supply route.
 
 ## Relationship To Other Docs
 
 - `docs/core/core-concepts.md` owns canonical concept definitions.
 - `docs/core/runtime-model.md` owns execution semantics.
 - `docs/core/agent-session.md` owns runtime continuity.
-- `docs/core/agent-capability.md` owns runtime capability access, gateway projection, routing, capability-call `UsageRecord` production, and audit metadata.
+- `docs/core/mediation.md` owns operation invocation, mediation points, runtime capability access, gateway projection, routing, capability-call `UsageRecord` production, and audit metadata.
 - `docs/core/metering.md` owns system-wide measurement policy, cross-producer aggregation, and cost projection.
-- `docs/core/permissions.md` owns authorization.
+- `docs/core/policy.md` owns authorization.
 - `docs/core/sandbox.md` owns execution isolation.
 - `docs/core/knowledge.md` owns reusable knowledge and context injection.

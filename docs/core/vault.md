@@ -125,8 +125,8 @@ Secret values must not appear in:
 ## Related Docs
 
 - `docs/core/core-concepts.md`
-- `docs/core/permissions.md`
+- `docs/core/policy.md`
 - `docs/core/sandbox.md`
-- `docs/core/agent-capability.md`
+- `docs/core/mediation.md`
 - `docs/core/communication.md`
 - `docs/core/storage.md`

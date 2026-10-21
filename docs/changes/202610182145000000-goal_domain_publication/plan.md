@@ -10,7 +10,7 @@ The coordinator authorized the additive active-publication seam after the reset 
 
 ## Owners
 
-[Permissions](../../core/permissions.md), [Policy Model](../../specs/20260629-openkit_policy_model.md), [Goal](../../specs/20261002-goal.md) and [Policy Enforcement](../../specs/20260703-policy_enforcement_mapping.md) own the behavior. Existing configuration CAS and PermissionDecision/Audit retain their authority. The new declaration lands additively with its activating product consumers before the format freeze.
+[Permissions](../../core/policy.md), [Policy Model](../../specs/20260629-openkit_policy_model.md), [Goal](../../specs/20261002-goal.md) and [Policy Enforcement](../../specs/20260703-policy_enforcement_mapping.md) own the behavior. Existing configuration CAS and PermissionDecision/Audit retain their authority. The new declaration lands additively with its activating product consumers before the format freeze.
 
 ## Current Checkpoint
 

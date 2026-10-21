@@ -29,7 +29,7 @@ kind: boundary
 - `docs/core/knowledge.md`
 - `docs/core/architecture.md`
 - `docs/core/agent-workflow.md`
-- `docs/core/permissions.md`
+- `docs/core/policy.md`
 - `docs/core/audit.md`
 - `docs/core/storage.md`
 

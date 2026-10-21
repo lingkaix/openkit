@@ -30,8 +30,8 @@ It does not define a universal `Resource` entity, feedback framework, locator fr
 - `docs/core/communication.md`
 - `docs/core/knowledge.md`
 - `docs/core/agent-workflow.md`
-- `docs/core/agent-capability.md`
-- `docs/core/permissions.md`
+- `docs/core/mediation.md`
+- `docs/core/policy.md`
 - `docs/core/audit.md`
 
 ## Intent
@@ -74,7 +74,7 @@ Work Resource Class 2 and Work Resource Class 3 are deferred boundary definition
 
 ## Personal Scope Projection
 
-Thread-grounded interaction and independently addressed Artifact/material reads obey `20260909-thread_visibility_and_sharing.md`. A private-origin Artifact remains private to an ordinary caller on direct byte delivery, preview, search, widget and export paths. A currently usable administrator credential is eligible for those paths under the administrator eligibility rule in [Core Permissions](../core/permissions.md). A guessed id or shared reference never widens its audience. Explicit snapshot sharing creates destination-owned admitted bytes rather than reclassifying the original. Data or configuration changed through a private conversation retains its own shared-resource effect authority. Each later card action authenticates its current caller and does not reuse the original user's permissions.
+Thread-grounded interaction and independently addressed Artifact/material reads obey `20260909-thread_visibility_and_sharing.md`. A private-origin Artifact remains private to an ordinary caller on direct byte delivery, preview, search, widget and export paths. A currently usable administrator credential is eligible for those paths under the administrator eligibility rule in [Core Permissions](../core/policy.md). A guessed id or shared reference never widens its audience. Explicit snapshot sharing creates destination-owned admitted bytes rather than reclassifying the original. Data or configuration changed through a private conversation retains its own shared-resource effect authority. Each later card action authenticates its current caller and does not reuse the original user's permissions.
 
 ## Decision
 

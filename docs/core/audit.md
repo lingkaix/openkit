@@ -137,8 +137,8 @@ Decision Trace is a derived read-only view over retained identifier edges, with 
 - `docs/core/core-concepts.md`
 - `docs/core/protocol.md`
 - `docs/core/communication.md`
-- `docs/core/permissions.md`
+- `docs/core/policy.md`
 - `docs/core/runtime-model.md`
 - `docs/core/vault.md`
-- `docs/core/agent-capability.md`
+- `docs/core/mediation.md`
 - `docs/core/storage.md`

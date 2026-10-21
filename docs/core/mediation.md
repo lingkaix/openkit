@@ -1,37 +1,37 @@
 ---
 status: Accepted
 ---
-# Agent Capability
+# Mediation
 
-This document defines OpenKit agent capability semantics for worker capability supply and internal-role Tool projection.
+This document defines OpenKit mediation semantics for operation definition and invocation, worker capability supply, and internal-role Tool projection.
 
-Agent capabilities are governed runtime paths supplied to worker agents during execution or projected as exact Tools to NanoCore-internal roles.
+Mediation is the single interception base across OpenKit: operations and governed runtime capability paths are invoked across `<operation>@<stage>` mediation points, supplied to worker agents during execution, or projected as exact Tools to NanoCore-internal roles.
 
-This document owns runtime capability access, gateway projection, internal-role Tool identity and admission, gateway-mediated usage metering, routing, transformer selection, credential injection contracts, context access paths, gateway audit metadata, rate limits, quotas, and provider/tool error normalization.
+This document owns the semantic definition and invocation procedure of an `Operation`, mediation points (`<operation>@<stage>`), the Capability Mediation Boundary, runtime capability access, `CapabilityCall`, gateway projection, internal-role Tool identity and admission, transformer selection, credential injection contracts, context access paths, gateway-mediated usage metering, routing, gateway audit metadata, rate limits, quotas, and provider/tool error normalization.
 
-This document does not own agent supply declarations, reusable knowledge semantics, task-time context package semantics, global audit projection, permission policy, sandbox containment, system-wide non-gateway metering, or the semantic definition and invocation procedure of a public operation.
+This document does not own agent supply declarations, reusable knowledge semantics, task-time context package semantics, global audit projection, permission policy, sandbox containment, or system-wide non-gateway metering.
 
 ## Purpose
 
 Agents may need LLM providers, MCP servers, tools, network access, external APIs, knowledge-base retrieval, context injection, vault-mediated credentials, or other privileged services.
 
-Agent capability gives Core a stable model for supplying, routing, transforming, authorizing, metering, rate-limiting, and auditing those calls.
+Mediation gives Core a stable model for defining, invoking, supplying, routing, transforming, authorizing, metering, rate-limiting, and auditing those calls.
 
-For worker execution, it is part of the broader agent supply domain: `agent-supply.md` declares what a worker agent may need, `agent-capability.md` governs the runtime capability paths supplied during execution, and `agent-session.md` records the live or resumable execution handle that consumes those paths. Internal Core roles have no worker AgentSession; this document governs only their exact Tool projection and admission boundary.
+For worker execution, it is part of the broader agent supply domain: `agent-supply.md` declares what a worker agent may need, `mediation.md` governs the runtime capability paths supplied during execution, and `agent-session.md` records the live or resumable execution handle that consumes those paths. Internal Core roles have no worker AgentSession; this document governs their exact Tool projection, admission boundary, and operation invocation seam.
 
 ## Principles
 
-- Agent capability is the governed runtime path for supplying capabilities to worker agents, not the declaration that an agent can do something.
+- Mediation is the single interception base for operation invocation and for supplying capabilities to worker agents, not the declaration that an agent can do something.
 - Gateway projection is the target realization for capabilities that need routing, policy, metering, audit, credential injection, or upstream error normalization.
 - Capability calls that are product-visible should remain item-backed; infrastructure calls may stay in capability, usage, and audit records.
 - Credential injection must use vault-mediated paths and must stay outside prompt context.
-- Agent capability usage and audit should be related but separate: usage measures consumption, audit explains action and governance.
+- Mediation usage and audit should be related but separate: usage measures consumption, audit explains action and governance.
 
 ## Boundary
 
-Capability describes what can technically be supplied or used.
+Mediation describes how operations and capabilities are defined, invoked, intercepted, supplied, and routed.
 
-Permission decides whether a capability may be used in the current context.
+Policy decides whether a capability or operation may be used in the current context.
 
 Vault supplies credential references and approved injection paths.
 
@@ -46,6 +46,79 @@ The gateway is the target implementation projection for agent capabilities that 
 The gateway owns routing, transformer pipeline selection, credential injection contract, gateway audit metadata, usage metering, rate-limit hooks, budget checks, and upstream error normalization for gateway-mediated calls.
 
 Gateway interception MUST use the common NanoCore mediation contract: providers may observe, advise, gate or transform, with Policy authority required for gate/transform and a final current Policy check before effects. Safe input/output version references and durable invocation evidence reuse existing owners; no provider gains credentials or runtime authority from installation. The [BWM support decision](../decisions/20261018-bwm_support_and_information_consolidation.md) records this Not Started unification, including unavailable timeout/circuit outcomes rather than fabricated permission decisions.
+
+## Operation
+
+When a resource family is cut over, the accepted target applies. Built-in worker MCP Tools and internal-role Tools are derived from the one semantic definition of the public operation and execute through its invocation seam. Trusted entry assembly and worker supply assembly keep capability admission and their immutable selections. Actor, execution lineage, entry scope, the private Turn, and command identities an owner derives come from the invocation context. The model-facing schema omits those bound fields. A conflicting argument is rejected before any effect. The ruling is recorded in [Operation Definition Rulings](../decisions/20261002-operation_definition_rulings.md). This document owns that semantic definition and invocation procedure.
+
+## Enforcement Points
+
+A mediation point is an operation at a stage on a Core-controlled effect or content crossing. Core MUST hold proposed effects or crossing content until the required decision permits release. Its identity MUST be `<operation>@<stage>`. The stages are `propose`, `decide`, `commit`, and `completed`. Core MUST extend the existing operation registry to non-API operations rather than create a separate point registry. The [unified mediation and Policy decision](../decisions/20261018-unified_mediation_and_policy.md) records this design.
+
+The access dimensions are subject, operation, and object. The subject follows [Policy Subject](policy.md#subject); the principal and actual actor MUST remain distinct when an agent acts for a User. Stage, insertion mode, and participant with its acting authority complete the dimensions. Crossing type, effect class, sensitivity, and static risk are attributes, not substitutes for those dimensions. Advice may attach dynamic risk to one exact proposal; an assessment MUST NOT grant authority.
+
+The built-in crossing attributes are `admission`, `disclosure`, `dispatch`, `ingress`, `mutation`, `administration`, and `decision`. An interaction can cross several points. A tool dispatch, its returning result, and disclosure of that result require separate checks at their actual boundaries. Calls inside a wrapper retain their own dispatch checks.
+
+Gate and transform participation MUST have explicit Policy authority. Core MUST order pre-decision work as transform, advise, gate, then the mandatory final Policy Kernel evaluation. Transform retains original and replacement through their existing content owners. Advice supplies proposal attributes. Gate results combine with the mapped Kernel result under [Decision's closed precedence](policy.md#decision). A point with no bindings uses its existing permission check. The Kernel MUST remain pure and synchronous, with only low-level allow or deny results.
+
+Only a final combined `allow` permits the commit stage. Commit obligations include the owner's write or send and Core-only credential injection. Injection MUST bind to the approved target, account, and action after the final allow. Participants MUST NOT receive secrets. Completed-stage observation cannot grant or undo the effect; returned content enters its own ingress point.
+
+Each operation MUST declare permitted modes and provider kinds. Boot admission and centralized Workspace access resolution accept no participant bindings. Participant invocation and a participant's investigative calls use Kernel-only checks without bindings. These exclusions bound mediation depth to one level. The owning human's root decision is not itself mediated by participants.
+
+Participant bindings are Policy statements administered under [Policy Statements And Administration](policy.md#policy-statements-and-administration), with lifetimes governed by [Delegated Goal Domain And Statement Lifetime](policy.md#delegated-goal-domain-and-statement-lifetime).
+
+Timeout, malformed result, unavailability, and an open participant circuit MUST remain explicit failures. The binding selects human escalation by default, continuation only for non-decisive work, or error. Continuation contributes neutral `not_applicable`; it MUST NOT manufacture allow or deny. Retries MUST stay within one bounded deadline. An unresolved required gate MUST NOT release the effect.
+
+### Mediation Acceptance
+
+An unauthorized transform, participant disclosure, Policy widening, or credential injection MUST be refused before release. Changed proposals, revisions, or participant bindings MUST invalidate prior assessments and approvals. Immutable historical decisions remain evidence, not current grants. Observe and advise MUST never become authorizing results. Deferred post-success Policy reactions do not authorize a present effect.
+
+Permission checks should happen at enforcement points.
+
+Examples:
+
+- centralized Workspace access resolution before a Workspace-addressed handler reads or mutates state
+- app API command handler
+- Core scheduler
+- agent adapter
+- agent capability gateway projection
+- runtime mediation boundary
+- vault access boundary
+- filesystem operation boundary
+- sandbox startup boundary
+
+The same policy decision may be enforced at multiple layers. Sandbox enforcement is still valuable even when permission policy already denies an action. Inside its Sandbox a worker has full permission; approval and audit apply to Gateway-mediated interaction with external systems at the Sandbox boundary and the Gateway, not to in-Sandbox tools or configuration, and native runtime permission prompts are not part of the permission model. Storage and network containment still apply at the Sandbox boundary. External routing follows [Sandbox](sandbox.md). [Routing](#routing) below owns the managed-supply route and REST exception; each crossing still requires its current Policy decision. Admission of that class does not exempt an action from policy-required approval or audit.
+
+## Capability Mediation Boundary
+
+A future capability mediation component may project Core capability services into a worker environment when the runtime cannot call those services directly.
+
+The component is communication substrate, not the agent runtime, worker-control path, or business-logic owner.
+
+Mediation responsibilities may include:
+
+- expose local capability endpoints to the agent
+- establish or accept a secure connection according to the deployment strategy
+- forward capability requests
+- apply Core-owned transformer pipeline decisions
+- support vault credential injection outside agent context
+- forward audit metadata
+- surface upstream failures as standard errors
+
+Mediation non-responsibilities:
+
+- choosing models
+- deciding provider fallback
+- owning rate limits
+- deciding which tools are visible
+- deciding which capabilities exist or remain available
+- persisting sensitive responses
+- owning product, workflow, or approval state
+- deciding permission policy
+- owning credentials, metering, or usage attribution
+- implementing business logic
+
+A capability mediation responsibility is not a worker-control owner and not a worker agent. The same outer transport projection or process MAY also carry a separately authenticated worker-control plane, but the capability mediation responsibility MUST NOT inspect, authorize, synthesize, retry, or reinterpret worker-control messages. Co-location and shared carriage MUST NOT change which participant owns a decision. [Communication](communication.md#capability-mediation-boundary) owns the transport projection of this boundary.
 
 ## Capability Call
 
@@ -148,7 +221,7 @@ Tool projection MUST preserve canonical semantic identity and exact implementati
 
 Until a resource family is cut over, trusted server code creates Tool closures bound to the authenticated actor and exact role, scope, audience, budget, confirmation, credential, and delegation context required by existing owners. The model may provide only schema-admitted operation arguments and MUST NOT supply or widen those bound authority facts.
 
-When that resource family is cut over, the accepted target applies. Built-in worker MCP Tools and internal-role Tools are derived from the one semantic definition of the public operation and execute through its invocation seam. Trusted entry assembly and worker supply assembly keep capability admission and their immutable selections. Actor, execution lineage, entry scope, the private Turn, and command identities an owner derives come from the invocation context. The model-facing schema omits those bound fields. A conflicting argument is rejected before any effect. The ruling is recorded in [Operation Definition Rulings](../decisions/20261002-operation_definition_rulings.md). This document keeps capability admission and does not take that definition or that invocation procedure.
+When that resource family is cut over, the accepted target in [Operation](#operation) applies.
 
 Every concrete call MUST be reauthorized against current Core state by its command or resource owner. Tool presence means permission for the model to request an operation, not proof that the request is authorized, within budget, current, audience-safe, successfully applied, or settled.
 
@@ -246,7 +319,8 @@ Usage measures resource consumption. Audit explains who caused an action, which 
 
 ## Invariants
 
-- Agent capability MUST NOT be conflated with server capability flags or agent supply declarations.
+- Mediation MUST NOT be conflated with server capability flags or agent supply declarations.
+- Capability mediation responsibilities MUST NOT own, inspect, authorize, synthesize, retry, or reinterpret worker-control traffic; choose models; decide provider fallback; own rate limits; decide tool visibility or capability availability; persist sensitive responses; own credentials, metering, or usage attribution; decide permission policy; own product or workflow state; or implement business logic. A shared outer transport or process may carry the separately authenticated control plane without transferring those responsibilities.
 - Gateway-mediated calls SHOULD preserve workspace, thread, turn, item, agent, AgentSession, capability-call, request, usage, vault-reference, transformer, and error context where practical.
 - Secret values MUST NOT appear in prompts, item payloads, context packages, audit records, usage records, or normal workspace files through the capability path.
 - Product-visible capability calls MUST produce or be referenced by item-backed events.
@@ -263,9 +337,10 @@ Feature discovery may report which server or client features are available. Desp
 - `docs/core/communication.md`
 - `docs/core/vault.md`
 - `docs/core/audit.md`
-- `docs/core/permissions.md`
+- `docs/core/policy.md`
 - `docs/core/sandbox.md`
 - `docs/core/agent-supply.md`
 - `docs/core/agent-session.md`
 - `docs/core/metering.md`
 - `docs/decisions/20261002-operation_definition_rulings.md`
+- `docs/decisions/20261018-unified_mediation_and_policy.md`

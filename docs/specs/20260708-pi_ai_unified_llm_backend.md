@@ -15,7 +15,7 @@ This spec does not own the public Gateway HTTP contract, which remains with `doc
 
 ## Core References
 
-- `docs/core/agent-capability.md`
+- `docs/core/mediation.md`
 - `docs/core/audit.md`
 - `docs/core/metering.md`
 - `docs/core/vault.md`

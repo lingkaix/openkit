@@ -52,7 +52,7 @@ This spec supersedes `docs/specs/superseded/20260702-worker_context_taxonomy.md`
 - `docs/core/architecture.md`
 - `docs/core/storage.md`
 - `docs/core/protocol.md`
-- `docs/core/agent-capability.md`
+- `docs/core/mediation.md`
 - `docs/core/vault.md`
 
 ## Goals
@@ -522,7 +522,7 @@ Historical inspection is diagnostic only. It cannot establish a missing accepted
 
 - `docs/core/knowledge.md`
 - `docs/core/storage.md`
-- `docs/core/agent-capability.md`
+- `docs/core/mediation.md`
 - `docs/specs/20260702-knowledge_store_governance_rules.md`
 - `docs/specs/20260703-knowledge_store_implementation.md`
 - `docs/specs/20260704-knowledge_manager_internal_agent_runtime.md`
