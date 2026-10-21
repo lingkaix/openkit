@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, expectTypeOf, it, onTestFinished } from 'vitest';
@@ -7,11 +7,13 @@ import type { WorkerContextPackageTrace } from '../context/worker-context-packag
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { nativeProductScope, readNativeProductEntries } from '../storage/workspace-file-records.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { createWorkspaceMaterial, saveWorkspaceMaterialRevision } from '../workspace-materials.js';
+import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { WorkerControlGateway } from './worker-control-gateway.js';
 import {
   createWorkerControlAcceptedRecordRecorder,
@@ -62,12 +64,27 @@ async function createTranscriptFixture() {
     workspaceCwd: '/workspace/repo',
     workspaceRoots: [],
   });
+  await store.createAgentSession({
+    id: environmentPackage.scope.agentSessionId,
+    workspaceId: environmentPackage.scope.workspaceId,
+    threadId: turn.threadId,
+    agentId: environmentPackage.agent.agentId,
+    environmentPackageSnapshotId: environmentPackage.snapshotId,
+    status: 'busy',
+    message: null,
+    createdAt: environmentPackage.createdAt,
+    updatedAt: environmentPackage.createdAt,
+  });
   await store.updateTurn(turn.id, {
     agentId: environmentPackage.agent.agentId,
     agentSessionId: 'as_00000000-0000-73fb-927c-5d84e16d5481',
   });
   const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   applyScopedMigrations(workspaceDb);
+  recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+    environmentPackage,
+    createdAt: environmentPackage.createdAt,
+  });
   onTestFinished(() => workspaceDb.sqlite.close());
 
   return { environmentPackage, store, turn, workspaceDb };
@@ -79,7 +96,7 @@ function artifactDigest(bytes: Buffer): string {
 }
 
 /** Builds exact transcript lineage. @param fixture Transcript fixture. @returns Lineage. */
-function transcriptLineage(fixture: ReturnType<typeof createTranscriptFixture>) {
+function transcriptLineage(fixture: Awaited<ReturnType<typeof createTranscriptFixture>>) {
   return {
     agentSessionId: 'as_00000000-0000-73fb-927c-5d84e16d5481',
     packageSnapshotId: fixture.environmentPackage.snapshotId,
@@ -92,7 +109,7 @@ function transcriptLineage(fixture: ReturnType<typeof createTranscriptFixture>) 
 
 /** Builds one Artifact declaration. @param fixture Transcript fixture. @param input Overrides. @returns Record. */
 function artifactRecord(
-  fixture: ReturnType<typeof createTranscriptFixture>,
+  fixture: Awaited<ReturnType<typeof createTranscriptFixture>>,
   input: {
     artifact?: Record<string, unknown>;
     sequence?: number;
@@ -117,7 +134,7 @@ function artifactRecord(
 const transcriptImportOptions = { recordedAt: '2026-07-16T00:00:00.000Z' };
 
 /** Counts durable imported owners. @param fixture Transcript fixture. @returns Owner counts. */
-function importedOwnerCounts(fixture: ReturnType<typeof createTranscriptFixture>) {
+function importedOwnerCounts(fixture: Awaited<ReturnType<typeof createTranscriptFixture>>) {
   return {
     artifacts: fixture.store
       .listArtifacts('ws_00000000-0000-7000-8000-000000000001')
@@ -152,7 +169,7 @@ function transcriptCredentialChecks(values: string[] = []): WorkerCredentialChec
 
 /** Builds a candidate and its separate trusted memory proof. @param fixture Real store fixture. @param item Worker body fields. @param checks Complete proof or unavailable evidence. @returns Collection payload. */
 function credentialItemPayload(
-  fixture: ReturnType<typeof createTranscriptFixture>,
+  fixture: Awaited<ReturnType<typeof createTranscriptFixture>>,
   item: { text?: string; parts?: Array<{ type: 'text'; text: string }> },
   checks: WorkerCredentialCheckValues | null = transcriptCredentialChecks()
 ): WorkerTranscriptPayload & { credentialCheckValues: WorkerCredentialCheckValues | null } {
@@ -169,20 +186,13 @@ function credentialItemPayload(
 }
 
 /** Reads actual canonical revision bytes, including earlier revisions. @param fixture Real store fixture. @returns Item history bytes. */
-function transcriptItemHistory(fixture: ReturnType<typeof createTranscriptFixture>): string {
-  return readFileSync(
-    join(
-      fixture.store.getDataRoot() as string,
-      'workspaces',
-      'ws_00000000-0000-7000-8000-000000000001',
-      'threads',
-      'th_00000000-0000-7000-8000-000000000001',
-      'turns',
-      fixture.turn.id,
-      'items.jsonl'
-    ),
-    'utf8'
-  );
+function transcriptItemHistory(
+  fixture: Awaited<ReturnType<typeof createTranscriptFixture>>
+): string {
+  const scope = nativeProductScope(fixture.store.getDataRoot()!, fixture.turn.owner);
+  return readNativeProductEntries(scope, fixture.turn.id, 'item')
+    .map(({ value }) => JSON.stringify(value))
+    .join('\n');
 }
 
 describe('worker transcript product-safe diagnostics', () => {
@@ -202,7 +212,7 @@ describe('worker transcript product-safe diagnostics', () => {
         ? value
         : JSON.stringify({ ...JSON.parse(payload.itemsJsonl!), sequence: 2, [value]: true });
     payload.itemsJsonl += `\n${invalidLine}\n`;
-    const result = importWorkerTranscript(
+    const result = await importWorkerTranscript(
       fixture.store,
       fixture.environmentPackage,
       payload,
@@ -268,7 +278,7 @@ describe('worker transcript product-safe diagnostics', () => {
       { text: `Reply ${value}` },
       transcriptCredentialChecks([value])
     );
-    const admitted = importWorkerTranscript(
+    const admitted = await importWorkerTranscript(
       fixture.store,
       fixture.environmentPackage,
       payload,
@@ -331,7 +341,7 @@ describe('worker transcript product-safe diagnostics', () => {
     }
     payload.eventsJsonl = `\n${failure === 'malformed-json' ? value : JSON.stringify(event)}\n`;
     if (evidence === 'unavailable') payload.credentialCheckValues = null;
-    const result = importWorkerTranscript(
+    const result = await importWorkerTranscript(
       fixture.store,
       fixture.environmentPackage,
       payload,
@@ -403,20 +413,20 @@ describe('worker transcript Item exact-value admission', () => {
       credentialCheckValues: createLocalSimulatorCredentialCheckValues(),
     };
     // Deliberately cross the static boundary to prove Worker admission also rejects this at runtime.
-    expect(() =>
+    await expect(
       importWorkerTranscript(
         fixture.store,
         fixture.environmentPackage,
         payload as unknown as WorkerTranscriptPayload,
         transcriptImportOptions
       )
-    ).toThrowError(expect.objectContaining({ code: 'recovery_required' }));
+    ).rejects.toThrowError(expect.objectContaining({ code: 'recovery_required' }));
     expect(transcriptItemHistory(fixture)).toBe(before);
     expect(fixture.store.listArtifacts('ws_00000000-0000-7000-8000-000000000001')).toHaveLength(0);
     expect(
       fixture.workspaceDb.sqlite.prepare('SELECT COUNT(*) AS count FROM artifact_reviews').get()
     ).toEqual({ count: 0 });
-    const result = importLocalSimulatorTranscript(
+    const result = await importLocalSimulatorTranscript(
       fixture.store,
       fixture.environmentPackage,
       payload,
@@ -441,14 +451,14 @@ describe('worker transcript Item exact-value admission', () => {
         ...credentialItemPayload(fixture, { text: 'Local reply.' }, null),
         credentialCheckValues: invalid,
       } as unknown as LocalSimulatorTranscriptPayload;
-      expect(() =>
+      await expect(
         importLocalSimulatorTranscript(
           fixture.store,
           fixture.environmentPackage,
           payload,
           transcriptImportOptions
         )
-      ).toThrowError(expect.objectContaining({ code: 'recovery_required' }));
+      ).rejects.toThrowError(expect.objectContaining({ code: 'recovery_required' }));
       expect(transcriptItemHistory(fixture)).toBe(before);
     }
   });
@@ -467,7 +477,7 @@ describe('worker transcript Item exact-value admission', () => {
       { text: `Before ${value} after ${value}.` },
       transcriptCredentialChecks([value, value, ''])
     );
-    const result = importWorkerTranscript(
+    const result = await importWorkerTranscript(
       fixture.store,
       fixture.environmentPackage,
       payload,
@@ -515,7 +525,7 @@ describe('worker transcript Item exact-value admission', () => {
       },
       transcriptCredentialChecks([value])
     );
-    const result = importWorkerTranscript(fixture.store, fixture.environmentPackage, payload);
+    const result = await importWorkerTranscript(fixture.store, fixture.environmentPackage, payload);
     expect(result.itemIds).toHaveLength(1);
     expect(transcriptItemHistory(fixture)).not.toContain(value);
     expect(
@@ -531,7 +541,7 @@ describe('worker transcript Item exact-value admission', () => {
   it('stores uninjected credential-looking text unchanged without a heuristic', async () => {
     const fixture = await createTranscriptFixture();
     const text = 'Authorization: Bearer sk-synthetic-uninjected-key; password=ordinary-example';
-    const result = importWorkerTranscript(
+    const result = await importWorkerTranscript(
       fixture.store,
       fixture.environmentPackage,
       credentialItemPayload(fixture, { text }, transcriptCredentialChecks(['different-value']))
@@ -553,7 +563,7 @@ describe('worker transcript Item exact-value admission', () => {
     const fixture = await createTranscriptFixture();
     const credential = index === 0 ? 'a'.repeat(43) : 'b'.repeat(43);
     const payload = credentialItemPayload(fixture, { text: `prefix_${credential}_suffix` });
-    const result = importWorkerTranscript(fixture.store, fixture.environmentPackage, payload);
+    const result = await importWorkerTranscript(fixture.store, fixture.environmentPackage, payload);
     expect(result.itemIds).toHaveLength(1);
     expect(
       fixture.store.listThreadItems(
@@ -586,7 +596,7 @@ describe('worker transcript Item exact-value admission', () => {
       { text: `prefix_${token}_suffix alternative_${alternate}_end` },
       checks
     );
-    const result = importWorkerTranscript(
+    const result = await importWorkerTranscript(
       reopened,
       fixture.environmentPackage,
       payload,
@@ -652,14 +662,14 @@ describe('worker transcript Item exact-value admission', () => {
         payload.credentialCheckValues!.routeTokenHashes.capability = '';
       }
 
-      expect(() =>
+      await expect(
         importWorkerTranscript(
           reopened,
           fixture.environmentPackage,
           payload,
           transcriptImportOptions
         )
-      ).toThrowError(expect.objectContaining({ code: 'recovery_required' }));
+      ).rejects.toThrowError(expect.objectContaining({ code: 'recovery_required' }));
       expect(transcriptItemHistory(fixture)).toBe(before);
       expect(importedOwnerCounts({ ...fixture, store: reopened })).toEqual({
         artifacts: 0,
@@ -673,7 +683,7 @@ describe('worker transcript Item exact-value admission', () => {
 describe('worker transcript import', () => {
   it('rejects transcript records whose lineage does not match the package scope', async () => {
     const { environmentPackage, store, turn } = await createTranscriptFixture();
-    const result = importWorkerTranscript(store, environmentPackage, {
+    const result = await importWorkerTranscript(store, environmentPackage, {
       credentialCheckValues: transcriptCredentialChecks(),
       itemsJsonl: `${JSON.stringify({
         schemaVersion: 1,
@@ -737,7 +747,7 @@ describe('worker transcript import', () => {
       },
     };
 
-    const result = importWorkerTranscript(
+    const result = await importWorkerTranscript(
       store,
       environmentPackage,
       {
@@ -776,7 +786,7 @@ describe('worker transcript import', () => {
       sequence: 3,
     };
 
-    const result = importWorkerTranscript(store, environmentPackage, {
+    const result = await importWorkerTranscript(store, environmentPackage, {
       credentialCheckValues: transcriptCredentialChecks(),
       eventsJsonl: `${JSON.stringify(eventRecord)}\n`,
     });
@@ -824,7 +834,7 @@ describe('worker transcript import', () => {
       },
     };
 
-    const result = importWorkerTranscript(
+    const result = await importWorkerTranscript(
       store,
       environmentPackage,
       {
@@ -866,7 +876,7 @@ describe('worker transcript import', () => {
       lineage: { ...acceptedRecord.lineage, requestId: 'req_transcript_other' },
     };
 
-    const result = importWorkerTranscript(
+    const result = await importWorkerTranscript(
       store,
       environmentPackage,
       {
@@ -904,7 +914,7 @@ describe('worker transcript import', () => {
       sequence: 3,
     };
 
-    const result = importWorkerTranscript(
+    const result = await importWorkerTranscript(
       store,
       environmentPackage,
       {
@@ -935,7 +945,7 @@ describe('retired Artifact declaration admission', () => {
     };
     // Removal may ignore or reject the retired channel, but never publish its bytes.
     try {
-      importWorkerTranscript(
+      await importWorkerTranscript(
         fixture.store,
         fixture.environmentPackage,
         payload,
@@ -950,7 +960,7 @@ describe('retired Artifact declaration admission', () => {
 
 /** Builds an Artifact candidate through the same exact-byte validator used by live submission. */
 function prepareCandidate(
-  fixture: ReturnType<typeof createTranscriptFixture>,
+  fixture: Awaited<ReturnType<typeof createTranscriptFixture>>,
   overrides: Partial<Parameters<typeof prepareWorkerArtifact>[0]> = {}
 ) {
   return prepareWorkerArtifact({

@@ -13,7 +13,6 @@ import type { AgentEnvironmentPackage, WorkspaceDataSourceCatalog } from '@openk
 import { AgentSessionIdSchema, deriveEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import type { WorkerContextPackageTrace } from '@openkit/worker-protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import * as artifactReviews from '../artifact-reviews.js';
 import { getArtifactReview } from '../artifact-reviews.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
@@ -32,7 +31,11 @@ import { readPendingRequest } from '../runtime/pending-requests.js';
 import { listWorkerBackendSessions } from '../runtime/worker-backend-sessions.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import * as filePayload from '../storage/artifacts/file-payload.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  ControlStoreWorkerError,
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
@@ -921,7 +924,7 @@ describe('SimulatedTurnExecutor', () => {
             const createArtifact = store.createArtifact.bind(store);
             const publicationPressure = vi
               .spyOn(store, 'createArtifact')
-              .mockImplementationOnce((artifact, payload) => {
+              .mockImplementationOnce(async (artifact, payload, materialized, submission) => {
                 const forecast = reserve.mock.calls.at(-1)![0];
                 const pending =
                   forecast.stagingBytes +
@@ -934,7 +937,7 @@ describe('SimulatedTurnExecutor', () => {
                   stagingBytes: capacity - configuredReserve - pending,
                 });
                 try {
-                  return createArtifact(artifact, payload);
+                  return await createArtifact(artifact, payload, materialized, submission);
                 } finally {
                   contender.release();
                 }
@@ -959,9 +962,11 @@ describe('SimulatedTurnExecutor', () => {
                 expect(reserve.mock.calls.length).toBeGreaterThan(previousReservations);
               });
             const reviewFailure = vi
-              .spyOn(artifactReviews, 'createArtifactReview')
-              .mockImplementationOnce(() => {
-                throw new Error('Fixture Review publication failed.');
+              .spyOn(getControlStoreWorkerClient(), 'review')
+              .mockImplementationOnce(async () => {
+                const error = new ControlStoreWorkerError('precondition', 'not-committed');
+                error.message = 'Fixture Review publication failed.';
+                throw error;
               });
             try {
               await expect(publish.apply(this, args)).rejects.toThrow(

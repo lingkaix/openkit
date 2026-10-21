@@ -3,8 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { FsStore } from '../lib/store.js';
-import { openWorkspaceDb } from '../storage/db.js';
-import { applyScopedMigrations } from '../storage/migrate.js';
+import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { executeGoalOperation, readGoalView } from './goal-owner.js';
 import { installPendingRequestAdmission } from './pending-request-flow.js';
 import { recordTaskTerminalFact, recoverTaskTerminalFacts } from './task-terminal-fact.js';
@@ -12,8 +12,11 @@ import { recordTaskTerminalFact, recoverTaskTerminalFacts } from './task-termina
 describe('Task terminal and Goal wake shared commit', () => {
   it('commits the terminal fact and one wake revision through the installed production hook', async () => {
     const root = mkdtempSync(join(tmpdir(), 'goal-terminal-hook-'));
+    const core = openCoreDb(root);
+    applyMigrations(core);
+    core.sqlite.close();
     const store = new FsStore({ dataRoot: root });
-    const ws = store.createWorkspace('Terminal hook');
+    const ws = await store.createWorkspace('Terminal hook');
     let db = openWorkspaceDb(root, ws.id);
     applyScopedMigrations(db);
     try {
@@ -25,7 +28,7 @@ describe('Task terminal and Goal wake shared commit', () => {
         db
       );
       const goal = view.goal!;
-      const task = store.createThread(ws.id, 'Task');
+      const task = await store.createThread(ws.id, 'Task');
       db.sqlite
         .prepare(
           'INSERT INTO goal_card_tasks (thread_id,goal_id,card_id,payload_json) VALUES (?,?,?,?)'
@@ -43,7 +46,7 @@ describe('Task terminal and Goal wake shared commit', () => {
             admittedAt: new Date().toISOString(),
           })
         );
-      const turn = store.createTurn(ws.id, task.id, 'Design', {
+      const turn = await store.createTurn(ws.id, task.id, 'Design', {
         kind: 'user',
         id: 'usr_00000000-0000-7000-8000-000000000001',
       });
@@ -52,11 +55,11 @@ describe('Task terminal and Goal wake shared commit', () => {
       });
       const before = readGoalView(store, db, goal.goalId).goal!.changeRevision;
       expect(db.sqlite.prepare('SELECT * FROM task_turn_terminal_facts').all()).toEqual([]);
-      const completed = store.updateTurn(turn.id, {
+      const completed = await store.updateTurn(turn.id, {
         status: 'completed',
         completedAt: new Date().toISOString(),
       });
-      store.updateTurn(turn.id, { status: 'completed', completedAt: completed.completedAt });
+      await store.updateTurn(turn.id, { status: 'completed', completedAt: completed.completedAt });
       db.sqlite.close();
       db = openWorkspaceDb(root, ws.id);
       applyScopedMigrations(db);
@@ -82,7 +85,7 @@ describe('Task terminal and Goal wake shared commit', () => {
         changeRevision: before + 1,
         disposition: null,
       });
-      recoverTaskTerminalFacts(reopened, db);
+      await recoverTaskTerminalFacts(reopened, db);
       expect(readGoalView(reopened, db, goal.goalId).goal!.changeRevision).toBe(before + 1);
     } finally {
       db.sqlite.close();
@@ -90,8 +93,11 @@ describe('Task terminal and Goal wake shared commit', () => {
   });
   it('survives closing and reopening SQLite and leaves the Goal open', async () => {
     const root = mkdtempSync(join(tmpdir(), 'goal-wake-'));
+    const core = openCoreDb(root);
+    applyMigrations(core);
+    core.sqlite.close();
     const store = new FsStore({ dataRoot: root });
-    const ws = store.createWorkspace('Wake');
+    const ws = await store.createWorkspace('Wake');
     let db = openWorkspaceDb(root, ws.id);
     applyScopedMigrations(db);
     const view = await executeGoalOperation(
@@ -102,7 +108,7 @@ describe('Task terminal and Goal wake shared commit', () => {
       db
     );
     const goal = view.goal!;
-    const task = store.createThread(ws.id, 'Task');
+    const task = await store.createThread(ws.id, 'Task');
     db.sqlite
       .prepare(
         'INSERT INTO goal_card_tasks (thread_id,goal_id,card_id,payload_json) VALUES (?,?,?,?)'
@@ -120,7 +126,7 @@ describe('Task terminal and Goal wake shared commit', () => {
           admittedAt: new Date().toISOString(),
         })
       );
-    const turn = store.createTurn(ws.id, task.id, 'Design', {
+    const turn = await store.createTurn(ws.id, task.id, 'Design', {
       kind: 'user',
       id: 'usr_00000000-0000-7000-8000-000000000001',
     });
@@ -145,11 +151,11 @@ describe('Task terminal and Goal wake shared commit', () => {
       ).toEqual({ turn_id: turn.id });
       const restarted = new FsStore({ dataRoot: root });
       expect(restarted.getTurnById(turn.id).status).toBe('running');
-      recoverTaskTerminalFacts(restarted, db);
+      await recoverTaskTerminalFacts(restarted, db);
       expect(restarted.getTurnById(turn.id).status).toBe('completed');
-      recoverTaskTerminalFacts(restarted, db);
+      await recoverTaskTerminalFacts(restarted, db);
       const absentHistory = new FsStore();
-      recoverTaskTerminalFacts(absentHistory, db);
+      await recoverTaskTerminalFacts(absentHistory, db);
       expect(absentHistory.listThreads(ws.id)).toEqual([]);
       const recovered = readGoalView(store, db, goal.goalId).goal!;
       expect(recovered.changeRevision).toBe(before + 1);
@@ -166,9 +172,13 @@ import { considerGoal } from './goal-coordinator.js';
 
 describe('Coordinator marker admission', () => {
   it('admits one ordinary Turn and acknowledges only its read revision', async () => {
-    const store = new FsStore();
-    const ws = store.createWorkspace('Coordinator wake');
-    const db = openWorkspaceDb(mkdtempSync(join(tmpdir(), 'goal-turn-')), ws.id);
+    const root = mkdtempSync(join(tmpdir(), 'goal-turn-'));
+    const core = openCoreDb(root);
+    applyMigrations(core);
+    core.sqlite.close();
+    const store = new FsStore({ dataRoot: root });
+    const ws = await store.createWorkspace('Coordinator wake');
+    const db = openWorkspaceDb(root, ws.id);
     applyScopedMigrations(db);
     try {
       const view = await executeGoalOperation(
@@ -179,10 +189,10 @@ describe('Coordinator marker admission', () => {
         db
       );
       const goal = view.goal!;
-      const turn = considerGoal(store, db, goal.goalId);
+      const turn = await considerGoal(store, db, goal.goalId);
       expect(turn?.agentId).toBe('goal-coordinator');
       expect(turn?.agentSessionId).toBeUndefined();
-      expect(considerGoal(store, db, goal.goalId)).toBeNull();
+      expect(await considerGoal(store, db, goal.goalId)).toBeNull();
       await executeGoalOperation(
         'goal.intent.revise',
         {
@@ -200,16 +210,19 @@ describe('Coordinator marker admission', () => {
       expect(readGoalView(store, db, goal.goalId).goal!.consideredRevision).toBe(
         goal.changeRevision
       );
-      expect(considerGoal(store, db, goal.goalId)).toBeNull();
-      store.updateTurn(turn!.id, { status: 'completed', completedAt: new Date().toISOString() });
-      const next = considerGoal(store, db, goal.goalId);
+      expect(await considerGoal(store, db, goal.goalId)).toBeNull();
+      await store.updateTurn(turn!.id, {
+        status: 'completed',
+        completedAt: new Date().toISOString(),
+      });
+      const next = await considerGoal(store, db, goal.goalId);
       expect(next?.agentId).toBe('goal-coordinator');
-      store.updateTurn(next!.id, {
+      await store.updateTurn(next!.id, {
         status: 'failed',
         completedAt: new Date().toISOString(),
         error: { code: 'provider_unavailable', message: 'Provider unavailable.' },
       });
-      expect(considerGoal(store, db, goal.goalId)).toBeNull();
+      expect(await considerGoal(store, db, goal.goalId)).toBeNull();
       expect(readGoalView(store, db, goal.goalId).goal!.disposition).toBeNull();
     } finally {
       db.sqlite.close();

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -48,14 +48,14 @@ describe('work observation portable closure', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Runtime joins');
-    const thread = store.createThread(workspace.id, 'Runtime joins');
+    const workspace = await store.createWorkspace('Runtime joins');
+    const thread = await store.createThread(workspace.id, 'Runtime joins');
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: workspace.id,
     });
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       workspace.id,
       thread.id,
       'Portable runtime recovery',
@@ -67,7 +67,7 @@ describe('work observation portable closure', () => {
     const owner = { threadId: thread.id, turnId: turn.id };
     try {
       const agentSetup = createTestAgentSetup();
-      const session = store.createAgentSession({
+      const session = await store.createAgentSession({
         id: 'as_00000000-0000-73ad-ab4c-ebd551f7a576',
         agentId: agentSetup.manifest.id,
         workspaceId: workspace.id,
@@ -93,11 +93,11 @@ describe('work observation portable closure', () => {
         createdAt: turn.startedAt!,
         environmentPackage,
       });
-      store.updateAgentSession(session.id, {
+      await store.updateAgentSession(session.id, {
         environmentPackageSnapshotId: environmentPackage.snapshotId,
       });
       for (const [index, corr] of [undefined, 'explicit-runtime-group'].entries()) {
-        appendWorkObservation(db, {
+        await appendWorkObservation(db, {
           ...owner,
           bodies: [],
           observation: {
@@ -123,7 +123,7 @@ describe('work observation portable closure', () => {
           },
         });
       }
-      const terminal = terminalizeGovernedWorkerTurn({
+      const terminal = await terminalizeGovernedWorkerTurn({
         agentSessionId: null,
         completedAt: turn.startedAt!,
         errorCode: 'worker_governance_restart_recovery',
@@ -133,7 +133,7 @@ describe('work observation portable closure', () => {
         store,
         turnId: turn.id,
       });
-      const reap = appendRecoveredTurnObservation(db, terminal, 'anchored-cleanup')!;
+      const reap = await appendRecoveredTurnObservation(db, terminal, 'anchored-cleanup')!;
       const sourceRows = readWorkObservations(db, owner);
       expect(sourceRows[0]).not.toHaveProperty('corr');
       expect(reap.payload.unresolvedCalls).toEqual([
@@ -227,7 +227,7 @@ describe('work observation portable closure', () => {
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
     const demo = createDemoWorkspaceForUser('usr_00000000-0000-7000-8000-000000000001');
-    store.importWorkspaceSnapshot({
+    await store.importWorkspaceSnapshot({
       ...notebookImportFixture({ workspaceId: demo.workspace.id, knowledge: [] }),
       workspace: demo.workspace,
       threads: [demo.thread],
@@ -243,7 +243,7 @@ describe('work observation portable closure', () => {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: demo.workspace.id,
     });
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       demo.workspace.id,
       demo.thread.id,
       'Portable environment',
@@ -281,7 +281,7 @@ describe('work observation portable closure', () => {
       inferredBy: 'core-recovery',
     };
     try {
-      appendWorkObservation(db, {
+      await appendWorkObservation(db, {
         threadId: demo.thread.id,
         turnId: turn.id,
         observation: {
@@ -294,39 +294,43 @@ describe('work observation portable closure', () => {
         },
         bodies: [],
       });
-      appendWorkObservation(db, {
-        threadId: demo.thread.id,
-        turnId: turn.id,
-        observation: {
-          id: `reap:${turn.id}`,
-          type: 'turn.reap',
-          ts: turn.startedAt!,
-          obs: 'nanocore',
-          corr: 'recovery-group',
-          parent: `env:${turn.id}`,
-          ret: 'turn-evidence',
-          payload: recovery,
-        },
-        bodies: [],
-      });
+      // Publish the actual Core-local terminal before selecting its retained archive fixture.
+      await store.completeTurn(turn.id, { status: 'interrupted', completedAt: turn.startedAt! });
+      const reapRow = db.sqlite
+        .prepare(
+          "SELECT record_json FROM control_work_observations WHERE turn_id=? AND json_extract(record_json,'$.type')='turn.reap'"
+        )
+        .get(turn.id) as { record_json: string };
+      const retainedReap = JSON.parse(reapRow.record_json);
+      // This test supplies historical recovery bytes; the live native terminal guard remains unchanged.
+      db.sqlite
+        .prepare(
+          "UPDATE control_work_observations SET record_json=? WHERE turn_id=? AND json_extract(record_json,'$.type')='turn.reap'"
+        )
+        .run(
+          JSON.stringify({
+            ...retainedReap,
+            corr: 'recovery-group',
+            parent: `env:${turn.id}`,
+            payload: recovery,
+          }),
+          turn.id
+        );
       if (foreignOwner !== null) {
         // Retained malformed archive input must not require the native writer to admit a foreign owner.
-        const path = join(
-          dataRoot,
-          'workspaces',
-          demo.workspace.id,
-          'threads',
-          demo.thread.id,
-          'turns',
-          turn.id,
-          'observations.jsonl'
-        );
-        const lines = readFileSync(path, 'utf8').split('\n');
-        const retained = JSON.parse(lines[0]!);
+        const row = db.sqlite
+          .prepare(
+            'SELECT record_json FROM control_work_observations WHERE turn_id=? AND sequence=1'
+          )
+          .get(turn.id) as { record_json: string };
+        const retained = JSON.parse(row.record_json);
         expect(retained.type).toBe('env.bound');
         retained.payload.workspaceId = foreignOwner;
-        lines[0] = JSON.stringify(retained);
-        writeFileSync(path, lines.join('\n'));
+        db.sqlite
+          .prepare(
+            'UPDATE control_work_observations SET record_json=? WHERE turn_id=? AND sequence=1'
+          )
+          .run(JSON.stringify(retained), turn.id);
       }
       const exported = createVerifiedWorkspaceExport({
         requestActor: { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' },
@@ -365,7 +369,7 @@ describe('work observation portable closure', () => {
       const result = await imported.text();
       if (foreignOwner !== null) {
         expect(imported.status, result).toBe(400);
-        expect(() =>
+        await expect(
           importVerifiedWorkspace({
             authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
             coreDb,
@@ -374,7 +378,7 @@ describe('work observation portable closure', () => {
             store,
             verified: exported.verified,
           })
-        ).toThrow(
+        ).rejects.toThrow(
           'Portable env.bound belongs to another workspace: ws_00000000-0000-7f9c-aa14-53566c621405'
         );
         expect(store.listWorkspaces().map((workspace) => workspace.id)).toEqual(workspaceIds);
@@ -431,7 +435,7 @@ describe('work observation portable closure', () => {
         JSON.parse(reexported.verified.fileContents.get(reexportedObservationFile)!.split('\n')[0]!)
           .payload.assistantSkillAdmission
       ).toEqual(environment.assistantSkillAdmission);
-      const secondImport = importVerifiedWorkspace({
+      const secondImport = await importVerifiedWorkspace({
         authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
         dataRoot,
@@ -478,14 +482,14 @@ describe('work observation portable closure', () => {
     }
   });
 
-  it('round-trips retained restricted originals through real storage with reminted publication closure', () => {
+  it('round-trips retained restricted originals through real storage with reminted publication closure', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-portable-observations-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
     const demo = createDemoWorkspaceForUser('usr_00000000-0000-7000-8000-000000000001');
-    store.importWorkspaceSnapshot({
+    await store.importWorkspaceSnapshot({
       ...notebookImportFixture({ workspaceId: demo.workspace.id, knowledge: [] }),
       workspace: demo.workspace,
       threads: [demo.thread],
@@ -501,7 +505,7 @@ describe('work observation portable closure', () => {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: demo.workspace.id,
     });
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       demo.workspace.id,
       demo.thread.id,
       'Observe work',
@@ -531,7 +535,7 @@ describe('work observation portable closure', () => {
       )
     );
     try {
-      appendWorkObservation(db, {
+      await appendWorkObservation(db, {
         threadId: demo.thread.id,
         turnId: turn.id,
         observation: {
@@ -617,7 +621,7 @@ describe('work observation portable closure', () => {
       expect(verified.fileContents.get('records/evidence-bundles.jsonl')).not.toContain(
         'evb_unpublished'
       );
-      const result = importVerifiedWorkspace({
+      const result = await importVerifiedWorkspace({
         authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
         dataRoot,
@@ -696,21 +700,15 @@ describe('work observation portable closure', () => {
       } finally {
         reopenedDb.sqlite.close();
       }
+      const targetDb = workspaceDb(dataRoot, targetWorkspaceId);
       const rawTurn = JSON.parse(
-        readFileSync(
-          join(
-            dataRoot,
-            'workspaces',
-            targetWorkspaceId,
-            'threads',
-            targetThread.id,
-            'turns',
-            targetTurn.id,
-            'turn.json'
-          ),
-          'utf8'
-        )
+        (
+          targetDb.sqlite
+            .prepare('SELECT record_json FROM control_turns WHERE id=?')
+            .get(targetTurn.id) as { record_json: string }
+        ).record_json
       );
+      targetDb.sqlite.close();
       expect(rawTurn.requiredFeatures).toContain('openkit.work-observations.v1');
       db.sqlite
         .prepare(
@@ -727,7 +725,7 @@ describe('work observation portable closure', () => {
         store,
         workspaceId: demo.workspace.id,
       });
-      const heldImport = importVerifiedWorkspace({
+      const heldImport = await importVerifiedWorkspace({
         authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
         dataRoot,
@@ -791,7 +789,7 @@ describe('work observation portable closure', () => {
           ).equals(bytes)
         )
       ).toBe(false);
-      const expiredImport = importVerifiedWorkspace({
+      const expiredImport = await importVerifiedWorkspace({
         authorityUserId: 'usr_00000000-0000-7000-8000-000000000001',
         coreDb,
         dataRoot,

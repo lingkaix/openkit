@@ -1997,7 +1997,7 @@ describe('worker control routes', () => {
       )
       .all(lineage.turnId);
     const acceptedEvents = listWorkerControlAcceptedEvents(coreDb, lineage);
-    const transcriptImport = importWorkerTranscript(
+    const transcriptImport = await importWorkerTranscript(
       store,
       environmentPackage,
       { eventsJsonl: `${JSON.stringify(acceptedEvents[0])}\n` },

@@ -22,8 +22,8 @@ import { OperationError } from './operation-error.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { artifactFilePayloadPath } from './storage/artifacts/file-records.js';
-import { openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
-import { applyScopedMigrations } from './storage/migrate.js';
+import { openCoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
+import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 
 const actor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
 const roots: string[] = [];
@@ -43,9 +43,12 @@ function digest(bytes: Uint8Array): string {
 async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'artifact-version-command-'));
   roots.push(dataRoot);
+  const core = openCoreDb(dataRoot);
+  applyMigrations(core);
+  core.sqlite.close();
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Version command');
-  const thread = store.createThread(workspace.id, 'Shared version publication');
+  const workspace = await store.createWorkspace('Version command');
+  const thread = await store.createThread(workspace.id, 'Shared version publication');
   const db = openWorkspaceDb(dataRoot, workspace.id);
   applyScopedMigrations(db);
   databases.push(db);
@@ -149,12 +152,12 @@ function forbiddenRetrySource() {
  * @param workspaceId Owning Workspace that must be quarantined.
  * @returns Reopened Store and isolated root for additional native readback checks.
  */
-function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
+async function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
   const restartRoot = mkdtempSync(join(tmpdir(), 'openkit-local-refusal-'));
   onTestFinished(() => rmSync(restartRoot, { recursive: true, force: true }));
   const seed = new FsStore({ dataRoot: restartRoot });
-  const sibling = seed.createWorkspace('Healthy refusal control');
-  const siblingThread = seed.createThread(sibling.id, 'Retained sibling thread');
+  const sibling = await seed.createWorkspace('Healthy refusal control');
+  const siblingThread = await seed.createThread(sibling.id, 'Retained sibling thread');
   const siblingBefore = seed.getWorkspace(sibling.id);
   cpSync(dataRoot, restartRoot, { recursive: true, verbatimSymlinks: true });
 
@@ -186,12 +189,12 @@ function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
   expect(() => reopened.getWorkspace(workspaceId)).toThrow(
     expect.objectContaining({ code: 'recovery_required' })
   );
-  expect(() => reopened.createThread(workspaceId, 'Must remain refused')).toThrow(
+  await expect(reopened.createThread(workspaceId, 'Must remain refused')).rejects.toThrow(
     expect.objectContaining({ code: 'recovery_required' })
   );
   expect(reopened.getWorkspace(sibling.id)).toEqual(siblingBefore);
   expect(reopened.getThread(sibling.id, siblingThread.id)).toEqual(siblingThread);
-  const progress = reopened.createThread(sibling.id, 'Healthy sibling progress');
+  const progress = await reopened.createThread(sibling.id, 'Healthy sibling progress');
   expect(new FsStore({ dataRoot: restartRoot }).getThread(sibling.id, progress.id)).toEqual(
     progress
   );

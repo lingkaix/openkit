@@ -3,8 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { FsStore } from '../lib/store.js';
-import { openWorkspaceDb } from '../storage/db.js';
-import { applyScopedMigrations } from '../storage/migrate.js';
+import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { executeGoalOperation, listExportableGoalState, readGoalView } from './goal-owner.js';
 import { recordTaskTerminalFact, recoverTaskTerminalFacts } from './task-terminal-fact.js';
 
@@ -12,8 +12,11 @@ import { recordTaskTerminalFact, recoverTaskTerminalFacts } from './task-termina
 async function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'task-terminal-format-'));
   onTestFinished(() => rmSync(root, { recursive: true, force: true }));
+  const core = openCoreDb(root);
+  applyMigrations(core);
+  core.sqlite.close();
   const store = new FsStore({ dataRoot: root });
-  const workspace = store.createWorkspace('Terminal format');
+  const workspace = await store.createWorkspace('Terminal format');
   const db = openWorkspaceDb(root, workspace.id);
   onTestFinished(() => db.sqlite.close());
   applyScopedMigrations(db);
@@ -29,7 +32,7 @@ async function fixture() {
     db
   );
   const goalId = view.goal!.goalId;
-  const task = store.createThread(workspace.id, 'Task');
+  const task = await store.createThread(workspace.id, 'Task');
   db.sqlite
     .prepare(
       'INSERT INTO goal_card_tasks (thread_id,goal_id,card_id,payload_json,schema_version) VALUES (?,?,?,?,1)'
@@ -46,7 +49,7 @@ async function fixture() {
         cardRevision: 0,
       })
     );
-  const turn = store.createTurn(workspace.id, task.id, 'Design', {
+  const turn = await store.createTurn(workspace.id, task.id, 'Design', {
     kind: 'user',
     id: 'usr_00000000-0000-7000-8000-000000000001',
   });
@@ -79,7 +82,7 @@ describe('retained Task terminal fact format', () => {
     f.db.sqlite.prepare('UPDATE task_turn_terminal_facts SET payload_json=?').run(annotatedBytes);
     const reopened = new FsStore({ dataRoot: f.root });
 
-    recoverTaskTerminalFacts(reopened, f.db);
+    await recoverTaskTerminalFacts(reopened, f.db);
     expect(reopened.getTurnById(f.turn.id)).toMatchObject({
       status: 'completed',
       error: null,
@@ -99,7 +102,7 @@ describe('retained Task terminal fact format', () => {
       .prepare('UPDATE task_turn_terminal_facts SET schema_version=2,payload_json=?')
       .run('{');
 
-    expect(() => recoverTaskTerminalFacts(f.store, f.db)).toThrow(
+    await expect(recoverTaskTerminalFacts(f.store, f.db)).rejects.toThrow(
       'Unsupported retained record format.'
     );
     expect(() => listExportableGoalState(f.db)).toThrow('Unsupported retained record format.');
