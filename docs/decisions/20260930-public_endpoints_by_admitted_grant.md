@@ -39,4 +39,4 @@ A need for per-request enforcement or audit of public traffic is demonstrated.
 - [Container Image Packaging And Release Publishing](../specs/20260708-container_image_packaging.md)
 - [Communication Model](../core/communication.md)
 - [Agent Supply](../core/agent-supply.md)
-- [Permissions Model](../core/permissions.md)
+- [Permissions Model](../core/policy.md)

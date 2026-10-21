@@ -25,11 +25,11 @@ Those contracts remain with their narrow Core and specification owners. An AEP c
 - `docs/core/runtime-model.md`
 - `docs/core/agent-session.md`
 - `docs/core/agent-supply.md`
-- `docs/core/agent-capability.md`
+- `docs/core/mediation.md`
 - `docs/core/sandbox.md`
-- `docs/core/permissions.md`
+- `docs/core/policy.md`
 - `docs/core/vault.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 - `docs/core/storage.md`
 
 ## Related Docs

@@ -27,10 +27,10 @@ kind: mechanism
 ## Core References
 
 - `docs/core/vault.md`
-- `docs/core/permissions.md`
-- `docs/core/audit.md`
+- `docs/core/policy.md`
+- `docs/core/evidence.md`
 - `docs/core/sandbox.md`
-- `docs/core/agent-capability.md`
+- `docs/core/mediation.md`
 - `docs/core/storage.md`
 
 ## Summary
@@ -276,6 +276,6 @@ Previously blocking questions are resolved in the contract above: Gateway namesp
 - `docs/specs/20260704-session_static_workspace_materialization.md`
 - `docs/specs/20260703-storage_layout_record_ownership.md`
 - `docs/core/vault.md`
-- `docs/core/permissions.md`
-- `docs/core/audit.md`
+- `docs/core/policy.md`
+- `docs/core/evidence.md`
 - External: NVIDIA OpenShell "Providers v2" and "Policy Schema Reference" documentation; upgrade evidence comes from the selected official release and its observed integration behavior rather than live runtime fetching.

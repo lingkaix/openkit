@@ -7,7 +7,7 @@ This document owns the OpenKit documentation type system: the closed set of docu
 
 This document also owns the metadata field contract: which fields exist, which each type requires, and each field's canonical values. The validation modules are its executable projection and hold no authority of their own; a field present in a module but not stated here is a defect in the module.
 
-This document does not own the content rules inside the body of any single type: material change execution and change-record content rules stay in `docs/change-execution.md`, story artifacts stay with `docs/specs/20260529-l6_story_acceptance.md`, and product doctrine stays in `docs/core/foundation.md`. It does not own how the field contract is expressed, parsed, or enforced, which is `docs/specs/20260729-documentation_field_contract.md`.
+This document does not own the content rules inside the body of any single type: material change execution and change-record content rules stay in `docs/change-execution.md`, story artifacts stay with `docs/specs/20260529-l6_story_acceptance.md`, and product doctrine stays in `docs/core/doctrine.md`. It does not own how the field contract is expressed, parsed, or enforced, which is `docs/specs/20260729-documentation_field_contract.md`.
 
 ## Purpose
 
@@ -267,6 +267,6 @@ The removed long-run archive type predates this model; its durable functions wer
 
 - `docs/engineering-doctrine.md`
 - `docs/change-execution.md`
-- `docs/core/foundation.md`
+- `docs/core/doctrine.md`
 - `docs/specs/20260529-l6_story_acceptance.md`
 - `docs/specs/20260729-documentation_field_contract.md`

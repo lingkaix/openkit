@@ -33,9 +33,9 @@ updated: "2026-10-02"
 ## Core References
 
 - `docs/core/identity.md`
-- `docs/core/permissions.md`
+- `docs/core/policy.md`
 - `docs/core/vault.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 
 ## Summary
 
@@ -101,7 +101,7 @@ This closed set applies only to the human remote-access token family. It neither
 Rules:
 
 - A human remote-access token MUST carry exactly one scope. Human remote-access `workspace` and `workspace-readonly` tokens MUST carry at least one workspace id; human remote-access `server-admin` tokens MUST NOT carry workspace bindings.
-- Scope checks are authentication-layer gates. Passing a scope check MUST NOT be treated as a permission decision; policy evaluation still applies downstream, per `docs/core/permissions.md`.
+- Scope checks are authentication-layer gates. Passing a scope check MUST NOT be treated as a permission decision; policy evaluation still applies downstream, per `docs/core/policy.md`.
 - Requests outside a token's scope MUST fail with a typed authorization error that does not reveal whether the target resource exists.
 - Every Workspace-addressed product request MUST check the current canonical User, credential usability, target and policy. Better Auth sessions and Workspace-scoped bearer Tokens require active membership; Workspace-scoped Tokens additionally require matching bindings. A presented usable administrator credential, the administrator's Web session or a `server-admin` bearer, grants cross-Workspace eligibility without membership or Workspace bindings, including Task execution. This specification does not exclude that credential from another user's private audience or from another user's Tokens. Attribution stays truthful: the administrator is the recorded actor and does not impersonate the affected user. Effect-specific checks stay. A `workspace-readonly` credential stays read-only. Missing required authority verification fails closed. The ruling is recorded in [Administrator Authority](../decisions/20261002-administrator_authority.md).
 - Membership tombstones, implicit-revival prohibition, and explicit reactivation follow `docs/core/identity.md`. Workspace creation and workspace import MUST record the owner membership transactionally and MUST NOT replace the first workspace registry owner.
@@ -123,7 +123,7 @@ In `Channel authentication`, `Transport requirements`, and `Rotation and revocat
 
 - The bundled CLI and any remote coordinator MUST authenticate to server-mode NanoCore with a scoped token presented as `Authorization: Bearer <token>`.
 - The bundled CLI MUST resolve the token from the client credential store or the explicit ephemeral `OPENKIT_NANOCORE_TOKEN` override. The `OPENKIT_NANOCORE_COOKIE` and `OPENKIT_NANOCORE_AUTHORIZATION` raw passthrough variables remain removed with no compatibility alias.
-- Every authenticated request under this V1 contract MUST resolve to an actor context containing: the acting human `User`, the token id (or `AuthSession` id for session-authenticated requests), and the channel. The actor context MUST flow into audit labels for CLI-originated operations so audit records can answer which identity, credential, and channel caused an action, per `docs/core/audit.md`. `AutomationIdentity` token actors remain undefined until a separate specification owns their issuance and membership rules.
+- Every authenticated request under this V1 contract MUST resolve to an actor context containing: the acting human `User`, the token id (or `AuthSession` id for session-authenticated requests), and the channel. The actor context MUST flow into audit labels for CLI-originated operations so audit records can answer which identity, credential, and channel caused an action, per `docs/core/evidence.md`. `AutomationIdentity` token actors remain undefined until a separate specification owns their issuance and membership rules.
 - Token verification failures MUST be indistinguishable between unknown, expired, revoked, and malformed tokens in the response body, and MUST NOT echo the presented value.
 - Tokens MUST NOT be accepted from query strings, request bodies, or cookies. The bearer header is the only token transport.
 - Better Auth session cookies remain a valid authentication path for browser product surfaces; this spec adds token authentication beside it, and both resolve to the same actor-context shape.
@@ -300,9 +300,9 @@ The following are not designed.
 ## Links
 
 - `docs/core/identity.md`
-- `docs/core/permissions.md`
+- `docs/core/policy.md`
 - `docs/specs/20260715-multi_user_workspace_system.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 - `docs/specs/20260628-nanocore_config_identity_contract.md`
 - `docs/specs/20260910-agent_operator_skill.md`
 - `docs/decisions/20261002-remote_mcp_static_bearer_first.md`

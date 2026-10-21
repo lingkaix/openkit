@@ -62,7 +62,7 @@ Amend these Core documents and specifications when the feature work package star
 - [Chat Mode And Core Assistant](../specs/20260704-chat_mode_assistant.md): the shared Workspace role, sources, authority, triggering, concurrency, context, and handoffs.
 - [Thread Visibility And Explicit Sharing](../specs/20260909-thread_visibility_and_sharing.md): direct shared conversation creation in team Workspaces, audience, and snapshot sharing.
 - [Unified Conversation Composer](../specs/20260831-unified_conversation_composer.md): shared conversation creation, addressing the Assistant, and Worker handoffs.
-- [Core Permissions](../core/permissions.md): the whole-audience output rule and current Actor authority.
+- [Core Permissions](../core/policy.md): the whole-audience output rule and current Actor authority.
 - Query Context, Sources, References And Acts (docs/decisions/20261015-context_sources_references_query_acts.md on branch `v010/retrieval-kernel-r2`): cross-reference only; do not edit this accepted decision record. Its private-Timeline trace sentence applies to private Assistant conversations. This record states the later shared-conversation trace rule in point 4.
 - [Personal Memory And Knowledge Learning](../specs/20260909-personal_memory_and_knowledge_learning.md), in its R2 version on branch `v010/retrieval-kernel-r2`: narrow the private-Timeline trace sentence to private Assistant conversations only. State the shared query's trace owner and audience from point 4.
 - [Retrieval Kernel](../specs/20261014-retrieval_kernel.md), in its R2 version on branch `v010/retrieval-kernel-r2`: narrow the private-Timeline trace sentence to private Assistant conversations only. State the shared query's trace owner and audience from point 4.

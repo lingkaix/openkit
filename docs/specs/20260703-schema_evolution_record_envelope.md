@@ -27,7 +27,7 @@ These bullets describe the concrete envelope realization only. `docs/core/contra
 
 - `docs/core/storage.md`
 - `docs/core/protocol.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 - `docs/core/vault.md`
 - `docs/core/agent-supply.md`
 - `docs/core/agent-session.md`

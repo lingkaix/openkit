@@ -34,7 +34,7 @@ The deployment profile, distinct Sandbox/Harness/session/Turn identities, fresh 
 
 - `docs/core/runtime-model.md`
 - `docs/core/agent-session.md`
-- `docs/core/agent-workflow.md`
+- `docs/core/work-model.md`
 - `docs/core/sandbox.md`
 - `docs/core/architecture.md`
 

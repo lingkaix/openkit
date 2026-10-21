@@ -28,7 +28,7 @@ updated: "2026-10-16"
 
 ## Core References
 
-- `docs/core/foundation.md`
+- `docs/core/doctrine.md`
 - `docs/core/architecture.md`
 - `docs/core/contract-evolution.md`
 

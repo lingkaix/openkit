@@ -114,8 +114,8 @@ The redesign touches these accepted owners, with amendments still to be drafted:
   - [AgentSession](../../core/agent-session.md);
   - [Communication](../../core/communication.md);
   - [Protocol](../../core/protocol.md);
-  - [Permissions](../../core/permissions.md), only if the approver definition changes;
-  - [Foundation](../../core/foundation.md), where the agent-native principle is already drafted.
+  - [Permissions](../../core/policy.md), only if the approver definition changes;
+  - [Foundation](../../core/doctrine.md), where the agent-native principle is already drafted.
 - **Lifecycle and runtime:**
   - [AgentSession continuity](../../specs/20260704-agent_session_continuity.md);
   - [Worker runtime communication model](../../specs/20260629-worker_runtime_communication_model.md);
@@ -138,7 +138,7 @@ The primary is the single writer of this bundle and of the owner amendments it d
 
 Each item gives the decision, its source, its reason, and when to revisit it. "Agent analysis" marks a reason the primary supplied and the engineer approved.
 
-1. **OpenKit is agent-native** (engineer, Round 5; drafted in `docs/product-vision.md`, `docs/core/foundation.md`, and `docs/decisions/20260929-agent_native_capabilities.md`, all uncommitted). Reason: without agents the platform does not stand. Revisit per that decision record.
+1. **OpenKit is agent-native** (engineer, Round 5; drafted in `docs/product-vision.md`, [docs/core/foundation.md](../../core/doctrine.md), and `docs/decisions/20260929-agent_native_capabilities.md`, all uncommitted). Reason: without agents the platform does not stand. Revisit per that decision record.
 2. **Worker runtimes must speak MCP**; a runtime without MCP is not supported (engineer, Round 6). Reason: one standard agent interface keeps new-runtime cost near zero.
 3. **Sandbox Integration's role** is to keep the link with NanoHost and NanoCore and to do only the work no standard covers: work-data capture, extra configuration, and Turn management (engineer, Round 6).
 4. **Delegated work is a tree**, not a mesh, for control edges such as dispatch and cancel (engineer, Round 4).
@@ -343,7 +343,7 @@ Source: the engineer's messages of 2026-10-01 after returning, translated from C
 The design is closed (Intent Revision 2), and execution has started.
 
 Milestones, each with one local commit:
-1. **M1, consolidated proposal.** Write `proposal.md` in this bundle from the `temp/` proposals (`temp/agent-interfaces/`, `temp/proposals/`, `temp/agent-native/`), keeping the worthwhile argument. Commit it together with the drafted agent-native edits: `docs/product-vision.md`, `docs/core/foundation.md`, and `docs/decisions/20260929-agent_native_capabilities.md`.
+1. **M1, consolidated proposal.** Write `proposal.md` in this bundle from the `temp/` proposals (`temp/agent-interfaces/`, `temp/proposals/`, `temp/agent-native/`), keeping the worthwhile argument. Commit it together with the drafted agent-native edits: `docs/product-vision.md`, [docs/core/foundation.md](../../core/doctrine.md), and `docs/decisions/20260929-agent_native_capabilities.md`.
 2. **M2, decision records.** Record the engineer's rulings under `docs/decisions/`.
 3. **M3, Core amendments.** Amend `agent-session`, `communication`, and `protocol` (requests are not Turn pauses; AgentSession is a binding). Pi reviews.
 4. **M4, specification amendments.** Amend these owners, and write the new DeepSeek adapter spec. Pi reviews.

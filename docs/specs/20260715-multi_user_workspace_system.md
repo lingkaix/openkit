@@ -32,14 +32,14 @@ updated: "2026-10-06"
 
 ## Core References
 
-- `docs/core/foundation.md`
+- `docs/core/doctrine.md`
 - `docs/core/core-concepts.md`
 - `docs/core/architecture.md`
 - `docs/core/work-model.md`
 - `docs/core/storage.md`
 - `docs/core/identity.md`
-- `docs/core/permissions.md`
-- `docs/core/audit.md`
+- `docs/core/policy.md`
+- `docs/core/evidence.md`
 - `docs/core/vault.md`
 - `docs/core/agent-session.md`
 - `docs/core/contract-evolution.md`
@@ -78,7 +78,7 @@ The smallest complete V1 supports registered-user invitations, full active-membe
 - Do not add authorization caches before measurements demonstrate a need.
 - Do not make a shared Workspace a real-time document-collaboration system.
 - Do not add filesystem aliases, symlinks, hard links, per-user Workspace copies, or compatibility readers.
-- Do not add a second permission model for the deployment administrator. [Core Permissions](../core/permissions.md) owns the one administrator eligibility rule.
+- Do not add a second permission model for the deployment administrator. [Core Permissions](../core/policy.md) owns the one administrator eligibility rule.
 - Do not design future Federation or P2P behavior in this specification.
 
 ## Background
@@ -204,7 +204,7 @@ At most one effective pending invitation may exist for one `(workspace_id, invit
 
 An authorized active member supplies an exact email as the product input. NanoCore normalizes it and resolves one existing active canonical user before creating the invitation. The email is a lookup input, not the durable authority key. Absent, disabled, already-active, and otherwise ineligible targets return the same product-safe `invitee_unavailable` result.
 
-Invitation acceptance and decline by the bound invitee require a Better Auth session or the implicit local identity whose canonical user ID equals `invitee_user_id`. A currently usable administrator credential may accept or decline under the administrator eligibility rule in [Core Permissions](../core/permissions.md), and the recorded actor is that administrator. Ordinary OpenKit bearer tokens, including `workspace` and `workspace-readonly`, are not accepted for this user-scoped collection. V1 does not create a bearer invitation secret, send email, create an account, or expose a user directory.
+Invitation acceptance and decline by the bound invitee require a Better Auth session or the implicit local identity whose canonical user ID equals `invitee_user_id`. A currently usable administrator credential may accept or decline under the administrator eligibility rule in [Core Permissions](../core/policy.md), and the recorded actor is that administrator. Ordinary OpenKit bearer tokens, including `workspace` and `workspace-readonly`, are not accepted for this user-scoped collection. V1 does not create a bearer invitation secret, send email, create an account, or expose a user directory.
 
 The authenticated invitee discovers invitations through one user-scoped `list my invitations` operation. It selects only rows whose `invitee_user_id` equals the authenticated canonical user, accepts no caller-supplied user filter, and requires no active Workspace membership. It denies ordinary OpenKit bearer tokens, including `workspace` and `workspace-readonly`. A currently usable administrator credential may list the authenticated administrator's own invitations under the administrator eligibility rule. Workspace-member invitation listing remains a separate Workspace-scoped `membership.manage` operation. Both projections reuse the same closed `WorkspaceInvitation` record and expose no email address or bearer secret.
 
@@ -222,7 +222,7 @@ Ownership remains one registry relationship for continuity, transfer-before-owne
 
 ### Projection And Supersession Boundary
 
-[Core Permissions](../core/permissions.md) owns the equal-member eligibility doctrine. This section owns its concrete membership-to-rights projection and Workspace lifecycle integration. The Current Implementation Projection records execution facts. Historical pre-cutover migration evidence does not authorize a role ceiling. Target schema, lifecycle, and acceptance sections use active membership. All non-role constraints remain in force. No implementation may use this member-permissions direction alone to remove a data-loss check, switch a deletion recovery principal, broaden a token, bypass an exact human gate, or publish confidential data. The administrator eligibility rule is the separate authority for a currently usable administrator credential.
+[Core Permissions](../core/policy.md) owns the equal-member eligibility doctrine. This section owns its concrete membership-to-rights projection and Workspace lifecycle integration. The Current Implementation Projection records execution facts. Historical pre-cutover migration evidence does not authorize a role ceiling. Target schema, lifecycle, and acceptance sections use active membership. All non-role constraints remain in force. No implementation may use this member-permissions direction alone to remove a data-loss check, switch a deletion recovery principal, broaden a token, bypass an exact human gate, or publish confidential data. The administrator eligibility rule is the separate authority for a currently usable administrator credential.
 
 The cutover removes obsolete editor/viewer fields and access-changing surfaces consistently across storage, public schemas, App API, administrator CLI, remote MCP, Web, and tests. Replace active-Workspace owner-only eligibility with current-member eligibility, without converting identity conditions such as transfer-before-owner-leave into permissions. A member-created deletion must bind its admitted initiating actor/request to the existing deletion lineage while preserving the exact recovery owner; the release-coupled payload and required initiating-user field are fixed in Equal-Member Deletion Attribution And Private Recovery Export below.
 
@@ -302,7 +302,7 @@ The effective authority of a Workspace token is the intersection of:
 
 `workspace-readonly` further caps the result to read operations. Removing a member or narrowing their current Policy authority affects the next request without rewriting every owned token.
 
-A currently usable administrator credential is eligible for every operation under the administrator eligibility rule in [Core Permissions](../core/permissions.md), including starting and executing Tasks without membership and including other users' resources. Its owner must remain active, and its current scope, ownership, and usability must be rechecked. The rule does not manufacture membership. Existing request and effect audit retain the administrator as the actor, the exact credential reference, and the request lineage, and never impersonate the affected user.
+A currently usable administrator credential is eligible for every operation under the administrator eligibility rule in [Core Permissions](../core/policy.md), including starting and executing Tasks without membership and including other users' resources. Its owner must remain active, and its current scope, ownership, and usability must be rechecked. The rule does not manufacture membership. Existing request and effect audit retain the administrator as the actor, the exact credential reference, and the request lineage, and never impersonate the affected user.
 
 Token administration may issue a Token to another exact active canonical `ownerUserId`. Any Workspace-bound Token issuance validates the target owner's active Workspace membership. A session whose User owns usable `server-admin` Token authority is a currently usable administrator credential for Workspace authorization under the same rule, and it receives no implicit membership.
 
@@ -570,7 +570,7 @@ The exact forward lifecycle is:
 
 A caught failure before the deleting Core transaction removes only an unsealed owned export or closure root as their owners allow; it never removes another request or canonical Workspace. After registry `deleting`, a retry derives no fact from directory discovery: request phase, registry state, exact export and closure verification, canonical-versus-staging identity, terminal audit, and receipt must agree. Any contradiction, missing request for a non-active registry, unexpected root, digest mismatch, different request, or unproved transaction result returns `recovery_required` and performs no further destructive action.
 
-Once the registry is `deleting` or `deleted`, ordinary Workspace-role authorization remains denied. The exact active initiating user bound by the request, or a currently usable administrator credential, may inspect or advance the exact matching request through a narrow non-content deletion-retry authorization. That authorization grants no Workspace read, membership, export, closure, or recovery authority outside that request. Current [Operation Definition admission](20261002-operation_definition.md) and [permission enforcement](../core/permissions.md#enforcement-points) reject a caller without current initiating-user or administrator authority before invoking the deletion owner. Missing, revoked or disabled authority receives the existing non-enumerating HTTP `403` access refusal, or the transport's authentication refusal; it discloses no deletion-request facts. An admitted exact request that loses authority during execution, or whose exact request facts are contradictory, returns HTTP `409` `recovery_required` before further effects. This includes an initiating user disabled after admission and an administrator credential that ceases to be usable. The request phase and closed gate remain unchanged, and Phase 1 performs no automatic authority substitution or further destructive action.
+Once the registry is `deleting` or `deleted`, ordinary Workspace-role authorization remains denied. The exact active initiating user bound by the request, or a currently usable administrator credential, may inspect or advance the exact matching request through a narrow non-content deletion-retry authorization. That authorization grants no Workspace read, membership, export, closure, or recovery authority outside that request. Current [Operation Definition admission](20261002-operation_definition.md) and [mediation enforcement](../core/mediation.md#enforcement-points) reject a caller without current initiating-user or administrator authority before invoking the deletion owner. Missing, revoked or disabled authority receives the existing non-enumerating HTTP `403` access refusal, or the transport's authentication refusal; it discloses no deletion-request facts. An admitted exact request that loses authority during execution, or whose exact request facts are contradictory, returns HTTP `409` `recovery_required` before further effects. This includes an initiating user disabled after admission and an administrator credential that ceases to be usable. The request phase and closed gate remain unchanged, and Phase 1 performs no automatic authority substitution or further destructive action.
 
 The registry owns `active`, `deleting`, `deleted`, and `retired`; only the first three participate in governed deletion. The deletion request owns only intermediate phase and retry; the deleted registry tombstone is the unique deletion-recovery authority; the closure is non-authorizing evidence. Retained retirement has no deletion request, closure or portable recovery authority. `deleted` permanently reserves the original Workspace ID. The terminal Core AuditEvent and tombstones remain deployment-local, while the closure and its referenced recovery export are retained under their own owners.
 
@@ -736,7 +736,7 @@ The migration is offline, explicit, one-way, and limited to this pre-cutover tra
 
 ### AEP Snapshot Identity Cutover
 
-Only after every Workspace opener and store resolver uses `workspaceId` without a user or responsible-user storage parameter, the stopped-process CLI applies the exact [AEP V2 Identity Cutover](./20260616-agent_environment_package.md#aep-v2-identity-cutover) to every staged `runtime/agent-sessions/<agent-session-id>/aep-snapshots/<snapshot-id>.json` record. The migration-only transform rewrites valid V1 human or automation scope identity into the required `triggerActor`, removes the legacy user, automation, and organization scope fields, advances the package to schema version `2`, recomputes and records snapshot digests, and blocks publication on any invalid record. Normal runtime, restart, ledger, export, and import readers accept only schema version `2`; no V1 union, alias, fallback lookup, or compatibility reader survives publication.
+Only after every Workspace opener and store resolver uses `workspaceId` without a user or responsible-user storage parameter, the stopped-process CLI applies the exact [AEP V2 Identity Cutover](./20260616-agent_environment_package.md) to every staged `runtime/agent-sessions/<agent-session-id>/aep-snapshots/<snapshot-id>.json` record. The migration-only transform rewrites valid V1 human or automation scope identity into the required `triggerActor`, removes the legacy user, automation, and organization scope fields, advances the package to schema version `2`, recomputes and records snapshot digests, and blocks publication on any invalid record. Normal runtime, restart, ledger, export, and import readers accept only schema version `2`; no V1 union, alias, fallback lookup, or compatibility reader survives publication.
 
 ### Publish
 
@@ -818,7 +818,7 @@ The exact V1 operation surface is closed as follows:
 | `workspace.delete` | `POST /api/app/operations/workspace.delete` | current active member or current administrator for creation; exact initiating-user or administrator non-content retry after `deleting`; `workspace.lifecycle` | `200/202 { deletion }` |
 | `workspace.deleted-recover` | `POST /api/app/operations/workspace.deleted-recover` | original active owner from the deleted tombstone or current administrator; ordinary Workspace bearer denied | `{ recovery }` |
 
-The App API and Core Client expose all fifteen operations. The existing bearer-token-only CLI and remote MCP project only the operations reachable through their current credential contract, while local mode may project both deletion operations through its implicit canonical user. `workspace.my-invitation-list`, `workspace.my-invitation-accept`, `workspace.my-invitation-decline`, the exact own-receipt form of `workspace.leave`, and deleted-Workspace recovery remain session-capable for an ordinary caller and are an explicit known-partial for an ordinary bearer on the administrator CLI and remote MCP. A currently usable administrator credential is eligible for them under the administrator eligibility rule in [Core Permissions](../core/permissions.md). The current baseline does not add a Better Auth bearer plugin, persist session cookies in the CLI, or create another user-token system to close the ordinary-caller presentation gap.
+The App API and Core Client expose all fifteen operations. The existing bearer-token-only CLI and remote MCP project only the operations reachable through their current credential contract, while local mode may project both deletion operations through its implicit canonical user. `workspace.my-invitation-list`, `workspace.my-invitation-accept`, `workspace.my-invitation-decline`, the exact own-receipt form of `workspace.leave`, and deleted-Workspace recovery remain session-capable for an ordinary caller and are an explicit known-partial for an ordinary bearer on the administrator CLI and remote MCP. A currently usable administrator credential is eligible for them under the administrator eligibility rule in [Core Permissions](../core/policy.md). The current baseline does not add a Better Auth bearer plugin, persist session cookies in the CLI, or create another user-token system to close the ordinary-caller presentation gap.
 
 ## Testing Strategy And Acceptance Criteria
 
@@ -910,7 +910,7 @@ Deferred because the current system has no secure delivery owner and agent-visib
 
 ### Let Server Admin Read Every Workspace
 
-The earlier rejection, which separated deployment administration from Workspace content authority, is replaced by the administrator eligibility rule in [Core Permissions](../core/permissions.md). A currently usable administrator credential may read every Workspace, including other users' private Threads. The read records the administrator and does not transfer ownership. The Policy Kernel later refines this authority.
+The earlier rejection, which separated deployment administration from Workspace content authority, is replaced by the administrator eligibility rule in [Core Permissions](../core/policy.md). A currently usable administrator credential may read every Workspace, including other users' private Threads. The read records the administrator and does not transfer ownership. The Policy Kernel later refines this authority.
 
 ### Add CRDT Or Real-Time Coediting
 

@@ -14,9 +14,9 @@ This specification owns the role-agnostic bounded runtime used by every NanoCore
 
 ## Does Not Own
 
-- `docs/core/agent-capability.md` owns canonical Tool identity, capability projection, exact Tool admission, per-call authorization, and final publication admission.
+- `docs/core/mediation.md` owns canonical Tool identity, capability projection, exact Tool admission, per-call authorization, and final publication admission.
 - `docs/core/architecture.md` owns the definitions and stable responsibilities of Core Assistant, Workflow Coordinator, Knowledge Manager, and other internal Core roles.
-- `docs/core/agent-workflow.md` owns durable workflow progression, bounded worker steps, gates, decisions, evidence, retry, and closeout.
+- `docs/core/work-model.md` owns durable workflow progression, bounded worker steps, gates, decisions, evidence, retry, and closeout.
 - The loop does not own or know product records, role selection, durable state, scheduling, recovery, provider configuration, capability catalogs, authorization policy, budgets, credentials, output audiences, or external-effect settlement.
 - This specification does not redefine Worker Agent execution, Worker runtime continuity, Harnesses, Sandboxes, or worker capability supply.
 - This specification owns no Sandbox pin. Ordinary Sandbox selection stays with runtime scheduling.
@@ -25,10 +25,10 @@ This specification owns the role-agnostic bounded runtime used by every NanoCore
 ## Core References
 
 - `docs/core/architecture.md`
-- `docs/core/agent-capability.md`
-- `docs/core/agent-workflow.md`
-- `docs/core/foundation.md`
-- `docs/core/permissions.md`
+- `docs/core/mediation.md`
+- `docs/core/work-model.md`
+- `docs/core/doctrine.md`
+- `docs/core/policy.md`
 
 ## Summary
 
@@ -210,7 +210,7 @@ Model-visible content follows [Context Package's bounded projection rules](20260
 
 Store large uploads and Tool data through their existing source owners before returning a descriptor or selected excerpt. Clamp results before appending them to model history. Saving, processing, or retrieval failure returns a bounded unavailable/error descriptor, never a full-body fallback or fabricated handle. Recheck current source access and destination disclosure before retrieval and model delivery, including names, digests, previews, snippets, counts, and diagnostics. Keep raw Provider payloads and hidden reasoning outside the retrieval corpus. Memory recall stays separate and private; Workers receive none of it. Acceptance covers all internal-role paths, CJK/JSON token cost, failed storage/retrieval, and revocation without replaying Tool effects.
 
-The generic Tool interface MUST NOT duplicate role, owner, effect class, budget class, visibility, confirmation, credential, scope, audience, or autonomy metadata already owned by Core contracts. Tool identity and admission are owned by `docs/core/agent-capability.md` rather than this runtime shape.
+The generic Tool interface MUST NOT duplicate role, owner, effect class, budget class, visibility, confirmation, credential, scope, audience, or autonomy metadata already owned by Core contracts. Tool identity and admission are owned by `docs/core/mediation.md` rather than this runtime shape.
 
 Tool creation and update occur in trusted server assembly, and a run receives a temporary immutable array. Tool termination is the end of that array's run; replacement occurs only on a newly admitted run. No between-roundtrip replacement inside a run is allowed. Missing Tools fail exact lookup, stale or unauthorized operations fail through their current owner, and restart reconstructs the array rather than reviving it.
 

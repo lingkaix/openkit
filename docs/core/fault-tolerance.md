@@ -13,7 +13,7 @@ OpenKit depends on parts it cannot make reliable: its own processes and storage,
 
 ## Principles
 
-**OpenKit records are the product truth; everything else is evidence.** [Foundation](foundation.md) owns durable product truth. Worker reports, native histories, provider output, MCP results and channel receipts are evidence with a recorded origin. They become product records only through their owner's validation.
+**OpenKit records are the product truth; everything else is evidence.** [Doctrine](doctrine.md) owns durable product truth. Worker reports, native histories, provider output, MCP results and channel receipts are evidence with a recorded origin. They become product records only through their owner's validation.
 
 **Acknowledge only what is durable.** A success shown to a user, client or agent follows the durable commit of the content it describes. Content is durable before a durable reference to it is published; the reference is the commit point.
 
@@ -21,7 +21,7 @@ OpenKit depends on parts it cannot make reliable: its own processes and storage,
 
 Effect uncertainty and any recovery requirement are expressed by the effect owner and the recovery owner respectively, and interruption MUST NOT infer that an effect did not happen.
 
-**Recover from durable records.** Recovery MUST start from the effect owner's durable records. Before dispatch, that owner MUST record the effect intent and the decision that permits it. If the result is not established, recovery MUST preserve the uncertainty and use the owning recovery contract to obtain proof or report unknown. Recorded decisions remain evidence; any further governed effect MUST satisfy current authorization under [Permissions](permissions.md).
+**Recover from durable records.** Recovery MUST start from the effect owner's durable records. Before dispatch, that owner MUST record the effect intent and the decision that permits it. If the result is not established, recovery MUST preserve the uncertainty and use the owning recovery contract to obtain proof or report unknown. Recorded decisions remain evidence; any further governed effect MUST satisfy current authorization under [Policy](policy.md).
 
 **One owner and one deadline per operation.** An operation that crosses a process or network boundary MUST have one end-to-end owner and one deadline covering its waiting, delivery, execution allowance and result collection. Inner waits and retries MUST use the remaining allowance, and a liveness signal MUST NOT extend it. Expiry MUST stop ordinary retries and invoke the owner's failure or unknown-outcome handling; it MUST NOT be treated as proof that external execution has stopped. Cleanup remains subject to the runtime's fencing requirements.
 
@@ -61,7 +61,7 @@ Durable signals and timers preserve waiting and wake conditions through restart.
 
 Global dispatch may index Workspace-owned work, but that index is rebuildable and cannot become a second durable queue. Server-owned capacity and physical bindings are separate effect authority. Their reservation and release must be idempotent under exact work identity; a missing acknowledgement never permits duplicate allocation or unproved capacity release. Necessary Host, Worker and attachment fences remain until an owner-proved replacement protects their failure boundary.
 
-Execution history retains lifecycle timing, outcomes and failed checks through the existing work-data owners. Operational spans are projections of those facts. Journal correlation identifiers grant no execution, access or cleanup authority, and telemetry loss cannot erase work history or determine retry.
+Execution history retains lifecycle timing, outcomes and failed checks through the existing work-data owners. Operational spans are projections of those facts ([Evidence](evidence.md#telemetry)). Journal correlation identifiers grant no execution, access or cleanup authority, and telemetry loss cannot erase work history or determine retry.
 
 ## Fault Model
 
@@ -107,7 +107,7 @@ Damaged, unreadable or unsupported authority-bearing storage fails closed within
 
 ### External services
 
-[Agent Capability](agent-capability.md) owns call outcomes, including unknown, and forbids automatic replay of an uncertain effect. Provider, MCP and external storage failures stay inside their dependent call or Turn. Returned structures are validated before acceptance; a model's statement that an action succeeded is not the result of that action's owner. Bounded retry or provider fallback is permitted only where the owning specification establishes that it is safe and authorized, and never after output is accepted. OpenKit performs no cross-system rollback, automatic compensation or general reconciliation.
+[Mediation](mediation.md) owns call outcomes, including unknown, and forbids automatic replay of an uncertain effect. Provider, MCP and external storage failures stay inside their dependent call or Turn. Returned structures are validated before acceptance; a model's statement that an action succeeded is not the result of that action's owner. Bounded retry or provider fallback is permitted only where the owning specification establishes that it is safe and authorized, and never after output is accepted. OpenKit performs no cross-system rollback, automatic compensation or general reconciliation.
 
 ## Boundaries And Non-Goals
 
@@ -143,13 +143,13 @@ Before `v0.1.0`, release resets are explicit operator actions under [Contract Ev
 
 ## Relationships To Other Core Aspects
 
-- [Foundation](foundation.md) owns durable product truth and trust boundaries; this document applies them to failure.
+- [Doctrine](doctrine.md) owns durable product truth and trust boundaries; this document applies them to failure.
 - [Storage](storage.md) owns acknowledgement points, integrity failure handling, retained volumes and backup coverage.
 - [Protocol](protocol.md) and [Communication](communication.md) own request replay, Turn outcomes, streams, pending-outcome delivery and closeout.
 - [Runtime Model](runtime-model.md) owns scheduling, placement, collection, interruption and execution-domain cleanup, and projects durable execution, safe points and danger windows onto the execution lifecycle.
-- [Permissions](permissions.md) owns enforcement points and current authorization at each governed effect boundary.
+- [Mediation](mediation.md#enforcement-points) owns enforcement points and [Policy](policy.md) owns current authorization at each governed effect boundary.
 - [AgentSession](agent-session.md) owns native continuity and its failure.
-- [Agent Capability](agent-capability.md) and [Vault](vault.md) own external call outcomes and secret injection receipts.
+- [Mediation](mediation.md), [Evidence](evidence.md), and [Vault](vault.md) own external call outcomes, evidence and telemetry boundaries, and secret injection receipts.
 - [Knowledge](knowledge.md) owns notebook publication and its recovery-required outcome.
 - [Contract Evolution](contract-evolution.md) owns format compatibility, backup integrity and pre-stable resets.
 

@@ -50,7 +50,7 @@ A qualified runtime cannot keep OpenKit-managed credentials outside retained sha
 
 - [Sandbox Core](../core/sandbox.md)
 - [Storage Core](../core/storage.md)
-- [Permissions Core](../core/permissions.md)
+- [Permissions Core](../core/policy.md)
 - [Runtime Model](../core/runtime-model.md)
 - [Agent Supply](../core/agent-supply.md)
 - [Persistent Worker Volumes](../specs/20260910-persistent_worker_volumes.md)

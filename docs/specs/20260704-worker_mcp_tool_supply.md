@@ -31,15 +31,15 @@ Agent-facing IDs and model spellings follow [Operation Definition](20261002-oper
 - MCP server sandboxing/isolation, which is deferred.
 - MCP servers and tools configured inside the worker's Sandbox, which are local execution under [Sandbox](../core/sandbox.md); the rationale is recorded in [Full Permission Inside The Sandbox](../decisions/20260930-full_permission_inside_the_sandbox.md). Their external traffic follows the route distinction owned by [Sandbox](../core/sandbox.md); an independently admitted public endpoint is not Gateway-managed server supply.
 - The pending request record, its lifecycle, and its delivery, owned by [Pending Requests](20260930-pending_requests.md).
-- The canonical `AgentCapability` and `CapabilityCall` terms (`docs/core/agent-capability.md`).
+- The canonical `AgentCapability` and `CapabilityCall` terms (`docs/core/mediation.md`).
 - RelayStream, nested HTTP/2, Sandbox Integration, route credentials, or NanoHost lifecycle, which belong to `docs/specs/20260802-nanohost_runtime_and_transport.md`.
 
 ## Core References
 
-- `docs/core/agent-capability.md`
-- `docs/core/permissions.md`
+- `docs/core/mediation.md`
+- `docs/core/policy.md`
 - `docs/core/vault.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 
 ## Summary
 
@@ -211,7 +211,7 @@ The first active Tool-condition subset is human-authored ordinary `prohibit` and
 
 ### Usage and audit
 
-- Every `mcp.call-tool` request produces one `CapabilityCall` record; exactly one `UsageRecord` is produced unless upstream is proved not contacted (`category: "tool"`, `unit: "tool_calls"`, quantity `1`; payload byte counts as auxiliary quantities when measured) per `docs/specs/20260703-audit_usage_evidence_records.md` and `docs/specs/20260704-capability_usage_gateway_foundation.md`, fully attributed through the standard order in `docs/core/agent-capability.md`.
+- Every `mcp.call-tool` request produces one `CapabilityCall` record; exactly one `UsageRecord` is produced unless upstream is proved not contacted (`category: "tool"`, `unit: "tool_calls"`, quantity `1`; payload byte counts as auxiliary quantities when measured) per `docs/specs/20260703-audit_usage_evidence_records.md` and `docs/specs/20260704-capability_usage_gateway_foundation.md`, fully attributed through the standard order in `docs/core/mediation.md`.
 - `mcp.list-servers` and `mcp.list-tools` are capability calls for audit purposes but do not emit usage rows.
 - Server lifecycle transitions, schema snapshot captures, and credential-bearing spawns emit audit events.
 - Usage rows and audit rows MUST NOT contain tool arguments or results; those belong to redacted diagnostics and restricted evidence per the audit spec's visibility split.
@@ -310,8 +310,8 @@ Previously open questions are resolved by accepted defaults: `stdio` MCP servers
 - `docs/specs/20260703-agent_manifest_aep_resolution.md`
 - `docs/specs/20260529-test_strategy.md`
 - `docs/specs/20260802-nanohost_runtime_and_transport.md`
-- `docs/core/agent-capability.md`
-- `docs/core/permissions.md`
+- `docs/core/mediation.md`
+- `docs/core/policy.md`
 - `docs/core/vault.md`
 - `docs/roadmap.md`
 

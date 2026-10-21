@@ -20,7 +20,7 @@ This specification owns task-external measurement of the repository's execution 
 
 ## Core References
 
-- `docs/core/foundation.md`
+- `docs/core/doctrine.md`
 
 ## Summary
 

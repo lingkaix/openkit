@@ -18,7 +18,7 @@ The scope extension on 2026-10-21 permits fixture setup in `policy/agent-gate.te
 
 ## Owners And Scope
 
-[Permissions](../../core/permissions.md) and [Policy Enforcement](../../specs/20260703-policy_enforcement_mapping.md) own current input authority, authorized narrowing and explicit review of widening. Reuse Native Policy statements and configuration candidate/application, the existing Kernel and immutable decision/Audit owners. This change adds no automatic application or new authority consumer.
+[Permissions](../../core/policy.md) and [Policy Enforcement](../../specs/20260703-policy_enforcement_mapping.md) own current input authority, authorized narrowing and explicit review of widening. Reuse Native Policy statements and configuration candidate/application, the existing Kernel and immutable decision/Audit owners. This change adds no automatic application or new authority consumer.
 
 ## Current Checkpoint
 

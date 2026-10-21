@@ -16,7 +16,7 @@ The engineer reports MCP Gateway merged to main and requests complete resource-c
 
 ## Owners
 
-- Existing boundaries: `docs/core/agent-supply.md`, `docs/core/storage.md`, `docs/core/permissions.md`, `docs/core/vault.md`, and `docs/core/audit.md`.
+- Existing boundaries: `docs/core/agent-supply.md`, `docs/core/storage.md`, `docs/core/policy.md`, `docs/core/vault.md`, and [docs/core/audit.md](../../core/evidence.md).
 - Accepted Skill contract: `docs/specs/20260711-skill_catalog_versioning_pinning.md`.
 - Accepted MCP management contract: `docs/specs/20260907-mcp_catalog_management.md`; the accepted effective-entry/Gateway owner remains `docs/specs/20260704-worker_mcp_tool_supply.md`.
 - Accepted package/supply contract: `docs/specs/20260907-agent_plugin_packaging_and_worker_supply.md`, using the existing `docs/specs/20260616-agent_environment_package.md` and `docs/specs/20260802-nanohost_runtime_and_transport.md` boundaries.

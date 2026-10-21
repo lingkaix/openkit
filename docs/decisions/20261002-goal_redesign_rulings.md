@@ -56,6 +56,5 @@ Source: change record 202610020530000000-goal_redesign.
 - docs/specs/20260704-task_mode_worker_delegation.md
 - docs/specs/20260531-human_attention_intervention_model.md
 - docs/core/work-model.md
-- docs/core/agent-workflow.md
 - docs/core/knowledge.md
 - docs/specs/20260704-workspace_backup_export_import.md

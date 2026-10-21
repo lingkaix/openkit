@@ -22,7 +22,7 @@ This design does not replace Policy evaluation, human-required decisions, Pendin
 
 Needed to identify the owners that constrain every binding and migration.
 
-[Architecture](../core/architecture.md), [Permissions](../core/permissions.md), [Knowledge](../core/knowledge.md), [Audit](../core/audit.md), [Generative Apps](../core/generative-apps.md), [Agent Capability](../core/agent-capability.md), [Agent Supply](../core/agent-supply.md), [Communication](../core/communication.md) and [Contract Evolution](../core/contract-evolution.md).
+[Architecture](../core/architecture.md), [Permissions](../core/policy.md), [Knowledge](../core/knowledge.md), [Evidence](../core/evidence.md), [Generative Apps](../core/generative-apps.md), [Agent Capability](../core/mediation.md), [Agent Supply](../core/agent-supply.md), [Communication](../core/communication.md) and [Contract Evolution](../core/contract-evolution.md).
 
 ## Summary And Decision
 
@@ -50,7 +50,7 @@ Raw Sources and mechanical derivatives remain evidence. Pending proposals remain
 
 Needed to integrate the existing mechanisms without another point, permission or record authority.
 
-[Permissions](../core/permissions.md) owns the shared point, mode, authority and scope concepts. [Policy Enforcement](20260703-policy_enforcement_mapping.md) owns statements, revisions, PermissionDecision, approval and policy.write. [Operation Definition](20261002-operation_definition.md) owns the existing registry and its non-API extension. This specification applies those contracts to the mechanisms below; it defines no separate point registry or binding store.
+[Mediation](../core/mediation.md#enforcement-points) and [Policy](../core/policy.md) own the shared point, mode, authority and scope concepts. [Policy Enforcement](20260703-policy_enforcement_mapping.md) owns statements, revisions, PermissionDecision, approval and policy.write. [Operation Definition](20261002-operation_definition.md) owns the existing registry and its non-API extension. This specification applies those contracts to the mechanisms below; it defines no separate point registry or binding store.
 
 A point is an operation at a stage, written `<operation>@<stage>`. Stages are propose, decide, commit and completed. Admission, disclosure, dispatch, ingress, mutation, administration and decision are operation crossing attributes. Effect class, sensitivity, static risk, dynamic advice and authorization remain separate inputs. Nested actions reach their actual operation points; approval of a wrapper does not approve its nested calls.
 

@@ -16,7 +16,7 @@ This spec does not own stable core workflow vocabulary, user-facing work labels,
 
 ## Core References
 
-- `docs/core/agent-workflow.md`
+- `docs/core/work-model.md`
 - `docs/core/protocol.md`
 - `docs/core/communication.md`
 - `docs/core/runtime-model.md`

@@ -37,14 +37,13 @@ The clean target keeps logical `capability.local` and `inference.local` bindings
 
 ## Core References
 
-- `docs/core/agent-capability.md`
+- `docs/core/mediation.md`
 - `docs/core/agent-supply.md`
 - `docs/core/agent-session.md`
 - `docs/core/communication.md`
 - `docs/core/knowledge.md`
 - `docs/core/vault.md`
-- `docs/core/metering.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 
 ## Goals
 
@@ -65,7 +64,7 @@ The clean target keeps logical `capability.local` and `inference.local` bindings
 
 ## Background
 
-`docs/core/agent-capability.md` defines the conceptual boundary. `docs/specs/20260802-nanohost_runtime_and_transport.md` fixes the transport projection: Sandbox Integration exposes worker-local `capability.local` and `inference.local` while carrying `/capabilities/*` and `/inference/*` alongside, but semantically separate from, `/worker-control/*`.
+`docs/core/mediation.md` defines the conceptual boundary. `docs/specs/20260802-nanohost_runtime_and_transport.md` fixes the transport projection: Sandbox Integration exposes worker-local `capability.local` and `inference.local` while carrying `/capabilities/*` and `/inference/*` alongside, but semantically separate from, `/worker-control/*`.
 
 This contract defines the non-LLM worker agent capability boundary; the current selected-MCP slice and deferred families are distinguished below.
 
@@ -406,13 +405,12 @@ Only native admission context supplies this metadata. A model or public input ca
 
 ## Links
 
-- `docs/core/agent-capability.md`
+- `docs/core/mediation.md`
 - `docs/core/agent-supply.md`
 - `docs/core/communication.md`
 - `docs/core/knowledge.md`
 - `docs/core/vault.md`
-- `docs/core/metering.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 - `docs/specs/20260526-llm_gateway_responses_api.md`
 - `docs/specs/20261002-operation_definition.md`
 - `docs/specs/20260629-worker_runtime_communication_model.md`

@@ -10,7 +10,7 @@ The coordinator approved the eight-line Goal-domain plan on 2026-10-18. The Coor
 
 ## Owners And Boundaries
 
-[Goal](../../specs/20261002-goal.md), [Permissions](../../core/permissions.md) and [Policy Enforcement](../../specs/20260703-policy_enforcement_mapping.md) own behavior. Capture the full inactive declaration and its existing Policy digest at `governedIntent.goalDomain` beside the exact Plan in the existing Pending Request. Native code fixes the declaration source before capture. Publication consumes actual retained deciding-human evidence only after the exact request and active Plan commit. The original approved capture remains immutable. Current admitted Policy readback supplies authority.
+[Goal](../../specs/20261002-goal.md), [Permissions](../../core/policy.md) and [Policy Enforcement](../../specs/20260703-policy_enforcement_mapping.md) own behavior. Capture the full inactive declaration and its existing Policy digest at `governedIntent.goalDomain` beside the exact Plan in the existing Pending Request. Native code fixes the declaration source before capture. Publication consumes actual retained deciding-human evidence only after the exact request and active Plan commit. The original approved capture remains immutable. Current admitted Policy readback supplies authority.
 
 No separate Policy candidate approval, new store, prose-derived grant, replacement approval, repair loop or cross-store atomicity is added. No Web source, deployment, reset, release or host action is authorized here. L-CH's final bounded publication branch at `88dc09a2971145dbae101baac6f0d4e28c00673e` is normal-merged. Its independently reviewed service and generated contracts are integration inputs, not acceptance of the real Goal joins.
 

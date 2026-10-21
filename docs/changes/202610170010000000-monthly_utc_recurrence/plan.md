@@ -21,7 +21,7 @@ Start with a lowest-sufficient schema regression that fails because monthly crea
 
 ## Execution Rules And Evidence
 
-Use pinned Node 24.18.0 and pnpm 10.33.3, TMPDIR /home/simonx/.cache/openkit-tmp/L-GO-calendar/, CARGO_BUILD_JOBS=1, shared run-slot.sh for CPU-heavy work, one Vitest worker, no coverage/watch and explicit Turbo environment passthrough when needed. Tests remove their temporary roots. Commit at least hourly on this branch with configured identity and no attribution; the primary merges the branch without cherry-pick. Checks and remaining gaps will be recorded here as observed evidence, not acceptance claims.
+Use pinned Node 24.18.0 and pnpm 10.33.3, TMPDIR ~/.cache/openkit-tmp/L-GO-calendar/, CARGO_BUILD_JOBS=1, shared run-slot.sh for CPU-heavy work, one Vitest worker, no coverage/watch and explicit Turbo environment passthrough when needed. Tests remove their temporary roots. Commit at least hourly on this branch with configured identity and no attribution; the primary merges the branch without cherry-pick. Checks and remaining gaps will be recorded here as observed evidence, not acceptance claims.
 
 
 ## Checkpoint 1

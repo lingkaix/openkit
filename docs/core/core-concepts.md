@@ -96,7 +96,7 @@ Thread is not a runtime session, workflow engine, scheduling implementation, or 
 
 Runtime governs the assignment of an executing Turn to an Agent and AgentSession. Durable work history preserves that exact relationship rather than inferring it from unrelated thread activity.
 
-Turn replaces the need for default `AgentRun` or `TaskRun` objects. Runtime-private task graphs, retries, and telemetry remain private unless an owning document promotes a stable projection.
+Turn replaces the need for default `AgentRun` or `TaskRun` objects. Runtime-private task graphs, retries, and telemetry remain private unless an owning document promotes a stable projection ([Evidence](evidence.md#telemetry)).
 
 A Turn is created only after its input and exact Thread are accepted while that Thread has no Turn in flight. Its updates are its ordered Items and lifecycle changes. A terminal Turn is immutable and never reopened: retry, recovery, redo, and refinement create a new Turn, preserving the prior Turn and its Items. Missing dependencies block creation; stale, replayed, conflicting, or wrong-Thread commands MUST NOT create, retarget, or update a Turn. Protocol owns the lifecycle states, interruption behavior, and externally observable terminal proof.
 
@@ -189,22 +189,20 @@ An external, provider-native, or adapter-native runtime identifier must not beco
 
 ## Related Docs
 
-- `docs/core/foundation.md`
+- `docs/core/doctrine.md`
 - `docs/core/work-model.md`
 - `docs/core/architecture.md`
 - `docs/core/runtime-model.md`
 - `docs/core/agent-supply.md`
 - `docs/core/agent-session.md`
-- `docs/core/agent-workflow.md`
 - `docs/core/protocol.md`
 - `docs/core/communication.md`
 - `docs/core/storage.md`
 - `docs/core/identity.md`
 - `docs/core/knowledge.md`
 - `docs/core/vault.md`
-- `docs/core/agent-capability.md`
-- `docs/core/metering.md`
-- `docs/core/permissions.md`
+- `docs/core/mediation.md`
+- `docs/core/policy.md`
 - `docs/core/sandbox.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 - `docs/core/contract-evolution.md`

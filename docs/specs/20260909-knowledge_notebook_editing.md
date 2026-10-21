@@ -30,8 +30,8 @@ Knowledge Core owns meaning and authority; S60 owns OKF profile and source gover
 
 - `docs/core/knowledge.md`
 - `docs/core/storage.md`
-- `docs/core/permissions.md`
-- `docs/core/agent-capability.md`
+- `docs/core/policy.md`
+- `docs/core/mediation.md`
 
 ## Summary
 

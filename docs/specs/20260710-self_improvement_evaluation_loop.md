@@ -21,12 +21,12 @@ kind: concept
 
 ## Core References
 
-- `docs/core/foundation.md`
+- `docs/core/doctrine.md`
 - `docs/core/architecture.md`
 - `docs/core/knowledge.md`
-- `docs/core/agent-workflow.md`
+- `docs/core/work-model.md`
 - `docs/core/protocol.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 
 ## Related Specifications
 

@@ -15,7 +15,7 @@ Source: the engineer's follow-up during design review clarifies that the interna
 
 ## Owners And Write Boundary
 
-The primary alone writes canonical documentation. `docs/core/agent-capability.md` owns identity/admission; `docs/specs/20260813-internal_agent_runtime.md` owns the transient loop; `docs/specs/20260909-internal_agent_resource_integration.md` owns trusted resource assembly and internal caller integration. Assistant, MCP, Skill, Kernel, UI, Human Attention and storage specifications retain their existing responsibilities. The new specification links those owners rather than duplicating their payloads or lifecycles. Reviewer and auditor own only their named temporary reports; Claude is read-only.
+The primary alone writes canonical documentation. `docs/core/mediation.md` owns identity/admission; `docs/specs/20260813-internal_agent_runtime.md` owns the transient loop; `docs/specs/20260909-internal_agent_resource_integration.md` owns trusted resource assembly and internal caller integration. Assistant, MCP, Skill, Kernel, UI, Human Attention and storage specifications retain their existing responsibilities. The new specification links those owners rather than duplicating their payloads or lifecycles. Reviewer and auditor own only their named temporary reports; Claude is read-only.
 
 ## Checkpoint
 

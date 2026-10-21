@@ -24,16 +24,16 @@ date: 2026-07-15
 
 ## Core References
 
-- `docs/core/foundation.md`
+- `docs/core/doctrine.md`
 - `docs/core/core-concepts.md`
 - `docs/core/architecture.md`
 - `docs/core/protocol.md`
 - `docs/core/communication.md`
 - `docs/core/storage.md`
 - `docs/core/identity.md`
-- `docs/core/permissions.md`
+- `docs/core/policy.md`
 - `docs/core/vault.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 - `docs/core/contract-evolution.md`
 
 ## Intent
@@ -312,8 +312,8 @@ None. A future independently released API consumer or legal-isolation deployment
 - [Core Concepts](../core/core-concepts.md)
 - [Storage Model](../core/storage.md)
 - [Identity Model](../core/identity.md)
-- [Permissions Model](../core/permissions.md)
-- [Audit Model](../core/audit.md)
+- [Permissions Model](../core/policy.md)
+- [Evidence Model](../core/evidence.md)
 - [Core Protocol](../core/protocol.md)
 - [Core Client Boundary](./20260528-core_client_boundary.md)
 - [Schema Evolution And Record Envelope](./20260703-schema_evolution_record_envelope.md)

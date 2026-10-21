@@ -23,9 +23,8 @@ It does not own the product integrity check operation. [Product Integrity Check]
 ## Core References
 
 - `docs/core/work-model.md`
-- `docs/core/agent-workflow.md`
 - `docs/core/communication.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 
 ## Summary
 
