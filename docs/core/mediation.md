@@ -29,6 +29,8 @@ For worker execution, it is part of the broader agent supply domain: `agent-supp
 
 ## Boundary
 
+Capability describes what can technically be supplied or used.
+
 Mediation describes how operations and capabilities are defined, invoked, intercepted, supplied, and routed.
 
 Policy decides whether a capability or operation may be used in the current context.

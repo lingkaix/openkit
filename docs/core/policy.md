@@ -11,7 +11,7 @@ This document does not own identity authentication, operation definition and med
 
 Policy is authorization and governance. It answers whether a subject may perform an action on a resource under current policy and context.
 
-Policy is separate from mediation and sandbox.
+Policy is separate from capability and sandbox.
 
 Identity is authentication and actor identity. Policy consumes identity context but does not define users, auth sessions, tokens, or workspace membership.
 
@@ -23,11 +23,11 @@ The policy model gives Core a stable way to decide whether those actions are all
 
 ## Principles
 
-- Policy is separate from identity, mediation, sandbox, and audit.
+- Policy is separate from identity, capability, sandbox, and audit.
 - Authorization decisions should be explainable, immutable, and attributable to a subject, action, resource, context, policy, and enforcement point.
 - Approval may satisfy a Policy requirement; it is not the entire permission model. Human eligibility follows Administrator Eligibility and the responsible-user rule. An accepted automatic Policy grant remains a Policy grant, never a human decision. An agent approver requires separate bounded activation under Policy Administration; this design activates none.
 - Multiple layers may enforce the same decision, but Core should remain able to explain the policy result.
-- Policy details may evolve, but permission vocabulary should remain stable enough for audit, UI summaries, and mediation control.
+- Policy details may evolve, but permission vocabulary should remain stable enough for audit, UI summaries, and agent capability control.
 - OpenKit may implement only a subset of NGAC, but every implemented NGAC concept MUST match NGAC definitions, standard terminology, and described semantics. Product adapters MAY expose friendlier names, but Core policy doctrine MUST preserve NGAC as the long-term standard rather than creating a parallel OpenKit-specific authorization model.
 - Workspace authorization is deny-by-default and uses current identity, membership, credential, and resource facts on every governed request.
 
@@ -85,7 +85,7 @@ The administrator must be an active user, and the credential's scope, ownership,
 
 Policy owns policy and authorization decisions.
 
-Mediation describes how operations and capabilities are defined, invoked, intercepted, supplied, and routed.
+Capability describes what an actor can technically do. [Mediation](mediation.md) owns operation definition, invocation and interception.
 
 Sandbox constrains what the runtime can actually reach.
 
@@ -356,7 +356,7 @@ Detailed audit semantics belong to `docs/core/evidence.md`.
 
 ## Invariants
 
-- Policy MUST NOT be collapsed into mediation, sandbox, identity, or approval.
+- Policy MUST NOT be collapsed into capability, sandbox, identity, or approval.
 - Implemented policy-kernel concepts MUST remain semantically consistent with NGAC. If product vocabulary needs different names, the mapping belongs in adapters rather than in the kernel concept definitions.
 - Permission decisions SHOULD preserve subject, action, resource, context, policy reference, enforcement point, outcome, reason, and request correlation when those fields are available.
 - Permission-sensitive actions SHOULD leave audit records or enough metadata for future audit projection.
