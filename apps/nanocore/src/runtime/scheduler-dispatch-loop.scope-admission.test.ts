@@ -6,7 +6,7 @@ import { allocateEntityId } from '@openkit/protocol';
 import { expect, it, vi } from 'vitest';
 import { refuseScope } from '../bootstrap/readiness.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
-import { FsStore } from '../lib/store.js';
+import { commandRequestExpiresAt, commandRequestKey, FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import {
   createSchedulerAdmissionEntry,
@@ -26,6 +26,7 @@ import {
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { commandInputHash } from './idempotent-command.js';
 import {
   getSchedulerPreparationClaims,
   runSchedulerDispatchLoop,
@@ -49,10 +50,11 @@ it('dispatches a healthy FIFO sibling while retaining quarantined admissions and
     const starts = vi.spyOn(executor, 'startTurn');
     const publish = async (workspaceId: string, name: string) => {
       const thread = await store.createThread(workspaceId, name);
+      const requestId = randomUUID();
       const entry = createSchedulerAdmissionEntry(coreDb, {
         backendId: executor.id,
         queueEntryId: randomUUID(),
-        requestId: randomUUID(),
+        requestId,
         triggerActor: { kind: 'user', id: userId },
         serverAdminTokenId: null,
         workspaceId,
@@ -61,6 +63,8 @@ it('dispatches a healthy FIFO sibling while retaining quarantined admissions and
         turnInput: 'Local scope dispatch proof',
         requestedAgentId: manifest.id,
       });
+      const scope = { actorId: userId, workspaceId, threadId: thread.id };
+      const createdAt = new Date().toISOString();
       await store.createTurn(
         entry.workspaceId,
         entry.threadId,
@@ -72,20 +76,22 @@ it('dispatches a healthy FIFO sibling while retaining quarantined admissions and
           status: 'pending',
           agentId: entry.requestedAgentId,
           executorKind: 'worker',
+          commandReceipt: {
+            key: commandRequestKey('turn.start', requestId, scope),
+            command: 'turn.start',
+            requestId,
+            inputHash: commandInputHash({ input: entry.turnInput }),
+            scope,
+            responseKind: 'turn',
+            createdAt,
+            expiresAt: commandRequestExpiresAt(createdAt),
+          },
         }
       );
-      store.recordCommandRequest({
-        command: 'turn.start',
-        requestId: entry.requestId,
-        inputHash: `fixture:${entry.queueEntryId}`,
-        scope: { actorId: userId, workspaceId, threadId: thread.id },
-        response: { kind: 'turn', id: entry.turnId },
-        createdAt: new Date().toISOString(),
-      });
       return entry;
     };
     const first = await publish(bad.id, 'Oldest queued work');
-    const held = publish(bad.id, 'Unresolved predecessor binding');
+    const held = await publish(bad.id, 'Unresolved predecessor binding');
     const heldAttempt = recordTestExecutionAttempt(coreDb, {
       entry: held,
       attemptId: allocateEntityId('attempt'),

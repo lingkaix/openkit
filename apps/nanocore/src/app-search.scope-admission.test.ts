@@ -9,6 +9,7 @@ import { FsStore } from './lib/store.js';
 import { admitOperation } from './operation-resolvers.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
+import { workspaceDbPath } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
@@ -54,7 +55,8 @@ it('searches healthy authorized siblings without reading quarantined or unauthor
       throw new Error('Unexpected scope.');
     expect(admitted.context.scope.workspaceIds).toEqual(expect.arrayContaining([bad.id, good.id]));
     expect(admitted.context.scope.workspaceIds).not.toContain(hidden.id);
-    const badRecord = join(dataRoot, 'workspaces', bad.id, 'workspace-record.json');
+    await shutdownControlStoreWorkerClient();
+    const badRecord = workspaceDbPath(dataRoot, bad.id);
     const before = readFileSync(badRecord);
     const reads = vi.spyOn(store, 'getWorkspace');
     try {

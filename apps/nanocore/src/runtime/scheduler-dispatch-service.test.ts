@@ -1,15 +1,16 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
-import { FsStore } from '../lib/store';
+import { commandRequestExpiresAt, commandRequestKey, FsStore } from '../lib/store';
 import { ProviderRegistry } from '../providers/registry';
 import {
   createSchedulerAdmissionEntry,
   requireSchedulerAdmissionEntry,
 } from '../scheduler-records';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db';
 import { applyMigrations } from '../storage/migrate';
 import {
@@ -21,6 +22,7 @@ import {
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { commandInputHash } from './idempotent-command.js';
 import { startSchedulerDispatchRetryService } from './scheduler-dispatch-service';
 import type { TurnExecutor, TurnStartRuntimeContext } from './types';
 
@@ -92,10 +94,18 @@ describe('scheduler dispatch service', () => {
         workspaceId: workspace.id,
       });
       recordTestNativeRuntimeTarget(coreDb);
+      const requestId = '0190f4c8-0000-7000-8000-000000000801';
+      const scope = {
+        actorId: 'usr_00000000-0000-7908-92ea-57819d2fa45f',
+        workspaceId: workspace.id,
+        threadId: thread.id,
+      };
+      const createdAt = new Date().toISOString();
+      const turnInput = 'Prepare background work';
       await store.createTurn(
         workspace.id,
         thread.id,
-        'Prepare background work',
+        turnInput,
         { kind: 'user', id: 'usr_00000000-0000-7908-92ea-57819d2fa45f' },
         null,
         {
@@ -103,24 +113,23 @@ describe('scheduler dispatch service', () => {
           agentId: manifest.id,
           status: 'pending',
           executorKind: 'worker',
+          commandReceipt: {
+            key: commandRequestKey('turn.start', requestId, scope),
+            command: 'turn.start',
+            requestId,
+            scope,
+            inputHash: commandInputHash({ input: turnInput }),
+            responseKind: 'turn',
+            createdAt,
+            expiresAt: commandRequestExpiresAt(createdAt),
+          },
         }
       );
-      store.recordCommandRequest({
-        command: 'turn.start',
-        requestId: 'request_transient_background',
-        scope: {
-          actorId: 'usr_00000000-0000-7908-92ea-57819d2fa45f',
-          workspaceId: workspace.id,
-          threadId: thread.id,
-        },
-        inputHash: 'transient-fixture',
-        response: { kind: 'turn', id: 'tu_00000000-0000-706e-9292-377535f93b73' },
-      });
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
         priorityClass: 'interactive',
         queueEntryId: 'queue_transient_background',
-        requestId: 'request_transient_background',
+        requestId: '0190f4c8-0000-7000-8000-000000000801',
         requestedAgentId: manifest.id,
         requiredPoolConstraints: ['openshell.local'],
         threadId: thread.id,
@@ -183,14 +192,16 @@ describe('scheduler dispatch service', () => {
       });
       expect(store.listCommandRequests()).toEqual([
         expect.objectContaining({
-          requestId: 'request_transient_background',
+          requestId: '0190f4c8-0000-7000-8000-000000000801',
           response: { kind: 'turn', id: 'tu_00000000-0000-706e-9292-377535f93b73' },
         }),
       ]);
       expect(recordingExecutor.calls).toEqual([]);
     } finally {
       service?.stop();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
+      rmSync(coreDb.dataRoot, { recursive: true, force: true });
     }
   });
 
@@ -262,25 +273,12 @@ describe('scheduler dispatch service', () => {
         workspaceId: workspace.id,
       });
       recordTestNativeRuntimeTarget(coreDb);
-      await store.createTurn(
-        workspace.id,
-        thread.id,
-        'Run from the owner store',
-        { kind: 'user', id: 'usr_00000000-0000-7908-92ea-57819d2fa45f' },
-        null,
-        {
-          turnId: 'tu_00000000-0000-7a20-9839-a54e7149be4d',
-          agentId: manifest.id,
-          status: 'pending',
-          executorKind: 'worker',
-        }
-      );
       createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
         priorityClass: 'interactive',
         profileRef: null,
         queueEntryId: 'queue_background',
-        requestId: 'request_background',
+        requestId: '0190f4c8-0000-7000-8000-000000000802',
         requestedAgentId: 'agent_codex_host',
         requiredPoolConstraints: ['openshell.local'],
         threadId: thread.id,
@@ -360,17 +358,37 @@ describe('scheduler dispatch service', () => {
           },
         ],
       });
-      store.recordCommandRequest({
-        command: 'turn.start',
-        requestId: 'request_background',
-        scope: {
-          actorId: 'usr_00000000-0000-7908-92ea-57819d2fa45f',
-          workspaceId: workspace.id,
-          threadId: thread.id,
-        },
-        inputHash: 'snapshot-fixture',
-        response: { kind: 'turn', id: 'tu_00000000-0000-7a20-9839-a54e7149be4d' },
-      });
+      const requestId = '0190f4c8-0000-7000-8000-000000000802';
+      const scope = {
+        actorId: 'usr_00000000-0000-7908-92ea-57819d2fa45f',
+        workspaceId: workspace.id,
+        threadId: thread.id,
+      };
+      const createdAt = new Date().toISOString();
+      const turnInput = 'Run from the owner store';
+      await store.createTurn(
+        workspace.id,
+        thread.id,
+        'Run from the owner store',
+        { kind: 'user', id: 'usr_00000000-0000-7908-92ea-57819d2fa45f' },
+        null,
+        {
+          turnId: 'tu_00000000-0000-7a20-9839-a54e7149be4d',
+          agentId: manifest.id,
+          status: 'pending',
+          executorKind: 'worker',
+          commandReceipt: {
+            key: commandRequestKey('turn.start', requestId, scope),
+            command: 'turn.start',
+            requestId,
+            scope,
+            inputHash: commandInputHash({ input: turnInput }),
+            responseKind: 'turn',
+            createdAt,
+            expiresAt: commandRequestExpiresAt(createdAt),
+          },
+        }
+      );
       const result = await service.runOnce();
       service.stop();
 
@@ -403,7 +421,9 @@ describe('scheduler dispatch service', () => {
         }),
       });
     } finally {
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
+      rmSync(coreDb.dataRoot, { recursive: true, force: true });
     }
   });
 });
