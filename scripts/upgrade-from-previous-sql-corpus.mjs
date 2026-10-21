@@ -775,18 +775,6 @@ export async function seedSqlCorpus({ appRoot, dataRoot, retainedRoot, userId, s
       throw new Error('B01 Turn must have its real request Item before SQL corpus seeding.');
     }
     o.reads.advanceThreadReadReceipt(user, workspaceId, threadId, [sql.readItemId]);
-    o.checkpoints.upsertWorkerCheckpoint(workspace, {
-      workspaceId,
-      threadId,
-      turnId,
-      requestId: 'upgrade-corpus-worker',
-      requestInputHash: 'sha256:synthetic-corpus',
-      stage: 'completed',
-      iteration: 1,
-      workerSessionId: sql.agentSessionId,
-      stopReason: 'completed',
-      now: () => NOW,
-    });
     sql.materialId = o.materials.createWorkspaceMaterial(workspace, {
       acceptedAt: NOW,
       actor,
@@ -910,7 +898,7 @@ export async function seedSqlCorpus({ appRoot, dataRoot, retainedRoot, userId, s
     } finally {
       appHandle.sqlite.close();
     }
-    await seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot, async () => {
+    await seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot, async (contextInput) => {
       const { shutdownControlStoreWorkerClient } = await o.load(
         'storage/control-store-worker-client'
       );
@@ -918,6 +906,57 @@ export async function seedSqlCorpus({ appRoot, dataRoot, retainedRoot, userId, s
       workspace.sqlite.close();
       user.sqlite.close();
       core.sqlite.close();
+      // The actual Task and Worker owners run in the process that will stop at first publication.
+      const producer = spawnSync(
+        process.execPath,
+        [
+          '-e',
+          `import(process.argv[1]).then(async ({ produceStoppedSqlContext }) => {
+const input = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+await produceStoppedSqlContext(input);
+});`,
+          import.meta.url,
+        ],
+        {
+          encoding: 'utf8',
+          input: JSON.stringify({ appRoot, dataRoot, sql, ...contextInput }),
+        }
+      );
+      if (producer.error) throw producer.error;
+      if (producer.status !== 0)
+        throw new Error(`SQL corpus Worker producer failed: ${producer.stderr || producer.stdout}`);
+      const stoppedLine = producer.stdout
+        .split('\n')
+        .find((row) => row.startsWith('SQL_CORPUS_WORKER_STOP '));
+      if (!stoppedLine)
+        throw new Error('SQL corpus Worker producer returned no stopped publication.');
+      const stopped = JSON.parse(stoppedLine.slice('SQL_CORPUS_WORKER_STOP '.length));
+      sql.contextTurnId = stopped.turn.id;
+      sql.contextAgentSessionId = stopped.session.id;
+      sql.aepSnapshotId = stopped.environmentPackage.snapshotId;
+      sql.contextStopped = stopped;
+      process.stdout.write(
+        `SQL_CORPUS_ADMITTED_STOP ${JSON.stringify({
+          turn: {
+            status: stopped.turn.status,
+            linked: stopped.turn.agentSessionId === stopped.session.id,
+          },
+          session: { status: stopped.session.status, stale: stopped.session.stale },
+          attempt: {
+            phase: stopped.attempt.phase,
+            operationId: stopped.attempt.operationId,
+            prepared: Boolean(stopped.attempt.bindingRef && stopped.attempt.inputRef),
+            linked: stopped.attempt.agentSessionId === stopped.session.id,
+          },
+          checkpoint: {
+            stage: stopped.checkpoint.stage,
+            iteration: stopped.checkpoint.iteration,
+            linked: stopped.checkpoint.workerSessionId === stopped.session.id,
+          },
+          executions: stopped.executionRows.length,
+          intents: stopped.intents,
+        })}\n`
+      );
       // A fresh process has no surviving Store, writer, admission cache or SQLite connection.
       const child = spawnSync(
         process.execPath,
@@ -941,6 +980,22 @@ process.stdout.write('SQL_CORPUS_COLD_BOOT ' + JSON.stringify(result));
       const line = child.stdout.split('\n').find((row) => row.startsWith('SQL_CORPUS_COLD_BOOT '));
       if (!line) throw new Error('SQL corpus cold boot returned no owner readback.');
       const recovered = JSON.parse(line.slice('SQL_CORPUS_COLD_BOOT '.length));
+      sql.contextRecovery = { turn: recovered.turn, session: recovered.session };
+      // Stop this case on the boot owner's first refusal; never seed against degraded checkpoint truth.
+      if (recovered.checkpointRecoveryFailures)
+        throw new Error(
+          `Cold boot recovery refused the native Task checkpoint: ${JSON.stringify({
+            turn: {
+              status: recovered.turn.status,
+              code: recovered.turn.error?.code,
+              linked: recovered.turn.agentSessionId === recovered.session.id,
+            },
+            session: { status: recovered.session.status, stale: recovered.session.stale },
+            checkpointRecoveryFailures: recovered.checkpointRecoveryFailures,
+            checkpointRecoveryErrors: recovered.checkpointRecoveryErrors,
+            projectRecoveredTurnCalls: recovered.projectRecoveredTurnCalls,
+          })}`
+        );
       const { isCurrentAgentSessionStatus } = await o.load('storage/workspace-file-records');
       if (
         isCurrentAgentSessionStatus(recovered.session.status) &&
@@ -960,11 +1015,10 @@ process.stdout.write('SQL_CORPUS_COLD_BOOT ' + JSON.stringify(result));
             }
           )}`
         );
-      sql.contextRecovery = { turn: recovered.turn, session: recovered.session };
       core = o.db.openCoreDb(dataRoot);
       user = o.db.openUserDb(dataRoot, userId);
       workspace = o.db.openWorkspaceDb(dataRoot, workspaceId);
-      return { core, workspace, store: new o.store.FsStore({ dataRoot }) };
+      return { core, workspace, store: new o.store.FsStore({ dataRoot }), stopped };
     });
     return { sql };
   } finally {
@@ -974,6 +1028,259 @@ process.stdout.write('SQL_CORPUS_COLD_BOOT ' + JSON.stringify(result));
     await shutdownControlStoreWorkerClient();
     if (workspace.sqlite.open) workspace.sqlite.close();
     if (user.sqlite.open) user.sqlite.close();
+    if (core.sqlite.open) core.sqlite.close();
+  }
+}
+
+/** Runs actual Task preparation and Worker publication, then exits before any external effect. */
+export async function produceStoppedSqlContext({
+  appRoot,
+  dataRoot,
+  sql,
+  workspaceId,
+  threadId,
+  requestId,
+}) {
+  const o = await owners(appRoot);
+  const [modes, worker, files, images, imagePreparation, hashing, protocol] = await Promise.all([
+    o.load('mode-entry-routes'),
+    o.load('runtime/worker-governance-turn-executor'),
+    o.load('storage/artifacts/file-admission'),
+    o.load('runtime/worker-image-settlements'),
+    o.load('worker-environments/worker-environment-preparation'),
+    o.load('runtime/idempotent-command'),
+    o.loadPackage('@openkit/protocol'),
+  ]);
+  const core = o.db.openCoreDb(dataRoot);
+  const store = new o.store.FsStore({ dataRoot });
+  const setup = syntheticAgentSetup();
+  const inputDigest = hashing.commandInputHash(
+    imagePreparation.materializeRuntimeImage(setup.manifest.runtime.image)
+  );
+  const candidate = {
+    authoredArtifactId: id('ar', 'image-evidence'),
+    authoredArtifactVersion: 1,
+    authoredContentDigest: inputDigest,
+    inputDigest,
+  };
+  const imageDigest = `sha256:${'a'.repeat(64)}`;
+  images.writeWorkerImageSettlement(core, {
+    ...candidate,
+    requestId: digest('upgrade-corpus-image'),
+    operation: 'image.acquire',
+    outcome: { kind: 'success', imageDigest },
+  });
+  images.admitWorkerImageEnvironment(core, candidate, {
+    imageDigest,
+    defaultsDigest: `sha256:${digest('{}')}`,
+    values: {},
+  });
+  const target = o.targets.getNanoHostRuntimeTarget(core, sql.runtimeTargetId);
+  const { shutdownControlStoreWorkerClient } = await o.load('storage/control-store-worker-client');
+  let originalAttemptId;
+  let workerRequest;
+  let publishedEnvironmentPackage;
+  /** Observes the actual native binding acknowledgement, then stops this process before later owners. */
+  async function stopAfterBinding(environmentPackage) {
+    const workspace = o.db.openWorkspaceDb(dataRoot, workspaceId);
+    const turn = store.getTurnById(environmentPackage.scope.turnId);
+    const session = store.getAgentSession(environmentPackage.scope.agentSessionId);
+    const executionRows = workspace.sqlite
+      .prepare('SELECT id FROM control_executions WHERE work_id = ?')
+      .all(turn.id);
+    const intents = workspace.sqlite
+      .prepare(
+        `SELECT json_extract(control_json, '$.kind') AS kind, state, json_extract(span_json, '$.endTimeUnixNano') AS endedAt
+         FROM control_execution_steps WHERE execution_id = ? ORDER BY kind`
+      )
+      .all(executionRows[0]?.id);
+    const stopped = {
+      turn,
+      session,
+      environmentPackage,
+      workerRequest,
+      requestItemId: protocol.deriveEntityId('it', ['task-user', turn.id]),
+      attempt: o.attempts.requireSchedulerExecutionAttempt(core, originalAttemptId),
+      checkpoint: o.checkpoints.getWorkerCheckpoint(workspace, workspaceId, threadId, turn.id),
+      executionRows,
+      intents,
+    };
+    await shutdownControlStoreWorkerClient();
+    workspace.sqlite.close();
+    core.sqlite.close();
+    await new Promise((resolve) =>
+      process.stdout.write(`SQL_CORPUS_WORKER_STOP ${JSON.stringify(stopped)}\n`, resolve)
+    );
+    // Real process loss prevents executor catch/finally from manufacturing a graceful closeout.
+    process.exit(0);
+  }
+  const publishTurn = store.updateTurn.bind(store);
+  store.updateTurn = async (...args) => {
+    const published = await publishTurn(...args);
+    // The Worker executor alone supplies these original intents; this observer changes no input or result.
+    if (args[2]?.journalIntents) await stopAfterBinding(publishedEnvironmentPackage);
+    return published;
+  };
+  // Only the external runtime is modeled. Native admissions, checkpoints and journal intents are real.
+  const backend = {
+    id: 'nanohost',
+    async describeCapabilities() {
+      return {
+        kind: 'openshell',
+        version: 'synthetic',
+        capabilities: setup.manifest.sandbox.backend.requiredCapabilities,
+        dynamicCapabilities: [],
+      };
+    },
+    async validatePackage() {
+      return [];
+    },
+    async prepareAgentSessionContinuity() {
+      return 'absent';
+    },
+    planSession(environmentPackage) {
+      return {
+        agentSessionId: environmentPackage.scope.agentSessionId,
+        backendKind: 'openshell',
+        backendSessionId: 'upgrade-corpus-context-session',
+        deploymentId: target.deploymentId,
+        packageSnapshotId: environmentPackage.snapshotId,
+        runtimeTargetId: target.targetId,
+        stagingDirectoryRef: 'server/runtime/worker-backend-sessions/upgrade-corpus-context',
+        transientProviderInstanceId: null,
+      };
+    },
+    async materialize(environmentPackage, context) {
+      // The observer stops on the first acknowledged binding inside this native callback.
+      publishedEnvironmentPackage = environmentPackage;
+      await context.beforeMaterialization();
+      throw new Error('SQL corpus missed the first native Worker binding stop.');
+    },
+  };
+  const executor = new worker.WorkerGovernanceTurnExecutor({
+    backend,
+    coreDb: core,
+    fileAdmission: new files.FileStorageAdmission(dataRoot, () => 0n),
+    createAgentSessionId: () => id('as', 'context-session'),
+  });
+  let execution;
+  const startTask = modes.createTaskStartOperation({
+    coreDb: core,
+    inflightCommands: new WeakMap(),
+    workspaceMutationAdmission: new o.admission.WorkspaceMutationAdmission(),
+    repositoryWorkspaceDb: (selectedWorkspaceId) =>
+      o.db.openWorkspaceDb(dataRoot, selectedWorkspaceId),
+    workerCoordinatorCandidates: () => [
+      {
+        agentId: setup.manifest.id,
+        displayName: setup.manifest.displayName,
+        readiness: 'ready',
+      },
+    ],
+    startModeWorkerTurn(input) {
+      execution = (async () => {
+        workerRequest = input.prompt;
+        const entry = o.scheduler.createSchedulerAdmissionEntry(core, {
+          backendId: backend.id,
+          queueEntryId: 'upgrade-corpus-context-queue',
+          requestId: input.requestId,
+          workspaceId,
+          threadId,
+          turnId: input.reservedTurnId,
+          turnInput: input.prompt,
+          requestedAgentId: input.requestedAgentId,
+          triggerActor: input.triggerActor,
+        });
+        const turn = await store.createTurn(
+          workspaceId,
+          threadId,
+          input.prompt,
+          input.triggerActor,
+          null,
+          {
+            turnId: input.reservedTurnId,
+            status: 'pending',
+            agentId: input.requestedAgentId,
+            executorKind: 'worker',
+            commandReceipt: input.commandReceipt,
+            triggerSource: input.triggerSource,
+            captureCoverage: { scope: 'server', value: 'on' },
+          }
+        );
+        await input.onTurnCreated?.(turn, null);
+        originalAttemptId = id('attempt', 'context-attempt');
+        o.attempts.createSchedulerExecutionAttempt(core, {
+          entry,
+          attemptId: originalAttemptId,
+          preparationInput: { admission: entry, setup },
+        });
+        const preparation = {
+          attemptId: originalAttemptId,
+          agentSetup: setup,
+          freshAgentSessionId: id('as', 'context-session'),
+          requestId: input.requestId,
+          turn,
+          turnInput: input.prompt,
+          workspaceCwd: '/workspace',
+          workspaceRoots: [],
+        };
+        const prepared = await executor.prepareAgentSessionForTurn(store, preparation);
+        o.attempts.bindSchedulerExecutionAttemptSession(core, {
+          attemptId: originalAttemptId,
+          agentSessionId: prepared.agentSessionId,
+        });
+        await executor.commitPreparedAgentSessionForTurn(store, {
+          attemptId: originalAttemptId,
+          prepared,
+          preparation,
+        });
+        // Match the orchestrator's admitted pending-to-running transition before executor entry.
+        await store.updateTurn(turn.id, { status: 'running' });
+        await executor.startTurn(store, turn.id, input.prompt, {
+          attemptId: originalAttemptId,
+          agentSessionId: prepared.agentSessionId,
+          agentSetup: setup,
+          sessionCompatibilityKey: prepared.sessionCompatibilityKey,
+          requestId: input.requestId,
+          triggerActor: input.triggerActor,
+          workspaceRoots: [],
+          workspaceCwd: '/workspace',
+        });
+        throw new Error('SQL corpus Worker producer returned without the required process stop.');
+      })().catch((error) => {
+        process.stderr.write(
+          `SQL_CORPUS_WORKER_REFUSAL ${JSON.stringify({
+            name: error.name,
+            code: error.code,
+            message: error.message,
+            causes: error.errors?.map((cause) => ({
+              name: cause.name,
+              code: cause.code,
+              message: cause.message,
+            })),
+          })}\n`
+        );
+        throw error;
+      });
+      return execution;
+    },
+  });
+  try {
+    await startTask(
+      store,
+      {
+        workspaceId,
+        threadId,
+        requestId,
+        agentId: setup.manifest.id,
+        input: 'Read the synthetic retained material and keep its content exact.',
+      },
+      { kind: 'local', userId: sql.userId }
+    );
+    await execution;
+    throw new Error('SQL corpus Task admission returned without the required Worker process stop.');
+  } finally {
+    await shutdownControlStoreWorkerClient();
     if (core.sqlite.open) core.sqlite.close();
   }
 }
@@ -1131,6 +1438,29 @@ export async function recoverStoppedSqlCorpus({ appRoot, dataRoot, sql }) {
       checkpointRecoveryErrors,
       projectRecoveredTurnCalls,
     };
+  } catch (error) {
+    const store = new o.store.FsStore({ dataRoot });
+    const turn = store.getTurnById(sql.contextTurnId);
+    const session = store.getAgentSession(sql.contextAgentSessionId);
+    process.stderr.write(
+      `SQL_CORPUS_RECOVERY_REFUSAL ${JSON.stringify({
+        name: error.name,
+        code: error.code,
+        message: error.message,
+        causes: error.errors?.map((cause) => ({
+          name: cause.name,
+          code: cause.code,
+          message: cause.message,
+        })),
+        turn: { status: turn.status, linked: turn.agentSessionId === session.id },
+        session: { status: session.status, stale: session.stale },
+        attempt: o.attempts.requireSchedulerExecutionAttempt(
+          core,
+          sql.contextStopped.attempt.attemptId
+        ),
+      })}\n`
+    );
+    throw error;
   } finally {
     const worker = await o.load('storage/control-store-worker-client');
     await worker.shutdownControlStoreWorkerClient();
@@ -1369,70 +1699,22 @@ async function seedChannelEvidence(o, core, workspace, sql, { workspaceId, threa
 
 /** Seeds correlated AEP, Context Package, and original evidence through their product owners. */
 async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot, coldReopen) {
-  const [
-    aep,
-    resolver,
-    images,
-    imagePreparation,
-    hashing,
-    context,
-    contextAuthorities,
-    fileAdmission,
-    provenance,
-    preparation,
-  ] = await Promise.all(
+  const [hashing, context, contextAuthorities, provenance] = await Promise.all(
     [
-      'runtime/aep-snapshot-ledger',
-      'runtime/agent-environment',
-      'runtime/worker-image-settlements',
-      'worker-environments/worker-environment-preparation',
       'runtime/idempotent-command',
       'context/worker-context-package',
       'context/worker-context-authorities',
-      'storage/artifacts/file-admission',
       'runtime/worker-runtime-provenance',
-      'runtime/nanohost-attempt-records',
     ].map(o.load)
   );
   const actor = { kind: 'user', id: sql.userId };
   const workspaceId = workspace.workspaceId;
   const threadId = sql.goalThreadId;
-  const requestId = 'upgrade-corpus-context';
-  const workerRequest = JSON.stringify({
-    schemaVersion: 1,
-    objective: 'Read the synthetic retained material.',
-    acceptanceCriteria: ['Keep the synthetic content exact.'],
-    contextRefs: [{ kind: 'workspace', id: workspaceId }],
-    resources: [],
-    expectedArtifacts: [],
-    constraints: { maxContextTokens: 4096, maxWorkerIterations: 1 },
-    verification: [{ kind: 'manual', description: 'Read the synthetic corpus.' }],
-    reviewPolicy: {
-      required: false,
-      reviewers: ['human'],
-      instructions: 'Synthetic fixture only.',
-    },
-    escalationConditions: [],
-    reviewContext: null,
-  });
-  const turn = await store.createTurn(workspaceId, threadId, workerRequest, actor, null, {
-    captureCoverage: { scope: 'server', value: 'on' },
-  });
-  sql.contextTurnId = turn.id;
-  sql.contextAgentSessionId = id('as', 'context-session');
-  const requestItemId = id('it', 'context-request');
-  await store.createItem({
-    id: requestItemId,
-    owner: turn.owner,
-    threadId,
-    turnId: turn.id,
-    type: 'user-message',
-    text: workerRequest,
-    actor,
-    status: 'completed',
-    createdAt: turn.startedAt,
-    completedAt: turn.startedAt,
-  });
+  const requestId = '00000000-0000-4000-8000-000000000907';
+  const reopened = await coldReopen({ workspaceId, threadId, requestId });
+  ({ core, workspace, store } = reopened);
+  const turn = store.getTurnById(sql.contextTurnId);
+  const environmentPackage = reopened.stopped.environmentPackage;
   const artifact = store.getArtifact(workspaceId, sql.artifactId);
   if (artifact.content.format === 'file')
     throw new Error('Artifact Review corpus requires the retained inline Artifact.');
@@ -1629,190 +1911,20 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot, 
     }
   );
   sql.presentationId = presentation.id;
-  const setup = syntheticAgentSetup();
-  const image = imagePreparation.materializeRuntimeImage(setup.manifest.runtime.image);
-  const inputDigest = hashing.commandInputHash(image);
-  const candidate = {
-    authoredArtifactId: id('ar', 'image-evidence'),
-    authoredArtifactVersion: 1,
-    authoredContentDigest: inputDigest,
-    inputDigest,
-  };
-  const imageDigest = `sha256:${'a'.repeat(64)}`;
-  images.writeWorkerImageSettlement(core, {
-    ...candidate,
-    requestId: digest('upgrade-corpus-image'),
-    operation: 'image.acquire',
-    outcome: { kind: 'success', imageDigest },
-  });
-  images.admitWorkerImageEnvironment(core, candidate, {
-    imageDigest,
-    defaultsDigest: `sha256:${digest('{}')}`,
-    values: {},
-  });
-  const files = context.createWorkerContextPackageFiles({
-    workspaceId,
-    threadId,
-    turnId: turn.id,
-    workerRequestItemId: requestItemId,
-    workerRequestBytes: workerRequest,
-    includedItemIds: [requestItemId],
-    contextBudgetTokens: 4096,
-    materialSelections: [],
-  });
-  const unresolved = resolver.resolveAgentEnvironmentPackage({
-    coreDb: core,
-    captureCoverage: { scope: 'server', value: 'on' },
-    agentSetup: setup,
-    agentSessionId: sql.contextAgentSessionId,
-    triggerActor: actor,
-    backend: { kind: 'openshell' },
-    requestId,
-    turn: store.getTurn(workspaceId, threadId, turn.id),
-    turnInput: workerRequest,
-    workspaceCwd: '/workspace',
-    workspaceRoots: [],
-  });
-  const environmentPackage = {
-    ...unresolved,
-    scope: { ...unresolved.scope, itemId: requestItemId },
-    workspace: {
-      ...unresolved.workspace,
-      inputs: [
-        context.buildWorkerContextPackageWorkspaceInput({
-          agentSessionId: sql.contextAgentSessionId,
-          threadId,
-          turnId: turn.id,
-          packageRootDigest: files.packageRootDigest,
-        }),
-      ],
-    },
-  };
-  sql.aepSnapshotId = aep.recordAgentEnvironmentPackageSnapshot(workspace, {
-    environmentPackage,
-    createdAt: turn.startedAt,
-  }).snapshotId;
-  await store.createAgentSession({
-    id: sql.contextAgentSessionId,
-    workspaceId,
-    threadId,
-    agentId: 'agent_codex_host',
-    status: 'idle',
-    message: 'Synthetic retained session.',
-    createdAt: turn.startedAt,
-    updatedAt: turn.startedAt,
-    environmentPackageSnapshotId: sql.aepSnapshotId,
-    stale: false,
-  });
-  // Only genuine shutdown and boot recovery may establish this Session's historical state.
-  await store.updateTurn(turn.id, { agentSessionId: sql.contextAgentSessionId });
-  ({ core, workspace, store } = await coldReopen());
-  const entry = o.scheduler.createSchedulerAdmissionEntry(core, {
-    backendId: 'nanohost',
-    queueEntryId: 'upgrade-corpus-context-queue',
-    requestId,
-    workspaceId,
-    threadId,
-    turnId: turn.id,
-    turnInput: workerRequest,
-    requestedAgentId: 'agent_codex_host',
-    triggerActor: actor,
-    now: () => turn.startedAt,
-  });
-  const attemptId = id('attempt', 'context-attempt');
-  o.attempts.createSchedulerExecutionAttempt(core, {
-    entry,
-    attemptId,
-    preparationInput: { admission: entry },
-    now: () => turn.startedAt,
-  });
-  o.attempts.bindSchedulerExecutionAttemptSession(core, {
-    attemptId,
-    agentSessionId: sql.contextAgentSessionId,
-    now: () => turn.startedAt,
-  });
-  preparation.bindNanoHostAttemptPreparation(core, {
-    attemptId,
-    agentSessionId: sql.contextAgentSessionId,
-    inputRef: sql.aepSnapshotId,
-    bindingRef: 'upgrade-corpus-context-binding',
-    sessionCompatibilityKey: 'upgrade-corpus-context',
-    now: () => turn.startedAt,
-  });
-  const target = o.targets.getNanoHostRuntimeTarget(core, sql.runtimeTargetId);
-  o.targets.upsertNanoHostRuntimeTarget(core, {
-    ...target,
-    physicalEpoch: 'a'.repeat(64),
-    freshEmpty: true,
-    ready: true,
-    predecessorFenced: true,
-    observedAt: new Date().toISOString(),
-  });
-  o.backend.recordWorkerBackendSessionMaterializing(core, {
-    backendLineage: { kind: 'reference', imageRef: setup.manifest.runtime.image.ref },
-    backendVersion: 'synthetic',
-    sandboxBindingRef: 'upgrade-corpus-context-binding',
-    identity: {
-      agentSessionId: sql.contextAgentSessionId,
-      backendKind: 'openshell',
-      backendSessionId: 'upgrade-corpus-context-session',
-      deploymentId: target.deploymentId,
-      packageSnapshotId: sql.aepSnapshotId,
-      runtimeTargetId: target.targetId,
-      stagingDirectoryRef: 'server/runtime/worker-backend-sessions/upgrade-corpus-context',
-      transientProviderInstanceId: null,
-    },
-    lineage: { workspaceId, threadId, turnId: turn.id },
-    now: () => turn.startedAt,
-  });
-  const trace = context.createWorkerContextPackageTrace({
-    agentSessionId: sql.contextAgentSessionId,
-    packageSnapshotId: sql.aepSnapshotId,
-    requestId,
-    goalId: sql.goalId,
-    taskId: 'task_upgrade-corpus',
-    packageFiles: files,
-    excludedItems: [],
-  });
-  const materializer = await o.load('runtime/workspace-materializer');
-  const [snapshot] = materializer.buildWorkspaceInputSnapshots({
-    environmentPackage,
-    backendCapabilities: environmentPackage.backend.requiredCapabilities,
-    backendKind: 'openshell',
-    createdAt: turn.startedAt,
-  });
-  const [materialization] = materializer.buildWorkspaceMaterializationRecords({
-    inputSnapshots: [snapshot],
-    createdAt: turn.startedAt,
-    materialization: {
-      backendKind: 'openshell',
-      backendStatus: { health: 'ready', version: 'synthetic' },
-      packageSnapshotId: sql.aepSnapshotId,
-      requiredCapabilities: environmentPackage.backend.requiredCapabilities,
-      sandbox: { name: 'upgrade-corpus-context-session', state: 'created' },
-      workspaceInputs: [
-        {
-          id: environmentPackage.workspace.inputs[0].id,
-          target: environmentPackage.workspace.inputs[0].target,
-        },
-      ],
-    },
-  });
-  o.sync.recordWorkspaceBackendHandoff(workspace, [snapshot], [materialization]);
-  o.backend.markWorkerBackendWorkspaceHandoffComplete(core, {
-    attemptId,
-    now: () => turn.startedAt,
-  });
   const workspaceRoot = join(workspace.dataRoot, 'workspaces', workspaceId);
-  await context.writeWorkerContextPackageFiles(workspaceRoot, files, {
-    admission: new fileAdmission.FileStorageAdmission(workspaceRoot, () => 0n),
-  });
   const authorities = contextAuthorities.createWorkerContextPackageAuthorityReader({
     coreDb: core,
     workspaceDb: workspace,
     store,
   });
-  context.writeWorkerContextPackageTrace({ authorities, trace, workspaceRoot });
+  // A stopped pre-effect producer cannot author an accepted backend handoff or trace.
+  const trace = context.readWorkerContextPackageTrace({
+    authorities,
+    workspaceId,
+    threadId,
+    turnId: turn.id,
+    workspaceRoot,
+  });
   sql.aepSnapshotPath = relative(
     workspace.dataRoot,
     join(
@@ -1828,38 +1940,12 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot, 
     workspace.dataRoot,
     join(workspaceRoot, 'threads', threadId, 'turns', turn.id, 'context-package.json')
   );
-  sql.contextFilePaths = ['package.json', ...files.fileInventory.map((file) => file.path)].map(
-    (path) =>
-      relative(
-        workspace.dataRoot,
-        join(workspaceRoot, 'threads', threadId, 'turns', turn.id, 'context-package', path)
-      )
+  sql.contextFilePaths = trace.fileInventory.map((file) =>
+    relative(
+      workspace.dataRoot,
+      join(workspaceRoot, 'threads', threadId, 'turns', turn.id, 'context-package', file.path)
+    )
   );
-  // Metadata is synthetic. No backend was called, and no physical effect needs a release fence.
-  o.attempts.closeSchedulerExecutionAttemptWithoutEffects(core, {
-    attemptId,
-    noOutstandingEffects: true,
-    cause: 'synthetic-corpus',
-    now: () => turn.startedAt,
-  });
-  for (const [fromState, toState] of [
-    ['materializing', 'cleanup-pending'],
-    ['cleanup-pending', 'physical-cleaned'],
-    ['physical-cleaned', 'cleaned'],
-  ]) {
-    o.backend.transitionWorkerBackendSessionState(core, {
-      attemptId,
-      fromState,
-      toState,
-      now: () => turn.startedAt,
-    });
-  }
-  o.targets.recordNanoHostRuntimeTargetConnectionClose(core, {
-    targetId: target.targetId,
-    closedGeneration: target.connectionGeneration,
-    authoritativeGeneration: null,
-    observedAt: new Date().toISOString(),
-  });
   const lineage = {
     agentSessionId: sql.contextAgentSessionId,
     packageSnapshotId: sql.aepSnapshotId,
