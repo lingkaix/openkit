@@ -1,8 +1,8 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs, {
-  appendFileSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -22,12 +22,17 @@ import {
 import { FsStore } from '../lib/store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { createTestStore } from '../test-support/store.js';
-import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
+import {
+  ControlStoreWorkerError,
+  shutdownControlStoreWorkerClient,
+} from './control-store-worker-client.js';
 import { openWorkspaceDb, type WorkspaceDb } from './db.js';
 import { applyScopedMigrations } from './migrate.js';
 import {
   appendWorkObservation,
+  applyControlWorkObservation,
   parseWorkObservationRecord,
+  prepareControlWorkObservation,
   readThreadRuntimeActivity,
   readWorkObservations,
   type WorkObservationDraft,
@@ -40,6 +45,12 @@ afterEach(async () => {
   await shutdownControlStoreWorkerClient();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
+
+/** Checks the native owner's redacted refusal without expecting internal diagnostics across transport. */
+async function expectNativeObservationRefusal(result: Promise<unknown>): Promise<void> {
+  await expect(result).rejects.toBeInstanceOf(ControlStoreWorkerError);
+  await expect(result).rejects.toMatchObject({ code: 'sql-failed', commit: 'not-committed' });
+}
 
 /** Creates an actual persisted admission and Workspace evidence database. */
 async function fixture(value: 'off' | 'on' = 'on') {
@@ -70,6 +81,47 @@ async function fixture(value: 'off' | 'on' = 'on') {
     turn.id
   );
   return { dataRoot, store, db, owner, turnRoot };
+}
+
+/** Reads exact retained observation descriptors and injects faults in their real native authority. */
+function observationAuthority(f: Awaited<ReturnType<typeof fixture>>) {
+  return {
+    read(): string {
+      const rows = f.db.sqlite
+        .prepare(
+          'SELECT record_json FROM control_work_observations WHERE turn_id=? ORDER BY sequence'
+        )
+        .all(f.owner.turnId) as { record_json: string }[];
+      return rows.map((row) => row.record_json).join('\n') + (rows.length ? '\n' : '');
+    },
+    write(bytes: string): void {
+      const rows = bytes.trim().split('\n');
+      const update = f.db.sqlite.prepare(
+        'UPDATE control_work_observations SET record_json=? WHERE turn_id=? AND sequence=?'
+      );
+      f.db.sqlite.transaction(() => {
+        for (const [index, row] of rows.entries()) update.run(row, f.owner.turnId, index + 1);
+      })();
+    },
+  };
+}
+
+/** Reads exact retained Turn bytes; fault injection keeps the indexed native identity unchanged. */
+function turnAuthority(f: Awaited<ReturnType<typeof fixture>>) {
+  return {
+    read(): string {
+      return (
+        f.db.sqlite
+          .prepare('SELECT record_json FROM control_turns WHERE id=?')
+          .get(f.owner.turnId) as { record_json: string }
+      ).record_json;
+    },
+    write(bytes: string): void {
+      f.db.sqlite
+        .prepare('UPDATE control_turns SET record_json=? WHERE id=?')
+        .run(bytes, f.owner.turnId);
+    },
+  };
 }
 
 /** Admits an ordinary reply through the real Item writer, independently of native observation identity. */
@@ -169,23 +221,35 @@ describe('durable work observations', () => {
       observation: environment(f.db.workspaceId),
       bodies: [],
     });
-    const path = join(f.turnRoot, 'observations.jsonl');
-    const bytes = readFileSync(path, 'utf8');
+    const path = observationAuthority(f);
+    const bytes = path.read();
+    await shutdownControlStoreWorkerClient();
     f.db.sqlite.close();
     const reopened = openWorkspaceDb(f.dataRoot, f.db.workspaceId);
     databases.push(reopened);
+    f.db = reopened;
     const rows = readWorkObservations(reopened, f.owner);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.payload).not.toHaveProperty('assistantSkillAdmission');
-    expect(readFileSync(path, 'utf8')).toBe(bytes);
-    expect(() =>
+    expect(path.read()).toBe(bytes);
+    await expectNativeObservationRefusal(
       appendWorkObservation(reopened, {
         ...f.owner,
         observation: environment(f.db.workspaceId, { catalogRevision: null, skills: [] }),
         bodies: [],
       })
-    ).toThrow('recovery_required: observation identity conflict');
-    expect(readFileSync(path, 'utf8')).toBe(bytes);
+    );
+    expect(path.read()).toBe(bytes);
+    expect(
+      (
+        await appendWorkObservation(reopened, {
+          ...f.owner,
+          observation: environment(f.db.workspaceId),
+          bodies: [],
+        })
+      ).disposition
+    ).toBe('duplicate');
+    expect(path.read()).toBe(bytes);
   });
 
   it.each([
@@ -207,14 +271,16 @@ describe('durable work observations', () => {
       bodies: [],
     };
     expect((await appendWorkObservation(f.db, input)).disposition).toBe('committed');
-    const path = join(f.turnRoot, 'observations.jsonl');
-    const bytes = readFileSync(path, 'utf8');
+    const path = observationAuthority(f);
+    const bytes = path.read();
     expect(JSON.parse(bytes).payload.assistantSkillAdmission).toEqual(admission);
     expect((await appendWorkObservation(f.db, input)).disposition).toBe('duplicate');
-    expect(readFileSync(path, 'utf8')).toBe(bytes);
+    expect(path.read()).toBe(bytes);
+    await shutdownControlStoreWorkerClient();
     f.db.sqlite.close();
     const reopened = openWorkspaceDb(f.dataRoot, f.db.workspaceId);
     databases.push(reopened);
+    f.db = reopened;
     const rows = readWorkObservations(reopened, f.owner);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.payload.assistantSkillAdmission).toEqual(admission);
@@ -228,7 +294,7 @@ describe('durable work observations', () => {
       })
     ).toEqual(timeline);
     expect((await appendWorkObservation(reopened, input)).disposition).toBe('duplicate');
-    expect(readFileSync(path, 'utf8')).toBe(bytes);
+    expect(path.read()).toBe(bytes);
   });
 
   it.each([
@@ -253,16 +319,18 @@ describe('durable work observations', () => {
       bodies: [],
     };
     await appendWorkObservation(f.db, input);
-    const path = join(f.turnRoot, 'observations.jsonl');
-    const bytes = readFileSync(path, 'utf8');
-    expect(() =>
+    const path = observationAuthority(f);
+    const bytes = path.read();
+    await expectNativeObservationRefusal(
       appendWorkObservation(f.db, {
         ...input,
         observation: environment(f.db.workspaceId, changed),
       })
-    ).toThrow('recovery_required: observation identity conflict');
-    expect(readFileSync(path, 'utf8')).toBe(bytes);
+    );
+    expect(path.read()).toBe(bytes);
     expect(readWorkObservations(f.db, f.owner)).toHaveLength(1);
+    expect((await appendWorkObservation(f.db, input)).disposition).toBe('duplicate');
+    expect(path.read()).toBe(bytes);
   });
 
   it.each([
@@ -323,18 +391,22 @@ describe('durable work observations', () => {
     expect(() =>
       parseWorkObservationRecord({ ...observation, turnId: f.owner.turnId, v: 1, seq: 1 })
     ).toThrow();
-    expect(() => appendWorkObservation(f.db, { ...f.owner, observation, bodies: [] })).toThrow();
+    await expect(
+      appendWorkObservation(f.db, { ...f.owner, observation, bodies: [] })
+    ).rejects.toThrow();
     expect(readWorkObservations(f.db, f.owner)).toEqual([]);
+    expect(observationAuthority(f).read()).toBe('');
     expect(existsSync(join(f.turnRoot, 'observations.jsonl'))).toBe(false);
   });
 
   it('reads appends and reopens observations with annotated owning Turn attribution', async () => {
     const f = await fixture();
     expect(readWorkObservations(f.db, f.owner)).toEqual([]);
-    const turnPath = join(f.turnRoot, 'turn.json');
-    const retained = JSON.parse(readFileSync(turnPath, 'utf8'));
+    const turnPath = turnAuthority(f);
+    await shutdownControlStoreWorkerClient();
+    const retained = JSON.parse(turnPath.read());
     retained.triggerActor.futureNote = 'Retained attribution';
-    writeFileSync(turnPath, `${JSON.stringify(retained, null, 2)}\n`);
+    turnPath.write(`${JSON.stringify(retained, null, 2)}\n`);
     expect(new FsStore({ dataRoot: f.dataRoot }).getTurnById(f.owner.turnId)?.triggerActor).toEqual(
       {
         kind: 'user',
@@ -348,14 +420,17 @@ describe('durable work observations', () => {
       bodies: [],
     });
     expect(appended.disposition).toBe('committed');
+    await shutdownControlStoreWorkerClient();
     f.db.sqlite.close();
     const reopened = openWorkspaceDb(f.dataRoot, f.db.workspaceId);
     databases.push(reopened);
+    f.db = reopened;
     expect(readWorkObservations(reopened, f.owner)).toEqual([appended.observation]);
     expect(
-      (await appendWorkObservation(reopened, { ...f.owner, observation: model(), bodies: [] })).disposition
+      (await appendWorkObservation(reopened, { ...f.owner, observation: model(), bodies: [] }))
+        .disposition
     ).toBe('duplicate');
-    expect(JSON.parse(readFileSync(turnPath, 'utf8')).triggerActor).toEqual(retained.triggerActor);
+    expect(JSON.parse(turnPath.read()).triggerActor).toEqual(retained.triggerActor);
     expect(new FsStore({ dataRoot: f.dataRoot }).getTurnById(f.owner.turnId)?.triggerActor).toEqual(
       {
         kind: 'user',
@@ -367,16 +442,28 @@ describe('durable work observations', () => {
   it.each([
     'running',
     'pending',
-  ] as const)('does constant prior-row parse work per append after opening the %s writer', async (status) => {
+  ] as const)('does constant prior-row parse work in the native SQL body for a %s Turn', async (status) => {
     const f = await fixture('off');
     await f.store.updateTurn(f.owner.turnId, { status });
     await appendWorkObservation(f.db, { ...f.owner, observation: model('warm'), bodies: [] });
+    await shutdownControlStoreWorkerClient();
+    // This L1 check proves SQL-body parsing only; transport acknowledgement is covered by append/reopen checks.
+    // A Main-thread spy cannot observe worker parsing.
     const parse = vi.spyOn(JSON, 'parse');
     try {
       for (let index = 0; index < 20; index++) {
         parse.mockClear();
         const id = `delta-${index}`;
-        await appendWorkObservation(f.db, { ...f.owner, observation: model(id), bodies: [] });
+        f.db.sqlite.transaction(() =>
+          applyControlWorkObservation(
+            f.db.sqlite,
+            { kind: 'workspace', workspaceId: f.db.workspaceId },
+            prepareControlWorkObservation(
+              { kind: 'workspace', workspaceId: f.db.workspaceId },
+              { ...f.owner, observation: model(id), bodies: [] }
+            )
+          )
+        )();
         const priorRows = parse.mock.calls.filter(
           ([text]) =>
             typeof text === 'string' &&
@@ -400,26 +487,37 @@ describe('durable work observations', () => {
     const result = await appendWorkObservation(f.db, input);
     (result.observation.payload.content as { state: string }).state = 'off';
     expect((await appendWorkObservation(f.db, input)).disposition).toBe('duplicate');
-    const path = join(f.turnRoot, 'observations.jsonl');
-    const original = readFileSync(path, 'utf8');
+    const path = observationAuthority(f);
+    const original = path.read();
+    await shutdownControlStoreWorkerClient();
     // Same-length replacement must invalidate state, not just growth or truncation.
-    writeFileSync(path, original.replace('"seq":1', '"seq":9'));
-    expect(() => readWorkObservations(f.db, f.owner)).toThrow(/corrupt observation/);
-    expect(() => appendWorkObservation(f.db, input)).toThrow(/corrupt observation/);
-    writeFileSync(path, original);
-    appendFileSync(path, '{"torn":');
+    const corrupt = original.replace('"seq":1', '"seq":9');
+    path.write(corrupt);
+    expect(() => readWorkObservations(f.db, f.owner)).toThrow(/native observation index mismatch/);
+    await expectNativeObservationRefusal(appendWorkObservation(f.db, input));
+    expect(path.read()).toBe(corrupt);
+    await shutdownControlStoreWorkerClient();
+    path.write(original);
     expect((await appendWorkObservation(f.db, input)).disposition).toBe('duplicate');
-    expect(readFileSync(path, 'utf8')).toBe(original);
+    expect(path.read()).toBe(original);
+    await shutdownControlStoreWorkerClient();
     f.db.sqlite.close();
     const reopened = openWorkspaceDb(f.dataRoot, f.db.workspaceId);
     databases.push(reopened);
-    writeFileSync(path, original.replace('"seq":1', '"seq":9'));
-    expect(() => appendWorkObservation(reopened, input)).toThrow(/corrupt observation/);
+    f.db = reopened;
+    await shutdownControlStoreWorkerClient();
+    path.write(corrupt);
+    await expectNativeObservationRefusal(appendWorkObservation(reopened, input));
+    expect(path.read()).toBe(corrupt);
+    await shutdownControlStoreWorkerClient();
+    path.write(original);
+    expect((await appendWorkObservation(reopened, input)).disposition).toBe('duplicate');
+    expect(path.read()).toBe(original);
   });
 
   it('refuses body effects for an observation kind without a body declaration', async () => {
     const f = await fixture();
-    expect(() =>
+    await expect(
       appendWorkObservation(f.db, {
         ...f.owner,
         observation: {
@@ -444,7 +542,7 @@ describe('durable work observations', () => {
           },
         ],
       })
-    ).toThrow('This observation type has no admitted body');
+    ).rejects.toThrow('Observation body requires a unique expected-content declaration');
     expect(readWorkObservations(f.db, f.owner)).toEqual([]);
   });
   it('normalizes model sampling, content, body and publication additions while retaining their bytes', async () => {
@@ -470,12 +568,14 @@ describe('durable work observations', () => {
       observation,
       bodies: [{ id: 'model-body', bytes, mediaType: 'text/plain', boundary: 'model-request-v1' }],
     });
-    const path = join(f.turnRoot, 'observations.jsonl');
-    const rows = readFileSync(path, 'utf8')
+    const path = observationAuthority(f);
+    const rows = path
+      .read()
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line));
     expect(JSON.stringify(rows)).not.toContain('futureNote');
+    await shutdownControlStoreWorkerClient();
     for (const row of rows) {
       row.futureNote = 'retained';
       row.payload.futureNote = 'retained';
@@ -484,13 +584,13 @@ describe('durable work observations', () => {
     }
     rows[0].payload.content.futureNote = 'retained';
     rows[0].payload.sampling.futureNote = 'retained';
-    writeFileSync(path, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`);
-    const retained = readFileSync(path, 'utf8');
+    path.write(`${rows.map((row) => JSON.stringify(row)).join('\n')}\n`);
+    const retained = path.read();
     expect(JSON.stringify(readWorkObservations(f.db, f.owner))).not.toContain('futureNote');
-    expect((await appendWorkObservation(f.db, { ...f.owner, observation, bodies: [] })).disposition).toBe(
-      'duplicate'
-    );
-    expect(readFileSync(path, 'utf8')).toBe(retained);
+    expect(
+      (await appendWorkObservation(f.db, { ...f.owner, observation, bodies: [] })).disposition
+    ).toBe('duplicate');
+    expect(path.read()).toBe(retained);
     expect(() =>
       parseWorkObservationRecord({
         ...rows[0],
@@ -518,11 +618,13 @@ describe('durable work observations', () => {
       bodies: [body],
     });
     expect(JSON.stringify(admitted.observation)).not.toContain('futureNote');
-    const path = join(f.turnRoot, 'observations.jsonl');
-    const rows = readFileSync(path, 'utf8')
+    const path = observationAuthority(f);
+    const rows = path
+      .read()
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line));
+    await shutdownControlStoreWorkerClient();
     for (const row of rows) {
       row.futureNote = 'retained';
       row.payload.futureNote = 'retained';
@@ -531,16 +633,18 @@ describe('durable work observations', () => {
     }
     rows[0].payload.fact.futureNote = 'retained';
     rows[0].payload.content.futureNote = 'retained';
-    writeFileSync(path, `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`);
-    const retainedBytes = readFileSync(path, 'utf8');
+    path.write(`${rows.map((row) => JSON.stringify(row)).join('\n')}\n`);
+    const retainedBytes = path.read();
     expect(JSON.stringify(readWorkObservations(f.db, f.owner))).not.toContain('futureNote');
     expect(
       (await appendWorkObservation(f.db, { ...f.owner, observation, bodies: [body] })).disposition
     ).toBe('duplicate');
-    expect(readFileSync(path, 'utf8')).toBe(retainedBytes);
+    expect(path.read()).toBe(retainedBytes);
+    await shutdownControlStoreWorkerClient();
     f.db.sqlite.close();
     const reopened = openWorkspaceDb(f.dataRoot, f.db.workspaceId);
     databases.push(reopened);
+    f.db = reopened;
     expect(readWorkObservations(reopened, f.owner)).toHaveLength(2);
     // F1 oracle alignment: annotated raw evidence stays readable by its owner, not as an ordinary excerpt.
     const publication = readWorkObservations(reopened, f.owner)[1]!;
@@ -580,39 +684,41 @@ describe('durable work observations', () => {
         observation.id,
         body.id
       );
+      await shutdownControlStoreWorkerClient();
       f.db.sqlite.close();
 
       // Exercise the real writers in a process that cannot run database or filesystem cleanup.
-      // The pre-publication stop is after body retention, before opening the publication append.
+      // The pre-publication stop is after body retention, before submitting the native publication reference.
       // SIGKILL removes process state; it does not discard the kernel cache or emulate power loss.
+      // A file entry keeps eval-only input-type flags out of the real native Worker's inherited arguments.
+      const childPath = join(f.dataRoot, 'observation-crash-child.mjs');
+      writeFileSync(
+        childPath,
+        `import fs from 'node:fs';
+const input = JSON.parse(process.argv[2]);
+const { getControlStoreWorkerClient } = await import(input.clientModule);
+const client = getControlStoreWorkerClient();
+const observation = client.observation.bind(client);
+client.observation = async (database, request) => {
+  if (request.publishBodies && input.boundary === 'before-publication') {
+    fs.writeSync(1, 'before-publication');
+    process.kill(process.pid, 'SIGKILL');
+  }
+  return observation(database, request);
+};
+const { openWorkspaceDb } = await import(input.dbModule);
+const { appendWorkObservation } = await import(input.observationModule);
+const db = openWorkspaceDb(input.dataRoot, input.workspaceId);
+await appendWorkObservation(db, { ...input.owner, observation: input.observation, bodies: [{ ...input.body, bytes: Buffer.from(input.body.bytes) }] });
+fs.writeSync(1, 'after-publication');
+process.kill(process.pid, 'SIGKILL');`
+      );
       const exited = spawnSync(
         process.execPath,
         [
           '--import',
           'tsx',
-          '--input-type=module',
-          '-e',
-          `import fs from 'node:fs';
-import { syncBuiltinESMExports } from 'node:module';
-import { join } from 'node:path';
-const input = JSON.parse(process.argv[1]);
-const path = join(input.dataRoot, 'workspaces', input.workspaceId, 'threads', input.owner.threadId, 'turns', input.owner.turnId, 'observations.jsonl');
-const openSync = fs.openSync;
-let appends = 0;
-fs.openSync = (target, flags, mode) => {
-  if (String(target) === path && typeof flags === 'number' && (flags & fs.constants.O_APPEND) !== 0 && ++appends === 2 && input.boundary === 'before-publication') {
-    fs.writeSync(1, 'before-publication');
-    process.kill(process.pid, 'SIGKILL');
-  }
-  return openSync(target, flags, mode);
-};
-syncBuiltinESMExports();
-const { openWorkspaceDb } = await import(input.dbModule);
-const { appendWorkObservation } = await import(input.observationModule);
-const db = openWorkspaceDb(input.dataRoot, input.workspaceId);
-appendWorkObservation(db, { ...input.owner, observation: input.observation, bodies: [{ ...input.body, bytes: Buffer.from(input.body.bytes) }] });
-fs.writeSync(1, 'after-publication');
-process.kill(process.pid, 'SIGKILL');`,
+          childPath,
           JSON.stringify({
             dataRoot: f.dataRoot,
             workspaceId,
@@ -622,6 +728,7 @@ process.kill(process.pid, 'SIGKILL');`,
             boundary,
             dbModule: new URL('./db.ts', import.meta.url).href,
             observationModule: new URL('./work-observations.ts', import.meta.url).href,
+            clientModule: new URL('./control-store-worker-client.ts', import.meta.url).href,
           }),
         ],
         { encoding: 'utf8', timeout: 15_000 }
@@ -633,6 +740,7 @@ process.kill(process.pid, 'SIGKILL');`,
 
       const reopened = openWorkspaceDb(f.dataRoot, workspaceId);
       databases.push(reopened);
+      f.db = reopened;
       const blobPath = join(
         f.dataRoot,
         'workspaces',
@@ -717,30 +825,39 @@ process.kill(process.pid, 'SIGKILL');`,
         sha256: ref!.digest!,
       })
     ).toEqual(bytes);
-    expect(readFileSync(join(f.turnRoot, 'observations.jsonl'), 'utf8')).not.toContain('hello');
+    expect(observationAuthority(f).read()).not.toContain('hello');
     expect(listWorkspaceEvidenceBundles(f.db, f.db.workspaceId)).toEqual([]);
+    await shutdownControlStoreWorkerClient();
     f.db.sqlite.close();
     const reopened = openWorkspaceDb(f.dataRoot, f.db.workspaceId);
     databases.push(reopened);
+    f.db = reopened;
     expect((await appendWorkObservation(reopened, input)).disposition).toBe('duplicate');
-    expect((await appendWorkObservation(reopened, { ...input, bodies: [] })).disposition).toBe('duplicate');
+    expect((await appendWorkObservation(reopened, { ...input, bodies: [] })).disposition).toBe(
+      'duplicate'
+    );
     expect(readWorkObservations(reopened, f.owner)).toEqual(rows);
-    expect(() =>
+    const beforeConflict = observationAuthority(f).read();
+    await expectNativeObservationRefusal(
       appendWorkObservation(reopened, {
         ...input,
         bodies: [{ ...input.bodies[0]!, bytes: Buffer.from('changed') }],
       })
-    ).toThrow(/conflict/);
-    expect(
-      JSON.parse(readFileSync(join(f.turnRoot, 'turn.json'), 'utf8')).requiredFeatures
-    ).toContain('openkit.work-observations.v1');
+    );
+    expect(observationAuthority(f).read()).toBe(beforeConflict);
+    expect((await appendWorkObservation(reopened, input)).disposition).toBe('duplicate');
+    expect(observationAuthority(f).read()).toBe(beforeConflict);
+    expect(JSON.parse(turnAuthority(f).read()).requiredFeatures).toContain(
+      'openkit.work-observations.v1'
+    );
     await f.store.updateTurn(f.owner.turnId, {
       status: 'failed',
+      completedAt: new Date().toISOString(),
       error: { code: 'test', message: 'test' },
     });
-    expect(
-      JSON.parse(readFileSync(join(f.turnRoot, 'turn.json'), 'utf8')).requiredFeatures
-    ).toContain('openkit.work-observations.v1');
+    expect(JSON.parse(turnAuthority(f).read()).requiredFeatures).toContain(
+      'openkit.work-observations.v1'
+    );
   });
 
   it('records deferred byte identity without retaining content, then publishes only exact admitted bytes', async () => {
@@ -759,16 +876,20 @@ process.kill(process.pid, 'SIGKILL');`,
     expect(f.db.sqlite.prepare('SELECT COUNT(*) AS count FROM evidence_bundles').get()).toEqual({
       count: 0,
     });
-    expect(() =>
+    const beforeConflict = observationAuthority(f).read();
+    await expectNativeObservationRefusal(
       appendWorkObservation(f.db, {
         ...input,
         bodies: [{ ...input.bodies[0]!, bytes: Buffer.from('changed') }],
       })
-    ).toThrow(/conflict/);
+    );
+    expect(observationAuthority(f).read()).toBe(beforeConflict);
     await appendWorkObservation(f.db, input);
     const rows = readWorkObservations(f.db, f.owner);
     expect(rows).toHaveLength(2);
-    expect((await appendWorkObservation(f.db, { ...input, bodies: [] })).disposition).toBe('duplicate');
+    expect((await appendWorkObservation(f.db, { ...input, bodies: [] })).disposition).toBe(
+      'duplicate'
+    );
     expect(readWorkObservations(f.db, f.owner)).toEqual(rows);
   });
 
@@ -789,27 +910,46 @@ process.kill(process.pid, 'SIGKILL');`,
         },
       ],
     };
-    expect(() => appendWorkObservation(f.db, input)).toThrow('injected body commit failure');
+    await expect(appendWorkObservation(f.db, input)).rejects.toThrow(
+      'injected body commit failure'
+    );
     expect(readWorkObservations(f.db, f.owner)).toHaveLength(1);
     expect(readWorkObservations(f.db, f.owner)[0]?.refs).toBeUndefined();
+    await shutdownControlStoreWorkerClient();
     f.db.sqlite.exec('DROP TRIGGER fail_body');
     await appendWorkObservation(f.db, input);
     expect(readWorkObservations(f.db, f.owner)).toHaveLength(2);
   });
 
-  it('discards even valid JSON without its LF and rejects corrupt interior records', async () => {
+  it('discards uncommitted native rows and rejects corrupt committed interior records', async () => {
     const f = await fixture();
     await appendWorkObservation(f.db, { ...f.owner, observation: model(), bodies: [] });
-    const path = join(f.turnRoot, 'observations.jsonl');
+    await shutdownControlStoreWorkerClient();
+    const path = observationAuthority(f);
+    const original = path.read();
     const row = readWorkObservations(f.db, f.owner)[0]!;
-    appendFileSync(path, JSON.stringify({ ...row, id: 'lost-tail', seq: 2 }));
+    f.db.sqlite.exec('BEGIN IMMEDIATE');
+    f.db.sqlite
+      .prepare(
+        'INSERT INTO control_work_observations (turn_id,sequence,id,schema_version,record_json) VALUES (?,?,?,1,?)'
+      )
+      .run(f.owner.turnId, 2, 'lost-tail', JSON.stringify({ ...row, id: 'lost-tail', seq: 2 }));
+    f.db.sqlite.close();
+    f.db = openWorkspaceDb(f.dataRoot, f.db.workspaceId);
+    databases.push(f.db);
+    expect(path.read()).toBe(original);
     expect(readWorkObservations(f.db, f.owner)).toHaveLength(1);
     await appendWorkObservation(f.db, { ...f.owner, observation: model('next'), bodies: [] });
     expect(readWorkObservations(f.db, f.owner).map((entry) => entry.id)).toEqual([
       'observation-one',
       'next',
     ]);
-    appendFileSync(path, '{bad}\n');
+    await shutdownControlStoreWorkerClient();
+    const corrupt = f.db.sqlite.prepare(
+      'UPDATE control_work_observations SET record_json=? WHERE turn_id=? AND sequence=1'
+    );
+    expect(() => corrupt.run('{bad}', f.owner.turnId)).toThrow();
+    corrupt.run(JSON.stringify({ bad: true }), f.owner.turnId);
     expect(() => readWorkObservations(f.db, f.owner)).toThrow();
     expect(
       readThreadRuntimeActivity(f.db, {
@@ -831,7 +971,8 @@ process.kill(process.pid, 'SIGKILL');`,
     const f = await fixture('off');
     const metadata = { ...model(), payload: { ...model().payload, content: { state: 'off' } } };
     await appendWorkObservation(f.db, { ...f.owner, observation: metadata, bodies: [] });
-    expect(() =>
+    const beforeRefusal = observationAuthority(f).read();
+    await expectNativeObservationRefusal(
       appendWorkObservation(f.db, {
         ...f.owner,
         observation: model('with-body'),
@@ -844,23 +985,130 @@ process.kill(process.pid, 'SIGKILL');`,
           },
         ],
       })
-    ).toThrow(/off/);
+    );
     expect(f.db.sqlite.prepare('SELECT COUNT(*) AS count FROM evidence_bundles').get()).toEqual({
       count: 0,
     });
-    const turnPath = join(f.turnRoot, 'turn.json');
-    const raw = JSON.parse(readFileSync(turnPath, 'utf8'));
+    expect(observationAuthority(f).read()).toBe(beforeRefusal);
+    expect(
+      (await appendWorkObservation(f.db, { ...f.owner, observation: metadata, bodies: [] }))
+        .disposition
+    ).toBe('duplicate');
+    const turnPath = turnAuthority(f);
+    await shutdownControlStoreWorkerClient();
+    const originalTurn = turnPath.read();
+    const raw = JSON.parse(originalTurn);
     delete raw.captureCoverage;
-    writeFileSync(turnPath, JSON.stringify(raw));
-    expect(() =>
+    const missingCoverage = JSON.stringify(raw);
+    turnPath.write(missingCoverage);
+    await expectNativeObservationRefusal(
       appendWorkObservation(f.db, { ...f.owner, observation: model('missing'), bodies: [] })
-    ).toThrow(/missing capture/);
+    );
     expect(
       readThreadRuntimeActivity(f.db, {
         threadId: f.owner.threadId,
         turnIds: [f.owner.turnId],
       })[0]?.contentCapture
     ).toBe('unknown');
+    expect(turnPath.read()).toBe(missingCoverage);
+    expect(observationAuthority(f).read()).toBe(beforeRefusal);
+    await shutdownControlStoreWorkerClient();
+    turnPath.write(originalTurn);
+    expect(
+      (await appendWorkObservation(f.db, { ...f.owner, observation: metadata, bodies: [] }))
+        .disposition
+    ).toBe('duplicate');
+    expect(observationAuthority(f).read()).toBe(beforeRefusal);
+  });
+
+  it.each([
+    'missing',
+    'stale',
+  ] as const)('uses committed native coverage with a %s disposable Turn projection', async (projection) => {
+    const f = await fixture();
+    const turnPath = join(f.turnRoot, 'turn.json');
+    if (projection === 'stale') {
+      mkdirSync(f.turnRoot, { recursive: true });
+      writeFileSync(
+        turnPath,
+        JSON.stringify({ captureCoverage: { scope: 'server', value: 'off' } })
+      );
+    }
+    const bytes = Buffer.from('Native coverage remains authoritative.');
+    await appendWorkObservation(f.db, {
+      ...f.owner,
+      observation: model(),
+      bodies: [{ id: 'body', bytes, mediaType: 'text/plain', boundary: 'test' }],
+    });
+    await shutdownControlStoreWorkerClient();
+    f.db.sqlite.close();
+    f.db = openWorkspaceDb(f.dataRoot, f.db.workspaceId);
+    databases.push(f.db);
+    const rows = readWorkObservations(f.db, f.owner);
+    expect(rows.map((row) => row.type)).toEqual(['model.observed', 'content.published']);
+    const ref = rows[1]!.refs![0]!;
+    expect(
+      readWorkObservationBody(f.db, {
+        ...f.owner,
+        bundleId: ref.locator,
+        sha256: ref.digest!,
+        createdAt: rows[0]!.ts,
+      })
+    ).toEqual(bytes);
+    expect(
+      readThreadRuntimeActivity(f.db, {
+        threadId: f.owner.threadId,
+        turnIds: [f.owner.turnId],
+      })[0]?.contentCapture
+    ).toBe('on');
+    if (projection === 'missing') expect(existsSync(turnPath)).toBe(false);
+    else expect(JSON.parse(readFileSync(turnPath, 'utf8')).captureCoverage.value).toBe('off');
+  });
+
+  it('refuses missing native owner authority without rebuilding it from readable projections', async () => {
+    const f = await fixture();
+    const input = { ...f.owner, observation: model(), bodies: [] };
+    await appendWorkObservation(f.db, input);
+    await shutdownControlStoreWorkerClient();
+    const turn = turnAuthority(f).read();
+    const originalTurnRow = f.db.sqlite
+      .prepare('SELECT * FROM control_turns WHERE id=?')
+      .get(f.owner.turnId) as {
+      id: string;
+      thread_id: string;
+      agent_session_id: string | null;
+      status: string;
+      schema_version: number;
+      revision: number;
+      record_json: string;
+    };
+    const records = observationAuthority(f).read();
+    mkdirSync(f.turnRoot, { recursive: true });
+    writeFileSync(join(f.turnRoot, 'turn.json'), turn);
+    writeFileSync(join(f.turnRoot, 'observations.jsonl'), records);
+    // Disable referential enforcement only for this deliberate missing-authority fault.
+    f.db.sqlite.pragma('foreign_keys = OFF');
+    f.db.sqlite.prepare('DELETE FROM control_turns WHERE id=?').run(f.owner.turnId);
+    f.db.sqlite.pragma('foreign_keys = ON');
+    expect(() => readWorkObservations(f.db, f.owner)).toThrow(
+      /missing or invalid native observation owner/
+    );
+    await expectNativeObservationRefusal(appendWorkObservation(f.db, input));
+    expect(
+      f.db.sqlite.prepare('SELECT id FROM control_turns WHERE id=?').get(f.owner.turnId)
+    ).toBeUndefined();
+    expect(readFileSync(join(f.turnRoot, 'turn.json'), 'utf8')).toBe(turn);
+    expect(readFileSync(join(f.turnRoot, 'observations.jsonl'), 'utf8')).toBe(records);
+    expect(observationAuthority(f).read()).toBe(records);
+    await shutdownControlStoreWorkerClient();
+    f.db.sqlite
+      .prepare(
+        'INSERT INTO control_turns (id,thread_id,agent_session_id,status,schema_version,revision,record_json) VALUES (@id,@thread_id,@agent_session_id,@status,@schema_version,@revision,@record_json)'
+      )
+      .run(originalTurnRow);
+    expect((await appendWorkObservation(f.db, input)).disposition).toBe('duplicate');
+    expect(observationAuthority(f).read()).toBe(records);
+    expect(turnAuthority(f).read()).toBe(turn);
   });
 
   it('does not resurrect lawfully expired bodies on exact replay', async () => {

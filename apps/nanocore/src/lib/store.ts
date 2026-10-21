@@ -4656,7 +4656,7 @@ export class FsStore {
       turn.threadId !== threadId
     )
       throw new StoreRecordNotFoundError(`Turn not found: ${turnId}`);
-    return TurnSchema.parse(turn);
+    return TurnSchema.parse(TurnReaderSchema.parse(turn));
   }
 
   /** Returns only the opaque Turn's canonical Workspace and Thread selectors before content admission. */

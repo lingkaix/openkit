@@ -26,11 +26,7 @@ import type { ControlProductOwner } from './control-store-products.js';
 import type { CoreDb, WorkspaceDb } from './db.js';
 import { StoredThreadSnapshotV1Schema } from './retained-work-events-v1.js';
 import { StoredTurnV1Schema, StoredWorkOwnerV1Schema } from './retained-work-metadata-v1.js';
-import {
-  nativeProductScope,
-  preserveDescriptiveRecord,
-  readNativeTurnHistory,
-} from './workspace-file-records.js';
+import { nativeProductScope, readNativeTurnHistory } from './workspace-file-records.js';
 
 /** A scoped citation; publication edges are minted only by the storage owner. */
 export interface WorkObservationReference {
@@ -843,12 +839,14 @@ export function prepareControlWorkObservation(
       ),
     });
   });
-  // Parse the same complete candidate as SQL before any immutable publication effect.
-  controlObservationCandidate({ ...input, bodies }, undefined, 1, owner);
+  // Forward the known live DTO; retained annotations and generated descriptors are not producer input.
+  const candidate = controlObservationCandidate({ ...input, bodies }, undefined, 1, owner);
+  const { v: _version, seq: _sequence, turnId: _turnId, payload, ...observation } = candidate;
+  const { bodies: _expectedBodies, ...producerPayload } = payload;
   return {
     threadId: input.threadId,
     turnId: input.turnId,
-    observation: input.observation,
+    observation: { ...observation, payload: producerPayload },
     bodies,
     publishBodies: bodies.length > 0 && !input.deferBodyPublication,
   };
@@ -902,7 +900,7 @@ export function publishControlWorkObservationBodies(
   return prepared;
 }
 
-/** Builds a known-core candidate while leaving its retained descriptive source available to the insert. */
+/** Builds the known live DTO while retained descriptive rows remain unchanged on replay. */
 function controlObservationCandidate(
   input: ControlWorkObservationInput,
   existing: WorkObservationRecord | undefined,
@@ -1062,8 +1060,9 @@ export function applyControlWorkObservation(
       for (const body of input.bodies) assertControlBodyPublished(sqlite, owner, input, body);
   }
   // The caller's savepoint rolls back the manifest and both rows on any bound or SQL failure.
-  const insert = (record: WorkObservationRecord, raw: unknown): void => {
-    const text = JSON.stringify(preserveDescriptiveRecord(raw, record, record));
+  const insert = (record: WorkObservationRecord): void => {
+    // New live rows admit parsed metadata only; retained rows are never rewritten here.
+    const text = JSON.stringify(record);
     if (Buffer.byteLength(text) > 64 * 1024)
       throw new Error('Observation metadata exceeds the native bound');
     // Refuse an unknown required declaration even when the known-field parser would strip it.
@@ -1098,9 +1097,8 @@ export function applyControlWorkObservation(
     if (changed.changes !== 1)
       throw new Error('recovery_required: observation Turn revision conflict');
   }
-  if (!existing)
-    insert(candidate, { ...input.observation, v: 1, seq: candidate.seq, turnId: input.turnId });
-  if (publication && !prior) insert(publication, publication);
+  if (!existing) insert(candidate);
+  if (publication && !prior) insert(publication);
   return { disposition: existing ? 'duplicate' : 'committed', observation: candidate, publication };
 }
 
