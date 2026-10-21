@@ -5,11 +5,84 @@ import { WorkerObservationDataSchema } from '@openkit/worker-protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { CodexRuntimeCapture } from './codex-runtime-capture.js';
 import {
+  NativeRuntimeCapture,
   type RuntimeCaptureInput,
   type RuntimeObservation,
   runtimeOriginRef,
   runtimeRef,
 } from './runtime-capture.js';
+
+// RET Capture Safety: one native semantic unit has the same secret refusal across filesystem read boundaries.
+it('RET E r2 REVIEW R1 refuses a split credential in a real rollout just as in one complete unit', async () => {
+  const f = await fixture('on');
+  const input = {
+    ...f.input,
+    nativeLogMaxBytes: 16 * 1024 * 1024,
+    authoredVersion: '0.153.4',
+    credentialValues: ['ret-e-synthetic-credential'],
+  };
+  const capture = await CodexRuntimeCapture.create(input, f.home, '0.153.4');
+  const bytes = Buffer.from(
+    lines(meta('root'), {
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'assistant',
+        channel: 'analysis',
+        content: [
+          { type: 'output_text', text: 'ret-e-', padding: 'x'.repeat(256 * 1024) },
+          { type: 'output_text', text: 'synthetic-credential' },
+        ],
+      },
+    })
+  );
+  const whole: Array<{ record: RuntimeObservation; body?: Uint8Array }> = [];
+  const wholeCapture = new NativeRuntimeCapture({
+    ...input,
+    emit: async (record, body) => {
+      whole.push({
+        record: WorkerObservationDataSchema.parse(record),
+        ...(body ? { body: Buffer.from(body) } : {}),
+      });
+    },
+  });
+  try {
+    // Identical bytes in one write establish that the credential and native shape are admitted to the check.
+    await wholeCapture.write('whole-rollout', bytes, {
+      harness: 'codex',
+      format: 'codex-session-jsonl',
+      runtimeOriginRef: null,
+    });
+    await wholeCapture.finish();
+    expect(whole.flatMap(({ body }) => (body ? [body] : []))).toEqual([]);
+    expect(whole.some(({ record }) => record.content.reason === 'credential-excluded')).toBe(true);
+
+    // The real producer reads this larger file in 64 KiB pieces; no collector or read seam is mocked.
+    await writeFile(f.path('root'), bytes);
+    await capture.writeStdout(Buffer.from(lines({ type: 'thread.started', thread_id: 'root' })));
+    await capture.finalize();
+    const retained = Buffer.concat(
+      f.received.flatMap(({ record, body }) =>
+        record.fact.kind === 'native-transcript' && body ? [body] : []
+      )
+    );
+    // Inspect retained bytes before parsing; neither part of the refused native unit may escape.
+    expect.soft(retained.includes(Buffer.from('"text":"ret-e-"'))).toBe(false);
+    expect.soft(retained.includes(Buffer.from('"text":"synthetic-credential"'))).toBe(false);
+    expect
+      .soft(
+        f.received.some(
+          ({ record }) =>
+            record.sourceRef === `${runtimeRef('rts', input.packageSnapshotId, 'root')}:native` &&
+            record.content.reason === 'credential-excluded'
+        )
+      )
+      .toBe(true);
+  } finally {
+    await capture.invalidate().catch(() => undefined);
+    await rm(f.home, { recursive: true, force: true });
+  }
+});
 
 // RET Native Transcripts And Runtime Logs: supervision loss keeps observed prefixes with a named gap.
 it('RET E REVIEW R3 retains a read Codex rollout prefix when supervision invalidates capture', async () => {

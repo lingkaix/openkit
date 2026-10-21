@@ -663,3 +663,43 @@ it('RET E REVIEW R4 preserves an ordinary Windows path and malformed escapes wit
     expect.soft(received.some(({ record }) => record.fact.coverage === 'unavailable')).toBe(false);
   }
 });
+
+// RET Native Transcripts And Runtime Logs: explicit truncation and safety refusal have distinct causes.
+it('RET E r2 REVIEW R2 keeps a limit-only native hold labelled as a limit through finalization', async () => {
+  const received: Array<{ record: RuntimeObservation; body?: Buffer }> = [];
+  const capture = new NativeRuntimeCapture({
+    packageSnapshotId: 'e-r2-limit-package',
+    captureCoverage: { scope: 'task', value: 'on' },
+    nativeLogMaxBytes: 16 * 1024 * 1024,
+    authoredVersion: '0.2.0-rc.2',
+    credentialValues: ['ret-e-synthetic-credential'],
+    emit: async (record, body) => {
+      received.push({
+        record: WorkerObservationDataEmissionSchema.parse(record),
+        ...(body ? { body: Buffer.from(body) } : {}),
+      });
+    },
+  });
+  // This incomplete prefix can require a bounded hold, but it is not the known credential.
+  await capture.write(
+    'limit-only-source',
+    Buffer.from(
+      JSON.stringify({
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: 'ret-e-' },
+        padding: 'x'.repeat(16 * 1024 * 1024),
+      })
+    ),
+    { harness: 'deepseek', format: 'deepseek-acp-update-json', runtimeOriginRef: null }
+  );
+  await capture.finish();
+  expect(received.flatMap(({ body }) => (body ? [body] : []))).toEqual([]);
+  expect(received.some(({ record }) => record.fact.reason === 'limit-exceeded')).toBe(true);
+  expect(
+    received.some(
+      ({ record }) =>
+        record.fact.reason === 'credential-excluded' ||
+        record.content.reason === 'credential-excluded'
+    )
+  ).toBe(false);
+}, 30_000);
