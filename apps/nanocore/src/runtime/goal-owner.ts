@@ -135,7 +135,7 @@ export interface GoalOwnerContext {
 export interface GoalOwnerServices {
   readonly coreDb?: CoreDb;
   readonly inflightCommands?: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
-  readonly wake?: (workspaceId: string, goalId: string) => void;
+  readonly wake?: (workspaceId: string, goalId: string) => void | Promise<void>;
   readonly interrupt?: (turn: Turn) => void;
   readonly grantAuthority?: (record: PendingRequestRecord) => boolean;
   /** Native publication uses the recorded deciding credential and the caller-owned DB lifetime. */
@@ -2010,6 +2010,6 @@ export async function executeGoalOperation<K extends GoalOperationId>(
       );
     }
   }
-  services.wake?.(input.workspaceId, goalId);
+  await services.wake?.(input.workspaceId, goalId);
   return result;
 }
