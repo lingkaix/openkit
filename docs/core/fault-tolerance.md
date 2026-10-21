@@ -55,7 +55,7 @@ Effect uncertainty and any recovery requirement are expressed by the effect owne
 
 ## Durable Execution
 
-The same `End-To-End Owner` advances normal work and work reopened after restart from each `Safe Point` and committed step outcome. Completed steps are not executed again. Effect intent and its permitting decision precede dispatch and open the `Danger Window`; result and dependent local state share one commit at the `Acknowledgement Point`. Unknown effects retain uncertainty and their required fences. The [durable execution decision](../decisions/20261019-durable_execution_and_control_store.md) replaces scattered execution and recovery authority rather than adding a parallel workflow service.
+The same owner advances normal work and work reopened after restart. Completed steps are not executed again. Effect intent and its permitting decision precede dispatch; result and dependent local state share one commit. Unknown effects retain uncertainty and their required fences. The [durable execution decision](../decisions/20261019-durable_execution_and_control_store.md) replaces scattered execution and recovery authority rather than adding a parallel workflow service.
 
 Durable signals and timers preserve waiting and wake conditions through restart. They reuse existing request and schedule semantics. Human outcomes still enter later Turns; there is no paused Turn status or default response expiry. A lost Worker cannot resume its executing code: its step becomes unknown, its Turn is interrupted truthfully, and continuation requires a newly admitted Turn with proved native-session continuity. Failed native resume follows [AgentSession](agent-session.md).
 

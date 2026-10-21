@@ -114,7 +114,7 @@ export function importWorkspaceEvidenceBundles(
  *
  * @param input Workspace database, owner workspace id, and exclusive cutoff timestamp.
  * @returns Number of compacted evidence bundle rows.
- * @throws Error when the requested Workspace does not match the open database lineage.
+ * @throws Error when Workspace lineage, retained format, or a bundle directory id is unsafe.
  */
 export function compactWorkspaceEvidenceBundles(
   input: CompactWorkspaceEvidenceBundlesInput
@@ -124,7 +124,7 @@ export function compactWorkspaceEvidenceBundles(
   }
   const compactedRows = input.workspaceDb.sqlite
     .prepare(
-      `SELECT evidence_bundle_id, schema_version, retention_class
+      `SELECT evidence_bundle_id, schema_version, retention_class, import_status
       FROM evidence_bundles
       WHERE workspace_id = ?
         AND (retention_class = 'ephemeral-diagnostic' OR (
@@ -137,13 +137,14 @@ export function compactWorkspaceEvidenceBundles(
     evidence_bundle_id: string;
     schema_version: number;
     retention_class: string;
+    import_status: string;
   }>;
   for (const row of compactedRows) {
     readRetainedV1({ schemaVersion: row.schema_version }, () => undefined);
+    assertEvidenceBundleDirectoryId(row.evidence_bundle_id);
   }
   for (const row of compactedRows) {
-    if (row.retention_class !== 'restricted-raw') continue;
-    assertSafeWorkspacePathSegment(row.evidence_bundle_id, 'Evidence bundle id');
+    if (row.retention_class !== 'restricted-raw' || row.import_status === 'expired') continue;
     rmSync(
       join(
         input.workspaceDb.dataRoot,
@@ -179,10 +180,19 @@ export function compactWorkspaceEvidenceBundles(
   return { expiredCount: result.changes };
 }
 
+/** Keeps bundle-owned directories separate from the shared immutable content namespace. */
+function assertEvidenceBundleDirectoryId(id: string): void {
+  assertSafeWorkspacePathSegment(id, 'Evidence bundle id');
+  if (id === 'sha256') {
+    throw new Error('Reserved evidence bundle id: sha256.');
+  }
+}
+
 function insertEvidenceBundle<T extends EvidenceBundleRecord | ServerEvidenceBundleRecord>(
   workspaceDb: WorkspaceDb | CoreDb,
   record: T
 ): T {
+  assertEvidenceBundleDirectoryId(record.id);
   const existingRow = workspaceDb.sqlite
     .prepare(
       `SELECT
