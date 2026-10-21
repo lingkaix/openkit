@@ -1602,8 +1602,9 @@ describe('private NanoHost Harness records', () => {
           .get()
       ).toEqual({ nextSequence: 1, operationState: 'settled' });
 
-      // Physical Receipt Consumption: this receiver-only test has no Workspace consumer acknowledgement.
-      try {
+      // docs/specs/20261019-durable_execution_and_control_store.md:301-305 requires receipt retention and blocked dispatch.
+      // Enqueue still accepts settled state without clearing its receipt (nanohost-harness-records.ts:877-905).
+      expect(
         queueNanoHostHarnessOperation(coreDb, {
           body: {
             agentSessionId: testEntityId('as', 'agent-session-1'),
@@ -1612,15 +1613,12 @@ describe('private NanoHost Harness records', () => {
           harnessInstanceId: 'harness-1',
           operation: 'session.inspect',
           timestamp: now,
-        });
-      } catch (error) {
-        expect(error).toBeInstanceOf(Error);
-        expect((error as Error).message).toMatch(/unsettled|consum|receipt|acknowledg/i);
-      }
+        })
+      ).toBe(1);
       const inspect = dispatchNanoHostHarnessOperation(coreDb, {
         sandboxIntegrationBindingRef: 'integration-binding-1',
       });
-      expect.soft(inspect !== null).toBe(false);
+      expect(inspect).toBeNull();
       expect(
         coreDb.sqlite.prepare('SELECT result_json FROM harness_instance_records').get()
       ).toEqual(receipt);
