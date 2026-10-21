@@ -4090,14 +4090,15 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   /** Reads the original native terminal descriptors without creating missing execution history. */
   private async readTerminalPublication(
     store: FsStore,
-    turnId: string
+    turnId: string,
+    outcome: 'completed' | 'failed' | 'cancelled' | 'interrupted' = 'completed'
   ): Promise<TerminalTurnPublication> {
     if (!this.coreDb) throw new Error('Worker terminal journal requires Core lineage.');
     const turn = store.getTurnById(turnId);
     const workspaceDb = this.openWorkspaceDb(workspaceIdForOwner(turn.owner));
     if (!workspaceDb) throw new Error('Worker terminal journal owner is unavailable.');
     try {
-      return await workerTurnTerminalPublication(workspaceDb, turnId);
+      return await workerTurnTerminalPublication(workspaceDb, turnId, outcome);
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -4145,7 +4146,13 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       agentSessionId,
       agentSessionRetained,
       ...(store.getTurnById(turnScope.id).agentSessionId
-        ? { publication: await this.readTerminalPublication(store, turnScope.id) }
+        ? {
+            publication: await this.readTerminalPublication(
+              store,
+              turnScope.id,
+              cancellationWon ? 'interrupted' : 'failed'
+            ),
+          }
         : {}),
       completedAt: this.now(),
       errorCode: cancellationWon

@@ -1666,7 +1666,8 @@ function applyTerminalExecution(
     root.revision < 1 ||
     db.scope !== 'workspace' ||
     root.definition_version !== 'workspace-worker-turn/v1' ||
-    !input.evidence.length ||
+    (!['failed', 'cancelled', 'interrupted'].includes(String(turn.status)) &&
+      !input.evidence.length) ||
     !isDeepStrictEqual(JSON.parse(root.owner_json), input.owner)
   )
     throw new ControlProductPreconditionError();

@@ -466,7 +466,8 @@ function isGovernedWorkerTerminalCode(errorCode: string): boolean {
 /** Supplies only original journal descriptors and actual runtime evidence to native terminal publication. */
 export async function workerTurnTerminalPublication(
   workspaceDb: WorkspaceDb,
-  turnId: string
+  turnId: string,
+  outcome: 'completed' | 'failed' | 'cancelled' | 'interrupted' = 'completed'
 ): Promise<TerminalTurnPublication> {
   const roots = workspaceDb.sqlite
     .prepare('SELECT id FROM control_executions WHERE work_id=?')
@@ -498,7 +499,7 @@ export async function workerTurnTerminalPublication(
   const evidence = listWorkspaceRuntimeEvidence(workspaceDb, workspaceDb.workspaceId).filter(
     (record) => record.turnId === turnId
   );
-  if (!evidence.length)
+  if (!['failed', 'cancelled', 'interrupted'].includes(outcome) && !evidence.length)
     throw new Error('Worker terminal publication requires actual runtime evidence.');
   return {
     execution: {
@@ -521,7 +522,11 @@ async function readTerminalPublication(
   if (!turn.agentSessionId || !dataRoot) return undefined;
   const workspaceDb = openWorkspaceDb(dataRoot, workspaceIdForOwner(turn.owner));
   try {
-    return await workerTurnTerminalPublication(workspaceDb, input.turnId);
+    return await workerTurnTerminalPublication(
+      workspaceDb,
+      input.turnId,
+      turn.status === 'completed' ? 'completed' : input.outcome
+    );
   } finally {
     workspaceDb.sqlite.close();
   }
