@@ -286,6 +286,8 @@ type TurnEventInput = Omit<
 export interface TerminalTurnPublication {
   /** New or changed Items included in the terminal snapshot, in publication order. */
   readonly items?: readonly Item[];
+  /** Existing ordered terminal projections committed before the final completion envelope. */
+  readonly precedingEvents?: readonly TurnEventInput[];
   /** Original invocation correlation; omission preserves the existing null projection. */
   readonly requestId?: string | null;
   /** Observed stop cause, checked against the terminal status by the native owner. */
@@ -4318,6 +4320,36 @@ export class FsStore {
         ? this.getServerTurnTranscript(turnId)
         : this.getTurnEventsForExport(turnId);
     const prior = events.find((event) => event.data.type === 'turn-completed');
+    const precedingEvents = (publication.precedingEvents ?? []).map((draft, index, drafts) => {
+      if (owner.kind !== 'workspace' || draft.data.type === 'turn-completed')
+        throw new Error('Terminal preceding events require an existing Workspace projection.');
+      const sequence = prior
+        ? prior.sequence - drafts.length + index
+        : (events.at(-1)?.sequence ?? 0) + index + 1;
+      const envelope = SseEventEnvelopeSchema.parse({
+        ...draft,
+        protocolVersion: PROTOCOL_VERSION,
+        timestamp: turn.completedAt,
+        sequence,
+        requestId: projectTurnEventRequestId(
+          draft.requestId ?? publication.requestId,
+          owner.workspaceId,
+          turn.threadId
+        ),
+      });
+      if (
+        envelope.turnId !== turnId ||
+        envelope.threadId !== turn.threadId ||
+        envelope.workspaceId !== owner.workspaceId ||
+        (prior &&
+          !alreadyDecidedPublicationBytesEqual(
+            events.find((event) => event.sequence === sequence),
+            envelope
+          ))
+      )
+        throw terminalTurnPublicationConflict(turnId);
+      return envelope;
+    });
     const stopReason =
       publication.stopReason ??
       (turn.status === 'completed' ? 'completed' : turn.status === 'failed' ? 'error' : 'aborted');
@@ -4333,7 +4365,7 @@ export class FsStore {
             ? (publication.requestId ?? null)
             : projectTurnEventRequestId(publication.requestId, owner.workspaceId, turn.threadId),
         timestamp: turn.completedAt,
-        sequence: (events.at(-1)?.sequence ?? 0) + 1,
+        sequence: (events.at(-1)?.sequence ?? 0) + precedingEvents.length + 1,
         event: 'turn.completed',
         data: { type: 'turn-completed', stopReason, turn },
       });
@@ -4365,33 +4397,35 @@ export class FsStore {
           content,
         });
       }
-      let content: ControlProductEntry['content'];
-      if (prior) {
-        // A decoded view can reorder JSON keys. Replay retains the original immutable descriptor.
-        const reader = openControlStoreProductReadHandle(scope.path, owner);
-        try {
-          const entry = reader.entries(turnId, 'event', prior.sequence - 1, 1)[0];
-          if (!entry || entry.sequence !== prior.sequence)
-            throw terminalTurnPublicationConflict(turnId);
-          content = entry.content;
-        } finally {
-          reader.close();
+      for (const terminalEvent of [...precedingEvents, event]) {
+        let content: ControlProductEntry['content'];
+        if (prior) {
+          // Replay retains each original immutable descriptor, including preceding projections.
+          const reader = openControlStoreProductReadHandle(scope.path, owner);
+          try {
+            const entry = reader.entries(turnId, 'event', terminalEvent.sequence - 1, 1)[0];
+            if (!entry || entry.sequence !== terminalEvent.sequence)
+              throw terminalTurnPublicationConflict(turnId);
+            content = entry.content;
+          } finally {
+            reader.close();
+          }
+        } else {
+          content = await publishImmutableProductJson(
+            scope.contentMount,
+            owner,
+            join(dirname(dirname(scope.path)), 'runtime', 'staging'),
+            writeRetainedV1(terminalEvent)
+          );
         }
-      } else {
-        content = await publishImmutableProductJson(
-          scope.contentMount,
-          owner,
-          join(dirname(dirname(scope.path)), 'runtime', 'staging'),
-          writeRetainedV1(event)
-        );
+        entries.push({
+          kind: 'event',
+          turnId,
+          sequence: terminalEvent.sequence,
+          expectedRevision: 0,
+          content,
+        });
       }
-      entries.push({
-        kind: 'event',
-        turnId,
-        sequence: event.sequence,
-        expectedRevision: 0,
-        content,
-      });
       const client = getControlStoreWorkerClient();
       const database = `${owner.kind === 'server' ? 'core' : 'workspace'}:${scope.path}`;
       await client.open({
@@ -4430,11 +4464,12 @@ export class FsStore {
         const stream =
           owner.kind === 'server' ? this.serverTurnStream(turnId) : this.turnStream(turnId);
         stream.sequence = event.sequence;
-        stream.events.push(event as never);
+        stream.events.push(...([...precedingEvents, event] as never[]));
         if (stream.events.length > TURN_STREAM_EVENT_WINDOW_SIZE) stream.events.shift();
       }
     }
-    this.acknowledgedTurnEvents.set(event, structuredClone(event));
+    for (const terminalEvent of [...precedingEvents, event])
+      this.acknowledgedTurnEvents.set(terminalEvent, structuredClone(terminalEvent));
     return owner.kind === 'server' ? this.getServerTurnById(turnId) : this.getTurnById(turnId);
   }
 

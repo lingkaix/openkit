@@ -328,11 +328,11 @@ function createNanoHostWorkerLifecycleRuntime(
 ): ConfiguredWorkerLifecycleRuntime {
   const backend = new NanoHostWorkerGovernanceBackend(
     coreDb,
-    (agentSessionId, digest, retainedStorage) => {
+    async (agentSessionId, digest, retainedStorage) => {
       if (!(turnExecutor instanceof WorkerGovernanceTurnExecutor)) {
         throw new Error('The self-check executor cannot record real native proof.');
       }
-      turnExecutor.recordNativeHandleDigest(
+      await turnExecutor.recordNativeHandleDigest(
         sharedStore ?? new FsStore({ dataRoot: coreDb.dataRoot }),
         agentSessionId,
         digest,
@@ -442,7 +442,7 @@ function createNanoHostWorkerLifecycleRuntime(
       const environmentPackage = await restoreDurableSession(session);
       backend.restoreSession(environmentPackage, session.attemptId);
       if (turnExecutor instanceof WorkerGovernanceTurnExecutor) {
-        turnExecutor.bindNativeHandleRecorder(
+        await turnExecutor.bindNativeHandleRecorder(
           sharedStore ?? new FsStore({ dataRoot: coreDb.dataRoot }),
           environmentPackage
         );
@@ -472,7 +472,10 @@ interface NanoHostBackendTurnSession {
   readonly nativeResume: WorkerGovernanceNativeResume | null;
   /** AgentSession owner bound by the executor; receives each accepted ready proof at once. */
   recordNativeHandleDigest:
-    | ((digest: string, retainedStorage: { storageRef: string; workSlotRef: string }) => void)
+    | ((
+        digest: string,
+        retainedStorage: { storageRef: string; workSlotRef: string }
+      ) => void | Promise<void>)
     | null;
   readonly environmentPackage: AgentEnvironmentPackage;
   readonly evidence: WorkerGovernanceEvidenceRecord[];
@@ -675,7 +678,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       agentSessionId: string,
       digest: string,
       retainedStorage: { storageRef: string; workSlotRef: string }
-    ) => void,
+    ) => void | Promise<void>,
     private readonly sessionDispatch?: NanoHostSessionDispatch,
     private readonly workerControlGateway?: WorkerControlGateway,
     private readonly collectionVaultBackend?: () => VaultBackend,
@@ -1347,7 +1350,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       }
       // Preserve read-only continuity inspection. Only the subsequent retirement may delete.
       for (const binding of retirement.bindings) {
-        this.handoffDurableAgentSessionProof(
+        await this.handoffDurableAgentSessionProof(
           binding,
           binding.agentSessionId === input.agentSessionId
             ? input.recordNativeHandleDigest
@@ -1409,7 +1412,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     }
     // Compatibility decides placement, never whether an already-accepted proof survives.
     if (input.recordNativeHandleDigest) {
-      this.handoffDurableAgentSessionProof(inspection, input.recordNativeHandleDigest);
+      await this.handoffDurableAgentSessionProof(inspection, input.recordNativeHandleDigest);
     }
     if (
       !this.hasProcessLocalAgentSession(inspection) &&
@@ -1666,7 +1669,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   }
 
   /** Transfers every sole ready proof before a Sandbox-wide binding cascade, including idle siblings. */
-  private handoffSandboxAgentSessionProofs(bindingRef: string): void {
+  private async handoffSandboxAgentSessionProofs(bindingRef: string): Promise<void> {
     const bindings = this.coreDb.sqlite
       .prepare(`
       SELECT b.agent_session_id AS agentSessionId,
@@ -1687,20 +1690,20 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       const live =
         candidates.find((session) => session.acceptedProofUnrecorded) ??
         candidates.find((session) => session.recordNativeHandleDigest);
-      // A synchronous recorder already accepted this immutable ready proof in this process.
+      // The recorder already acknowledged this immutable ready proof in this process.
       if (live?.acceptedProofUnrecorded === false) continue;
       if (live?.recordNativeHandleDigest && binding.nativeHandleDigest) {
-        this.recordAcceptedNativeHandleDigest(live, binding.nativeHandleDigest);
+        await this.recordAcceptedNativeHandleDigest(live, binding.nativeHandleDigest);
       } else {
-        this.handoffDurableAgentSessionProof({ ...binding, reusable: false });
+        await this.handoffDurableAgentSessionProof({ ...binding, reusable: false });
       }
     }
   }
 
   /** Completes Core handoff after known physical deletion; a failed transfer retains and fences its rows. */
-  private finishProvedSandboxCleanup(scope: NanoHostSharedSandbox): void {
+  private async finishProvedSandboxCleanup(scope: NanoHostSharedSandbox): Promise<void> {
     try {
-      this.handoffSandboxAgentSessionProofs(scope.sandboxBindingRef);
+      await this.handoffSandboxAgentSessionProofs(scope.sandboxBindingRef);
       if (
         getWorkerStorageBindingForSandbox(this.coreDb, {
           sandboxBindingRef: scope.sandboxBindingRef,
@@ -1763,7 +1766,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       );
       if (provedScope) {
         try {
-          this.finishProvedSandboxCleanup(provedScope);
+          await this.finishProvedSandboxCleanup(provedScope);
         } catch (error) {
           retainUnrecordedProof = !!session;
           throw error;
@@ -1815,7 +1818,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           identity.deploymentId
         );
         // Physical absence does not erase accepted native proof or its immutable storage lineage.
-        this.handoffSandboxAgentSessionProofs(durableSandbox.sandboxBindingRef);
+        await this.handoffSandboxAgentSessionProofs(durableSandbox.sandboxBindingRef);
         this.releaseWorkerStorageForSandbox(durableSandbox.sandboxBindingRef);
         removeNanoHostSandboxRuntimeByBinding(this.coreDb, durableSandbox.sandboxBindingRef);
         this.forgetSharedSandbox(durableSandbox.sandboxCompatibilityKey);
@@ -1945,13 +1948,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         }
         if (session) {
           try {
-            this.finishProvedSandboxCleanup(session.sharedHarness.sandbox);
+            await this.finishProvedSandboxCleanup(session.sharedHarness.sandbox);
           } catch (error) {
             retainUnrecordedProof = true;
             throw error;
           }
         } else if (durableSandbox) {
-          this.handoffSandboxAgentSessionProofs(durableSandbox.sandboxBindingRef);
+          await this.handoffSandboxAgentSessionProofs(durableSandbox.sandboxBindingRef);
           this.releaseWorkerStorageForSandbox(durableSandbox.sandboxBindingRef);
           removeNanoHostSandboxRuntimeByBinding(this.coreDb, durableSandbox.sandboxBindingRef);
         } else {
@@ -2157,15 +2160,15 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   }
 
   /** Reports capacity after preserving any retiring binding's proof, without runtime effects. */
-  public inspectMaterializationCapacity(
+  public async inspectMaterializationCapacity(
     environmentPackage: AgentEnvironmentPackagePreview
-  ): 'available' | 'capacity-saturated' {
+  ): Promise<'available' | 'capacity-saturated'> {
     // Compatible live residents share only the authored aggregate capacity. Closing Turns
     // retain their live reservation through output collection and the complete handoff.
     const eviction = this.inspectIncompatibleIdleSandbox(environmentPackage);
     if (eviction === 'capacity-saturated') return 'capacity-saturated';
     for (const binding of eviction?.bindings ?? []) {
-      this.handoffDurableAgentSessionProof(binding, undefined, eviction!);
+      await this.handoffDurableAgentSessionProof(binding, undefined, eviction!);
     }
     return 'available';
   }
@@ -2535,7 +2538,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         }
         // Every row removed by whole-Sandbox retirement must settle proof before drain.
         for (const binding of eviction.bindings) {
-          this.handoffDurableAgentSessionProof(binding, undefined, eviction);
+          await this.handoffDurableAgentSessionProof(binding, undefined, eviction);
         }
         const timestamp = new Date().toISOString();
         const physicalAbsentFlag = Number(eviction.physicalAbsent);
@@ -3390,7 +3393,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       };
       session.sharedHarness.bindings.set(session.environmentPackage.scope.agentSessionId, binding);
       if (binding.nativeHandleDigest !== null) {
-        this.recordAcceptedNativeHandleDigest(session, binding.nativeHandleDigest);
+        await this.recordAcceptedNativeHandleDigest(session, binding.nativeHandleDigest);
       }
     } else {
       copyNanoHostMeasuredHarnessIdentity(this.coreDb, {
@@ -3736,17 +3739,20 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
    * the binding already holds, including one accepted before a NanoCore restart. Restored handoff
    * uses the shared recorder boundary, so a throw keeps that proof's binding row.
    */
-  public bindNativeHandleRecorder(
+  public async bindNativeHandleRecorder(
     packageSnapshotId: string,
-    record: (digest: string, retainedStorage: { storageRef: string; workSlotRef: string }) => void
-  ): void {
+    record: (
+      digest: string,
+      retainedStorage: { storageRef: string; workSlotRef: string }
+    ) => void | Promise<void>
+  ): Promise<void> {
     const session = this.requireSession(packageSnapshotId);
     session.recordNativeHandleDigest = record;
     const digest = session.sharedHarness.bindings.get(
       session.environmentPackage.scope.agentSessionId
     )?.nativeHandleDigest;
     if (digest) {
-      this.recordAcceptedNativeHandleDigest(session, digest);
+      await this.recordAcceptedNativeHandleDigest(session, digest);
     }
   }
 
@@ -3754,18 +3760,18 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
    * Hands one ready proof NanoCore just accepted to the AgentSession owner, which keeps it after
    * the binding row closes. The proof is marked unrecorded before the recorder runs and cleared
    * only after that exact digest is handed off, so a throw keeps the binding, the admission fence,
-   * and cleanup ownership. The SQLite binding commit precedes this synchronous write, so a crash
+   * and cleanup ownership. The SQLite binding commit precedes this acknowledged write, so a crash
    * between them leaves the proof on the binding row for the restart recorder bind to record.
    */
-  private recordAcceptedNativeHandleDigest(
+  private async recordAcceptedNativeHandleDigest(
     session: NanoHostBackendTurnSession,
     digest: string
-  ): void {
+  ): Promise<void> {
     session.acceptedProofUnrecorded = true;
     if (!session.recordNativeHandleDigest) {
       throw new Error('NanoHost accepted native ready proof without its AgentSession recorder.');
     }
-    session.recordNativeHandleDigest(digest, {
+    await session.recordNativeHandleDigest(digest, {
       storageRef: session.sharedHarness.sandbox.workerStorageBinding.storageRef,
       workSlotRef: packageWorkerStorageWorkSlotRef(session.environmentPackage),
     });
@@ -5019,11 +5025,14 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   /**
    * Joins accepted proof to original persisted identities and compatibility keys reproduced from digest-verified retained JSON before normalization. Proof-only inspection needs no Turn handle or live Harness, including in an old physical Epoch. A recorder refusal leaves the binding and its cleanup ownership untouched.
    */
-  private handoffDurableAgentSessionProof(
+  private async handoffDurableAgentSessionProof(
     inspection: NanoHostAgentSessionContinuityInspection,
-    record?: (digest: string, retainedStorage: { storageRef: string; workSlotRef: string }) => void,
+    record?: (
+      digest: string,
+      retainedStorage: { storageRef: string; workSlotRef: string }
+    ) => void | Promise<void>,
     retirement?: NanoHostIdleSandboxEviction
-  ): void {
+  ): Promise<void> {
     const digest = inspection.nativeHandleDigest;
     if (!digest) return;
     // Physical retirement is not executable admission. Keep the accepted historical proof and bytes.
@@ -5066,9 +5075,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const recorder =
       record ??
       liveSession?.recordNativeHandleDigest ??
-      ((digest: string, retainedStorage: { storageRef: string; workSlotRef: string }) => {
-        this.recordNativeHandleDigest(inspection.agentSessionId, digest, retainedStorage);
-      });
+      ((digest: string, retainedStorage: { storageRef: string; workSlotRef: string }) =>
+        this.recordNativeHandleDigest(inspection.agentSessionId, digest, retainedStorage));
     if (liveSession) {
       if (
         liveSession.sharedHarness.sandbox.workerStorageBinding.storageRef !==
@@ -5080,13 +5088,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       }
       liveSession.recordNativeHandleDigest = recorder;
       // The durable result may precede the volatile cache handoff; record exactly the inspected proof.
-      this.recordAcceptedNativeHandleDigest(liveSession, digest);
+      await this.recordAcceptedNativeHandleDigest(liveSession, digest);
       const cachedBinding = liveSession.sharedHarness.bindings.get(inspection.agentSessionId);
       if (cachedBinding?.agentSessionRuntimeBindingId === inspection.agentSessionRuntimeBindingId) {
         cachedBinding.nativeHandleDigest = digest;
       }
     } else {
-      recorder(digest, retainedStorage);
+      await recorder(digest, retainedStorage);
     }
   }
 
@@ -5321,7 +5329,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       (carriedResumeDigest === null || readyDigest === carriedResumeDigest);
     if (digestAgrees && readyDigest !== null) {
       binding.nativeHandleDigest = readyDigest;
-      this.recordAcceptedNativeHandleDigest(session, readyDigest);
+      await this.recordAcceptedNativeHandleDigest(session, readyDigest);
     }
     const barrierReached =
       (inspected.state === 'open' && inspected.cleanupState === 'clean') ||

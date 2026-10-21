@@ -191,7 +191,14 @@ export async function terminalizeGovernedWorkerTurn(
           .find(
             (event) => event.event === 'turn.completed' && event.data.type === 'turn-completed'
           );
-        if (event) notifications.push(event);
+        if (event)
+          notifications.push(
+            await input.store.persistTurnEvent(
+              input.turnId,
+              event,
+              ALREADY_DECIDED_PUBLICATION_ADMISSION
+            )
+          );
       }
     } catch (error) {
       errors.push(error);
@@ -309,7 +316,14 @@ async function reconcileCompletedTurn(
           .find(
             (event) => event.event === 'turn.completed' && event.data.type === 'turn-completed'
           );
-        if (event) notifications.push(event);
+        if (event)
+          notifications.push(
+            await input.store.persistTurnEvent(
+              input.turnId,
+              event,
+              ALREADY_DECIDED_PUBLICATION_ADMISSION
+            )
+          );
       }
     } catch (error) {
       errors.push(error);

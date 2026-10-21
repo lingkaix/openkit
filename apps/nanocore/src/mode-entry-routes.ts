@@ -2426,7 +2426,7 @@ export function createConversationService({
     readonly onTurnCreated?: (
       turn: z.infer<typeof TurnSchema>,
       agentSessionId: string | null
-    ) => void;
+    ) => void | Promise<void>;
   }) => Promise<z.infer<typeof TurnSchema>>;
   readonly goalServices?: () => GoalOwnerServices;
   readonly knowledgeAgent?: import('./operation-composition.js').OperationInvocationDependencies['knowledgeAgent'];
@@ -3378,11 +3378,11 @@ export function createConversationService({
                   requestedAgentId: agentId!,
                   reservedTurnId: turnId,
                   ...(workerStorageChoice ? { workerStorageChoice } : {}),
-                  onTurnCreated: (created, agentSessionId) => {
+                  onTurnCreated: async (created, agentSessionId) => {
                     onAdmitted(created, agentSessionId);
                     const createdAt = created.startedAt ?? new Date().toISOString();
                     for (const artifact of artifacts) {
-                      store.createItem({
+                      await store.createItem({
                         id: artifactReferenceItemId(artifact.id, created.id),
                         owner: { kind: 'workspace', workspaceId: workspaceId },
                         threadId: receivingThreadId,
@@ -3398,7 +3398,7 @@ export function createConversationService({
                         completedAt: createdAt,
                       });
                     }
-                    persistWorkerResult();
+                    await persistWorkerResult();
                     acceptSignalled = true;
                     resolveAccepted();
                   },
@@ -4731,7 +4731,7 @@ export function createTaskStartOperation({
     readonly onTurnCreated?: (
       turn: z.infer<typeof TurnSchema>,
       agentSessionId: string | null
-    ) => void;
+    ) => void | Promise<void>;
   }) => Promise<z.infer<typeof TurnSchema>>;
   readonly workerCoordinatorCandidates: (
     store: FsStore,

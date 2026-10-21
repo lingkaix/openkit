@@ -241,7 +241,7 @@ export interface WorkerGovernanceAgentSessionContinuityInput {
   readonly recordNativeHandleDigest?: (
     digest: string,
     retainedStorage: { storageRef: string; workSlotRef: string }
-  ) => void;
+  ) => void | Promise<void>;
   /** Whether the product owner permits reuse if backend hygiene is exact. */
   readonly reuseAllowed: boolean;
   /** Exact retained-storage selection whose attached Sandbox may be retired. */
@@ -1109,7 +1109,7 @@ export interface WorkerGovernanceBackend extends ExecutionBackend {
   /** Reads whether the one configured physical runtime can admit this secret-free package. */
   inspectMaterializationCapacity?(
     environmentPackage: AgentEnvironmentPackagePreview
-  ): 'available' | 'capacity-saturated';
+  ): 'available' | 'capacity-saturated' | Promise<'available' | 'capacity-saturated'>;
 
   /**
    * Reads the sole native AgentSession occupying one Workspace Thread, if any.
@@ -1169,7 +1169,7 @@ export interface WorkerGovernanceBackend extends ExecutionBackend {
 
   /**
    * Binds the AgentSession owner that durably records native ready proof for one live Turn's
-   * binding. The backend calls `record` synchronously each time it accepts a ready proof, before
+   * binding. The backend awaits `record` each time it accepts a ready proof, before
    * any later import, native work, export, or close can discard it, and once at bind time for a
    * proof its binding already holds, so a proof accepted before a NanoCore restart reaches the
    * AgentSession record. A `record` failure fails the accepting operation closed.
@@ -1179,8 +1179,11 @@ export interface WorkerGovernanceBackend extends ExecutionBackend {
    */
   bindNativeHandleRecorder?(
     packageSnapshotId: string,
-    record: (digest: string, retainedStorage: { storageRef: string; workSlotRef: string }) => void
-  ): void;
+    record: (
+      digest: string,
+      retainedStorage: { storageRef: string; workSlotRef: string }
+    ) => void | Promise<void>
+  ): void | Promise<void>;
 
   /**
    * Applies a dynamic package update when supported.

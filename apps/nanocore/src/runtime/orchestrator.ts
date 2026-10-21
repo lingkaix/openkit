@@ -103,7 +103,7 @@ export interface StartTurnInput
    * Callers that need a bounded acceptance signal must filter to the exact requested Turn.
    */
   onSubmissionSettled?: () => void;
-  onTurnCreated?: (turn: z.infer<typeof TurnSchema>) => void;
+  onTurnCreated?: (turn: z.infer<typeof TurnSchema>) => void | Promise<void>;
 }
 
 /**
@@ -382,7 +382,7 @@ export async function startTurn(input: StartTurnInput): Promise<TurnHandle> {
         }).id
       : null;
 
-  input.onTurnCreated?.(input.store.getTurnById(turn.id));
+  await input.onTurnCreated?.(input.store.getTurnById(turn.id));
   await input.turnExecutor.startTurn(input.store, turn.id, input.input, {
     ...(input.onSubmissionSettled ? { onSubmissionSettled: input.onSubmissionSettled } : {}),
     ...(input.attemptId ? { attemptId: input.attemptId } : {}),

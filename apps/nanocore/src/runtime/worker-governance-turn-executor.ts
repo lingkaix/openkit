@@ -1158,7 +1158,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         input.freshAgentSessionId,
         input
       );
-      this.requireMaterializationCapacity(input.freshAgentSessionId, input);
+      await this.requireMaterializationCapacity(input.freshAgentSessionId, input);
       let disposition: WorkerGovernanceAgentSessionContinuityDisposition;
       try {
         disposition = await this.backend.prepareAgentSessionContinuity({
@@ -1195,7 +1195,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     }
     const currentCompatibilityKey = this.previewAgentSessionCompatibilityKey(current.id, input);
     const currentEnvironmentPackage = this.previewAgentEnvironmentPackage(current.id, input);
-    this.requireMaterializationCapacity(current.id, input);
+    await this.requireMaterializationCapacity(current.id, input);
     const reuseAllowed =
       current.status === 'idle' &&
       !current.stale &&
@@ -1270,7 +1270,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       input.freshAgentSessionId,
       input
     );
-    this.requireMaterializationCapacity(input.freshAgentSessionId, input);
+    await this.requireMaterializationCapacity(input.freshAgentSessionId, input);
     return {
       ...(workerStorageChoice ? { workerStorageChoice } : {}),
       agentSessionId: input.freshAgentSessionId,
@@ -1375,7 +1375,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           409
         );
       }
-      this.requireMaterializationCapacity(prepared.agentSessionId, preparation);
+      await this.requireMaterializationCapacity(prepared.agentSessionId, preparation);
       const disposition = await inspectBackendContinuity(
         prepared.agentSessionId,
         freshCompatibilityKey,
@@ -1475,7 +1475,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           409
         );
       }
-      this.requireMaterializationCapacity(current.id, preparation);
+      await this.requireMaterializationCapacity(current.id, preparation);
       const disposition = await inspectBackendContinuity(
         current.id,
         currentCompatibilityKey,
@@ -1517,7 +1517,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         409
       );
     }
-    this.requireMaterializationCapacity(prepared.agentSessionId, preparation);
+    await this.requireMaterializationCapacity(prepared.agentSessionId, preparation);
     const inspected = await inspectBackendContinuity(
       current.id,
       currentCompatibilityKey,
@@ -1665,16 +1665,16 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   }
 
   /** Rejects admission when the current NanoHost target cannot host the resolved package. */
-  private requireMaterializationCapacity(
+  private async requireMaterializationCapacity(
     agentSessionId: string,
     input: PrepareAgentSessionForTurnInput
-  ): void {
+  ): Promise<void> {
     if (!this.backend.inspectMaterializationCapacity) {
       return;
     }
     let capacity: 'available' | 'capacity-saturated';
     try {
-      capacity = this.backend.inspectMaterializationCapacity(
+      capacity = await this.backend.inspectMaterializationCapacity(
         this.previewAgentEnvironmentPackage(agentSessionId, input)
       );
     } catch (cause) {
@@ -1928,7 +1928,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       };
       // This inexpensive recheck is a snapshot; materialize owns the final capacity decision.
       // Publication precedes every incoming reservation or effect.
-      this.requireMaterializationCapacity(resolvedAgentSessionId, launchPreparation);
+      await this.requireMaterializationCapacity(resolvedAgentSessionId, launchPreparation);
       const launchEnvironmentPackage = this.previewAgentEnvironmentPackage(
         resolvedAgentSessionId,
         launchPreparation
@@ -2210,7 +2210,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       const launchCapabilities = backendCapabilities;
       const launchLifecycle = backendLifecycle;
       /** Publishes the execution binding only after the backend's final no-effect capacity guards. */
-      const publishMaterialization = () => {
+      const publishMaterialization = async () => {
         preparedWorkerContext?.assertCurrentKnowledgeOverview();
         if (materializationPublished)
           throw new Error('Worker materialization publication may occur only once.');
@@ -2228,14 +2228,14 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             attemptId: launchContext.attemptId!,
           });
         const agentSession = existingAgentSession
-          ? store.updateAgentSession(existingAgentSession.id, {
+          ? await store.updateAgentSession(existingAgentSession.id, {
               configVersion: turn.configVersion,
               environmentPackageSnapshotId: launchPackage.snapshotId,
               message: null,
               status: 'initializing',
               updatedAt: timestamp,
             })
-          : store.createAgentSession({
+          : await store.createAgentSession({
               agentId: manifest.id,
               configVersion: turn.configVersion,
               createdAt: timestamp,
@@ -2250,11 +2250,11 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
               workspaceId: workspaceIdForOwner(turn.owner),
               workspaceRoots: launchContext.workspaceRoots,
             });
-        store.updateTurn(turnId, {
+        await store.updateTurn(turnId, {
           agentProfileId: launchPackage.agent.profileId,
           agentSessionId: agentSession.id,
         });
-        const userItem = store.createItem({
+        const userItem = await store.createItem({
           actor: outcomeInitiated
             ? pendingRequestSystemActor(responsibleUserIdForActor(launchContext.triggerActor))
             : launchContext.triggerActor,
@@ -2269,9 +2269,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
         });
 
-        this.emitTurnStarted(store, launchPackage, requestId);
-        this.emitItemCreatedAndCompleted(store, launchPackage, requestId, userItem);
-        this.emitAgentSession(store, launchPackage, requestId, agentSession);
+        await this.emitTurnStarted(store, launchPackage, requestId);
+        await this.emitItemCreatedAndCompleted(store, launchPackage, requestId, userItem);
+        await this.emitAgentSession(store, launchPackage, requestId, agentSession);
 
         if (workspaceDb) {
           recordAgentEnvironmentPackageSnapshot(workspaceDb, {
@@ -2344,7 +2344,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           updatedAt: this.now(),
         });
       }
-      this.bindNativeHandleRecorder(store, environmentPackage);
+      await this.bindNativeHandleRecorder(store, environmentPackage);
       if (backendLifecycle.session) {
         backendLifecycle.session = transitionWorkerBackendSessionState(this.coreDb!, {
           fromState: 'materializing',
@@ -2402,7 +2402,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         status: 'busy',
         updatedAt: this.now(),
       });
-      this.emitAgentSession(store, environmentPackage, requestId, busySession);
+      await this.emitAgentSession(store, environmentPackage, requestId, busySession);
 
       const completionLeaseId = this.awaitWorkerCompletion
         ? backendLifecycle.session?.attemptId
@@ -2687,7 +2687,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       session,
       this.backend.planSession(environmentPackage)
     );
-    if (session.state !== 'cleaned') this.bindNativeHandleRecorder(store, environmentPackage);
+    if (session.state !== 'cleaned') await this.bindNativeHandleRecorder(store, environmentPackage);
     const turn = store.getTurnById(environmentPackage.scope.turnId);
     const accepted = getWorkerControlAcceptedFinalStatus(this.coreDb, {
       agentSessionId: environmentPackage.scope.agentSessionId,
@@ -3153,7 +3153,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         environmentPackage,
         backendCapabilities
       );
-      this.emitImportedRecords(store, environmentPackage, requestId, importResult);
+      await this.emitImportedRecords(store, environmentPackage, requestId, importResult);
     } finally {
       releaseMutation?.();
     }
@@ -3215,16 +3215,15 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
    * @param environmentPackage Package of the live or restored Turn whose binding the backend holds.
    * @throws Error when native proof contradicts the durable digest or actual attachment provenance.
    */
-  public bindNativeHandleRecorder(
+  public async bindNativeHandleRecorder(
     store: FsStore,
     environmentPackage: AgentEnvironmentPackage
-  ): void {
+  ): Promise<void> {
     const agentSessionId = environmentPackage.scope.agentSessionId;
-    this.backend.bindNativeHandleRecorder?.(
+    await this.backend.bindNativeHandleRecorder?.(
       environmentPackage.snapshotId,
-      (digest, retainedStorage) => {
-        this.recordNativeHandleDigest(store, agentSessionId, digest, retainedStorage);
-      }
+      (digest, retainedStorage) =>
+        this.recordNativeHandleDigest(store, agentSessionId, digest, retainedStorage)
     );
   }
 
@@ -3237,12 +3236,12 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
    * @param retainedStorage Actual association and work slot held by that binding.
    * @throws TurnStartValidationError when immutable attachment provenance is missing or disagrees.
    */
-  public recordNativeHandleDigest(
+  public async recordNativeHandleDigest(
     store: FsStore,
     agentSessionId: string,
     digest: string,
     retainedStorage: { storageRef: string; workSlotRef: string }
-  ): void {
+  ): Promise<void> {
     const session = store.getAgentSession(agentSessionId);
     if (
       !AgentSessionRetainedStorageSchema.safeParse(session.retainedStorage).success ||
@@ -3255,7 +3254,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       );
     }
     if (session.nativeHandleDigest !== digest) {
-      store.updateAgentSession(agentSessionId, {
+      await store.updateAgentSession(agentSessionId, {
         nativeHandleDigest: digest,
         updatedAt: this.now(),
       });
@@ -3391,12 +3390,12 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
    * @param environmentPackage Package lineage.
    * @param requestId Request id.
    */
-  private emitTurnStarted(
+  private async emitTurnStarted(
     store: FsStore,
     environmentPackage: AgentEnvironmentPackage,
     requestId: string | null
-  ): void {
-    store.emitTurnEvent(environmentPackage.scope.turnId, {
+  ): Promise<void> {
+    const turnStartedEvent = await store.persistTurnEvent(environmentPackage.scope.turnId, {
       data: { status: 'running', turnId: environmentPackage.scope.turnId, type: 'turn-started' },
       event: 'turn.started',
       requestId,
@@ -3404,6 +3403,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       turnId: environmentPackage.scope.turnId,
       workspaceId: environmentPackage.scope.workspaceId,
     });
+    store.emitTurnEvent(environmentPackage.scope.turnId, turnStartedEvent);
   }
 
   /**
@@ -3640,7 +3640,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         if (!artifactItem) {
           throw new Error(`Workspace review Artifact reference is missing: ${artifactId}`);
         }
-        this.emitImportedRecords(store, environmentPackage, artifactRequestId, {
+        await this.emitImportedRecords(store, environmentPackage, artifactRequestId, {
           artifactIds: [artifactId],
           itemIds: [artifactItem.id],
         });
@@ -3670,13 +3670,13 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
    * @param requestId Request id.
    * @param item Item to emit.
    */
-  private emitItemCreatedAndCompleted(
+  private async emitItemCreatedAndCompleted(
     store: FsStore,
     environmentPackage: AgentEnvironmentPackage,
     requestId: string | null,
     item: Awaited<ReturnType<FsStore['createItem']>>
-  ): void {
-    store.emitTurnEvent(
+  ): Promise<void> {
+    const itemCreatedEvent = await store.persistTurnEvent(
       environmentPackage.scope.turnId,
       {
         data: { item, type: 'item-created' },
@@ -3688,7 +3688,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       },
       ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
-    store.emitTurnEvent(
+    store.emitTurnEvent(environmentPackage.scope.turnId, itemCreatedEvent);
+    const itemCompletedEvent = await store.persistTurnEvent(
       environmentPackage.scope.turnId,
       {
         data: { item, itemId: item.id, type: 'item-completed' },
@@ -3700,6 +3701,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       },
       ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
+    store.emitTurnEvent(environmentPackage.scope.turnId, itemCompletedEvent);
   }
 
   /**
@@ -3710,13 +3712,13 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
    * @param requestId Request id.
    * @param agentSession AgentSession record.
    */
-  private emitAgentSession(
+  private async emitAgentSession(
     store: FsStore,
     environmentPackage: AgentEnvironmentPackage,
     requestId: string | null,
     agentSession: Awaited<ReturnType<FsStore['createAgentSession']>>
-  ): void {
-    store.emitTurnEvent(
+  ): Promise<void> {
+    const agentSessionUpdatedEvent = await store.persistTurnEvent(
       environmentPackage.scope.turnId,
       {
         data: { agentSession, type: 'agent-session-updated' },
@@ -3728,6 +3730,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       },
       ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
+    store.emitTurnEvent(environmentPackage.scope.turnId, agentSessionUpdatedEvent);
   }
 
   /**
@@ -3738,12 +3741,12 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
    * @param requestId Request id.
    * @param importResult Imported canonical record ids.
    */
-  private emitImportedRecords(
+  private async emitImportedRecords(
     store: FsStore,
     environmentPackage: AgentEnvironmentPackage,
     requestId: string | null,
     importResult: { itemIds: string[]; artifactIds: string[] }
-  ): void {
+  ): Promise<void> {
     const threadItems = store.listThreadItems(
       environmentPackage.scope.workspaceId,
       environmentPackage.scope.threadId
@@ -3753,12 +3756,12 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       const item = threadItems.find((candidate) => candidate.id === itemId);
 
       if (item) {
-        this.emitItemCreatedAndCompleted(store, environmentPackage, requestId, item);
+        await this.emitItemCreatedAndCompleted(store, environmentPackage, requestId, item);
       }
     }
     for (const artifactId of importResult.artifactIds) {
       const artifact = store.getArtifact(environmentPackage.scope.workspaceId, artifactId);
-      store.emitTurnEvent(
+      const artifactCreatedEvent = await store.persistTurnEvent(
         environmentPackage.scope.turnId,
         {
           data: { artifact, type: 'artifact-created' },
@@ -3770,6 +3773,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         },
         ALREADY_DECIDED_PUBLICATION_ADMISSION
       );
+      store.emitTurnEvent(environmentPackage.scope.turnId, artifactCreatedEvent);
     }
   }
 
@@ -3937,13 +3941,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       status: 'idle',
       updatedAt: completedAt,
     });
-    const turn = await store.updateTurn(turnScope.id, {
-      completedAt,
-      error: null,
-      status: 'completed',
-    });
-
-    await store.emitTurnEvent(
+    const agentSessionUpdatedEvent = await store.persistTurnEvent(
       turnScope.id,
       {
         data: { agentSession, type: 'agent-session-updated' },
@@ -3955,7 +3953,16 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       },
       ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
-    await store.emitTurnEvent(
+    const turn = await store.completeTurn(
+      turnScope.id,
+      {
+        completedAt,
+        error: null,
+        status: 'completed',
+      },
+      { requestId, stopReason }
+    );
+    const turnCompletedEvent = await store.persistTurnEvent(
       turnScope.id,
       {
         data: { stopReason, turn, type: 'turn-completed' },
@@ -3967,6 +3974,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       },
       ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
+    // Completion and cleanup preparation finish before the synchronous notification tail.
+    store.emitTurnEvent(turnScope.id, agentSessionUpdatedEvent);
+    store.emitTurnEvent(turnScope.id, turnCompletedEvent);
   }
 
   /**
