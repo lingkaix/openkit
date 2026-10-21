@@ -5,7 +5,9 @@ import { join } from 'node:path';
 import { zstdDecompressSync } from 'node:zlib';
 import { createModels } from '@earendil-works/pi-ai';
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
+import { ProductOperationSchema } from '@openkit/config-schema';
 import { formatReferenceUri } from '@openkit/protocol';
+import { Ajv2020 } from 'ajv/dist/2020.js';
 import { expect, it, vi } from 'vitest';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
@@ -340,6 +342,91 @@ it('dispatches an ordinary Coordinator Turn through Gateway and invokes a table-
         'goal_task_dispatch',
       ])
     );
+    // Inspect the delivered schema semantically; prompt wording is not a behavior oracle.
+    const proposalTool = dispatch.mock.calls[0]![1].tools.find(
+      (tool: { name: string }) => tool.name === 'goal_plan_propose'
+    );
+    expect(proposalTool).toBeDefined();
+    const validateProposal = new Ajv2020({ strict: false }).compile(proposalTool.parameters);
+    const owner = { kind: 'workspace', workspaceId: workspace.id };
+    const domain = {
+      id: 'delivered-domain',
+      scope: {
+        subjects: [{ kind: 'agent', id: 'discoverable-worker' }],
+        actions: ['knowledge.read'],
+        resources: [
+          { kind: 'container', container: { owner, kind: 'workspace', id: workspace.id } },
+        ],
+      },
+      lifetime: { anchor: { owner, kind: 'goal', id: created.goal.goalId } },
+    };
+    const proposal = {
+      expectedRevision: 0,
+      commitment: {
+        intentBasis: { revision: 0, intent: 'Review this release' },
+        cards: [],
+        permittedAdjustments: 'Read only',
+        completionEvidence: ['Review'],
+        boundaries: 'No writes',
+      },
+      goalDomain: domain,
+    };
+    expect(validateProposal(proposal)).toBe(true);
+    for (const action of ProductOperationSchema.options) {
+      expect
+        .soft(
+          validateProposal({
+            ...proposal,
+            goalDomain: { ...domain, scope: { ...domain.scope, actions: [action] } },
+          }),
+          action
+        )
+        .toBe(true);
+    }
+    for (const action of ['read', 'propose', 'knowledge-candidate']) {
+      expect
+        .soft(
+          validateProposal({
+            ...proposal,
+            goalDomain: { ...domain, scope: { ...domain.scope, actions: [action] } },
+          }),
+          action
+        )
+        .toBe(false);
+    }
+    for (const kind of [
+      'workspace',
+      'goal',
+      'thread',
+      'turn',
+      'workspace-knowledge',
+      'knowledge',
+      'artifact',
+    ]) {
+      const id =
+        kind === 'goal'
+          ? created.goal.goalId
+          : kind === 'thread'
+            ? created.goal.threadId
+            : kind === 'turn'
+              ? store.listThreadTurns(workspace.id, created.goal.threadId)[0]!.id
+              : workspace.id;
+      expect
+        .soft(
+          validateProposal({
+            ...proposal,
+            goalDomain: {
+              ...domain,
+              scope: {
+                ...domain.scope,
+                resources: [{ kind: 'container', container: { owner, kind, id } }],
+              },
+            },
+          }),
+          kind
+        )
+        .toBe(['workspace', 'goal', 'thread', 'turn'].includes(kind));
+    }
     expect(store.listThreadAgentSessions(workspace.id, created.goal.threadId)).toEqual([]);
     expect(readGoalView(store, db, created.goal.goalId).tasks).toEqual([]);
     expect(readGoalView(store, db, created.goal.goalId).goal?.disposition).toBeNull();
