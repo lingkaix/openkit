@@ -1818,12 +1818,6 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
     if (!artifactItem) {
       throw new Error(`Artifact reference was not persisted: ${artifact.id}`);
     }
-    const completedAt = new Date().toISOString();
-    const agentSession = await store.updateAgentSession(state.agentSessionId, {
-      status: 'idle',
-      message: null,
-      updatedAt: completedAt,
-    });
     const artifactCreatedEvent = await store.persistTurnEvent(
       state.turnId,
       {
@@ -1847,15 +1841,57 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       'artifact-reference'
     );
     await this.emitItemCompleted(store, state, artifactItem);
-    await this.emitAgentSessionUpdated(store, state, agentSession);
+    const completedAt = new Date().toISOString();
+    const sessionProjection = {
+      id: state.agentSessionId,
+      status: 'idle' as const,
+      message: null,
+      updatedAt: completedAt,
+    };
+    const composeSession = Boolean(store.getDataRoot());
+    const { id: _sessionId, ...sessionPatch } = sessionProjection;
+    const agentSession = composeSession
+      ? { ...store.getAgentSession(state.agentSessionId), ...sessionProjection }
+      : await store.updateAgentSession(state.agentSessionId, sessionPatch);
+    // The Session closeout and completion share their decided timestamp and native commit.
+    // Awaited Artifact events must not place a later Session event before an older completion.
+    const sessionEvent = {
+      event: 'agent.session.updated' as const,
+      requestId: state.requestId,
+      workspaceId: state.workspaceId,
+      threadId: state.threadId,
+      turnId: state.turnId,
+      data: { type: 'agent-session-updated' as const, agentSession },
+    };
     const turn = await store.completeTurn(
       state.turnId,
       {
         status: 'completed',
         completedAt,
       },
-      { ...(await this.readTerminalPublication(store, state.turnId)), requestId: state.requestId }
+      {
+        ...(await this.readTerminalPublication(store, state.turnId)),
+        ...(composeSession ? { agentSession: sessionProjection } : {}),
+        precedingEvents: [sessionEvent],
+        requestId: state.requestId,
+      }
     );
+    const retainedSessionEvent = store
+      .getTurnEvents(state.turnId)
+      .findLast(
+        (event) =>
+          event.data.type === 'agent-session-updated' &&
+          event.data.agentSession.id === state.agentSessionId &&
+          event.data.agentSession.updatedAt === completedAt
+      );
+    if (!retainedSessionEvent)
+      throw new Error('Simulator terminal Session event was not acknowledged.');
+    const sessionNotification = await store.persistTurnEvent(
+      state.turnId,
+      retainedSessionEvent,
+      ALREADY_DECIDED_PUBLICATION_ADMISSION
+    );
+    store.emitTurnEvent(state.turnId, sessionNotification);
     const turnCompletedEvent = await store.persistTurnEvent(
       state.turnId,
       {
