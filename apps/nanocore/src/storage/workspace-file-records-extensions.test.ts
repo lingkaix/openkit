@@ -55,7 +55,7 @@ function annotate(path: string, nested: readonly string[] = []): void {
 async function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
   const restartRoot = mkdtempSync(join(tmpdir(), 'openkit-local-refusal-'));
   onTestFinished(() => rmSync(restartRoot, { recursive: true, force: true }));
-  const seed = new FsStore({ dataRoot: restartRoot });
+  const seed = createTestStore({ dataRoot: restartRoot });
   const sibling = await seed.createWorkspace('Healthy refusal control');
   const siblingThread = await seed.createThread(sibling.id, 'Retained sibling thread');
   const siblingBefore = seed.getWorkspace(sibling.id);

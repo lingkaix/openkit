@@ -73,7 +73,7 @@ async function fixture(sourceBacked = false) {
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
   const actor = { kind: 'local' as const, userId };
-  const store = await createDemoStore();
+  const store = await createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId: userId, workspaceId: DEMO_WORKSPACE_ID });
   const userDb = openUserDb(dataRoot, userId);
   const workspaceDb = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);

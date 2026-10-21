@@ -200,7 +200,7 @@ async function expectScopedReloadRefusal(dataRoot: string, workspaceIds: string[
     rmSync(healthyRoot, { recursive: true, force: true });
   });
   cpSync(dataRoot, restartRoot, { recursive: true, verbatimSymlinks: true });
-  const control = new FsStore({ dataRoot: healthyRoot });
+  const control = createTestStore({ dataRoot: healthyRoot });
   const healthy = await control.createWorkspace('Healthy reload sibling');
   const thread = await control.createThread(healthy.id, 'Retained sibling history');
   cpSync(join(healthyRoot, 'workspaces', healthy.id), join(restartRoot, 'workspaces', healthy.id), {
@@ -412,7 +412,7 @@ describe('FsStore canonical reload', () => {
         { kind: 'workspace', workspaceId: workspace.id }
       )
     );
-    const store = new FsStore({ dataRoot });
+    const store = createTestStore({ dataRoot });
     await store.importWorkspaceSnapshot({
       workspace,
       knowledge: [knowledge],
