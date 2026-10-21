@@ -36,6 +36,7 @@ import { loadBootPolicyKernel } from './bootstrap/policy.js';
 import {
   createBootId,
   createShutdownReadinessSnapshot,
+  isScopeAdmitted,
   refuseScope,
   restoreWorkspaceRetirementAdmission,
   withScopeAdmissionReadiness,
@@ -57,7 +58,7 @@ import { readReleaseIdentity } from './diagnostics/release-identity.js';
 import { NANOCORE_HTTP_SERVER_OPTIONS } from './http-server-options.js';
 import { recoverServerKnowledgeManagerTurns } from './knowledge/server-knowledge-maintenance.js';
 import { AutomationStore } from './lib/automation-store.js';
-import { FsStore } from './lib/store.js';
+import { FsStore, quickChatWorkspaceIdForUser } from './lib/store.js';
 import { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from './mode-entry-routes.js';
 import { recordBootPolicySelfCheckDecisions } from './policy/permission-decisions.js';
@@ -559,12 +560,15 @@ const runtimeConfigManager = createRuntimeConfigManager({
 });
 
 if (mode === 'local') {
-  // Boot owns durable personal scope; synchronous app composition cannot await native publication.
-  await ensureUserQuickChatWorkspace({
-    coreDb,
-    store: requireBootValue(sharedStore, 'Shared Workspace store was not initialized.'),
-    userId: ensureLocalUser(coreDb),
-  });
+  // A quarantined Personal scope must not prevent the server or healthy siblings from booting.
+  const userId = ensureLocalUser(coreDb);
+  if (isScopeAdmitted(dataRoot, 'workspace', quickChatWorkspaceIdForUser(userId))) {
+    await ensureUserQuickChatWorkspace({
+      coreDb,
+      store: requireBootValue(sharedStore, 'Shared Workspace store was not initialized.'),
+      userId,
+    });
+  }
 }
 if (mode === 'server') {
   const bootstrap = ensureServerBootstrapToken(coreDb);

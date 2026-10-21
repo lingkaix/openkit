@@ -66,6 +66,8 @@ describe('nanocore e2e migration idempotency', () => {
       'core_0012_quarantined_workspace_retirement',
       'core_0013_control_store',
       'core_0014_execution_journal',
+      'core_0015_work_observations',
+      'core_0016_workspace_recovery_admissions',
     ]);
     expect(ledgerRows).toEqual(
       journal.entries.map((entry) => ({ createdAt: entry.when, count: 1 }))
