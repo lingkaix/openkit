@@ -8,7 +8,8 @@ import { Worker } from 'node:worker_threads';
 import { allocateEntityId, deriveEntityId, ItemSchema, writeRetainedV1 } from '@openkit/protocol';
 import { LocalStorage, type StorageResult } from '@openkit/storage';
 import { afterEach, describe, expect, it } from 'vitest';
-import { commandRequestExpiresAt, commandRequestKey } from '../lib/store.js';
+import { commandRequestExpiresAt, commandRequestKey, FsStore } from '../lib/store.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { publishImmutableContent } from '../storage/immutable-content.js';
 import { testGoalDomainProposal } from '../test-support/goal-domain.js';
@@ -17,6 +18,7 @@ import {
   type ControlGoalCommandInput,
   ControlGoalCommandInputSchema,
   type ControlGoalCommandResult,
+  executeGoalOperation,
 } from './goal-owner.js';
 import { commandInputHash } from './idempotent-command.js';
 import { readPendingRequest } from './pending-requests.js';
@@ -26,6 +28,7 @@ const roots: string[] = [];
 const workers: Worker[] = [];
 afterEach(async () => {
   for (const worker of workers.splice(0)) await worker.terminate();
+  await shutdownControlStoreWorkerClient();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -234,6 +237,109 @@ async function pendingItem(
 }
 
 describe('native Goal command deciding body', () => {
+  it('uses admitted foreign Assistant source facts without looking them up in the destination Workspace', async () => {
+    const f = await fixture();
+    const originThreadId = allocateEntityId('th');
+    const originTurnId = allocateEntityId('tu');
+    const sourceHash = commandInputHash({ originThreadId, originTurnId });
+    const base = command(f.workspaceId, 'goal.create', { intent: 'Confirmed foreign handoff' });
+    const input: ControlGoalCommandInput = {
+      ...base,
+      receipt: null,
+      context: { actor, assistantHandoff: { originThreadId, originTurnId, sourceHash } },
+    };
+    await expect(f.send('apply', input)).rejects.toMatchObject({ code: 'invalid_request' });
+    const admitted = {
+      workspaceId: allocateEntityId('ws'),
+      threadId: originThreadId,
+      turnId: originTurnId,
+      triggerActor: { kind: 'user' as const, id: actor.userId },
+      agentId: 'quick-chat' as const,
+      agentSessionId: null,
+      sourceHash,
+    };
+    await expect(
+      f.send('apply', { ...input, assistantOrigin: { ...admitted, sourceHash: 'changed' } })
+    ).rejects.toMatchObject({ code: 'origin_authority_denied' });
+    const result = await f.send('apply', { ...input, assistantOrigin: admitted });
+    expect(result.view.goal?.intent).toBe('Confirmed foreign handoff');
+    const db = openWorkspaceDb(f.root, f.workspaceId);
+    try {
+      expect(
+        db.sqlite.prepare('SELECT id FROM control_turns WHERE id=?').get(originTurnId)
+      ).toBeUndefined();
+      const row = db.sqlite
+        .prepare('SELECT record_json FROM control_threads WHERE id=?')
+        .get(result.view.goal!.threadId) as { record_json: string };
+      expect(JSON.parse(row.record_json).parentThreadId).toBe(originThreadId);
+      expect(db.sqlite.prepare('SELECT request_key FROM idempotency_requests').all()).toEqual([]);
+    } finally {
+      db.sqlite.close();
+    }
+  });
+
+  it('rolls back and replays the real public Goal tuple through the production worker transport', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'native-goal-public-'));
+    roots.push(root);
+    const store = new FsStore({ dataRoot: root });
+    const workspace = store.createWorkspace('Native Goal public tuple');
+    const db = openWorkspaceDb(root, workspace.id);
+    const input = {
+      workspaceId: workspace.id,
+      requestId: randomUUID(),
+      intent: 'Produce a reviewed design',
+    };
+    try {
+      db.sqlite.exec(
+        "CREATE TRIGGER reject_native_public_goal BEFORE INSERT ON idempotency_requests WHEN NEW.command_name='goal.create' BEGIN SELECT RAISE(ABORT, 'private native Goal trigger'); END"
+      );
+      await expect(
+        executeGoalOperation('goal.create', input, { actor }, store, db)
+      ).rejects.toMatchObject({
+        code: 'constraint',
+        commit: 'not-committed',
+        message: 'Control database writer operation failed.',
+      });
+      expect(db.sqlite.prepare('SELECT goal_id FROM goals').all()).toEqual([]);
+      expect(db.sqlite.prepare('SELECT id FROM control_threads').all()).toEqual([]);
+      expect(db.sqlite.prepare('SELECT request_key FROM idempotency_requests').all()).toEqual([]);
+      expect(new FsStore({ dataRoot: root }).listThreads(workspace.id)).toEqual([]);
+      db.sqlite.exec('DROP TRIGGER reject_native_public_goal');
+      const created = await executeGoalOperation('goal.create', input, { actor }, store, db);
+      expect(created.goal?.intent).toBe(input.intent);
+      expect(await executeGoalOperation('goal.create', input, { actor }, store, db)).toEqual(
+        created
+      );
+      expect(db.sqlite.prepare('SELECT goal_id FROM goals').all()).toHaveLength(1);
+      expect(db.sqlite.prepare('SELECT id FROM control_threads').all()).toEqual([
+        { id: created.goal!.threadId },
+      ]);
+      expect(db.sqlite.prepare('SELECT request_id FROM idempotency_requests').all()).toEqual([
+        { request_id: input.requestId },
+      ]);
+      await expect(
+        executeGoalOperation(
+          'goal.intent.revise',
+          {
+            workspaceId: workspace.id,
+            threadId: created.goal!.threadId,
+            goalId: created.goal!.goalId,
+            requestId: randomUUID(),
+            expectedRevision: 999999,
+            intent: 'Must not commit a stale change',
+          },
+          { actor },
+          store,
+          db
+        )
+      ).rejects.toMatchObject({ code: 'revision_conflict', status: 409 });
+      expect(db.sqlite.prepare('SELECT request_id FROM idempotency_requests').all()).toEqual([
+        { request_id: input.requestId },
+      ]);
+    } finally {
+      db.sqlite.close();
+    }
+  });
   it('rolls back the native Thread and Goal with the ORIGINAL receipt, then replays after reopen', async () => {
     const f = await fixture();
     const input = command(f.workspaceId, 'goal.create', { intent: 'Produce a reviewed design' });

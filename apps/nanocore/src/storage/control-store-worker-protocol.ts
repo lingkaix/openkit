@@ -1,4 +1,10 @@
 import { isAbsolute } from 'node:path';
+import { GoalViewSchema } from '@openkit/app-api-schemas';
+import {
+  type ControlGoalCommandInput,
+  ControlGoalCommandInputSchema,
+  type ControlGoalCommandResult,
+} from '../runtime/goal-owner.js';
 import {
   type ProjectWorkerBackendCleanupInput,
   ProjectWorkerBackendCleanupInputSchema,
@@ -99,6 +105,7 @@ export type ControlWorkerCommand =
       | { readonly operation: 'products'; readonly transition: ControlProductTransition }
       | { readonly operation: 'project-cleanup'; readonly input: ProjectWorkerBackendCleanupInput }
       | { readonly operation: 'observation'; readonly input: ControlWorkObservationInput }
+      | { readonly operation: 'goal'; readonly input: ControlGoalCommandInput }
       | { readonly operation: 'checkpoint' | 'reclaim' | 'close' }
     ));
 
@@ -125,6 +132,14 @@ export const CONTROL_WORKER_FAILURE_CODES = [
 
 /** Closed native failure code, with no SQL text or bound values. */
 export type ControlWorkerFailureCode = (typeof CONTROL_WORKER_FAILURE_CODES)[number];
+
+/** Trusted domain refusals preserve the existing public contract; native SQL diagnostics never enter this projection. */
+export interface ControlWorkerDomainRefusal {
+  readonly operation: 'goal';
+  readonly code: string;
+  readonly message: string;
+  readonly status: number;
+}
 
 /**
  * Worker reply. Success for writes follows the outer FULL-durability COMMIT.
@@ -158,6 +173,11 @@ export type ControlWorkerReply = {
     }
   | {
       readonly status: 'ok';
+      readonly operation: 'goal';
+      readonly result: ControlGoalCommandResult;
+    }
+  | {
+      readonly status: 'ok';
       readonly operation: 'checkpoint';
       readonly pressure: {
         readonly busy: number;
@@ -172,6 +192,7 @@ export type ControlWorkerReply = {
       readonly status: 'error';
       readonly code: ControlWorkerFailureCode;
       readonly commit: 'not-committed' | 'unknown';
+      readonly domain?: ControlWorkerDomainRefusal;
     }
 );
 
@@ -211,6 +232,23 @@ function isSqlResult(value: unknown): boolean {
   );
 }
 
+/** Validates only a trusted, bounded domain refusal, never an arbitrary native exception or SQL message. */
+function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
+  return (
+    isRecord(value) &&
+    exactFields(value, ['operation', 'code', 'message', 'status']) &&
+    value.operation === 'goal' &&
+    typeof value.code === 'string' &&
+    value.code.length > 0 &&
+    value.code.length <= 128 &&
+    typeof value.message === 'string' &&
+    Buffer.byteLength(value.message) <= CONTROL_PRODUCT_LIMITS.metadataBytes &&
+    Number.isInteger(value.status) &&
+    (value.status as number) >= 400 &&
+    (value.status as number) <= 599
+  );
+}
+
 /**
  * Checks worker replies before a caller promise can be completed.
  *
@@ -231,7 +269,11 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
   if (reply.status === 'error') {
     return (
       CONTROL_WORKER_FAILURE_CODES.some((code) => code === reply.code) &&
-      (reply.commit === 'not-committed' || reply.commit === 'unknown')
+      (reply.commit === 'not-committed' || reply.commit === 'unknown') &&
+      (reply.domain === undefined ||
+        (reply.code === 'precondition' &&
+          reply.commit === 'not-committed' &&
+          isDomainRefusal(reply.domain)))
     );
   }
   if (reply.status !== 'ok') return false;
@@ -258,6 +300,16 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     } catch {
       return false;
     }
+  }
+  if (reply.operation === 'goal') {
+    return (
+      isRecord(reply.result) &&
+      typeof reply.result.replayed === 'boolean' &&
+      GoalViewSchema.safeParse(reply.result.view).success &&
+      (reply.result.refusal === null ||
+        (isRecord(reply.result.refusal) &&
+          isDomainRefusal({ ...reply.result.refusal, operation: 'goal' })))
+    );
   }
   if (reply.operation === 'write')
     return Array.isArray(reply.results) && reply.results.every(isSqlResult);
@@ -396,12 +448,18 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       return false;
     }
   }
-  if (value.operation === 'project-cleanup' || value.operation === 'observation') {
+  if (
+    value.operation === 'project-cleanup' ||
+    value.operation === 'observation' ||
+    value.operation === 'goal'
+  ) {
     try {
       const schema =
         value.operation === 'project-cleanup'
           ? ProjectWorkerBackendCleanupInputSchema
-          : ControlWorkObservationInputSchema;
+          : value.operation === 'goal'
+            ? ControlGoalCommandInputSchema
+            : ControlWorkObservationInputSchema;
       return (
         exactFields(value, [...scoped, 'input']) &&
         schema.safeParse(value.input).success &&

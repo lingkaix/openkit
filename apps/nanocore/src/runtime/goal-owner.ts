@@ -15,6 +15,7 @@ import {
   type OperationInput,
 } from '@openkit/app-api-schemas';
 import {
+  ActorRefSchema,
   allocateEntityId,
   type CapabilityCall,
   deriveEntityId,
@@ -25,7 +26,9 @@ import {
   PolicyDocumentV1Schema,
   RequestIdSchema,
   readRetainedV1,
+  ThreadIdSchema,
   ThreadSchema,
+  TurnIdSchema,
   TurnSchema,
   UserIdSchema,
   WorkspaceIdSchema,
@@ -50,7 +53,7 @@ import { evaluateWorkspaceResourceAccess } from '../policy/workspace-resource-ac
 import {
   mapCommandRequestRow,
   readCommandRequestRecordsFromSqlite,
-  recordCommandRequestRecordInDb,
+  recordControlCommandRequestRecordInDb,
 } from '../storage/command-request-records.js';
 import {
   applyControlProducts,
@@ -576,6 +579,19 @@ export const ControlGoalCommandInputSchema = z
   .object({
     command: GoalCommandSchema,
     context: GoalContextSchema,
+    // The source Workspace is a separate effect domain; admitted source facts must not be looked up in the destination database.
+    assistantOrigin: z
+      .object({
+        workspaceId: WorkspaceIdSchema,
+        threadId: ThreadIdSchema,
+        turnId: TurnIdSchema,
+        triggerActor: ActorRefSchema,
+        agentId: z.literal('quick-chat'),
+        agentSessionId: z.null(),
+        sourceHash: z.string().min(1),
+      })
+      .strict()
+      .optional(),
     receipt: GoalReceiptSchema.nullable(),
     administrator: z
       .object({ userId: UserIdSchema, tokenId: z.string().min(1).nullable() })
@@ -1518,6 +1534,12 @@ export function applyControlGoalCommand(
 ): ControlGoalCommandResult {
   assertControlProductWriter(db.sqlite);
   const input = ControlGoalCommandInputSchema.parse(value);
+  if (input.assistantOrigin && !input.context.assistantHandoff)
+    throw new GoalCommandError(
+      'invalid_request',
+      'Assistant source facts require their exact handoff.',
+      400
+    );
   const args = input.command.arguments;
   const goalId = 'goalId' in args ? args.goalId : `g_${args.requestId}`;
   if (db.workspaceId !== args.workspaceId)
@@ -1594,9 +1616,23 @@ export function applyControlGoalCommand(
     );
   }
   if (input.context.assistantHandoff) {
-    const source = nativeTurn(db, input.context.assistantHandoff.originTurnId);
+    const admitted = input.assistantOrigin;
+    if (!admitted)
+      throw new GoalCommandError(
+        'invalid_request',
+        'The Assistant source admission is missing.',
+        400
+      );
+    // Recheck local authority locally. A foreign source was checked by its owning producer before this separate destination effect.
+    const source =
+      admitted.workspaceId === db.workspaceId
+        ? nativeTurn(db, input.context.assistantHandoff.originTurnId)
+        : admitted;
     if (
       input.command.operation !== 'goal.create' ||
+      admitted.threadId !== input.context.assistantHandoff.originThreadId ||
+      admitted.turnId !== input.context.assistantHandoff.originTurnId ||
+      admitted.sourceHash !== input.context.assistantHandoff.sourceHash ||
       source.threadId !== input.context.assistantHandoff.originThreadId ||
       source.agentSessionId ||
       source.agentId !== 'quick-chat' ||
@@ -1638,7 +1674,10 @@ export function applyControlGoalCommand(
   }
   if (receipt) {
     const { responseKind, ...facts } = receipt;
-    recordCommandRequestRecordInDb(db, { ...facts, response: { kind: responseKind, id: goalId } });
+    recordControlCommandRequestRecordInDb(db, {
+      ...facts,
+      response: { kind: responseKind, id: goalId },
+    });
   }
   return { view, replayed: false, refusal: null };
 }
@@ -1688,10 +1727,12 @@ export async function executeGoalOperation<K extends GoalOperationId>(
   if (goal) coordinatorTurn(context, db, goal);
   const commandInput = input as GoalArguments & { requestId: string };
   const client = getControlStoreWorkerClient();
-  const database = `workspace:${input.workspaceId}`;
+  const path = workspaceDbPath(db.dataRoot, input.workspaceId);
+  const database = `workspace:${path}`;
   await client.open({
     database,
-    path: workspaceDbPath(db.dataRoot, input.workspaceId),
+    path,
+    dataRoot: db.dataRoot,
     create: false,
     initialize: 'workspace',
     productOwner: { kind: 'workspace', workspaceId: input.workspaceId },
@@ -1783,9 +1824,36 @@ export async function executeGoalOperation<K extends GoalOperationId>(
         (id === 'goal.completion.accept' && input.candidate && !input.pendingRequestId))
         ? await publishGoalPendingItem(db, id, input, context, goal, receipt, proposalTurnId)
         : null;
+    let assistantOrigin: ControlGoalCommandInput['assistantOrigin'];
+    if (context.assistantHandoff) {
+      const source = store.getTurnById(context.assistantHandoff.originTurnId);
+      if (
+        source.owner.kind !== 'workspace' ||
+        source.threadId !== context.assistantHandoff.originThreadId ||
+        source.agentSessionId ||
+        source.agentId !== 'quick-chat' ||
+        source.triggerActor.id !== context.actor.userId ||
+        !context.assistantHandoff.sourceHash
+      )
+        throw new GoalCommandError(
+          'origin_authority_denied',
+          'The Assistant handoff source is unavailable.',
+          403
+        );
+      assistantOrigin = {
+        workspaceId: source.owner.workspaceId,
+        threadId: source.threadId,
+        turnId: source.id,
+        triggerActor: source.triggerActor,
+        agentId: 'quick-chat',
+        agentSessionId: null,
+        sourceHash: context.assistantHandoff.sourceHash,
+      };
+    }
     const nativeInput = ControlGoalCommandInputSchema.parse({
       command: { operation: id, arguments: input },
       context,
+      ...(assistantOrigin ? { assistantOrigin } : {}),
       receipt,
       administrator,
       resourcePolicy: store.getWorkspaceResourceAccess(input.workspaceId),

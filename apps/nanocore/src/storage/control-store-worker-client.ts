@@ -2,6 +2,12 @@ import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { isMainThread, Worker } from 'node:worker_threads';
+import {
+  type ControlGoalCommandInput,
+  type ControlGoalCommandResult,
+  GoalCommandError,
+} from '../runtime/goal-owner.js';
+import { IdempotencyKeyConflictError } from '../runtime/idempotent-command.js';
 import type {
   ProjectWorkerBackendCleanupInput,
   WorkerBackendCleanupProjectionResult,
@@ -15,6 +21,7 @@ import {
   type ControlSqlResult,
   type ControlSqlStatement,
   type ControlWorkerCommand,
+  type ControlWorkerDomainRefusal,
   type ControlWorkerFailureCode,
   type ControlWorkerReply,
   type ControlWorkerRequest,
@@ -31,7 +38,8 @@ export class ControlStoreWorkerError extends Error {
   /** Creates a redacted failure; unknown results require original-request inspection. */
   constructor(
     readonly code: ControlWorkerFailureCode,
-    readonly commit: 'not-committed' | 'unknown'
+    readonly commit: 'not-committed' | 'unknown',
+    readonly domain?: ControlWorkerDomainRefusal
   ) {
     super('Control database writer operation failed.');
     this.name = 'ControlStoreWorkerError';
@@ -200,6 +208,21 @@ class ControlStoreWorkerClient {
     return (reply as Extract<Success, { operation: 'observation' }>).result;
   }
 
+  /** Executes the complete native Goal body; trusted domain refusals keep their public meaning, while SQL failures remain redacted. */
+  async goal(database: string, input: ControlGoalCommandInput): Promise<ControlGoalCommandResult> {
+    try {
+      const reply = await this.request({ operation: 'goal', database, input });
+      return (reply as Extract<Success, { operation: 'goal' }>).result;
+    } catch (error) {
+      if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'goal') {
+        if (error.domain.code === 'idempotency_key_conflict')
+          throw new IdempotencyKeyConflictError();
+        throw new GoalCommandError(error.domain.code, error.domain.message, error.domain.status);
+      }
+      throw error;
+    }
+  }
+
   /** Attempts native checkpoint progress after prior submitted work. */
   async checkpoint(database: string): Promise<ControlCheckpoint> {
     const reply = await this.request({ operation: 'checkpoint', database });
@@ -308,13 +331,20 @@ class ControlStoreWorkerClient {
     const entry = this.pending.get(value.id);
     if (
       entry === undefined ||
-      (value.status === 'ok' && value.operation !== entry.command.operation)
+      (value.status === 'ok' && value.operation !== entry.command.operation) ||
+      (value.status === 'error' &&
+        value.domain !== undefined &&
+        value.domain.operation !== entry.command.operation)
     ) {
       this.fail();
       return;
     }
     if (value.status === 'error')
-      this.complete(value.id, undefined, new ControlStoreWorkerError(value.code, value.commit));
+      this.complete(
+        value.id,
+        undefined,
+        new ControlStoreWorkerError(value.code, value.commit, value.domain)
+      );
     else this.complete(value.id, value);
   }
 

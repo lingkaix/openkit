@@ -3,6 +3,13 @@ import { basename, dirname, join } from 'node:path';
 import { isMainThread, parentPort } from 'node:worker_threads';
 import Database from 'better-sqlite3';
 import {
+  applyControlGoalCommand,
+  GoalCommandError,
+  type PreparedControlGoalCommand,
+  prepareControlGoalCommand,
+} from '../runtime/goal-owner.js';
+import { IdempotencyKeyConflictError } from '../runtime/idempotent-command.js';
+import {
   ProjectWorkerBackendCleanupInputSchema,
   projectWorkerBackendCleanupInDb,
 } from '../runtime/worker-backend-cleanup-projection.js';
@@ -23,6 +30,7 @@ import {
   type ControlSqlRow,
   type ControlSqlStatement,
   type ControlSqlValue,
+  type ControlWorkerDomainRefusal,
   type ControlWorkerFailureCode,
   type ControlWorkerReply,
   type ControlWorkerRequest,
@@ -43,9 +51,10 @@ const port = parentPort;
 /** A queued transition, not a durable request or a second command receipt. */
 type WriteRequest = Extract<
   ControlWorkerRequest,
-  { operation: 'write' | 'transition' | 'products' | 'project-cleanup' | 'observation' }
+  { operation: 'write' | 'transition' | 'products' | 'project-cleanup' | 'observation' | 'goal' }
 > & {
   readonly preparedEntries?: readonly PreparedControlEntry[] | undefined;
+  readonly preparedGoal?: PreparedControlGoalCommand | undefined;
 };
 
 /** One worker-owned writable connection and its finite, disposable pending work. */
@@ -83,8 +92,22 @@ function failure(
   id: number,
   code: ControlWorkerFailureCode,
   commit: 'not-committed' | 'unknown' = 'not-committed'
-): ControlWorkerReply {
+): Extract<ControlWorkerReply, { status: 'error' }> {
   return { version: CONTROL_WORKER_VERSION, id, status: 'error', code, commit };
+}
+
+/** Projects only errors declared by the trusted Goal owner; SQLite and other native exceptions are never included. */
+function goalRefusal(error: unknown): ControlWorkerDomainRefusal | undefined {
+  if (error instanceof GoalCommandError || error instanceof IdempotencyKeyConflictError) {
+    const domain = {
+      operation: 'goal' as const,
+      code: error.code,
+      message: error.message,
+      status: error.status,
+    };
+    if (isControlWorkerReply({ ...failure(0, 'precondition'), domain })) return domain;
+  }
+  return undefined;
 }
 
 /** Classifies a native failure without publishing its message, SQL or parameters. */
@@ -191,6 +214,21 @@ function flush(owner: OwnedDatabase): void {
               status: 'ok',
               operation: 'products',
             };
+          } else if (request.operation === 'goal') {
+            if (owner.scopeDb?.scope !== 'workspace' || !request.preparedGoal)
+              throw new ControlProductPreconditionError();
+            const result = applyControlGoalCommand(
+              owner.scopeDb,
+              request.input,
+              request.preparedGoal
+            );
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'goal',
+              result,
+            };
           } else if (request.operation === 'observation') {
             if (!owner.productOwner || !owner.scopeDb) throw new ControlProductPreconditionError();
             const result = applyControlWorkObservation(sqlite, owner.productOwner, request.input);
@@ -236,7 +274,12 @@ function flush(owner: OwnedDatabase): void {
           sqlite.exec('ROLLBACK TO control_transition');
           sqlite.exec('RELEASE control_transition');
           if (failureCode(error) === 'integrity') throw error;
-          outcomes.push(failure(request.id, failureCode(error)));
+          const domain = request.operation === 'goal' ? goalRefusal(error) : undefined;
+          outcomes.push(
+            domain
+              ? { ...failure(request.id, 'precondition'), domain }
+              : failure(request.id, failureCode(error))
+          );
         }
       }
       bodyFinished = true;
@@ -427,13 +470,23 @@ function receive(value: unknown): void {
       value.operation === 'transition' ||
       value.operation === 'products' ||
       value.operation === 'project-cleanup' ||
-      value.operation === 'observation'
+      value.operation === 'observation' ||
+      value.operation === 'goal'
     ) {
       if (owner.pending.length >= CONTROL_WORKER_LIMITS.pendingTransitions) {
         reply(failure(value.id, 'busy'));
       } else {
         let preparedEntries: WriteRequest['preparedEntries'];
+        let preparedGoal: PreparedControlGoalCommand | undefined;
         try {
+          if (value.operation === 'goal') {
+            if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
+            preparedGoal = prepareControlGoalCommand(
+              owner.scopeDb,
+              value.input,
+              owner.contentMount
+            );
+          }
           if (value.operation === 'transition' || value.operation === 'products') {
             if (!owner.productOwner) throw new ControlProductPreconditionError();
             preparedEntries = prepareControlEntries(
@@ -444,10 +497,15 @@ function receive(value: unknown): void {
           }
         } catch (error) {
           // No queue or SQL effect exists yet; only later transaction/reply failures can be unknown.
-          reply(failure(value.id, failureCode(error), 'not-committed'));
+          const domain = value.operation === 'goal' ? goalRefusal(error) : undefined;
+          reply(
+            domain
+              ? { ...failure(value.id, 'precondition'), domain }
+              : failure(value.id, failureCode(error), 'not-committed')
+          );
           return;
         }
-        owner.pending.push({ ...value, preparedEntries });
+        owner.pending.push({ ...value, preparedEntries, preparedGoal });
         schedule(owner);
       }
       return;

@@ -12,7 +12,7 @@ import {
   type FsStore,
 } from '../lib/store.js';
 import type { AppDb } from '../storage/app-db.js';
-import { CONTROL_ADMISSION_COMMANDS } from '../storage/control-store-admission.js';
+import { CONTROL_NATIVE_RECEIPT_COMMANDS } from '../storage/control-store-admission.js';
 import type { CoreDb, UserDb, WorkspaceDb } from '../storage/db.js';
 
 /** Original command facts passed to the existing producer before its single native tuple; the product owner supplies the final response pointer. */
@@ -254,7 +254,7 @@ export async function runIdempotentCommand<T>(options: IdempotentCommandOptions<
   const key = commandRequestKey(options.command, options.requestId, options.scope);
   const workerOwned =
     options.store.getDataRoot() !== null &&
-    CONTROL_ADMISSION_COMMANDS.some((command) => command === options.command) &&
+    CONTROL_NATIVE_RECEIPT_COMMANDS.some((command) => command === options.command) &&
     (options.scope.coreId === 'server' || options.scope.workspaceId !== undefined) &&
     options.scope.userId === undefined &&
     options.scope.appId === undefined;

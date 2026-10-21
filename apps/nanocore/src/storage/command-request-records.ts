@@ -33,8 +33,14 @@ import type {
 } from '../lib/store.js';
 import type { AppDb } from './app-db.js';
 import { lightAppDbPath, openExistingAppDb } from './app-db.js';
-import { CONTROL_ADMISSION_COMMANDS } from './control-store-admission.js';
-import { openControlStoreProductReadHandle } from './control-store-products.js';
+import {
+  CONTROL_NATIVE_RECEIPT_COMMANDS,
+  pruneControlAdmissionReceipts,
+} from './control-store-admission.js';
+import {
+  assertControlProductWriter,
+  openControlStoreProductReadHandle,
+} from './control-store-products.js';
 import {
   type CoreDb,
   openCoreDb,
@@ -260,10 +266,33 @@ export function recordCommandRequestRecordInDb(
   assertCommandRequestDbOwner(db, record.scope);
   if (
     (db.scope === 'core' || db.scope === 'workspace') &&
-    CONTROL_ADMISSION_COMMANDS.some((command) => command === record.command)
+    CONTROL_NATIVE_RECEIPT_COMMANDS.some((command) => command === record.command)
   ) {
     throw new Error('Native admission receipts belong to the database worker.');
   }
+  writeCommandRequestRecordInDb(db, record);
+  pruneCommandRequestRecords(db, new Date().toISOString());
+}
+
+/** Writes one original native receipt inside its complete owning command tuple, with only the native operation/scope maintenance partition. */
+export function recordControlCommandRequestRecordInDb(
+  db: CoreDb | WorkspaceDb,
+  record: CommandRequestRecord
+): void {
+  assertControlProductWriter(db.sqlite);
+  assertCommandRequestDbOwner(db, record.scope);
+  if (!CONTROL_NATIVE_RECEIPT_COMMANDS.some((command) => command === record.command))
+    throw new Error('The command has no native receipt owner.');
+  writeCommandRequestRecordInDb(db, record);
+  pruneControlAdmissionReceipts(
+    db.sqlite,
+    db.scope === 'core' ? { kind: 'server' } : { kind: 'workspace', workspaceId: db.workspaceId },
+    record.createdAt
+  );
+}
+
+/** Preserves the existing complete row read/check/write body; public entry points own authority and disjoint pruning. */
+function writeCommandRequestRecordInDb(db: CommandRequestDb, record: CommandRequestRecord): void {
   const scope = StoredCommandScopeV1Schema.parse(record.scope);
   const response = normalizeCommandRequestResponse(record.command, record.response);
   const previous = db.sqlite
@@ -316,7 +345,6 @@ export function recordCommandRequestRecordInDb(
       record.createdAt,
       record.expiresAt
     );
-  pruneCommandRequestRecords(db, new Date().toISOString());
 }
 
 /**
@@ -365,7 +393,7 @@ export function getCommandRequestRecord(
     // commandRequestKey owns the operation prefix; this selects maintenance, never authority.
     const workerOwnedKey =
       (db.scope === 'core' || db.scope === 'workspace') &&
-      CONTROL_ADMISSION_COMMANDS.some((command) => key.startsWith(`${command}|`));
+      CONTROL_NATIVE_RECEIPT_COMMANDS.some((command) => key.startsWith(`${command}|`));
     if (!workerOwnedKey) pruneCommandRequestRecords(db, referenceTime);
     return getCommandRequestRecordFromDb(db, key, referenceTime);
   } finally {
@@ -707,9 +735,9 @@ function pruneCommandRequestRecords(db: CommandRequestDb, referenceTime: string)
 
   db.sqlite
     .prepare(
-      `DELETE FROM idempotency_requests WHERE expires_at <= ? AND command_name NOT IN (${CONTROL_ADMISSION_COMMANDS.map(() => '?').join(',')})`
+      `DELETE FROM idempotency_requests WHERE expires_at <= ? AND command_name NOT IN (${CONTROL_NATIVE_RECEIPT_COMMANDS.map(() => '?').join(',')})`
     )
-    .run(referenceTime, ...CONTROL_ADMISSION_COMMANDS);
+    .run(referenceTime, ...CONTROL_NATIVE_RECEIPT_COMMANDS);
 }
 
 /**

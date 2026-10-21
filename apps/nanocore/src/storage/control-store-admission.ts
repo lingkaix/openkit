@@ -2,7 +2,11 @@ import { isDeepStrictEqual } from 'node:util';
 import { AuditEventSchema, RequestIdSchema } from '@openkit/protocol';
 import type Database from 'better-sqlite3';
 import { z } from 'zod';
-import { type CommandRequestResponse, commandRequestKey } from '../lib/store.js';
+import {
+  type CommandRequestName,
+  type CommandRequestResponse,
+  commandRequestKey,
+} from '../lib/store.js';
 import {
   mapCommandRequestRow,
   normalizeCommandRequestResponse,
@@ -29,6 +33,24 @@ export const CONTROL_ADMISSION_COMMANDS = [
   'turn.input.submit',
   'conversation.submit',
 ] as const;
+
+/** Activated native command partitions share the original receipt owner, not a second ledger or Main backfill. */
+export const CONTROL_NATIVE_RECEIPT_COMMANDS = [
+  ...CONTROL_ADMISSION_COMMANDS,
+  'goal.create',
+  'goal.intent.revise',
+  'goal.card.create',
+  'goal.card.edit',
+  'goal.card.cancel',
+  'goal.plan.propose',
+  'goal.plan.approve',
+  'goal.cancel',
+  'goal.completion.accept',
+  'knowledge.maintain',
+  'knowledge.tell',
+  'knowledge.server.maintain',
+  'knowledge.server.tell',
+] as const satisfies readonly CommandRequestName[];
 
 /** Original receipt facts; expiry policy remains with the existing command producer, not another ledger. */
 const ReceiptSchema = z
@@ -94,11 +116,11 @@ export function pruneControlAdmissionReceipts(
       : "json_extract(scope_json,'$.workspaceId')=? AND json_extract(scope_json,'$.coreId') IS NULL";
   sqlite
     .prepare(
-      `DELETE FROM idempotency_requests WHERE schema_version=1 AND expires_at<=? AND command_name IN (${CONTROL_ADMISSION_COMMANDS.map(() => '?').join(',')}) AND ${scope} AND json_extract(scope_json,'$.userId') IS NULL AND json_extract(scope_json,'$.appId') IS NULL`
+      `DELETE FROM idempotency_requests WHERE schema_version=1 AND expires_at<=? AND command_name IN (${CONTROL_NATIVE_RECEIPT_COMMANDS.map(() => '?').join(',')}) AND ${scope} AND json_extract(scope_json,'$.userId') IS NULL AND json_extract(scope_json,'$.appId') IS NULL`
     )
     .run(
       referenceTime,
-      ...CONTROL_ADMISSION_COMMANDS,
+      ...CONTROL_NATIVE_RECEIPT_COMMANDS,
       ...(owner.kind === 'workspace' ? [owner.workspaceId] : [])
     );
 }
