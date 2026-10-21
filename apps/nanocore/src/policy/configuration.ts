@@ -15,6 +15,7 @@ import type { z } from 'zod';
 import { listWorkspaceAuditEvents } from '../audit-events.js';
 import type { Actor } from '../auth/identity.js';
 import {
+  authorizeWorkspace,
   DeploymentAdminRequiredError,
   requireCurrentDeploymentAdmin,
 } from '../auth/operation-authorizer.js';
@@ -106,6 +107,26 @@ export function preparePolicyConfiguration(input: {
       'Policy changes are required.',
       409
     );
+  const changedIds = new Set([...prepared.diff.added, ...prepared.diff.changed]);
+  for (const statement of prepared.document.statements) {
+    if (
+      statement.kind !== 'binding' ||
+      statement.state === 'inactive' ||
+      !changedIds.has(statement.id)
+    )
+      continue;
+    // Recheck the input contract's sole Workspace at apply to prevent stale candidate authority.
+
+    const resource = statement.inputDisclosure.resources[0];
+    if (
+      resource?.kind !== 'mcp-tool' ||
+      !authorizeWorkspace(input.coreDb, input.actor, resource.workspaceId, {
+        mutating: true,
+        policyOperation: 'tool.use',
+      })
+    )
+      throw new Error('Policy binding input authority is unavailable.');
+  }
   // Restrictions may precede discovery. Their exact-name uncertainty belongs to the confirmed candidate, not a grant.
   const warnings: PolicyConfigurationWarning[] = [];
   const changedToolConditions = new Set([...prepared.diff.added, ...prepared.diff.changed]);
