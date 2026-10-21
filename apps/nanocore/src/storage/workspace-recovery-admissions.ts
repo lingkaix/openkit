@@ -24,7 +24,8 @@ export interface RecoveryProof {
   readonly input: WorkspaceRecoveryCliArgs;
   readonly manifest: WorkspaceBackupManifest;
   readonly capture: WorkspaceBackupReport;
-  readonly result: WorkspaceRecoveryCliReport;
+  result: WorkspaceRecoveryCliReport;
+  readonly candidateDigest?: string;
 }
 /** One native request whose proof and candidate survive registration rollback. */
 export interface RecoveryAdmission {
