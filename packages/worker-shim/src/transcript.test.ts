@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WorkerTranscriptRecordSchema } from '@openkit/worker-protocol';
@@ -10,6 +10,7 @@ const appendControl = vi.hoisted(() => ({
   holdNext: false,
   release: null as (() => void) | null,
   secondCompleted: null as (() => void) | null,
+  settled: null as (() => void) | null,
   total: 0,
 }));
 
@@ -27,7 +28,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
           appendControl.release = resolve;
         });
       }
-      const result = await actual.appendFile(...args);
+      const result = await actual.appendFile(...args).finally(() => appendControl.settled?.());
       appendControl.completed.push(String(args[1]));
       if (call === 2) {
         appendControl.secondCompleted?.();
@@ -262,6 +263,73 @@ describe('WorkerTranscriptWriter', () => {
       expect.objectContaining({ event: expect.objectContaining({ type: 'worker.ready' }) }),
       expect.objectContaining({ event: expect.objectContaining({ type: 'turn.completed' }) }),
     ]);
+  });
+
+  it('settles a pending local observation append before reporting a prior live rejection, without an unhandled failure', async () => {
+    // Worker Control Protocol: remote failure must not abandon the separate local append queue.
+    const sessionDir = mkdtempSync(join(tmpdir(), 'openkit-transcript-local-drain-'));
+    const liveFailure = new Error('Live observation rejected.');
+    const appendEvent = vi.fn(async () => {
+      throw liveFailure;
+    });
+    const writer = new WorkerTranscriptWriter({ lineage, sessionDir, appendEvent });
+    await expect(writer.writeAndAppendEvent({ type: 'worker.ready' })).rejects.toBe(liveFailure);
+    const unhandled: unknown[] = [];
+    const observeUnhandled = (error: unknown) => unhandled.push(error);
+    process.on('unhandledRejection', observeUnhandled);
+    appendControl.holdNext = true;
+    appendControl.release = null;
+    const localSettled = new Promise<void>((resolve) => {
+      appendControl.settled = resolve;
+    });
+    let settled = false;
+    const write = writer
+      .writeObservation({
+        observationId: 'obs_local_drain',
+        sourceRef: 'source_local_drain',
+        sourceSequence: 0,
+        observedAt: '2026-10-21T00:00:00.000Z',
+        fact: {
+          kind: 'coverage',
+          runtimeOriginRef: null,
+          family: 'primary-content',
+          coverage: 'off',
+        },
+        content: { state: 'off' },
+      })
+      .then(
+        () => {
+          settled = true;
+          return null;
+        },
+        (error: unknown) => {
+          settled = true;
+          return error;
+        }
+      );
+    try {
+      await vi.waitFor(() => expect(appendControl.release).toBeTypeOf('function'));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect.soft(settled).toBe(false);
+      expect(readJsonl(join(sessionDir, 'events.jsonl'))).toHaveLength(1);
+      // The held real append now fails with ENOENT; no writer promise may leave that failure unobserved.
+      rmSync(sessionDir, { recursive: true });
+      appendControl.release?.();
+      await localSettled;
+      expect(await write).toBeInstanceOf(Error);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+      expect(appendEvent).toHaveBeenCalledTimes(1);
+    } finally {
+      appendControl.release?.();
+      await localSettled;
+      await write;
+      appendControl.settled = null;
+      appendControl.holdNext = false;
+      appendControl.release = null;
+      process.off('unhandledRejection', observeUnhandled);
+      rmSync(sessionDir, { recursive: true, force: true });
+    }
   });
 });
 
