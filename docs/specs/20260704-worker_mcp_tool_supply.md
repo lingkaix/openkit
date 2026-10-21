@@ -39,7 +39,7 @@ Agent-facing IDs and model spellings follow [Operation Definition](20261002-oper
 - `docs/core/mediation.md`
 - `docs/core/policy.md`
 - `docs/core/vault.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 
 ## Summary
 

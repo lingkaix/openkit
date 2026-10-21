@@ -41,6 +41,8 @@ const INDEX_FILE = 'docs/INDEX.md';
 const TERMINAL_SPEC_DIRECTORIES = new Set(['superseded', 'retired', 'rejected']);
 const HISTORICAL_CORE_RENAMES = new Map([
   ['docs/core/agent-capability.md', 'docs/core/mediation.md'],
+  ['docs/core/audit.md', 'docs/core/evidence.md'],
+  ['docs/core/metering.md', 'docs/core/evidence.md'],
   ['docs/core/permissions.md', 'docs/core/policy.md'],
 ]);
 const MANUAL_FILE_PATTERN = /^.+\.(?:en|zh)\.md$/u;

@@ -49,8 +49,7 @@ Admitted SourceSummary pointers at Notebook `sources/<source-id>.md` replace the
 - `docs/core/architecture.md`
 - `docs/core/protocol.md`
 - `docs/core/knowledge.md`
-- `docs/core/audit.md`
-- `docs/core/metering.md`
+- `docs/core/evidence.md`
 - `docs/core/vault.md`
 - `docs/core/agent-session.md`
 - `docs/core/contract-evolution.md`
@@ -682,8 +681,7 @@ Post-baseline import is an explicit contract with three verifiable rules:
 ## Links
 
 - `docs/core/storage.md`
-- `docs/core/audit.md`
-- `docs/core/metering.md`
+- `docs/core/evidence.md`
 - `docs/core/mediation.md`
 - `docs/core/knowledge.md`
 - `docs/core/vault.md`

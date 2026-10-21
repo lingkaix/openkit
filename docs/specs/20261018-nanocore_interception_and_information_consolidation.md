@@ -22,7 +22,7 @@ This design does not replace Policy evaluation, human-required decisions, Pendin
 
 Needed to identify the owners that constrain every binding and migration.
 
-[Architecture](../core/architecture.md), [Permissions](../core/policy.md), [Knowledge](../core/knowledge.md), [Audit](../core/audit.md), [Generative Apps](../core/generative-apps.md), [Agent Capability](../core/mediation.md), [Agent Supply](../core/agent-supply.md), [Communication](../core/communication.md) and [Contract Evolution](../core/contract-evolution.md).
+[Architecture](../core/architecture.md), [Permissions](../core/policy.md), [Knowledge](../core/knowledge.md), [Evidence](../core/evidence.md), [Generative Apps](../core/generative-apps.md), [Agent Capability](../core/mediation.md), [Agent Supply](../core/agent-supply.md), [Communication](../core/communication.md) and [Contract Evolution](../core/contract-evolution.md).
 
 ## Summary And Decision
 

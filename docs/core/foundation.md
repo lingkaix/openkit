@@ -92,7 +92,7 @@ Foundation does not promise compatibility with obsolete internal contracts. Cont
 
 `identity.md`, `policy.md`, `vault.md`, and `sandbox.md` own the concrete trust, authority, credential, and execution boundaries.
 
-`mediation.md`, `audit.md`, and `metering.md` own governed external effects, accountability projections, and measured consumption.
+`mediation.md` and `evidence.md` own governed external effects, accountability projections, measured consumption, Capture Coverage, and telemetry boundaries.
 
 `knowledge.md` owns reusable understanding and reviewed learning records.
 

@@ -277,6 +277,8 @@ describe('documentation model validator', () => {
 
   for (const [legacyPath, currentPath] of [
     ['docs/core/agent-capability.md', 'docs/core/mediation.md'],
+    ['docs/core/audit.md', 'docs/core/evidence.md'],
+    ['docs/core/metering.md', 'docs/core/evidence.md'],
     ['docs/core/permissions.md', 'docs/core/policy.md'],
   ]) {
     it(`resolves a frozen archive or audit link to ${legacyPath} when ${currentPath} exists`, () => {

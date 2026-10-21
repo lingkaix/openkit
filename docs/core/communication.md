@@ -458,5 +458,5 @@ Audit is a cross-cutting communication requirement, not a separate transport.
 - `docs/core/agent-supply.md`
 - `docs/core/mediation.md`
 - `docs/core/vault.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 - `docs/app-api.md`

@@ -32,7 +32,7 @@ This spec defines the target record model for audit, usage, and evidence.
 
 The clean target is to split three concerns that are currently easy to blur: audit explains responsibility and policy, usage measures consumed resources, and evidence preserves proof material. They must link through common lineage, but they should not collapse into one log table or raw backend transcript.
 
-Agent-capability-mediated usage semantics belong to `docs/core/mediation.md`. Future non-gateway metering direction belongs to `docs/core/metering.md`. This spec owns the concrete record-linking projection for audit, usage, and evidence records.
+Agent-capability-mediated usage production belongs to `docs/core/mediation.md`. `UsageRecord`, usage attribution, and future non-gateway metering direction belong to `docs/core/evidence.md`. This spec owns the concrete record-linking projection for audit, usage, and evidence records.
 
 ## Owns
 
@@ -56,9 +56,8 @@ Agent-capability-mediated usage semantics belong to `docs/core/mediation.md`. Fu
 
 ## Core References
 
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 - `docs/core/mediation.md`
-- `docs/core/metering.md`
 - `docs/core/storage.md`
 - `docs/core/vault.md`
 - `docs/core/policy.md`
@@ -588,10 +587,9 @@ If a producer is not implemented, diagnostics must not claim that audit or usage
 
 ## Links
 
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 - `docs/core/mediation.md`
 - `docs/core/storage.md`
-- `docs/core/metering.md`
 - `docs/core/vault.md`
 - `docs/specs/20260703-schema_evolution_record_envelope.md`
 - `docs/specs/20260616-agent_environment_package.md`

@@ -22,8 +22,7 @@ It also does not own how a fixed real-provider test is executed: run counts, ord
 - `docs/core/mediation.md`
 - `docs/core/vault.md`
 - `docs/core/policy.md`
-- `docs/core/audit.md`
-- `docs/core/metering.md`
+- `docs/core/evidence.md`
 
 Related specs:
 

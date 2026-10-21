@@ -43,8 +43,7 @@ The clean target keeps logical `capability.local` and `inference.local` bindings
 - `docs/core/communication.md`
 - `docs/core/knowledge.md`
 - `docs/core/vault.md`
-- `docs/core/metering.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 
 ## Goals
 
@@ -411,8 +410,7 @@ Only native admission context supplies this metadata. A model or public input ca
 - `docs/core/communication.md`
 - `docs/core/knowledge.md`
 - `docs/core/vault.md`
-- `docs/core/metering.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 - `docs/specs/20260526-llm_gateway_responses_api.md`
 - `docs/specs/20261002-operation_definition.md`
 - `docs/specs/20260629-worker_runtime_communication_model.md`

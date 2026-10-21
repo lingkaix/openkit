@@ -58,7 +58,7 @@ Backup copies the same canonical Knowledge Base files unchanged within its decla
 - `docs/core/storage.md`
 - `docs/core/identity.md`
 - `docs/core/architecture.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 - `docs/core/vault.md`
 - `docs/core/policy.md`
 

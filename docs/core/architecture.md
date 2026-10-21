@@ -81,7 +81,7 @@ These services reuse existing storage, capability, Agent supply, Policy, Vault, 
 
 ## Observation And Agent-Assisted Improvement
 
-Agents may use governed work records and diagnostic projections to investigate failures, evaluate outcomes and propose improvements. Operational telemetry is optional, potentially incomplete diagnostic information; it never becomes product state, permission, audit or acceptance authority. Existing work and evidence owners retain creation, retention and termination semantics. Missing or contradictory observations remain explicit and cannot authorize reconstruction of a successful effect.
+Agents may use governed work records and diagnostic projections to investigate failures, evaluate outcomes and propose improvements. Operational telemetry is optional, potentially incomplete diagnostic information; it never becomes product state, permission, audit or acceptance authority ([Evidence](evidence.md#telemetry)). Existing work and evidence owners retain creation, retention and termination semantics. Missing or contradictory observations remain explicit and cannot authorize reconstruction of a successful effect.
 
 Product operation through an App, Skill or API remains separate from an external engineer-authorized host or repository action. Co-locating an observer, testing Agent or maintenance tool with Core transfers no privilege. A repair follows the existing command, work and release owners; observation does not create an automatic repair runtime. Whether execution is driven internally or externally, completion requires the actual owned result, not an Agent claim or the absence of error logs.
 
@@ -132,6 +132,6 @@ Product target selection and runtime placement are independent. A product surfac
 
 Core Concepts owns the shared product objects and identifier semantics; Identity owns actors, authentication, and membership; Work Model owns user-facing work meaning; Agent Workflow owns workflow progression; Runtime Model and AgentSession own execution lifecycle and continuity; Communication owns command, event, streaming, and transport projections; Storage owns persistence and data-source boundaries.
 
-Agent Supply owns selectable agent profiles and readiness; Agent Capability owns governed runtime capability supply; Permissions, Sandbox, and Vault own authorization, containment, and credential boundaries; Knowledge, Audit, and Metering own their respective workspace services and records.
+Agent Supply owns selectable agent profiles and readiness; Mediation owns governed runtime capability supply; Policy, Sandbox, and Vault own authorization, containment, and credential boundaries; Knowledge and Evidence own their respective workspace services and records.
 
 Architecture constrains how those aspects compose. It does not redefine their objects, records, algorithms, or implementation projections.

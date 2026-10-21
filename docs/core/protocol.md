@@ -250,7 +250,7 @@ Those two categories are not a general license to write after terminal, and same
 
 The two categories have deliberately different equality rules and MUST NOT be merged into one predicate. Exact repair of an already-decided publication requires deep equality of the already-recorded bytes. A named field-limited refresh of a display projection returns the Item unchanged when its display fields already match and updates only those display fields when they differ. Each admitting path declares its own equality rule; a single shared predicate would be wrong. Completion of an already-decided publication covers Turn events as well as Items; completing a missing terminal event of an already-decided outcome is that category, not a second one.
 
-The resolved effective capture setting is fixed at Turn admission, before any work governed by that setting starts. A later change of the setting takes effect at the next Turn. An already-started Turn is never interrupted for an ordinary capture-setting change, and no mid-Turn interrupt path for that change exists or may be introduced. Capture Coverage defaults to on under [Storage](storage.md#agent-data-retention-and-deletion) and the [retention decision](../decisions/20261019-work_data_retention_completeness.md). This section owns when that resolved setting is fixed. It does not own the meaning or values of the setting. The admission-time pair MUST be stored on the control-store Turn record owned by [Storage](storage.md#source-of-truth).
+[Evidence](evidence.md#capture-coverage) owns Capture Coverage and its admission-time fixing before governed Turn work starts.
 
 ### Turn Interruption
 
@@ -745,6 +745,6 @@ Acceptance requires submission precedence and composed Agent-default fallthrough
 - `docs/core/storage.md`
 - `docs/core/identity.md`
 - `docs/core/mediation.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 - `docs/core/contract-evolution.md`
 - `docs/app-api.md`

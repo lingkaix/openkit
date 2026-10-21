@@ -96,7 +96,7 @@ Descriptive text can explain intent, but stable protocol, model, ownership, and 
 
 ## Required Core Aspect Set
 
-The current required core aspect set contains 22 documents. Future merge or retirement work should first migrate canonical definitions, update cross-references, and update this inventory.
+The current required core aspect set contains 21 documents. Future merge or retirement work should first migrate canonical definitions, update cross-references, and update this inventory.
 
 ### Foundation
 
@@ -117,7 +117,7 @@ The current required core aspect set contains 22 documents. Future merge or reti
 ### Resources And Agent Supply
 
 - `generative-apps.md` — Light Apps, stable data kernels, agent-first understanding and operation, and optional generative presentation.
-- `storage.md` — scope-owned stores, control-record authority, immutable content, retained working volumes, and rebuildable indexes.
+- `storage.md` — two explicit persistence layers: Layer 1 (System State And Work Data: scope-owned stores, control-record authority, immutable content, item log, retention and deletion classes, format markers, and portability) and Layer 2 (User Data And The Storage Service: locations and byte operations, backends, `contentRef` digest and locator references, leases under Policy grants, Knowledge package bytes, and external Git/object-storage boundaries).
 - `identity.md` — users, workspace membership, auth sessions, tokens, invitations, automations, integrations, and stable actor references.
 - `vault.md` — secret vault references, grants, injection boundaries, and secret handling constraints.
 - `knowledge.md` — workspace knowledge, source references, proposals, review, and context injection.
@@ -125,11 +125,10 @@ The current required core aspect set contains 22 documents. Future merge or reti
 
 ### Capability, Governance, And Control
 
-- `mediation.md` — operation definition and invocation, `<operation>@<stage>` mediation points, Capability Mediation Boundary, `CapabilityCall`, gateway projection and routing, transformer/advice/gate ordering, invocation evidence, vault injection, usage, and rate-limit boundary.
+- `mediation.md` — operation definition and invocation, `<operation>@<stage>` mediation points, Capability Mediation Boundary, `CapabilityCall`, gateway projection and routing, transformer/advice/gate ordering, invocation evidence, vault injection, capability-call usage production, and rate-limit boundary.
 - `policy.md` — Policy authority model: principals, statements, decisions, approval, administration, workspace and administrator eligibility, and disclosure authorization.
 - `sandbox.md` — execution isolation, runtime environments, containment, and resource boundaries.
-- `audit.md` — stable audit projections over items, permission decisions, capability calls, vault use, and runtime events.
-- `metering.md` — system-wide measurement principles, attribution, aggregation, and cost projection boundaries.
+- `evidence.md` — what is recorded and with which authority across four record classes: Audit (`AuditEvent`), Usage and metering (`UsageRecord`, capability usage units, attribution, system-wide measurement, aggregation, and cost projection), Capture Coverage, and Telemetry.
 
 ### Evolution And Compliance
 
@@ -150,7 +149,7 @@ This index routes readers to the owner of each canonical term family. The owner 
 | Agent, Runtime, turn assignment, execution-substrate lifecycle | `runtime-model.md` |
 | Protocol records, commands, event envelope, item delta kinds, error shape, lifecycle enums | `protocol.md` |
 | Client/Core communication, Core/agent communication, transport projections, communication planes, Proven Non-Receipt | `communication.md` |
-| Storage, scope-owned transactional control authority, immutable content, Workspace portability, item log persistence | `storage.md` |
+| Storage, Layer 1 (System State And Work Data: scope-owned transactional control authority, immutable content, item log persistence, retention and deletion classes, format markers, Workspace portability), Layer 2 (User Data And The Storage Service: shared file storage, `contentRef`, Policy access leases, Knowledge package byte layout) | `storage.md` |
 | User, WorkspaceMember, AuthSession, Token, Invitation, AutomationIdentity, IntegrationIdentity, ActorRef | `identity.md` |
 | SecretVault, VaultReference, VaultGrant, VaultInjection, VaultInjectionPlan, VaultInjectionReceipt, VaultUse, future VaultAudit | `vault.md` |
 | Personal Memory, Knowledge Store, Knowledge Page, Knowledge Source, Knowledge Proposal, Knowledge Review, Knowledge Manager, Notebook, Agent-Near Context, Context Package | `knowledge.md` |
@@ -158,9 +157,7 @@ This index routes readers to the owner of each canonical term family. The owner 
 | Policy, Subject, Action, Resource, Context, PermissionDecision, policy statements and administration, delegated goal domain, approval gates, disclosure authorization | `policy.md` |
 | Sandbox, sandbox scope, isolation area, sandbox summary, backend containment | `sandbox.md` |
 | Operation, mediation point, enforcement point, Capability Mediation Boundary, AgentCapability, CapabilityCall, gateway projection, gateway routing, transformer pipeline, capability traffic, rate limits | `mediation.md` |
-| AuditEvent, audit projection, audit producer boundary | `audit.md` |
-| UsageRecord, capability-call usage units and attribution | `mediation.md` |
-| System-wide measurement policy, non-gateway runtime, storage and network consumption, cross-producer aggregation, Cost projection | `metering.md` |
+| AuditEvent, audit projection, audit producer boundary, UsageRecord, capability-call usage units and attribution, System-wide measurement, Non-gateway measurement, Aggregation, Cost projection, Capture Coverage, Telemetry | `evidence.md` |
 | AgentSession, continuity, exact reconnect, interruption, fresh-session fallback | `agent-session.md` |
 | Agent Workflow, Workflow Mechanism, Workflow Mode, Workflow Recipe, Default Workflow Setup, Goal Mode, Intent, Objective, Phase, Plan, Planning Phase, Plan Approval, Bounded Step, Workflow Loop, Gate, Human Attention Gate, Review Gate, Decision, Checkpoint, Context Compaction, Stop Condition, Workflow Evidence | `agent-workflow.md` |
 | Stability classes, stabilization mechanisms, contract evolution, strict parsing, conformance dimensions, fixture expectations | `contract-evolution.md` |
@@ -187,10 +184,9 @@ Discuss and promote the core docs in this order:
 16. `policy.md`
 17. `sandbox.md`
 18. `knowledge.md`
-19. `audit.md`
-20. `metering.md`
-21. `contract-evolution.md`
-22. `generative-apps.md`
+19. `evidence.md`
+20. `contract-evolution.md`
+21. `generative-apps.md`
 
 ## Promotion And Retirement Rules
 

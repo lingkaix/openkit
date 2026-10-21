@@ -20,7 +20,7 @@ It does not own release publication, Git review/merge, NanoHost lifecycle, Worke
 - `docs/core/architecture.md`
 - `docs/core/policy.md`
 - `docs/core/work-model.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 - `docs/core/sandbox.md`
 
 ## Decision

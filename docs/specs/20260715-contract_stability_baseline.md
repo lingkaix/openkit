@@ -33,7 +33,7 @@ date: 2026-07-15
 - `docs/core/identity.md`
 - `docs/core/policy.md`
 - `docs/core/vault.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 - `docs/core/contract-evolution.md`
 
 ## Intent
@@ -313,7 +313,7 @@ None. A future independently released API consumer or legal-isolation deployment
 - [Storage Model](../core/storage.md)
 - [Identity Model](../core/identity.md)
 - [Permissions Model](../core/policy.md)
-- [Audit Model](../core/audit.md)
+- [Evidence Model](../core/evidence.md)
 - [Core Protocol](../core/protocol.md)
 - [Core Client Boundary](./20260528-core_client_boundary.md)
 - [Schema Evolution And Record Envelope](./20260703-schema_evolution_record_envelope.md)

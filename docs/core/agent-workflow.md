@@ -328,7 +328,7 @@ Agent-private task graphs should stay private unless Core needs to schedule, ret
 
 `policy.md`, `sandbox.md`, and `vault.md` define important constraints that workflow orchestration must respect.
 
-`audit.md` defines durable projections that explain workflow-relevant events after the fact.
+`evidence.md` defines durable projections that explain workflow-relevant events after the fact.
 
 ## Default Setup Projection
 

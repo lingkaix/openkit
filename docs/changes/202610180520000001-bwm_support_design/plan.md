@@ -12,7 +12,7 @@ branch: lane/ch
 
 ## Owners And Decision
 
-The [decision](../../decisions/20261018-bwm_support_and_information_consolidation.md) and [specification](../../specs/20261018-nanocore_interception_and_information_consolidation.md) record the accepted direction. [Architecture](../../core/architecture.md), [Permissions](../../core/policy.md), [Knowledge](../../core/knowledge.md), [Audit](../../core/audit.md), [Generative Apps](../../core/generative-apps.md), [Agent Capability](../../core/mediation.md) and [Agent Supply](../../core/agent-supply.md) retain their aspect authority.
+The [decision](../../decisions/20261018-bwm_support_and_information_consolidation.md) and [specification](../../specs/20261018-nanocore_interception_and_information_consolidation.md) record the accepted direction. [Architecture](../../core/architecture.md), [Permissions](../../core/policy.md), [Knowledge](../../core/knowledge.md), [Audit](../../core/evidence.md), [Generative Apps](../../core/generative-apps.md), [Agent Capability](../../core/mediation.md) and [Agent Supply](../../core/agent-supply.md) retain their aspect authority.
 
 ## Checkpoint
 

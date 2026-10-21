@@ -22,7 +22,7 @@ This spec does not own the stable core definitions for work, protocol records, c
 - `docs/core/protocol.md`
 - `docs/core/policy.md`
 - `docs/core/vault.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 
 ## Summary
 

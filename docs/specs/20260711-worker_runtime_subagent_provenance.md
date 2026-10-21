@@ -33,7 +33,7 @@ updated: "2026-09-30"
 - `docs/core/agent-session.md`
 - `docs/core/mediation.md`
 - `docs/core/storage.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 
 ## Intent
 

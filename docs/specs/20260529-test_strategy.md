@@ -21,7 +21,7 @@ This spec does not own individual test implementation files, CI workflow syntax,
 - `docs/core/protocol.md`
 - `docs/core/communication.md`
 - `docs/core/agent-workflow.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 
 ## Summary
 

@@ -29,7 +29,7 @@ kind: mechanism
 - `docs/core/vault.md`
 - `docs/core/storage.md`
 - `docs/core/policy.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 
 ## Summary
 
@@ -290,4 +290,4 @@ Remaining alignment requires the provider-subscription account, storage, credent
 - `docs/core/vault.md`
 - `docs/core/storage.md`
 - `docs/core/policy.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`

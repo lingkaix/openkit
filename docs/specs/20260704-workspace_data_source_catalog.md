@@ -30,7 +30,7 @@ updated: 2026-08-22
 - `docs/core/agent-supply.md`
 - `docs/core/vault.md`
 - `docs/core/policy.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 
 ## Related Docs
 

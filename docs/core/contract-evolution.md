@@ -277,7 +277,7 @@ A reader of operator- or user-authored configuration ignores an unknown key as a
 
 `communication.md` owns command, event, streaming, and transport projections.
 
-`storage.md`, `identity.md`, `vault.md`, `policy.md`, `sandbox.md`, `mediation.md`, `audit.md`, and `metering.md` own their aspect-specific semantics and invariants.
+`storage.md`, `identity.md`, `vault.md`, `policy.md`, `sandbox.md`, `mediation.md`, and `evidence.md` own their aspect-specific semantics and invariants.
 
 This document owns the cross-aspect rule for how those contracts are classified, changed, promoted, and judged for conformance.
 
@@ -290,4 +290,4 @@ This document owns the cross-aspect rule for how those contracts are classified,
 - `docs/core/storage.md`
 - `docs/core/identity.md`
 - `docs/core/policy.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`

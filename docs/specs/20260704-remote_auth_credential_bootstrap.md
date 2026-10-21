@@ -35,7 +35,7 @@ updated: "2026-10-02"
 - `docs/core/identity.md`
 - `docs/core/policy.md`
 - `docs/core/vault.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 
 ## Summary
 
@@ -123,7 +123,7 @@ In `Channel authentication`, `Transport requirements`, and `Rotation and revocat
 
 - The bundled CLI and any remote coordinator MUST authenticate to server-mode NanoCore with a scoped token presented as `Authorization: Bearer <token>`.
 - The bundled CLI MUST resolve the token from the client credential store or the explicit ephemeral `OPENKIT_NANOCORE_TOKEN` override. The `OPENKIT_NANOCORE_COOKIE` and `OPENKIT_NANOCORE_AUTHORIZATION` raw passthrough variables remain removed with no compatibility alias.
-- Every authenticated request under this V1 contract MUST resolve to an actor context containing: the acting human `User`, the token id (or `AuthSession` id for session-authenticated requests), and the channel. The actor context MUST flow into audit labels for CLI-originated operations so audit records can answer which identity, credential, and channel caused an action, per `docs/core/audit.md`. `AutomationIdentity` token actors remain undefined until a separate specification owns their issuance and membership rules.
+- Every authenticated request under this V1 contract MUST resolve to an actor context containing: the acting human `User`, the token id (or `AuthSession` id for session-authenticated requests), and the channel. The actor context MUST flow into audit labels for CLI-originated operations so audit records can answer which identity, credential, and channel caused an action, per `docs/core/evidence.md`. `AutomationIdentity` token actors remain undefined until a separate specification owns their issuance and membership rules.
 - Token verification failures MUST be indistinguishable between unknown, expired, revoked, and malformed tokens in the response body, and MUST NOT echo the presented value.
 - Tokens MUST NOT be accepted from query strings, request bodies, or cookies. The bearer header is the only token transport.
 - Better Auth session cookies remain a valid authentication path for browser product surfaces; this spec adds token authentication beside it, and both resolve to the same actor-context shape.
@@ -302,7 +302,7 @@ The following are not designed.
 - `docs/core/identity.md`
 - `docs/core/policy.md`
 - `docs/specs/20260715-multi_user_workspace_system.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 - `docs/specs/20260628-nanocore_config_identity_contract.md`
 - `docs/specs/20260910-agent_operator_skill.md`
 - `docs/decisions/20261002-remote_mcp_static_bearer_first.md`

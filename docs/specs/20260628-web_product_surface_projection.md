@@ -50,7 +50,7 @@ The superseded Web UI slice specs are retained as historical reference only. The
 - `docs/core/mediation.md`
 - `docs/core/knowledge.md`
 - `docs/core/policy.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 - `docs/core/vault.md`
 
 ## Goals

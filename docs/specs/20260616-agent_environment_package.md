@@ -29,7 +29,7 @@ Those contracts remain with their narrow Core and specification owners. An AEP c
 - `docs/core/sandbox.md`
 - `docs/core/policy.md`
 - `docs/core/vault.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 - `docs/core/storage.md`
 
 ## Related Docs
