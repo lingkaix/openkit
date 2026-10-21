@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as schemas from '@openkit/app-api-schemas';
 import { Hono } from 'hono';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createCoreClient } from '../../../packages/core-client/src/index.js';
 import { registerArtifactFileRoutes } from './artifact-file-routes.js';
 import { createArtifactReview, getArtifactReview } from './artifact-reviews.js';
@@ -13,6 +13,7 @@ import type { AuthVariables } from './auth/middleware.js';
 import { createBootReadinessSnapshot } from './bootstrap/readiness.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -28,7 +29,7 @@ function digest(content: string) {
 }
 
 /** Isolated real authority; membership, audience and admission are explicit fixture inputs. */
-function fixture(member = true, acceptingProductWork = true, privateOrigin = false) {
+async function fixture(member = true, acceptingProductWork = true, privateOrigin = false) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-artifact-operations-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -38,7 +39,7 @@ function fixture(member = true, acceptingProductWork = true, privateOrigin = fal
       "INSERT INTO users (id, kind, display_name, email, email_verified, created_at, updated_at, last_seen_at) SELECT 'usr_00000000-0000-7ed5-9b62-226e0a66887f', 'human', display_name, 'foreign@local.openkit.invalid', email_verified, created_at, updated_at, last_seen_at FROM users WHERE id = 'usr_00000000-0000-7000-8000-000000000001'"
     )
     .run();
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({
     coreDb,
     ownerUserId: member
@@ -46,7 +47,7 @@ function fixture(member = true, acceptingProductWork = true, privateOrigin = fal
       : 'usr_00000000-0000-7ed5-9b62-226e0a66887f',
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
-  const thread = store.createThread(
+  const thread = await store.createThread(
     'ws_00000000-0000-7000-8000-000000000001',
     'Review source',
     undefined,
@@ -55,7 +56,7 @@ function fixture(member = true, acceptingProductWork = true, privateOrigin = fal
       ? { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-7ed5-9b62-226e0a66887f' }
       : { visibility: 'workspace' }
   );
-  const turn = store.createTurn(
+  const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     thread.id,
     'Produce an output',
@@ -64,7 +65,7 @@ function fixture(member = true, acceptingProductWork = true, privateOrigin = fal
     { agentId: 'agent_codex_host' }
   );
   const content = 'Exact reviewed output.\n';
-  store.createArtifact({
+  await store.createArtifact({
     id: 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f',
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     threadId: thread.id,
@@ -99,7 +100,7 @@ function fixture(member = true, acceptingProductWork = true, privateOrigin = fal
     createdAt: turn.startedAt!,
   });
   db.sqlite.close();
-  store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
+  await store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
   const options = {
     coreDb,
     dataRoot,
@@ -321,7 +322,7 @@ const oldRoutes = [
 
 describe('Artifact definition projections', () => {
   it('records exact candidate choices without work or a final decision', async () => {
-    const f = fixture();
+    const f = await fixture();
     try {
       const input = {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -397,7 +398,7 @@ describe('Artifact definition projections', () => {
     false,
     true,
   ])('persists exact original UTF-16 feedback or refuses changed base (%s)', async (changedBase) => {
-    const f = fixture();
+    const f = await fixture();
     const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
     const artifactId = 'ar_00000000-0000-7b5d-82ba-fa20d4518e2f';
     const db = openWorkspaceDb(f.dataRoot, workspaceId);
@@ -550,7 +551,7 @@ describe('Artifact definition projections', () => {
   });
 
   it.each(oldRoutes)('deletes %s %s with HTTP 404', async (method, path) => {
-    const f = fixture();
+    const f = await fixture();
     try {
       expect(
         (
@@ -570,7 +571,7 @@ describe('Artifact definition projections', () => {
     'Workspace member',
     'eligible administrator',
   ])('preserves exact authorized results and command replay across HTTP client and CLI for %s', async (authority) => {
-    const f = fixture(
+    const f = await fixture(
       authority === 'Workspace member',
       true,
       authority === 'eligible administrator'
@@ -694,7 +695,7 @@ describe('Artifact definition projections', () => {
   });
 
   it('rechecks the current source audience and exact version for binary downloads', async () => {
-    const f = fixture(true, true, true);
+    const f = await fixture(true, true, true);
     try {
       const token = createOpenKitAccessTokenRecord(f.coreDb, {
         ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -744,7 +745,7 @@ describe('Artifact definition projections', () => {
   });
 
   it('replays an accepted import without reading a changed or unreadable retry body', async () => {
-    const f = fixture();
+    const f = await fixture();
     try {
       const projectors = await projections(f, undefined, 'artifact.import');
       const metadata = {
@@ -779,7 +780,7 @@ describe('Artifact definition projections', () => {
   });
 
   it('does not invent an import receipt after the original was published without acknowledgement', async () => {
-    const f = fixture();
+    const f = await fixture();
     try {
       const record = vi.spyOn(f.store, 'recordCommandRequest').mockImplementationOnce(() => {
         throw new Error('Fixture receipt write unavailable.');
@@ -822,7 +823,7 @@ describe('Artifact definition projections', () => {
   });
 
   it('preserves the missing receiving Thread JSON refusal before introduction replay across projections', async () => {
-    const f = fixture();
+    const f = await fixture();
     try {
       for (const project of Object.values(await projections(f)))
         await expect(
@@ -842,7 +843,7 @@ describe('Artifact definition projections', () => {
     'artifact.introduce',
     'artifact.review.decide',
   ] as const)('retains HTTP 500 when %s cannot open its receipt database', async (id) => {
-    const f = fixture();
+    const f = await fixture();
     try {
       const app = new Hono<{ Variables: AuthVariables }>();
       app.use('*', async (c, next) => {
@@ -895,7 +896,7 @@ describe('Artifact definition projections', () => {
   it.each(
     Object.entries(inputs)
   )('preserves unauthorized Workspace refusal for %s across HTTP client and CLI', async (id, input) => {
-    const f = fixture();
+    const f = await fixture();
     try {
       for (const project of Object.values(await projections(f, undefined, id)))
         await expect(
@@ -910,9 +911,9 @@ describe('Artifact definition projections', () => {
   });
 
   it('preserves Artifact owner not-found for another member reading private-origin content and an unknown Artifact id in another authorized Workspace', async () => {
-    const f = fixture(true, true, true);
+    const f = await fixture(true, true, true);
     try {
-      const other = f.store.createWorkspace('Other Workspace');
+      const other = await f.store.createWorkspace('Other Workspace');
       recordWorkspaceOwnerMembership({
         coreDb: f.coreDb,
         ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -961,7 +962,7 @@ describe('Artifact definition projections', () => {
       ].includes(id)
     )
   )('refuses read-only Token mutation for %s across HTTP client and CLI before effects', async (id, input) => {
-    const f = fixture();
+    const f = await fixture();
     let reviewDb: ReturnType<typeof openWorkspaceDb> | undefined;
     try {
       const token = createOpenKitAccessTokenRecord(f.coreDb, {
@@ -1016,7 +1017,7 @@ describe('Artifact definition projections', () => {
       ].includes(id)
     )
   )('returns product_work_unavailable for %s while product admission is closed', async (id, input) => {
-    const f = fixture(true, false);
+    const f = await fixture(true, false);
     try {
       const artifacts = f.store.listArtifacts('ws_00000000-0000-7000-8000-000000000001');
       for (const project of Object.values(await projections(f, undefined, id)))
@@ -1031,4 +1032,9 @@ describe('Artifact definition projections', () => {
       f.close();
     }
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

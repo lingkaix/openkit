@@ -8,8 +8,7 @@ import {
   type LightAppSchemaInput,
 } from '@openkit/app-api-schemas';
 import { allocateEntityId } from '@openkit/protocol';
-import { describe, expect, it, vi } from 'vitest';
-
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createLightApp,
   createRecord,
@@ -17,6 +16,7 @@ import {
   updateRecord,
 } from '../generative-kernel/commands.js';
 import { KernelCommandError } from '../generative-kernel/errors.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -76,11 +76,13 @@ const MAPPING_SCHEMA: LightAppSchemaInput = {
  * @param requestId Caller request id.
  * @returns Context plus close helper.
  */
-function createContext(requestId = randomUUID()): GenerativeUiCommandContext & {
-  close: () => void;
-} {
+async function createContext(requestId = randomUUID()): Promise<
+  GenerativeUiCommandContext & {
+    close: () => void;
+  }
+> {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-generative-ui-'));
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   applyScopedMigrations(workspaceDb);
   return {
@@ -124,16 +126,16 @@ function nativeMessages(surfaceId: string, components: unknown[]) {
 
 describe('Generative UI commands', () => {
   it('binds exact completed Tool result text without creating a Kernel', async () => {
-    const context = createContext();
+    const context = await createContext();
     try {
-      const turn = context.store.createTurn(
+      const turn = await context.store.createTurn(
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001',
         'Show the observation',
         context.actor
       );
       const text = 'The external source reported 3 matches.';
-      const sourceItem = context.store.createItem({
+      const sourceItem = await context.store.createItem({
         id: allocateEntityId('it'),
         owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -172,9 +174,9 @@ describe('Generative UI commands', () => {
         { result: null },
         { result: 'Changed retained observation' },
       ]) {
-        context.store.updateItem(sourceItem.id, changedSource);
+        await context.store.updateItem(sourceItem.id, changedSource);
         expect(() => getGenerativePresentation(context, published.id)).toThrow(KernelCommandError);
-        context.store.updateItem(sourceItem.id, sourceItem);
+        await context.store.updateItem(sourceItem.id, sourceItem);
       }
       expect(getGenerativePresentation(context, published.id).id).toBe(published.id);
       expect(
@@ -188,9 +190,9 @@ describe('Generative UI commands', () => {
   });
 
   it('publishes generated text once and normalizes its source without terminalizing the Turn', async () => {
-    const context = createContext();
+    const context = await createContext();
     try {
-      const turn = context.store.createTurn(
+      const turn = await context.store.createTurn(
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001',
         'Present the answer',
@@ -254,15 +256,15 @@ describe('Generative UI commands', () => {
     result,
     digestMatches,
   }) => {
-    const context = createContext();
+    const context = await createContext();
     try {
-      const turn = context.store.createTurn(
+      const turn = await context.store.createTurn(
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001',
         'Show the observation',
         context.actor
       );
-      const source = context.store.createItem({
+      const source = await context.store.createItem({
         id: allocateEntityId('it'),
         owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -311,9 +313,9 @@ describe('Generative UI commands', () => {
   });
 
   it('keeps source-only interruption inspectable and refuses automatic publication repair', async () => {
-    const context = createContext();
+    const context = await createContext();
     try {
-      const turn = context.store.createTurn(
+      const turn = await context.store.createTurn(
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001',
         'Present the answer',
@@ -331,8 +333,8 @@ describe('Generative UI commands', () => {
         actions: [],
       };
       const createItem = context.store.createItem.bind(context.store);
-      const interrupted = vi.spyOn(context.store, 'createItem').mockImplementation((item) => {
-        const retained = createItem(item);
+      const interrupted = vi.spyOn(context.store, 'createItem').mockImplementation(async (item) => {
+        const retained = await createItem(item);
         if (item.type === 'assistant-message')
           throw new Error('Injected source publication interruption');
         return retained;
@@ -365,9 +367,9 @@ describe('Generative UI commands', () => {
   });
 
   it('validates answer declarations before retaining source text', async () => {
-    const context = createContext();
+    const context = await createContext();
     try {
-      const turn = context.store.createTurn(
+      const turn = await context.store.createTurn(
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001',
         'Present the answer',
@@ -395,29 +397,29 @@ describe('Generative UI commands', () => {
   });
 
   it('refuses private Tool result disclosure into a shared destination even for an administrator', async () => {
-    const context = createContext();
+    const context = await createContext();
     try {
-      const privateThread = context.store.createThread(
+      const privateThread = await context.store.createThread(
         'ws_00000000-0000-7000-8000-000000000001',
         'Private Tool observation',
         undefined,
         'conversation',
         { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001' }
       );
-      const sourceTurn = context.store.createTurn(
+      const sourceTurn = await context.store.createTurn(
         'ws_00000000-0000-7000-8000-000000000001',
         privateThread.id,
         'Read a private source',
         context.actor
       );
-      const destination = context.store.createTurn(
+      const destination = await context.store.createTurn(
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001',
         'Show the result publicly',
         context.actor
       );
       const text = 'Private Tool result';
-      const source = context.store.createItem({
+      const source = await context.store.createItem({
         id: allocateEntityId('it'),
         owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: privateThread.id,
@@ -464,15 +466,15 @@ describe('Generative UI commands', () => {
   });
 
   it('publishes an item-source presentation onto a running turn', async () => {
-    const context = createContext();
+    const context = await createContext();
     try {
-      const turn = context.store.createTurn(
+      const turn = await context.store.createTurn(
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001',
         'Publish a generated view',
         context.actor
       );
-      const sourceItem = context.store.createItem({
+      const sourceItem = await context.store.createItem({
         id: testEntityId('it', `it_${turn.id}_source`),
         owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -532,9 +534,9 @@ describe('Generative UI commands', () => {
   });
 
   it('commits a kernel-record-update and rereads the new value', async () => {
-    const context = createContext();
+    const context = await createContext();
     try {
-      const turn = context.store.createTurn(
+      const turn = await context.store.createTurn(
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001',
         'Edit a mapping annotation',
@@ -631,9 +633,9 @@ describe('Generative UI commands', () => {
   });
 
   it('refuses a form write after the record leaves the bound source query', async () => {
-    const context = createContext();
+    const context = await createContext();
     try {
-      const turn = context.store.createTurn(
+      const turn = await context.store.createTurn(
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001',
         'Edit a mapping annotation',
@@ -742,15 +744,15 @@ describe('Generative UI commands', () => {
   });
 
   it('rolls back presentation insert when admission audit fails', async () => {
-    const context = createContext();
+    const context = await createContext();
     try {
-      const turn = context.store.createTurn(
+      const turn = await context.store.createTurn(
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001',
         'Publish a generated view',
         context.actor
       );
-      const sourceItem = context.store.createItem({
+      const sourceItem = await context.store.createItem({
         id: testEntityId('it', `it_${turn.id}_source`),
         owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -794,15 +796,15 @@ describe('Generative UI commands', () => {
 
   it('replays the same publish request and rejects changed arguments', async () => {
     const requestId = randomUUID();
-    const context = createContext(requestId);
+    const context = await createContext(requestId);
     try {
-      const turn = context.store.createTurn(
+      const turn = await context.store.createTurn(
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001',
         'Replay publication',
         context.actor
       );
-      const sourceItem = context.store.createItem({
+      const sourceItem = await context.store.createItem({
         id: testEntityId('it', `it_${turn.id}_source`),
         owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -846,15 +848,15 @@ describe('Generative UI commands', () => {
 
   it('rejects an unknown retained presentation format before read or replay', async () => {
     const requestId = randomUUID();
-    const context = createContext(requestId);
+    const context = await createContext(requestId);
     try {
-      const turn = context.store.createTurn(
+      const turn = await context.store.createTurn(
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001',
         'Replay publication',
         context.actor
       );
-      const sourceItem = context.store.createItem({
+      const sourceItem = await context.store.createItem({
         id: testEntityId('it', `it_${turn.id}_source`),
         owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -905,15 +907,15 @@ describe('Generative UI commands', () => {
   });
 
   it('rejects publication onto a completed turn', async () => {
-    const context = createContext();
+    const context = await createContext();
     try {
-      const turn = context.store.createTurn(
+      const turn = await context.store.createTurn(
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001',
         'Completed turn',
         context.actor
       );
-      context.store.updateTurn(turn.id, {
+      await context.store.updateTurn(turn.id, {
         status: 'completed',
         completedAt: new Date().toISOString(),
         durationMs: 1,
@@ -939,4 +941,9 @@ describe('Generative UI commands', () => {
       context.close();
     }
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

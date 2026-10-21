@@ -2,8 +2,9 @@ import {
   GetAgentCatalogEntryResponseSchema,
   ListAgentCatalogResponseSchema,
 } from '@openkit/app-api-schemas';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
@@ -11,7 +12,7 @@ import { operationRequest } from './test-support/operation-request.js';
 
 describe('Agent inventory and health operations', () => {
   it('lists and reads product-visible Agent Catalog entries', async () => {
-    const store = createDemoStore();
+    const store = await createDemoStore();
     const app = createApp({
       agentManifests: [createTestAgentSetup().manifest],
       store,
@@ -57,7 +58,7 @@ describe('Agent inventory and health operations', () => {
   });
 
   it('refreshes workspace agent health for Settings Diagnostics', async () => {
-    const store = createDemoStore();
+    const store = await createDemoStore();
     const app = createApp({
       agentManifests: [createTestAgentSetup().manifest],
       store,
@@ -89,4 +90,9 @@ describe('Agent inventory and health operations', () => {
     expect(payload).not.toHaveProperty('sessions');
     expect(JSON.stringify(payload)).not.toContain('"sessions"');
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

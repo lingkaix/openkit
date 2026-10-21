@@ -32,6 +32,7 @@ import { readPendingRequest } from '../runtime/pending-requests.js';
 import { listWorkerBackendSessions } from '../runtime/worker-backend-sessions.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import * as filePayload from '../storage/artifacts/file-payload.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
@@ -140,13 +141,13 @@ const REMOTE_GIT_COMMIT = '0123456789abcdef0123456789abcdef01234567';
 const REMOTE_GIT_URL = 'https://git.example.test/openkit/repository.git';
 
 /** Creates a product-start fixture whose only authored Workspace input is remote Git. */
-function createRemoteGitProductFixture(
+async function createRemoteGitProductFixture(
   locator: Readonly<Record<string, unknown>>,
   vaultGrantRef?: string,
   configuredCanary = false
 ) {
   const coreDb = createCoreDb();
-  const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+  const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
   const executor = new SimulatedTurnExecutor({ coreDb });
   const providerRegistry = new ProviderRegistry([
     {
@@ -249,13 +250,14 @@ function createRemoteGitProductFixture(
 }
 
 describe('SimulatedTurnExecutor', () => {
-  afterEach(() => {
+  afterEach(async () => {
+    await shutdownControlStoreWorkerClient();
     delete process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR;
   });
 
   it('records simulator input and completes the bounded Turn', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new SimulatedTurnExecutor({ coreDb });
     const app = createApp({
       agentManifests: [createTestAgentSetup().manifest],
@@ -354,10 +356,10 @@ describe('SimulatedTurnExecutor', () => {
 
   it('rejects a mismatched scheduler lease key before any simulator backend effect', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new SimulatedTurnExecutor({ coreDb });
     const agentSetup = createTestAgentSetup();
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Reject a mismatched lease key',
@@ -366,7 +368,7 @@ describe('SimulatedTurnExecutor', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    store.updateTurn(turn.id, { agentId: agentSetup.manifest.id });
+    await store.updateTurn(turn.id, { agentId: agentSetup.manifest.id });
 
     try {
       await expect(
@@ -402,7 +404,7 @@ describe('SimulatedTurnExecutor', () => {
   // Two real S39 publication and native execution lifecycles use this local runner budget; product deadlines stay unchanged.
   it('reuses one compatible current AgentSession across sequential simulator Turns', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const fileAdmission = new FileStorageAdmission(coreDb.dataRoot, () => 1_000_000n);
     const executor = new SimulatedTurnExecutor({ coreDb, fileAdmission });
     // HTTP202 admits the Turn; await the actual execution before inspecting terminal state.
@@ -539,7 +541,7 @@ describe('SimulatedTurnExecutor', () => {
     const imageRefA = 'openkit/worker-codex:image-a';
     const imageRefB = 'openkit/worker-codex:image-b';
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const fileAdmission = new FileStorageAdmission(coreDb.dataRoot, () => 1_000_000n);
     const executor = new SimulatedTurnExecutor({ coreDb, fileAdmission });
     // HTTP202 admits the Turn; await the actual execution before inspecting terminal state.
@@ -767,7 +769,7 @@ describe('SimulatedTurnExecutor', () => {
   it('strictly projects and consumes bound Material with shared file admission', async () => {
     process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR = '1';
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const capacity = 16_000_000n;
     let configuredReserve = 2_000_000n;
     const admission = new FileStorageAdmission(
@@ -1439,14 +1441,14 @@ describe('SimulatedTurnExecutor', () => {
   });
 
   it('uses the resolved manifest agent and default profile', async () => {
-    const store = createDemoStore();
+    const store = await createDemoStore();
     const executor = new SimulatedTurnExecutor();
     const firstAgentSetup = createTestAgentSetup({
       agentId: 'agent_codex_host',
       provider: null,
       requiredCapabilities: [],
     });
-    const firstTurn = store.createTurn(
+    const firstTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Use the default agent',
@@ -1456,7 +1458,7 @@ describe('SimulatedTurnExecutor', () => {
       }
     );
 
-    store.updateTurn(firstTurn.id, { agentId: 'agent_codex_host' });
+    await store.updateTurn(firstTurn.id, { agentId: 'agent_codex_host' });
     await executor.startTurn(store, firstTurn.id, 'Use the default agent', {
       agentSetup: firstAgentSetup,
       triggerActor: firstTurn.triggerActor,
@@ -1475,11 +1477,11 @@ describe('SimulatedTurnExecutor', () => {
       { id: 'draft', instructionsRef: 'draft', skills: [] },
       { id: 'review', instructionsRef: 'review', skills: [] },
     ];
-    const selectedThread = store.createThread(
+    const selectedThread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Selected agent thread'
     );
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       selectedThread.id,
       'Use the selected agent',
@@ -1489,7 +1491,7 @@ describe('SimulatedTurnExecutor', () => {
       }
     );
 
-    store.updateTurn(turn.id, { agentId: selectedAgentSetup.manifest.id });
+    await store.updateTurn(turn.id, { agentId: selectedAgentSetup.manifest.id });
     await executor.startTurn(store, turn.id, 'Use the selected agent', {
       agentSetup: selectedAgentSetup,
       triggerActor: turn.triggerActor,
@@ -1520,9 +1522,9 @@ describe('SimulatedTurnExecutor', () => {
   });
 
   it('fails closed when the resolved agent setup is missing', async () => {
-    const store = createDemoStore();
+    const store = await createDemoStore();
     const executor = new SimulatedTurnExecutor();
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Missing setup',
@@ -1532,7 +1534,7 @@ describe('SimulatedTurnExecutor', () => {
       }
     );
 
-    store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
+    await store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
 
     await expect(executor.startTurn(store, turn.id, 'Missing setup')).rejects.toThrow(
       'Simulator execution requires one resolved agent setup.'
@@ -1547,11 +1549,11 @@ describe('SimulatedTurnExecutor', () => {
   });
 
   it('commits one ready version-one Artifact with exact turn-output proof', async () => {
-    const store = createDemoStore();
+    const store = await createDemoStore();
     const executor = new SimulatedTurnExecutor();
     const agentSetup = createTestAgentSetup({ provider: null, requiredCapabilities: [] });
     const actor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Create one simulator Artifact',
@@ -1560,7 +1562,7 @@ describe('SimulatedTurnExecutor', () => {
     const artifactRequestId = '0190f4c8-0000-7000-8000-000000000230';
     const body = 'Simulator answer: Concise';
 
-    store.updateTurn(turn.id, { agentId: agentSetup.manifest.id });
+    await store.updateTurn(turn.id, { agentId: agentSetup.manifest.id });
     await executor.startTurn(store, turn.id, 'Create one simulator Artifact', {
       agentSetup,
       requestId: artifactRequestId,
@@ -1633,7 +1635,7 @@ describe('SimulatedTurnExecutor', () => {
 
   it('emits command output delta before the command item completes', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const app = createApp({
       agentManifests: [createTestAgentSetup().manifest],
       coreDb,
@@ -1718,7 +1720,7 @@ describe('SimulatedTurnExecutor', () => {
   });
 
   it('admits one manifest-selected remote Git source without a WorkspaceRepository or host path', async () => {
-    const { app, coreDb, executor, store } = createRemoteGitProductFixture({
+    const { app, coreDb, executor, store } = await createRemoteGitProductFixture({
       commit: REMOTE_GIT_COMMIT,
       url: REMOTE_GIT_URL,
     });
@@ -1824,7 +1826,7 @@ describe('SimulatedTurnExecutor', () => {
     requestId,
     vaultGrantRef,
   }) => {
-    const { app, canaryPath, coreDb, executor, store } = createRemoteGitProductFixture(
+    const { app, canaryPath, coreDb, executor, store } = await createRemoteGitProductFixture(
       locator,
       vaultGrantRef,
       true

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { FsStore } from './lib/store.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -18,13 +19,13 @@ import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 const fixtures: Array<ReturnType<typeof fixture>> = [];
 
 /** Compose actual public admission, Store, SQLite and Git through the existing fresh-scope initializer. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-notebook-publication-'));
   const coreDb = openCoreDb(dataRoot);
   try {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       workspaceId: DEMO_WORKSPACE_ID,
@@ -159,7 +160,8 @@ async function accept(f: ReturnType<typeof fixture>, d: Awaited<ReturnType<typeo
     candidateRevision: d.proposal.candidateRevision,
   });
 }
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const f of fixtures.splice(0)) {
     f.workspaceDb.sqlite.close();
     f.coreDb.sqlite.close();
@@ -169,7 +171,7 @@ afterEach(() => {
 
 describe('native fixed-base Knowledge Review and removal', () => {
   it('publishes the retained candidate and refuses a stale Review without changing the winner', async () => {
-    const f = fixture();
+    const f = await fixture();
     const d = await draft(f);
     expect(git(f, 'rev-parse', `refs/proposals/${d.proposal.id}`)).toBe(
       d.proposal.candidateRevision
@@ -237,7 +239,7 @@ describe('native fixed-base Knowledge Review and removal', () => {
   });
 
   it('reverses and explicitly removes through new commits while retaining original bytes and receipts', async () => {
-    const f = fixture();
+    const f = await fixture();
     const d = await draft(f, 'alpha', true);
     const accepted = await accept(f, d);
     expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);

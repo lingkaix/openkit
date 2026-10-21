@@ -20,6 +20,7 @@ import {
 } from '../auth/operation-authorizer.js';
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -271,7 +272,8 @@ function files(root: string, directory = root): Array<[string, string]> {
     });
 }
 
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   vi.restoreAllMocks();
   for (const entry of fixtures.splice(0)) {
     if (entry.coreDb.sqlite.open) entry.coreDb.sqlite.close();
@@ -710,14 +712,14 @@ describe('administrator runtime cleanup view', () => {
   it('withholds contributed storage whose current private-source audience cannot be proved from Core records', async () => {
     const input = fixture();
     const { storage: empty } = populate(input.coreDb);
-    const store = createDemoStore({ dataRoot: input.dataRoot });
+    const store = await createDemoStore({ dataRoot: input.dataRoot });
     const workspace = store.listWorkspaces().find((entry) => entry.kind === 'code')!;
     recordWorkspaceOwnerMembership({
       coreDb: input.coreDb,
       workspaceId: workspace.id,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     });
-    const thread = store.createThread(
+    const thread = await store.createThread(
       workspace.id,
       PRIVATE,
       testEntityId('th', 'private_cleanup_source'),

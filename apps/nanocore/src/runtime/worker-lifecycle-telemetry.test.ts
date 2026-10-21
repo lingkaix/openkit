@@ -6,6 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { InMemorySpanExporter, type ReadableSpan } from '@opentelemetry/sdk-trace-base';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { shutdownTelemetry, startTelemetry } from '../telemetry.js';
@@ -88,6 +89,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   try {
     await shutdownTelemetry();
   } finally {
@@ -100,7 +102,7 @@ afterEach(async () => {
 describe('current Worker lifecycle telemetry', () => {
   it('ends validation only after the real executor awaits its backend, without claiming native work', async () => {
     const exporter = beginTelemetry();
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const entered = deferred<void>();
     const release = deferred<void>();
     fixture.capabilities.mockImplementationOnce(async () => {
@@ -108,7 +110,7 @@ describe('current Worker lifecycle telemetry', () => {
       await release.promise;
       return fixture.availableCapabilities();
     });
-    const run = fixture.run();
+    const run = await fixture.run();
     try {
       await vi.waitFor(() => expect(fixture.validation).toHaveBeenCalledOnce());
       await entered.promise;
@@ -152,12 +154,12 @@ describe('current Worker lifecycle telemetry', () => {
 
   it('records a returned validation refusal as rejected, never successful native execution', async () => {
     const exporter = beginTelemetry();
-    const fixture = createFixture();
+    const fixture = await createFixture();
     fixture.capabilities.mockResolvedValueOnce({
       ...(await fixture.availableCapabilities()),
       capabilities: [],
     });
-    const run = fixture.run();
+    const run = await fixture.run();
     expect(await run.outcome).toBeInstanceOf(DeterministicAgentPreparationError);
     expect(fixture.validation).toHaveBeenCalledOnce();
     expect(fixture.plan).not.toHaveBeenCalled();
@@ -174,12 +176,12 @@ describe('current Worker lifecycle telemetry', () => {
 
   it('exports nine successful validations and one failure as ten delta histogram samples', async () => {
     beginTelemetry();
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const backendFailure = new Error(ERROR_CANARY);
     const turnIds: string[] = [];
     for (let index = 0; index < 10; index++) {
       if (index === 9) fixture.capabilities.mockRejectedValueOnce(backendFailure);
-      const run = fixture.run();
+      const run = await fixture.run();
       turnIds.push(run.turn.id);
       expect(await run.outcome).toBe(index === 9 ? backendFailure : fixture.stopAfterValidation);
       assertProductSettlement(fixture, run);
@@ -230,10 +232,10 @@ describe('current Worker lifecycle telemetry', () => {
   ] as const)('preserves backend failure and claim cleanup when telemetry is %s', async (mode) => {
     const exporter = beginTelemetry(mode);
     const exported = vi.spyOn(exporter, 'export');
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const failure = new Error(ERROR_CANARY);
     fixture.capabilities.mockRejectedValueOnce(failure);
-    const run = fixture.run();
+    const run = await fixture.run();
     expect(await run.outcome).toBe(failure);
     expect(fixture.validation).toHaveBeenCalledOnce();
     expect(fixture.plan).not.toHaveBeenCalled();
@@ -245,8 +247,8 @@ describe('current Worker lifecycle telemetry', () => {
 });
 
 /** Keeps the real validator and executor; controls capability discovery and the next no-effect boundary. */
-function createFixture() {
-  const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+async function createFixture() {
+  const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
   const agentSetup = createTestAgentSetup({ requiredCapabilities: ['worker-control'] });
   admitTestNativeEnvironment(coreDb, agentSetup.manifest);
   const runtime = createConfiguredWorkerLifecycleRuntime({ coreDb, store, env: {} });
@@ -278,10 +280,15 @@ function createFixture() {
     cleanup,
     stopAfterValidation,
     /** Starts one real admitted Turn and observes its public settlement without replacing the executor. */
-    run() {
+    async run() {
       const actor = { kind: 'user', id: FIXTURE_LOCAL_USER_ID } as const;
-      const created = store.createTurn(DEMO_WORKSPACE_ID, DEMO_THREAD_ID, REQUEST_CANARY, actor);
-      const turn = store.updateTurn(created.id, { agentId: agentSetup.manifest.id });
+      const created = await store.createTurn(
+        DEMO_WORKSPACE_ID,
+        DEMO_THREAD_ID,
+        REQUEST_CANARY,
+        actor
+      );
+      const turn = await store.updateTurn(created.id, { agentId: agentSetup.manifest.id });
       const agentSessionId = testEntityId('as', `telemetry-${turn.id}`);
       const now = () => new Date().toISOString();
       const entry = createSchedulerAdmissionEntry(coreDb, {

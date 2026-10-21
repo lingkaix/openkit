@@ -33,6 +33,7 @@ import {
   requireSchedulerExecutionAttemptAdmissionContext,
 } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import {
   openCoreDb,
   openWorkspaceDb,
@@ -143,7 +144,8 @@ import {
 } from './workspace-sync-records.js';
 
 const fixtureDatabases: ReturnType<typeof openCoreDb>[] = [];
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const coreDb of fixtureDatabases.splice(0)) {
     if (coreDb.sqlite.open) coreDb.sqlite.close();
     rmSync(coreDb.dataRoot, { recursive: true, force: true });
@@ -175,7 +177,7 @@ async function createFailedStartFixture(
   const coreDb = createMigratedCoreDb();
   const dataRoot = coreDb.dataRoot;
   ensureLocalUser(coreDb);
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({
     coreDb,
     ownerUserId: LOCAL_USER_ID,
@@ -185,11 +187,15 @@ async function createFailedStartFixture(
   const turnId = testEntityId('tu', `turn_${suffix}`);
   const agentSessionId = testEntityId('as', `as_${suffix}`);
   const packageSnapshotId = `aepsnap_${testEntityId('tu', `turn_${suffix}`)}_${testEntityId('as', `as_${suffix}`)}`;
-  store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Recover failed start', threadId);
+  await store.createThread(
+    'ws_00000000-0000-7000-8000-000000000001',
+    'Recover failed start',
+    threadId
+  );
   const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   applyScopedMigrations(workspaceDb);
   if (outcome) {
-    const raising = store.createTurn(
+    const raising = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       threadId,
       'Ask for input',
@@ -207,7 +213,7 @@ async function createFailedStartFixture(
         isSecret: false,
       },
     ];
-    store.createItem({
+    await store.createItem({
       id: testEntityId('it', `it_request_${suffix}`),
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId,
@@ -235,7 +241,10 @@ async function createFailedStartFixture(
       questionDigest: `digest_${suffix}`,
       now: '2026-07-05T00:00:00.000Z',
     });
-    store.updateTurn(raising.id, { status: 'completed', completedAt: '2026-07-05T00:00:00.000Z' });
+    await store.updateTurn(raising.id, {
+      status: 'completed',
+      completedAt: '2026-07-05T00:00:00.000Z',
+    });
     answerPendingRequest(
       workspaceDb.sqlite,
       `input_${suffix}`,
@@ -244,7 +253,7 @@ async function createFailedStartFixture(
       '2026-07-05T00:00:00.000Z'
     );
   }
-  store.createAgentSession({
+  await store.createAgentSession({
     id: agentSessionId,
     agentId: 'agent_codex_host',
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -255,7 +264,7 @@ async function createFailedStartFixture(
     createdAt: '2026-07-05T00:00:01.000Z',
     updatedAt: '2026-07-05T00:00:01.000Z',
   });
-  const turn = store.createTurn(
+  const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     threadId,
     `Run ${suffix}`,
@@ -280,7 +289,7 @@ async function createFailedStartFixture(
       cause: 'outcome',
       now: '2026-07-05T00:00:01.000Z',
     });
-  store.updateTurn(turnId, { status: 'running' });
+  await store.updateTurn(turnId, { status: 'running' });
   dispatchLease(
     coreDb,
     suffix,
@@ -413,7 +422,7 @@ async function createFailedStartFixture(
               code: 'worker_governance_turn_failed',
               message: 'The worker attempt failed to start.',
             });
-      const result = terminalizeGovernedWorkerTurn({
+      const result = await terminalizeGovernedWorkerTurn({
         agentSessionId: subject.agentSessionId,
         completedAt: this.now?.() ?? new Date().toISOString(),
         errorCode: diagnostic.code,
@@ -541,13 +550,13 @@ function seedRecoveryBusyHistory(f: FailedStartFixture, count: number): string |
 }
 
 /** Freezes the already-decided product outcome before repeated maintenance revalidates its proof. */
-function terminalizeRecoveryCostFixture(f: FailedStartFixture): void {
+async function terminalizeRecoveryCostFixture(f: FailedStartFixture): Promise<void> {
   f.coreDb.sqlite
     .prepare(
       "UPDATE scheduler_execution_attempts SET disposition = 'not_accepted', operation_id = NULL, deadline = NULL WHERE attempt_id = ?"
     )
     .run(f.attemptId);
-  terminalizeGovernedWorkerTurn({
+  await terminalizeGovernedWorkerTurn({
     store: f.store,
     turnId: f.turnId,
     agentSessionId: f.agentSessionId,
@@ -691,7 +700,7 @@ describe('failed-start busy-history proof cost (#164)', () => {
     }> = [];
     for (const siblings of [0, 378, 37800]) {
       const f = await createFailedStartFixture(`cost_${siblings}`);
-      terminalizeRecoveryCostFixture(f);
+      await terminalizeRecoveryCostFixture(f);
       seedRecoveryBusyHistory(f, siblings);
       const before = recoveryProofSnapshot(f);
       expect(before.attempts).toBe(
@@ -772,7 +781,7 @@ describe('failed-start busy-history proof cost (#164)', () => {
     ['empty-token', 'worker_control_token_hash', ''],
   ] as const)('preserves refusal and terminal history for sibling %s', async (name, column, value) => {
     const f = await createFailedStartFixture(`cost_conflict_${name}`);
-    terminalizeRecoveryCostFixture(f);
+    await terminalizeRecoveryCostFixture(f);
     const siblingId = seedRecoveryBusyHistory(f, 3)!;
     f.coreDb.sqlite
       .prepare(`UPDATE scheduler_execution_attempts SET ${column} = ? WHERE attempt_id = ?`)
@@ -809,7 +818,7 @@ describe('failed-start busy-history proof cost (#164)', () => {
     ['unrelated', 'closed'],
   ] as const)('checks sibling binding by %s with state %s without replay', async (match, state) => {
     const f = await createFailedStartFixture(`cost_binding_${match}_${state}`);
-    terminalizeRecoveryCostFixture(f);
+    await terminalizeRecoveryCostFixture(f);
     const siblingId = seedRecoveryBusyHistory(f, 3)!;
     recordRecoverySiblingBinding(f, siblingId, match, state);
     const before = recoveryProofSnapshot(f);
@@ -836,7 +845,7 @@ describe('failed-start busy-history proof cost (#164)', () => {
     'malformed',
   ] as const)('refuses a sibling backend association with %s proof', async (proof) => {
     const f = await createFailedStartFixture(`cost_backend_${proof}`);
-    terminalizeRecoveryCostFixture(f);
+    await terminalizeRecoveryCostFixture(f);
     const siblingId = seedRecoveryBusyHistory(f, 3)!;
     const columns = f.coreDb.sqlite.pragma('table_info(worker_backend_sessions)') as Array<{
       name: string;
@@ -948,7 +957,7 @@ describe('terminal failed-start product recovery', () => {
             'UPDATE worker_backend_sessions SET physical_cleaned_at = NULL WHERE attempt_id = ?'
           )
           .run(attemptId);
-      terminalizeGovernedWorkerTurn({
+      await terminalizeGovernedWorkerTurn({
         store: f.store,
         turnId: f.turnId,
         agentSessionId: f.agentSessionId,
@@ -1103,7 +1112,7 @@ describe('terminal failed-start product recovery', () => {
     const itemId = testEntityId('it', `it_${suffix}`);
     try {
       for (let index = 0; index < 4; index += 1) {
-        f.store.createItem({
+        await f.store.createItem({
           id: testEntityId('it', `it_prior_${suffix}_${index}`),
           owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
           threadId: f.threadId,
@@ -1153,7 +1162,7 @@ describe('terminal failed-start product recovery', () => {
       } finally {
         db.sqlite.close();
       }
-      const decided = f.store.updateTurn(f.turnId, {
+      const decided = await f.store.updateTurn(f.turnId, {
         status: 'failed',
         completedAt,
         error: { code: 'worker_governance_turn_failed', message: 'The worker failed.' },
@@ -1291,7 +1300,7 @@ describe('terminal failed-start product recovery', () => {
     let timestamp = f.input.now();
     f.input.now = () => timestamp;
     try {
-      const display = f.store.createItem({
+      const display = await f.store.createItem({
         id: testEntityId('it', `it_display_${owner}`),
         owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: f.threadId,
@@ -1308,7 +1317,7 @@ describe('terminal failed-start product recovery', () => {
       if (owner === 'maintenance') {
         await drainTestRecovery(f.coreDb, f.input);
       } else {
-        terminalizeGovernedWorkerTurn({
+        await terminalizeGovernedWorkerTurn({
           store: f.store,
           turnId: f.turnId,
           agentSessionId: f.agentSessionId,
@@ -1351,7 +1360,7 @@ describe('terminal failed-start product recovery', () => {
       expect(readFileSync(eventsPath, 'utf8')).toBe(eventsBefore);
 
       // Core Protocol admits only these named display fields after the terminal snapshot.
-      f.store.updateItem(
+      await f.store.updateItem(
         display.id,
         {
           title: 'Worker Turn failed',
@@ -1476,18 +1485,18 @@ describe('terminal failed-start product recovery', () => {
           },
         },
       });
-      f.store.updateTurn(f.turnId, {
+      await f.store.updateTurn(f.turnId, {
         status: decided.status,
         completedAt: decided.completedAt,
         error: decided.error,
       });
       const sibling = `z_after_publication_${contradiction}`;
-      f.store.createThread(
+      await f.store.createThread(
         'ws_00000000-0000-7000-8000-000000000001',
         'Independent worker',
         testEntityId('th', `th_${sibling}`)
       );
-      f.store.createAgentSession({
+      await f.store.createAgentSession({
         id: testEntityId('as', `as_${sibling}`),
         agentId: 'agent_codex_host',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -1498,7 +1507,7 @@ describe('terminal failed-start product recovery', () => {
         createdAt: f.input.now(),
         updatedAt: f.input.now(),
       });
-      f.store.createTurn(
+      await f.store.createTurn(
         'ws_00000000-0000-7000-8000-000000000001',
         testEntityId('th', `th_${sibling}`),
         'Independent work',
@@ -2065,7 +2074,7 @@ describe('terminal failed-start product recovery', () => {
 
   it('finishes a crash after the decided delivery failure without replacing its bytes or duplicating publications', async () => {
     const f = await createFailedStartFixture('partial_delivery', true);
-    f.store.updateTurn(f.turnId, {
+    await f.store.updateTurn(f.turnId, {
       status: 'failed',
       completedAt: '2026-10-02T23:59:00.000Z',
       error: { code: 'delivery_unknown', message: 'Outcome delivery could not be proved.' },
@@ -2102,7 +2111,7 @@ describe('terminal failed-start product recovery', () => {
       ['package', 'request', 'runtime-binding'].includes(contradiction)
     );
     if (contradiction === 'package')
-      f.store.updateAgentSession(f.agentSessionId, {
+      await f.store.updateAgentSession(f.agentSessionId, {
         environmentPackageSnapshotId: 'aepsnap_other',
       });
     if (contradiction === 'request')
@@ -2122,7 +2131,7 @@ describe('terminal failed-start product recovery', () => {
         )
         .run(f.turnId);
     if (contradiction === 'stale-session')
-      f.store.updateAgentSession(f.agentSessionId, { stale: true });
+      await f.store.updateAgentSession(f.agentSessionId, { stale: true });
     if (contradiction === 'runtime-binding') {
       f.coreDb.sqlite
         .prepare(`INSERT INTO sandbox_runtime_records
@@ -2231,7 +2240,7 @@ describe('terminal failed-start product recovery', () => {
       .run(f.turnId);
     const proved = readPendingRequest(db.sqlite, 'input_typed_refusal');
     db.sqlite.close();
-    f.store.updateTurn(f.turnId, {
+    await f.store.updateTurn(f.turnId, {
       status: 'failed',
       completedAt: '2026-10-02T23:59:00.000Z',
       error: { code: 'native_admission_refused', message: 'An authoritative native refusal.' },
@@ -3099,7 +3108,7 @@ describe('scheduler restart recovery', () => {
       f.coreDb.sqlite
         .prepare('UPDATE worker_backend_sessions SET physical_cleaned_at = ? WHERE attempt_id = ?')
         .run('2026-10-08T04:30:35.231Z', testEntityId('attempt', `lease_${suffix}`));
-      f.store.updateAgentSession(f.agentSessionId, { status: 'created' });
+      await f.store.updateAgentSession(f.agentSessionId, { status: 'created' });
       const db = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
         expect(listBackendWorkspaceHandles(db, 'ws_00000000-0000-7000-8000-000000000001')).toEqual(
@@ -3255,7 +3264,7 @@ describe('scheduler restart recovery', () => {
       f.coreDb.sqlite
         .prepare("UPDATE scheduler_execution_attempts SET phase = 'closed' WHERE attempt_id = ?")
         .run(testEntityId('attempt', `lease_${suffix}`));
-      f.store.updateAgentSession(f.agentSessionId, { status: 'created' });
+      await f.store.updateAgentSession(f.agentSessionId, { status: 'created' });
       expect(
         f.coreDb.sqlite
           .prepare(`SELECT
@@ -3308,7 +3317,7 @@ describe('scheduler restart recovery', () => {
         predecessorFenced: true,
         ready: true,
       });
-      const queued = f.store.createTurn(
+      const queued = await f.store.createTurn(
         'ws_00000000-0000-7000-8000-000000000001',
         f.threadId,
         'Later queued work',
@@ -3517,7 +3526,7 @@ describe('scheduler restart recovery', () => {
       f.coreDb.sqlite
         .prepare("UPDATE scheduler_admission_entries SET status = 'queued' WHERE turn_id = ?")
         .run(f.turnId);
-      const pending = f.store.updateTurn(f.turnId, { status: 'pending' });
+      const pending = await f.store.updateTurn(f.turnId, { status: 'pending' });
       await runNanoHostAttemptRecoveryMaintenance(f.coreDb, testRecoveryInput(f.coreDb, f.input));
       expect(new FsStore({ dataRoot: f.dataRoot }).getTurnById(f.turnId)).toEqual(pending);
       expect(listQueuedSchedulerAdmissionEntries(f.coreDb).map((entry) => entry.turnId)).toContain(
@@ -4179,7 +4188,7 @@ describe('scheduler restart recovery', () => {
     try {
       await runRestartRecoveryThroughMaintenance(f.coreDb, f.input);
       expect(f.store.getTurnById(f.turnId).status).toBe('completed');
-      assertRecoveryClosedAndNextTurnAdmitted(f);
+      await assertRecoveryClosedAndNextTurnAdmitted(f);
     } finally {
       f.coreDb.sqlite.close();
     }
@@ -4318,10 +4327,10 @@ describe('scheduler restart recovery', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-restart-product-projection-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const turnId = testEntityId('tu', 'turn_restart_product_projection');
     const agentSessionId = testEntityId('as', 'as_restart_product_projection');
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Recover this turn',
@@ -4329,7 +4338,7 @@ describe('scheduler restart recovery', () => {
       null,
       { turnId }
     );
-    store.createAgentSession({
+    await store.createAgentSession({
       agentId: 'agent_codex_host',
       createdAt: turn.startedAt ?? '2026-07-05T00:00:01.000Z',
       id: agentSessionId,
@@ -4368,7 +4377,7 @@ describe('scheduler restart recovery', () => {
       agentSessionId,
     });
     const project = async () => {
-      const result = terminalizeGovernedWorkerTurn({
+      const result = await terminalizeGovernedWorkerTurn({
         agentSessionId,
         completedAt: '2026-07-05T00:01:00.000Z',
         errorCode: 'worker_governance_restart_recovery',
@@ -5318,13 +5327,13 @@ describe('minimal scheduler reconnect contract', () => {
   it('hydrates one same-Epoch survivor while readiness is absent and rejects a different Epoch', async () => {
     const coreDb = createMigratedCoreDb();
     const suffix = 'graceful_same_epoch_reconnect';
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    store.createThread(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Same-Epoch restart fixture',
       testEntityId('th', `th_${suffix}`)
     );
-    store.createAgentSession({
+    await store.createAgentSession({
       agentId: 'agent_codex_host',
       createdAt: '2026-07-05T00:00:01.000Z',
       environmentPackageSnapshotId: `aepsnap_${testEntityId('tu', `turn_${suffix}`)}_${testEntityId('as', `as_${suffix}`)}`,
@@ -5823,7 +5832,7 @@ describe('minimal scheduler reconnect contract', () => {
       await drainTestRecovery(f.coreDb, f.input);
       expect(f.store.getTurnById(f.turnId).status).toBe('interrupted');
       expect(f.store.getAgentSession(f.agentSessionId).status).toBe('interrupted');
-      assertRecoveryClosedAndNextTurnAdmitted(f);
+      await assertRecoveryClosedAndNextTurnAdmitted(f);
     } finally {
       f.coreDb.sqlite.close();
     }
@@ -5945,7 +5954,7 @@ describe('minimal scheduler reconnect contract', () => {
           fenceRef: null,
         });
       expect(f.store.listArtifacts('ws_00000000-0000-7000-8000-000000000001')).toEqual([]);
-      if (proved) assertRecoveryClosedAndNextTurnAdmitted(f);
+      if (proved) await assertRecoveryClosedAndNextTurnAdmitted(f);
     } finally {
       db.sqlite.close();
       f.coreDb.sqlite.close();
@@ -5957,7 +5966,7 @@ describe('minimal scheduler reconnect contract', () => {
     try {
       await drainTestRecovery(f.coreDb, f.input);
       expect(f.store.getTurnById(f.turnId).status).toBe('failed');
-      assertRecoveryClosedAndNextTurnAdmitted(f);
+      await assertRecoveryClosedAndNextTurnAdmitted(f);
     } finally {
       f.coreDb.sqlite.close();
     }
@@ -6201,14 +6210,18 @@ async function createFinalReviewRecoveryFixture(
   boundary: 'running' | 'completed' | 'failed-start' | 'failed-preparation'
 ) {
   const coreDb = createMigratedCoreDb();
-  const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+  const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
   const threadId = testEntityId('th', `th_${suffix}`);
   const turnId = testEntityId('tu', `turn_${suffix}`);
   const agentSessionId = testEntityId('as', `as_${suffix}`);
   const attemptId = testEntityId('attempt', `lease_${suffix}`);
   const packageSnapshotId = `aepsnap_${testEntityId('tu', `turn_${suffix}`)}_${testEntityId('as', `as_${suffix}`)}`;
-  store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Recover exact worker', threadId);
-  store.createAgentSession({
+  await store.createThread(
+    'ws_00000000-0000-7000-8000-000000000001',
+    'Recover exact worker',
+    threadId
+  );
+  await store.createAgentSession({
     id: agentSessionId,
     agentId: 'agent_codex_host',
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -6219,7 +6232,7 @@ async function createFinalReviewRecoveryFixture(
     createdAt: '2026-07-05T00:00:01.000Z',
     updatedAt: '2026-07-05T00:00:01.000Z',
   });
-  store.createTurn(
+  await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     threadId,
     `Run ${suffix}`,
@@ -6234,7 +6247,7 @@ async function createFinalReviewRecoveryFixture(
       startedAt: '2026-07-05T00:00:01.000Z',
     }
   );
-  store.updateTurn(turnId, { status: 'running' });
+  await store.updateTurn(turnId, { status: 'running' });
   if (boundary === 'running') await prepareReconnectLease(coreDb, suffix);
   else {
     dispatchLease(coreDb, suffix, undefined, boundary !== 'failed-preparation');
@@ -6331,8 +6344,11 @@ async function createFinalReviewRecoveryFixture(
   });
   if (boundary === 'completed') {
     // Retained canonical product completion predates the crash; recovery must preserve it and finish exclusion release.
-    store.updateTurn(turnId, { status: 'completed', completedAt: '2026-07-05T00:00:08.000Z' });
-    terminalizeGovernedWorkerTurn({
+    await store.updateTurn(turnId, {
+      status: 'completed',
+      completedAt: '2026-07-05T00:00:08.000Z',
+    });
+    await terminalizeGovernedWorkerTurn({
       store,
       turnId,
       agentSessionId,
@@ -6344,7 +6360,7 @@ async function createFinalReviewRecoveryFixture(
     });
   } else if (boundary === 'failed-preparation') {
     attempts.markSchedulerExecutionAttemptClosing(coreDb, { attemptId, cause: 'execution-failed' });
-    terminalizeGovernedWorkerTurn({
+    await terminalizeGovernedWorkerTurn({
       store,
       turnId,
       agentSessionId,
@@ -6404,7 +6420,7 @@ async function createFinalReviewRecoveryFixture(
     },
     projectRecoveredTurn: async (subject) => {
       const admission = requireSchedulerExecutionAttemptAdmissionContext(coreDb, subject.attemptId);
-      const result = terminalizeGovernedWorkerTurn({
+      const result = await terminalizeGovernedWorkerTurn({
         store,
         turnId: subject.turnId,
         agentSessionId: subject.agentSessionId,
@@ -6423,7 +6439,7 @@ async function createFinalReviewRecoveryFixture(
 }
 
 /** Decides release using actual fenced closure and same-Thread/same-AgentSession admission, never cleanup counts. */
-function assertRecoveryClosedAndNextTurnAdmitted(
+async function assertRecoveryClosedAndNextTurnAdmitted(
   f: Awaited<ReturnType<typeof createFinalReviewRecoveryFixture>>
 ) {
   expect(getWorkerBackendSession(f.coreDb, f.attemptId)).toMatchObject({
@@ -6436,7 +6452,7 @@ function assertRecoveryClosedAndNextTurnAdmitted(
     fenceRef: expect.any(String),
   });
   const nextTurnId = testEntityId('tu', `${f.turnId}:next`);
-  f.store.createTurn(
+  await f.store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     f.threadId,
     'New authorized work',

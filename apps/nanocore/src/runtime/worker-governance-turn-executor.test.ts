@@ -84,6 +84,7 @@ import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { artifactFilePayloadPath } from '../storage/artifacts/file-records.js';
 import { withCanonicalFileWriteAdmission } from '../storage/canonical-write-capacity.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { workspaceDbPath } from '../storage/fs-layout.js';
 import { retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
@@ -369,14 +370,14 @@ function runTestGit(cwd: string, args: readonly string[]): string {
  * @param turnId Optional exact Turn identity.
  * @returns Persisted turn with its exact agent assignment.
  */
-function createAssignedTurn(
+async function createAssignedTurn(
   store: FsStore,
   workspaceId: string,
   threadId: string,
   input: string,
   turnId?: string
 ) {
-  const turn = store.createTurn(
+  const turn = await store.createTurn(
     workspaceId,
     threadId,
     input,
@@ -387,17 +388,17 @@ function createAssignedTurn(
     null,
     turnId ? { turnId } : {}
   );
-  return store.updateTurn(turn.id, {
+  return await store.updateTurn(turn.id, {
     agentId: 'agent_codex_host',
   });
 }
 
 /** Records the named same-Agent/runtime package required by a native-continuity fixture. */
-function recordNativeResumeFixturePackage(
+async function recordNativeResumeFixturePackage(
   coreDb: CoreDb,
   store: FsStore,
   agentSessionId: string
-): void {
+): Promise<void> {
   const session = store.getAgentSession(agentSessionId);
   const actor = { kind: 'user' as const, id: LOCAL_USER_ID };
   const environmentPackage = resolveAgentEnvironmentPackage({
@@ -425,7 +426,7 @@ function recordNativeResumeFixturePackage(
     workspaceCwd: null,
     workspaceRoots: [],
   });
-  store.updateAgentSession(agentSessionId, {
+  await store.updateAgentSession(agentSessionId, {
     environmentPackageSnapshotId: environmentPackage.snapshotId,
     updatedAt: session.updatedAt,
   });
@@ -449,15 +450,15 @@ function recordNativeResumeFixturePackage(
  * @param registeredTurnId Optional gateway Turn lineage used by mismatch checks.
  * @returns Bound AgentSession and package identities.
  */
-function bindInterruptAttempt(
+async function bindInterruptAttempt(
   store: FsStore,
   gateway: WorkerControlGateway,
   turn: ReturnType<typeof createAssignedTurn>,
   registeredTurnId = turn.id
-): { readonly agentSessionId: string; readonly packageSnapshotId: string } {
+): Promise<{ readonly agentSessionId: string; readonly packageSnapshotId: string }> {
   const agentSessionId = testEntityId('as', `as_interrupt_${turn.id}`);
   const packageSnapshotId = `aepsnap_interrupt_${turn.id}`;
-  store.createAgentSession({
+  await store.createAgentSession({
     agentId: 'agent_codex_host',
     createdAt: turn.startedAt ?? '2026-08-12T00:00:00.000Z',
     environmentPackageSnapshotId: packageSnapshotId,
@@ -468,7 +469,7 @@ function bindInterruptAttempt(
     updatedAt: turn.startedAt ?? '2026-08-12T00:00:00.000Z',
     workspaceId: workspaceIdForOwner(turn.owner),
   });
-  store.updateTurn(turn.id, { agentSessionId });
+  await store.updateTurn(turn.id, { agentSessionId });
   gateway.registerSession({
     scope: {
       agentSessionId,
@@ -523,7 +524,7 @@ async function createWorkerContextExecutorFixture(
   const dataRoot = mkdtempSync(join(tmpdir(), `openkit-governance-context-${name}-`));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   const requestId = '00000000-0000-4000-8000-000000000270';
   const threadId = options.originatingThreadId
     ? conversationTaskThreadId(
@@ -534,7 +535,7 @@ async function createWorkerContextExecutorFixture(
       )
     : 'th_00000000-0000-7000-8000-000000000001';
   if (options.originatingThreadId) {
-    store.createThread(
+    await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Receiving Task',
       threadId,
@@ -566,7 +567,7 @@ async function createWorkerContextExecutorFixture(
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
   }
-  const turn = createAssignedTurn(
+  const turn = await createAssignedTurn(
     store,
     'ws_00000000-0000-7000-8000-000000000001',
     threadId,
@@ -594,7 +595,7 @@ async function createWorkerContextExecutorFixture(
       escalationConditions: [],
       reviewContext: null,
     });
-  store.createItem({
+  await store.createItem({
     completedAt: turn.startedAt,
     createdAt: turn.startedAt ?? new Date().toISOString(),
     id: contextItemId,
@@ -785,7 +786,7 @@ async function prepareNullKnowledgeTaskContext(name: string, turnId: string) {
  * @param strategy Workspace synchronization strategy emitted by the worker.
  * @returns Ingress dependencies and a valid baseline worker change record.
  */
-function createWorkspaceChangeIngressFixture(name: string, strategy: 'git' | 'filesystem') {
+async function createWorkspaceChangeIngressFixture(name: string, strategy: 'git' | 'filesystem') {
   const timestamp = '2026-07-11T00:00:00.000Z';
   const requestId = '00000000-0000-4000-8000-000000000260';
   const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
@@ -822,8 +823,8 @@ function createWorkspaceChangeIngressFixture(name: string, strategy: 'git' | 'fi
   applyScopedMigrations(workspaceDb);
 
   const storeDataRoot = mkdtempSync(join(tmpdir(), `openkit-ingress-${name}-store-`));
-  const store = createDemoStore({ dataRoot: storeDataRoot });
-  const turn = createAssignedTurn(
+  const store = await createDemoStore({ dataRoot: storeDataRoot });
+  const turn = await createAssignedTurn(
     store,
     workspaceId,
     'th_00000000-0000-7000-8000-000000000001',
@@ -1092,7 +1093,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -1517,7 +1518,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
             throw new Error('Failed preparation has no final status.');
           },
           projectRecoveredTurn: async () => {
-            const result = terminalizeGovernedWorkerTurn({
+            const result = await terminalizeGovernedWorkerTurn({
               store: f.store,
               turnId: f.turn.id,
               agentSessionId: f.agentSessionId,
@@ -1593,8 +1594,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     'package-parent-link',
   ] as const)('settles only proved unassigned planned successor preparation: %s', async (proof) => {
     const coreDb = openCommitFixtureCore();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const turn = store.createTurn(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Prepare planned successor',
@@ -1602,7 +1603,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       undefined,
       { status: 'pending', agentId: 'agent_codex_host', executorKind: 'worker' }
     );
-    const predecessor = store.createAgentSession({
+    const predecessor = await store.createAgentSession({
       id: testEntityId('as', 'as_planned_predecessor'),
       agentId: 'agent_codex_host',
       workspaceId: workspaceIdForOwner(turn.owner),
@@ -1619,7 +1620,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const backend = new FakeWorkerGovernanceBackend();
     const continuity = vi.fn(async (input: { readonly reuseAllowed: boolean }) => {
       if (input.reuseAllowed) return 'replacement-required' as const;
-      if (proof === 'assigned-missing') store.updateTurn(turn.id, { agentSessionId: plannedId });
+      if (proof === 'assigned-missing')
+        await store.updateTurn(turn.id, { agentSessionId: plannedId });
       throw new Error('/private/planned-successor-canary native-secret-canary');
     });
     Object.assign(backend, { prepareAgentSessionContinuity: continuity });
@@ -1959,8 +1961,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     'native-proof',
     'retained-aep',
   ] as const)('retains safe capacity inspection cause and request correlation: %s', async (scenario) => {
-    const store = createDemoStore();
-    const turn = createAssignedTurn(
+    const store = await createDemoStore();
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -2188,15 +2190,15 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
   it('reuses compatible continuity without previewing a fresh AgentSession target', async () => {
     const coreDb = openCommitFixtureCore();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Reuse current continuity'
     );
     const currentCompatibilityKey = `sha256:${'a'.repeat(64)}`;
-    store.createAgentSession({
+    await store.createAgentSession({
       agentId: 'agent_codex_host',
       createdAt: '2026-08-21T00:00:00.000Z',
       environmentPackageSnapshotId: 'aepsnap-current-continuity',
@@ -2217,7 +2219,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
       workspaceId: workspaceIdForOwner(turn.owner),
       workspaceRoots: [],
     });
-    recordNativeResumeFixturePackage(coreDb, store, 'as_00000000-0000-791f-a5ab-b76cfc7ea9a6');
+    await recordNativeResumeFixturePackage(
+      coreDb,
+      store,
+      'as_00000000-0000-791f-a5ab-b76cfc7ea9a6'
+    );
     const backend = new FakeWorkerGovernanceBackend();
     const prepareContinuity = vi.fn(async () => 'reusable' as const);
     Object.assign(backend, { prepareAgentSessionContinuity: prepareContinuity });
@@ -2262,15 +2268,15 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
   it('previews a fresh target before closing runtime-incompatible continuity', async () => {
     const coreDb = openCommitFixtureCore();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Replace current continuity'
     );
     const currentCompatibilityKey = `sha256:${'b'.repeat(64)}`;
-    store.createAgentSession({
+    await store.createAgentSession({
       agentId: 'agent_codex_host',
       createdAt: '2026-08-21T00:00:00.000Z',
       environmentPackageSnapshotId: 'aepsnap-runtime-incompatible',
@@ -2284,7 +2290,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
       workspaceId: workspaceIdForOwner(turn.owner),
       workspaceRoots: [],
     });
-    recordNativeResumeFixturePackage(coreDb, store, 'as_00000000-0000-7cba-9aba-f054b08da113');
+    await recordNativeResumeFixturePackage(
+      coreDb,
+      store,
+      'as_00000000-0000-7cba-9aba-f054b08da113'
+    );
     const backend = new FakeWorkerGovernanceBackend();
     const prepareContinuity = vi.fn(async () => 'replacement-required' as const);
     Object.assign(backend, { prepareAgentSessionContinuity: prepareContinuity });
@@ -2317,8 +2327,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
   it('commits replacement only after fresh compatibility and runtime revalidation', async () => {
     const coreDb = openCommitFixtureCore();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -2326,7 +2336,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     );
     const currentCompatibilityKey = `sha256:${'c'.repeat(64)}`;
     const freshCompatibilityKey = `sha256:${'d'.repeat(64)}`;
-    store.createAgentSession({
+    await store.createAgentSession({
       agentId: 'agent_codex_host',
       createdAt: '2026-08-21T00:00:00.000Z',
       id: 'as_00000000-0000-75a9-97fd-a29b9a328dc9',
@@ -2400,8 +2410,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
   it('selects a fresh AgentSession without local close for restart-unproved Sandbox continuity', async () => {
     const coreDb = openCommitFixtureCore();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -2409,7 +2419,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     );
     const currentCompatibilityKey = `sha256:${'1'.repeat(64)}`;
     const freshCompatibilityKey = `sha256:${'2'.repeat(64)}`;
-    store.createAgentSession({
+    await store.createAgentSession({
       agentId: 'agent_codex_host',
       createdAt: '2026-09-06T00:00:00.000Z',
       id: 'as_00000000-0000-7fc2-9af3-27b4c5ffdc57',
@@ -2500,8 +2510,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     'closed',
   ] as const)('retires a %s predecessor binding after admission without rewriting Core history', async (status) => {
     const coreDb = openCommitFixtureCore();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -2509,7 +2519,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     );
     const predecessorCompatibilityKey = `sha256:${'a'.repeat(64)}`;
     const freshCompatibilityKey = `sha256:${'b'.repeat(64)}`;
-    store.createAgentSession({
+    await store.createAgentSession({
       agentId: 'agent_codex_host',
       createdAt: '2026-08-20T00:00:00.000Z',
       id: 'as_00000000-0000-76e6-8620-bbbc702707cb',
@@ -2521,7 +2531,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       updatedAt: '2026-08-20T00:00:00.000Z',
       workspaceId: workspaceIdForOwner(turn.owner),
     });
-    store.createAgentSession({
+    await store.createAgentSession({
       agentId: 'agent_codex_host',
       createdAt: '2026-08-21T00:00:00.000Z',
       id: 'as_00000000-0000-7fab-94ef-b9e0d894e72e',
@@ -2650,31 +2660,31 @@ describe('WorkerGovernanceTurnExecutor', () => {
     setup,
   }) => {
     const coreDb = openCommitFixtureCore();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const predecessorTurn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const predecessorTurn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Terminal predecessor work'
     );
-    store.createThread(
+    await store.createThread(
       workspaceIdForOwner(predecessorTurn.owner),
       'Foreign thread',
       testEntityId('th', 'th_00000000-0000-78ce-b458-8347d12d1da2')
     );
-    const turn = createAssignedTurn(
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Keep predecessor barrier'
     );
-    const foreignTurn = createAssignedTurn(
+    const foreignTurn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       testEntityId('th', 'th_00000000-0000-78ce-b458-8347d12d1da2'),
       'Foreign thread work'
     );
-    store.createAgentSession({
+    await store.createAgentSession({
       agentId: 'agent_codex_host',
       createdAt: '2026-08-21T00:00:00.000Z',
       id: 'as_00000000-0000-7c02-b5f7-4874fb86e258',
@@ -2686,7 +2696,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       updatedAt: '2026-08-21T00:00:00.000Z',
       workspaceId: workspaceIdForOwner(turn.owner),
     });
-    store.createAgentSession({
+    await store.createAgentSession({
       agentId: 'agent_codex_host',
       createdAt: '2026-08-21T00:00:00.000Z',
       id: 'as_00000000-0000-7d42-80d7-a2a6e6461331',
@@ -2699,7 +2709,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       workspaceId: workspaceIdForOwner(turn.owner),
     });
     if (setup === 'active') {
-      store.updateTurn(predecessorTurn.id, {
+      await store.updateTurn(predecessorTurn.id, {
         agentSessionId: 'as_00000000-0000-7c02-b5f7-4874fb86e258',
         status: 'running',
       });
@@ -2787,8 +2797,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     false,
     true,
   ])('uses a fresh work slot only for explicit fresh storage (%s)', async (fresh) => {
-    const store = createDemoStore();
-    const turn = createAssignedTurn(
+    const store = await createDemoStore();
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -2839,9 +2849,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
     applyMigrations(coreDb);
 
     try {
-      const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+      const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
       const turnInput = 'Start from the pre-lease preview key';
-      const turn = createAssignedTurn(
+      const turn = await createAssignedTurn(
         store,
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001',
@@ -3069,8 +3079,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
   it('delegates exactly one same-attempt interrupt to the backend without owning terminal lifecycle', async () => {
     const coreDb = openCommitFixtureCore();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -3080,7 +3090,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const workerControlGateway = new WorkerControlGateway({
       now: () => '2026-08-12T00:00:00.000Z',
     });
-    const { agentSessionId, packageSnapshotId } = bindInterruptAttempt(
+    const { agentSessionId, packageSnapshotId } = await bindInterruptAttempt(
       store,
       workerControlGateway,
       turn
@@ -3153,8 +3163,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     'missing-package-snapshot',
     'package-snapshot-mismatch',
   ])('fails closed for %s interrupt without reaching the backend', async (failureMode) => {
-    const store = createDemoStore();
-    const turn = createAssignedTurn(
+    const store = await createDemoStore();
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -3168,26 +3178,26 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
 
     if (failureMode !== 'missing-agent-session') {
-      const { agentSessionId } = bindInterruptAttempt(
+      const { agentSessionId } = await bindInterruptAttempt(
         store,
         workerControlGateway,
         turn,
         failureMode === 'lineage-mismatch' ? `${turn.id}_other` : turn.id
       );
       if (failureMode === 'stale-agent-session') {
-        store.updateAgentSession(agentSessionId, { stale: true });
+        await store.updateAgentSession(agentSessionId, { stale: true });
       }
       if (failureMode === 'terminal-turn') {
-        store.updateTurn(turn.id, {
+        await store.updateTurn(turn.id, {
           completedAt: '2026-08-12T00:01:00.000Z',
           status: 'interrupted',
         });
       }
       if (failureMode === 'missing-package-snapshot') {
-        store.updateAgentSession(agentSessionId, { environmentPackageSnapshotId: null });
+        await store.updateAgentSession(agentSessionId, { environmentPackageSnapshotId: null });
       }
       if (failureMode === 'package-snapshot-mismatch') {
-        store.updateAgentSession(agentSessionId, {
+        await store.updateAgentSession(agentSessionId, {
           environmentPackageSnapshotId: `aepsnap_interrupt_${turn.id}_other`,
         });
       }
@@ -3218,8 +3228,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
       mkdtempSync(join(tmpdir(), `openkit-governance-live-events-${mode}-`))
     );
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -3330,9 +3340,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
         message: expect.stringContaining(detail),
       });
       expect(appLog).toHaveBeenCalledWith(expect.stringContaining(detail));
-      expect(createDemoStore({ dataRoot: coreDb.dataRoot }).getTurnById(turn.id).error).toEqual(
-        store.getTurnById(turn.id).error
-      );
+      expect(
+        (await createDemoStore({ dataRoot: coreDb.dataRoot })).getTurnById(turn.id).error
+      ).toEqual(store.getTurnById(turn.id).error);
       expect(appLog.mock.calls.flat().join(' ')).not.toContain('private-transcript-payload');
       expect(store.getTurnById(turn.id).error?.message).not.toContain('private-transcript-payload');
     }
@@ -3507,8 +3517,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-governance-stale-publication-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -3598,7 +3608,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-collection-publication-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const fixture = createWorkspaceChangeIngressFixture(`publication_${mode}`, 'git');
+    const fixture = await createWorkspaceChangeIngressFixture(`publication_${mode}`, 'git');
     const publicationDb = openWorkspaceDb(dataRoot, fixture.workspaceId);
     applyScopedMigrations(publicationDb);
     publicationDb.sqlite.close();
@@ -3655,8 +3665,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-governance-deletion-fence-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -3713,8 +3723,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
   it('refuses unadvertised runtime provenance before backend effects with a deterministic error', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-provenance-admission-')));
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -3780,14 +3790,14 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     applyMigrations(coreDb);
 
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Run in OpenShell'
     );
-    store.updateTurn(turn.id, { agentId: 'agent_opencode_host' });
+    await store.updateTurn(turn.id, { agentId: 'agent_opencode_host' });
     const completedAt = new Date(
       new Date(turn.startedAt ?? Date.now()).getTime() + 1000
     ).toISOString();
@@ -3983,8 +3993,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
   ] as const)('preserves accepted diagnostics in one failure closeout log: %s', async (kind) => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-failure-log-')));
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -4084,8 +4094,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
   ] as const)('collects durable outputs and preserves a failed worker status with %s inference', async (inference) => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-failed-status-')));
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -4253,8 +4263,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
   ] as const)('preserves a non-UUID App command through Worker launch and %s closeout', async (outcome) => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-command-id-')));
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -4323,8 +4333,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
   }) => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-retained-')));
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -4386,8 +4396,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     'idle',
   ] as const)('continues a pre-fact predecessor with no proof and no backend binding: %s', async (status) => {
     const coreDb = openCommitFixtureCore();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -4408,7 +4418,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       turnInput: 'Continue without native proof',
       workspaceRoots: [],
     };
-    store.createAgentSession({
+    await store.createAgentSession({
       id: testEntityId('as', 'as_unproved_old'),
       agentId: input.agentSetup.manifest.id,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -4437,8 +4447,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it('refuses a reusable runtime ready proof without attachment provenance even before digest handoff', async () => {
-    const store = createDemoStore();
-    const turn = createAssignedTurn(
+    const store = await createDemoStore();
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -4461,7 +4471,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         previewAgentSessionCompatibilityKey(id: string, preparation: typeof input): string;
       }
     ).previewAgentSessionCompatibilityKey(testEntityId('as', 'as_unrecorded_ready'), input);
-    store.createAgentSession({
+    await store.createAgentSession({
       id: testEntityId('as', 'as_unrecorded_ready'),
       agentId: input.agentSetup.manifest.id,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -4490,7 +4500,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
   ])('reconstructs the same proof source and nondefault slot after restart without rebasing caller revision: explicit=%s', async (explicit) => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-retained-selection-')));
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     coreDb.sqlite
       .prepare(
         `INSERT INTO nanohost_runtime_targets (target_id, identity_id, deployment_id, connection_generation, predecessor_fenced, ready, fresh_empty, observed_at, slot_count) VALUES ('target_retained', 'identity_retained', 'deployment_retained', 1, 1, 1, 1, ?, 1)`
@@ -4532,7 +4542,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       )
       .run(binding.storageRef);
     const retainedStorage = { storageRef: binding.storageRef, workSlotRef: 'slot-exact' };
-    store.createAgentSession({
+    await store.createAgentSession({
       id: testEntityId('as', 'as_retained_proof'),
       agentId: 'agent_codex_host',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -4544,8 +4554,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
       nativeHandleDigest: 'a'.repeat(64),
       retainedStorage,
     });
-    recordNativeResumeFixturePackage(coreDb, store, testEntityId('as', 'as_retained_proof'));
-    store.createAgentSession({
+    await recordNativeResumeFixturePackage(coreDb, store, testEntityId('as', 'as_retained_proof'));
+    await store.createAgentSession({
       id: testEntityId('as', 'as_failed_unproved'),
       agentId: 'agent_codex_host',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -4568,7 +4578,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       backend,
       coreDb,
     });
-    const turn = createAssignedTurn(
+    const turn = await createAssignedTurn(
       restarted,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -4668,7 +4678,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
   ])('records actual attachment before native open and refuses work on recording failure: failure=%s', async (recordingFailure) => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-attachment-before-open-')));
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const retainedStorage = {
       storageRef: 'wst_00000000-0000-75ec-bb52-9171c38651e9',
       workSlotRef: 'actual-nondefault',
@@ -4703,9 +4713,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
     backend.submit = launch;
     if (recordingFailure) {
       const update = store.updateAgentSession.bind(store);
-      vi.spyOn(store, 'updateAgentSession').mockImplementation((id, input) => {
+      vi.spyOn(store, 'updateAgentSession').mockImplementation(async (id, input) => {
         if ('retainedStorage' in input) throw new Error('attachment persistence failed');
-        return update(id, input);
+        return await update(id, input);
       });
     }
     const executor = new WorkerGovernanceTurnExecutor({
@@ -4713,7 +4723,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       backend,
       coreDb,
     });
-    const turn = createAssignedTurn(
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -4765,8 +4775,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     'different-slot',
   ])('refuses continuation before planning or effects when attachment choice is $0', async (violation) => {
     const coreDb = openCommitFixtureCore();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const predecessor = store.createAgentSession({
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const predecessor = await store.createAgentSession({
       id: testEntityId('as', 'as_choice_predecessor'),
       agentId: 'agent_codex_host',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -4781,7 +4791,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       storageRef: 'wst_00000000-0000-7ac8-9f6c-13552db6aa87',
       workSlotRef: 'slot-exact',
     };
-    recordNativeResumeFixturePackage(coreDb, store, predecessor.id);
+    await recordNativeResumeFixturePackage(coreDb, store, predecessor.id);
     // Isolate selection from schema evolution: the durable-record regression verifies real persistence.
     vi.spyOn(store, 'listThreadAgentSessions').mockReturnValue([
       {
@@ -4793,7 +4803,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const inspect = vi.fn(async () => 'absent' as const);
     Object.assign(backend, { prepareAgentSessionContinuity: inspect });
     const executor = new WorkerGovernanceTurnExecutor({ backend, coreDb });
-    const turn = createAssignedTurn(
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -4841,7 +4851,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     true,
   ])('keeps the triggering Turn queued through predecessor refusal, retirement failure=%s', async (retirementFails) => {
     const coreDb = openCommitFixtureCore();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const target = recordTestNativeRuntimeTarget(coreDb);
     const binding = createWorkerStorageBinding(coreDb, {
       deploymentId: target.deploymentId,
@@ -4875,7 +4885,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       attachmentGeneration: reserved.attachmentGeneration,
       cleanupProved: true,
     });
-    const predecessor = store.createAgentSession({
+    const predecessor = await store.createAgentSession({
       id: testEntityId('as', 'as_queued_predecessor'),
       agentId: 'agent_codex_host',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -4894,7 +4904,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         ),
       },
     });
-    recordNativeResumeFixturePackage(coreDb, store, predecessor.id);
+    await recordNativeResumeFixturePackage(coreDb, store, predecessor.id);
     let refused = false;
     const effects: string[] = [];
     const backend = Object.assign(new FakeWorkerGovernanceBackend(), {
@@ -4947,7 +4957,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       requestedAgentId: 'agent_codex_host',
       triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     });
-    store.createTurn(
+    await store.createTurn(
       entry.workspaceId,
       entry.threadId,
       entry.turnInput,
@@ -5054,7 +5064,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
   it('records the accepted ready handle digest and offers it as the successor resume pair', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-resume-pair-')));
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const digest = 'a'.repeat(64);
     let record:
       | ((digest: string, retainedStorage: { storageRef: string; workSlotRef: string }) => void)
@@ -5096,7 +5106,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       now: () => '2026-07-15T00:00:03.000Z',
     });
     const run = async (agentSessionId: string, index: number) => {
-      const turn = createAssignedTurn(
+      const turn = await createAssignedTurn(
         store,
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001',
@@ -5130,7 +5140,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         status: 'idle',
       });
       // The pair outlives the binding: close the predecessor, then admit a successor.
-      store.updateAgentSession(agentSessionIds[0]!, { status: 'closed' });
+      await store.updateAgentSession(agentSessionIds[0]!, { status: 'closed' });
       coreDb.sqlite
         .prepare(
           "UPDATE scheduler_execution_attempts SET phase = 'closed' WHERE agent_session_id = ?"
@@ -5145,12 +5155,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
       });
       expect(store.getAgentSession(agentSessionIds[0]!).nativeHandleDigest).toBe(digest);
       // A conflicting later proof for the same AgentSession is refused.
-      expect(() =>
-        store.updateAgentSession(agentSessionIds[1]!, { nativeHandleDigest: digest })
-      ).not.toThrow();
-      expect(() =>
+      await store.updateAgentSession(agentSessionIds[1]!, { nativeHandleDigest: digest });
+      await expect(
         store.updateAgentSession(agentSessionIds[1]!, { nativeHandleDigest: 'b'.repeat(64) })
-      ).toThrow('resume digest cannot change');
+      ).rejects.toThrow('resume digest cannot change');
     } finally {
       coreDb.sqlite.close();
     }
@@ -5159,7 +5167,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
   it('keeps a ready proof accepted at open when the Turn fails before export', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-open-proof-')));
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const digest = 'c'.repeat(64);
     let record:
       | ((digest: string, retainedStorage: { storageRef: string; workSlotRef: string }) => void)
@@ -5192,7 +5200,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       backend,
       coreDb,
     });
-    const turn = createAssignedTurn(
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -5295,9 +5303,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
   ])('selects the successor resume pair: $name', async ({ expected, sessions }) => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-predecessor-')));
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     for (const session of sessions) {
-      store.createAgentSession({
+      await store.createAgentSession({
         agentId: 'agent_codex_host',
         createdAt: session.createdAt,
         id: session.id,
@@ -5315,7 +5323,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         updatedAt: session.createdAt,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      recordNativeResumeFixturePackage(coreDb, store, session.id);
+      await recordNativeResumeFixturePackage(coreDb, store, session.id);
     }
     const backend = new FakeWorkerGovernanceBackend();
     const executor = new WorkerGovernanceTurnExecutor({
@@ -5323,7 +5331,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       backend,
       coreDb,
     });
-    const turn = createAssignedTurn(
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -5434,8 +5442,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const { finalStatus, stopReason, turnStatus } = testCase;
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-completion-gate-')));
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -5535,7 +5543,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
     const reopensStore = finalStatus === 'failed' || 'routeHashEcho' in testCase;
     const reopenedCoreDb = reopensStore ? openCoreDb(coreDb.dataRoot) : coreDb;
-    const reopenedStore = reopensStore ? createDemoStore({ dataRoot: coreDb.dataRoot }) : store;
+    const reopenedStore = reopensStore
+      ? await createDemoStore({ dataRoot: coreDb.dataRoot })
+      : store;
     const restartedExecutor = new WorkerGovernanceTurnExecutor({
       fileAdmission: new FileStorageAdmission(reopenedCoreDb.dataRoot, () => 0n),
       backend,
@@ -5669,7 +5679,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
       'cleanupSession',
     ]);
     if (reopenedCoreDb !== coreDb) reopenedCoreDb.sqlite.close();
-    const durableStore = reopensStore ? createDemoStore({ dataRoot: coreDb.dataRoot }) : store;
+    const durableStore = reopensStore
+      ? await createDemoStore({ dataRoot: coreDb.dataRoot })
+      : store;
     if ('routeHashEcho' in testCase) {
       expect(
         durableStore.listThreadItems(workspaceIdForOwner(turn.owner), turn.threadId)
@@ -5727,8 +5739,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-governance-provenance-success-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -6109,8 +6121,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), `openkit-governance-provenance-${failure}-`));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -6217,8 +6229,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
   it('rejects missing durable capture history without falling back to current settings or launching', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-missing-capture-')));
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -6272,8 +6284,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
   it('binds the trusted provider selection into the materialized package', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-admitted-')));
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -6323,7 +6335,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     'utf8',
     'non-utf8',
   ] as const)('retains worker Git evidence without staging a host branch: $0', async (format) => {
-    const fixture = createWorkspaceChangeIngressFixture('staged_review_branch', 'git');
+    const fixture = await createWorkspaceChangeIngressFixture('staged_review_branch', 'git');
     const stagedBytes =
       format === 'utf8' ? Buffer.from('# Demo\n\nReviewed.\n') : Buffer.from([98, 255, 10]);
     writeFileSync(join(fixture.repositoryPath, 'README.md'), stagedBytes);
@@ -6421,7 +6433,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it('accepts equivalent workspace bases with different object key order', async () => {
-    const fixture = createWorkspaceChangeIngressFixture('equivalent_base_key_order', 'git');
+    const fixture = await createWorkspaceChangeIngressFixture('equivalent_base_key_order', 'git');
     const record = {
       ...fixture.record,
       changeSet: {
@@ -6442,7 +6454,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it('rejects a workspace review without package request proof before Artifact or Review writes', async () => {
-    const fixture = createWorkspaceChangeIngressFixture('missing_package_request_proof', 'git');
+    const fixture = await createWorkspaceChangeIngressFixture(
+      'missing_package_request_proof',
+      'git'
+    );
     const createArtifact = vi.spyOn(fixture.store, 'createArtifact');
 
     fixture.environmentPackage.scope.requestId = null;
@@ -6458,7 +6473,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it('refuses governed dispatch without durable capture admission before Git backend effects', async () => {
-    const fixture = createWorkspaceChangeIngressFixture('git_without_core_db', 'git');
+    const fixture = await createWorkspaceChangeIngressFixture('git_without_core_db', 'git');
     const backend = new FakeWorkerGovernanceBackend();
     const collectWorkspaceChanges = vi
       .spyOn(backend, 'collectWorkspaceChanges')
@@ -6499,11 +6514,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it('stores worker Git evidence in the owner-independent workspace', async () => {
-    const fixture = createWorkspaceChangeIngressFixture('actor_scope', 'git');
+    const fixture = await createWorkspaceChangeIngressFixture('actor_scope', 'git');
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-governance-actor-scope-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const workspace = store.listWorkspaces().find((candidate) => candidate.kind === 'code');
     if (!workspace) {
       throw new Error('Demo workspace was not created.');
@@ -6512,7 +6527,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     if (!thread) {
       throw new Error('Demo thread was not created.');
     }
-    const turn = createAssignedTurn(
+    const turn = await createAssignedTurn(
       store,
       workspace.id,
       thread.id,
@@ -6650,7 +6665,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it('retains a complete Artifact for exact retry when later ingress persistence fails', async () => {
-    const fixture = createWorkspaceChangeIngressFixture('artifact_compensation', 'git');
+    const fixture = await createWorkspaceChangeIngressFixture('artifact_compensation', 'git');
     const createArtifact = fixture.store.createArtifact.bind(fixture.store);
     fixture.store.createArtifact = (artifact) => {
       const created = createArtifact(artifact);
@@ -6672,7 +6687,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     const retainedArtifact = fixture.store.getArtifact(fixture.workspaceId, fixture.artifactId);
     expect(
-      createDemoStore({ dataRoot: fixture.storeDataRoot }).getArtifact(
+      (await createDemoStore({ dataRoot: fixture.storeDataRoot })).getArtifact(
         fixture.workspaceId,
         fixture.artifactId
       )
@@ -6693,7 +6708,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it('retains a refinement-only candidate without staging a Git review branch', async () => {
-    const fixture = createWorkspaceChangeIngressFixture('refinement_only', 'git');
+    const fixture = await createWorkspaceChangeIngressFixture('refinement_only', 'git');
     const record = {
       ...fixture.record,
       review: {
@@ -6872,7 +6887,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
   ];
 
   it('retains Git-source output as evidence without a host repository or apply review', async () => {
-    const fixture = createWorkspaceChangeIngressFixture('vendor_git_evidence', 'git');
+    const fixture = await createWorkspaceChangeIngressFixture('vendor_git_evidence', 'git');
     fixture.environmentPackage.workspace = {
       inputs: [{ id: 'repo', access: 'read-write', source: { kind: 'git' } }],
     } as AgentEnvironmentPackage['workspace'];
@@ -6892,7 +6907,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it('reports a non-secret workspace review actionability reason', async () => {
-    const fixture = createWorkspaceChangeIngressFixture('actionability_reason', 'git');
+    const fixture = await createWorkspaceChangeIngressFixture('actionability_reason', 'git');
     let ingressError: unknown;
 
     try {
@@ -6917,7 +6932,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     name,
     strategy,
   }) => {
-    const fixture = createWorkspaceChangeIngressFixture(
+    const fixture = await createWorkspaceChangeIngressFixture(
       name.replaceAll(/[^a-z0-9]+/gi, '_').toLowerCase(),
       strategy
     );
@@ -6966,9 +6981,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it('rejects a conflicting pre-existing review artifact without overwriting or deleting it', async () => {
-    const fixture = createWorkspaceChangeIngressFixture('conflicting_artifact', 'git');
+    const fixture = await createWorkspaceChangeIngressFixture('conflicting_artifact', 'git');
     const body = 'Unrelated artifact content.';
-    const existingArtifact = fixture.store.createArtifact({
+    const existingArtifact = await fixture.store.createArtifact({
       content: { body, format: 'markdown' },
       contentDigest: `sha256:${createHash('sha256').update(body, 'utf8').digest('hex')}`,
       createdAt: fixture.timestamp,
@@ -7023,8 +7038,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
   it('passes failedCloseout into backend cleanup after rejected Workspace-change lineage', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-failed-closeout-')));
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -7041,7 +7056,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
       turnId: turn.id,
     });
     const backend = new FakeWorkerGovernanceBackend();
-    const fixture = createWorkspaceChangeIngressFixture('failed_closeout_missing_target', 'git');
+    const fixture = await createWorkspaceChangeIngressFixture(
+      'failed_closeout_missing_target',
+      'git'
+    );
     vi.spyOn(backend, 'collectWorkspaceChanges').mockResolvedValue([fixture.record]);
     const cleanupSession = vi.spyOn(backend, 'cleanupSession');
     const executor = new WorkerGovernanceTurnExecutor({
@@ -7080,7 +7098,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
   });
 
   it('adopts an exact orphan review artifact without rewriting it', async () => {
-    const fixture = createWorkspaceChangeIngressFixture('exact_orphan_artifact', 'git');
+    const fixture = await createWorkspaceChangeIngressFixture('exact_orphan_artifact', 'git');
     const review = fixture.record.review;
     const body = JSON.stringify(
       {
@@ -7091,7 +7109,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       null,
       2
     );
-    const orphanArtifact = fixture.store.createArtifact({
+    const orphanArtifact = await fixture.store.createArtifact({
       content: { body, format: 'json' },
       contentDigest: `sha256:${createHash('sha256').update(body, 'utf8').digest('hex')}`,
       createdAt: fixture.timestamp,
@@ -7143,8 +7161,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     applyMigrations(coreDb);
 
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -7222,8 +7240,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
   ])('persists primary HTTP facts when cleanup also fails: %s', async (cleanupFails) => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-primary-fetch-failure-')));
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -7308,7 +7326,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
           getWorkerBackendSession(coreDb, testEntityId('attempt', `lease_${turn.id}`))?.state
         ).toBe('cleanup-failed');
         backend.failTeardown = false;
-        const reloaded = createDemoStore({ dataRoot: coreDb.dataRoot });
+        const reloaded = await createDemoStore({ dataRoot: coreDb.dataRoot });
         const recovery = {
           executionBackend: backend,
           store: reloaded,
@@ -7320,7 +7338,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
             throw new Error('Failed fetch has no accepted final status.');
           },
           projectRecoveredTurn: async () => {
-            const result = terminalizeGovernedWorkerTurn({
+            const result = await terminalizeGovernedWorkerTurn({
               store: reloaded,
               turnId: turn.id,
               agentSessionId: testEntityId('as', 'as_fetch_failure'),
@@ -7369,8 +7387,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     applyMigrations(coreDb);
 
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -7431,8 +7449,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-teardown-retry-')));
     applyMigrations(coreDb);
 
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -7500,7 +7518,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-cleanup-status-')));
     applyMigrations(coreDb);
 
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const setupDb = openTestWorkspaceDb(coreDb);
     const sqlitePrototype = Object.getPrototypeOf(setupDb.sqlite) as {
       close: typeof setupDb.sqlite.close;
@@ -7521,7 +7539,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     setupDb.sqlite.close();
     closeSpy.mockClear();
 
-    const turn = createAssignedTurn(
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -7583,8 +7601,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
 
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -7641,7 +7659,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-governance-workspace-migrate-fail-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const setupDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     const sqlitePrototype = Object.getPrototypeOf(setupDb.sqlite) as {
       exec: typeof setupDb.sqlite.exec;
@@ -7666,7 +7684,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       return originalPrepare.call(this, sql, ...rest);
     });
 
-    const turn = createAssignedTurn(
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -7722,7 +7740,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
   it('does not emit completed before failed when workspace storage close fails', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-close-fail-')));
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const setupDb = openTestWorkspaceDb(coreDb);
     const sqlitePrototype = Object.getPrototypeOf(setupDb.sqlite) as {
       close: typeof setupDb.sqlite.close;
@@ -7732,7 +7750,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       throw new Error('workspace storage close failed');
     });
 
-    const turn = createAssignedTurn(
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -7784,20 +7802,22 @@ describe('WorkerGovernanceTurnExecutor', () => {
   it('fails terminally when completed turn persistence fails after the session becomes idle', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-admitted-')));
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Fail completed turn persistence'
     );
     const updateTurn = store.updateTurn.bind(store);
-    const updateTurnSpy = vi.spyOn(store, 'updateTurn').mockImplementation((turnId, patch) => {
-      if (patch.status === 'completed') {
-        throw new Error('completed turn persistence failed');
-      }
-      return updateTurn(turnId, patch);
-    });
+    const updateTurnSpy = vi
+      .spyOn(store, 'updateTurn')
+      .mockImplementation(async (turnId, patch) => {
+        if (patch.status === 'completed') {
+          throw new Error('completed turn persistence failed');
+        }
+        return await updateTurn(turnId, patch);
+      });
     const executor = new WorkerGovernanceTurnExecutor({
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       coreDb,
@@ -7849,8 +7869,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
   it('fails terminally when the backend rejects without an error value', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-admitted-')));
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -7911,8 +7931,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-governance-terminal-notify-fail-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -7956,7 +7976,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       unsubscribe();
     }
 
-    const durableStore = createDemoStore({ dataRoot });
+    const durableStore = await createDemoStore({ dataRoot });
     const durableTurn = durableStore.getTurnById(turn.id);
     const terminalEvents = durableStore
       .getTurnEvents(turn.id)
@@ -7978,8 +7998,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), `openkit-governance-${failurePoint}-fail-`));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -8000,8 +8020,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     if (failurePoint === 'agent-session') {
       const updateAgentSession = store.updateAgentSession.bind(store);
-      const spy = vi.spyOn(store, 'updateAgentSession').mockImplementation((id, patch) => {
-        const updated = updateAgentSession(id, patch);
+      const spy = vi.spyOn(store, 'updateAgentSession').mockImplementation(async (id, patch) => {
+        const updated = await updateAgentSession(id, patch);
         if (!injected && patch.status === 'failed') {
           injected = true;
           throw new Error('failed AgentSession persistence reported failure after write');
@@ -8011,8 +8031,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
       restoreFailure = () => spy.mockRestore();
     } else if (failurePoint === 'turn') {
       const updateTurn = store.updateTurn.bind(store);
-      const spy = vi.spyOn(store, 'updateTurn').mockImplementation((id, patch) => {
-        const updated = updateTurn(id, patch);
+      const spy = vi.spyOn(store, 'updateTurn').mockImplementation(async (id, patch) => {
+        const updated = await updateTurn(id, patch);
         if (!injected && patch.status === 'failed') {
           injected = true;
           throw new Error('failed turn persistence reported failure after write');
@@ -8071,7 +8091,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       collectEvidenceSpy.mockRestore();
     }
 
-    const durableStore = createDemoStore({ dataRoot });
+    const durableStore = await createDemoStore({ dataRoot });
     expect(failure).toBeInstanceOf(AggregateError);
     expect(durableStore.getTurnById(turn.id)).toMatchObject({ status: 'failed' });
     expect(
@@ -8088,16 +8108,16 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-governance-setup-fail-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Fail worker setup'
     );
     const createItem = store.createItem.bind(store);
-    const createItemSpy = vi.spyOn(store, 'createItem').mockImplementation((item) => {
-      const created = createItem(item);
+    const createItemSpy = vi.spyOn(store, 'createItem').mockImplementation(async (item) => {
+      const created = await createItem(item);
       if (item.id === deriveEntityId('it', ['task-user', turn.id])) {
         throw new Error('worker setup failed after item persistence');
       }
@@ -8136,7 +8156,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       createItemSpy.mockRestore();
     }
 
-    const durableStore = createDemoStore({ dataRoot });
+    const durableStore = await createDemoStore({ dataRoot });
     expect(failure).toBeInstanceOf(Error);
     expect(durableStore.getTurnById(turn.id)).toMatchObject({
       agentId: 'agent_codex_host',
@@ -8174,10 +8194,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     applyMigrations(coreDb);
 
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-governance-source-ref-repo-'));
     seedWritableGitRepository(repositoryPath);
-    const turn = createAssignedTurn(
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -8514,39 +8534,38 @@ describe('WorkerGovernanceTurnExecutor', () => {
       workerRequest,
     });
     const fileAdmission = new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n);
-    withCanonicalFileWriteAdmission(fileAdmission, () => {
-      const sourceTurn = createAssignedTurn(
-        fixture.store,
-        workspaceIdForOwner(fixture.turn.owner),
-        fixture.turn.threadId,
-        'Produce the reviewed Artifact.',
-        testEntityId('tu', 'tu_source_review')
-      );
-      const createdAt = sourceTurn.startedAt ?? '2026-07-14T00:00:00.000Z';
-      fixture.store.createArtifact({
-        id: 'ar_00000000-0000-7f52-a2ff-8f9bfabc26a1',
-        workspaceId: workspaceIdForOwner(fixture.turn.owner),
+    const sourceTurn = await createAssignedTurn(
+      fixture.store,
+      workspaceIdForOwner(fixture.turn.owner),
+      fixture.turn.threadId,
+      'Produce the reviewed Artifact.',
+      testEntityId('tu', 'tu_source_review')
+    );
+    const createdAt = sourceTurn.startedAt ?? '2026-07-14T00:00:00.000Z';
+    await fixture.store.createArtifact({
+      id: 'ar_00000000-0000-7f52-a2ff-8f9bfabc26a1',
+      workspaceId: workspaceIdForOwner(fixture.turn.owner),
+      threadId: sourceTurn.threadId,
+      turnId: sourceTurn.id,
+      kind: 'report',
+      title: 'Reviewed Artifact',
+      status: 'ready',
+      summary: null,
+      version: 1,
+      content: { format: 'text', body: artifactContent },
+      contentDigest: turnRuntimeSha256(Buffer.from(artifactContent, 'utf8')),
+      lastMutationRequestId: 'source_artifact_review',
+      origin: {
+        kind: 'turn-output',
         threadId: sourceTurn.threadId,
         turnId: sourceTurn.id,
-        kind: 'report',
-        title: 'Reviewed Artifact',
-        status: 'ready',
-        summary: null,
-        version: 1,
-        content: { format: 'text', body: artifactContent },
-        contentDigest: turnRuntimeSha256(Buffer.from(artifactContent, 'utf8')),
-        lastMutationRequestId: 'source_artifact_review',
-        origin: {
-          kind: 'turn-output',
-          threadId: sourceTurn.threadId,
-          turnId: sourceTurn.id,
-          requestId: 'source_artifact_review',
-        },
-        createdAt,
-        updatedAt: createdAt,
-      });
-      fixture.store.updateTurn(sourceTurn.id, { status: 'completed', completedAt: createdAt });
+        requestId: 'source_artifact_review',
+      },
+      createdAt,
+      updatedAt: createdAt,
     });
+    await fixture.store.updateTurn(sourceTurn.id, { status: 'completed', completedAt: createdAt });
+
     const backend = new FakeWorkerGovernanceBackend();
     const executor = new WorkerGovernanceTurnExecutor({
       fileAdmission,
@@ -9695,8 +9714,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
   it('keeps recovery maintenance out of a live accepted-final-status closeout', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-live-closeout-race-')));
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -9763,7 +9782,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       (error: unknown) => error
     );
     const projectRecoveredTurn = vi.fn(async () => {
-      const result = terminalizeGovernedWorkerTurn({
+      const result = await terminalizeGovernedWorkerTurn({
         agentSessionId,
         completedAt: '2026-07-15T00:01:00.000Z',
         errorCode: 'worker_governance_restart_recovery',
@@ -9837,8 +9856,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
     applyMigrations(coreDb);
 
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -9908,15 +9927,15 @@ describe('WorkerGovernanceTurnExecutor', () => {
       tokenId: 'token_admin_worker_effect',
       workspaceIds: [],
     });
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const actor = { kind: 'user', id: 'usr_00000000-0000-7916-9acc-f85082f95261' } as const;
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Run as nonmember administrator',
       actor
     );
-    store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
+    await store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
     const agentSessionId = testEntityId('as', 'as_admin_worker_effect');
     const sandboxBindingRef = 'lease-binding:admin-worker-effect';
     recordExecutorAttempt(coreDb, {
@@ -9969,8 +9988,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
       mkdtempSync(join(tmpdir(), 'openkit-governance-prematerialize-authority-'))
     );
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -10038,8 +10057,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
   it('writes a package-scoped backend anchor before incoming materialization effects and cleans it for zero-input turns', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-anchor-order-')));
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -10109,8 +10128,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
       mkdtempSync(join(tmpdir(), 'openkit-governance-materialize-failure-'))
     );
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -10188,8 +10207,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
   it('does not launch when the scheduler lease stops being live during materialization', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-prelaunch-gate-')));
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -10294,7 +10313,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       vaultReferenceId: 'vault_00000000-0000-7d14-9747-33948cb59d1e',
       now: () => timestamp,
     });
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const backend = new FakeWorkerGovernanceBackend();
     // Each Turn has its own backend session record even when it reuses the AgentSession binding.
     const planSession = backend.planSession.bind(backend);
@@ -10326,7 +10345,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       ],
     });
     const run = async (index: number) => {
-      const turn = createAssignedTurn(
+      const turn = await createAssignedTurn(
         store,
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001',
@@ -10405,8 +10424,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
       now: () => timestamp,
     });
 
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -10543,8 +10562,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
       now: () => timestamp,
     });
 
-    const store = createDemoStore({ dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -10651,8 +10670,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
       now: () => timestamp,
     });
 
-    const store = createDemoStore({ dataRoot });
-    const turn = createAssignedTurn(
+    const store = await createDemoStore({ dataRoot });
+    const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -11671,6 +11690,7 @@ function completeOwnedTerminalAttempt(db: CoreDb, input: { id: string }) {
 
 const commitFixtureDbs: CoreDb[] = [];
 afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   await closeRetrievalServices();
   for (const db of commitFixtureDbs.splice(0)) db.sqlite.close();
 });
@@ -12064,8 +12084,8 @@ async function assertNativePreSubmissionFault(fault: NativePreSubmissionFault): 
 async function launchFinalReviewWorker(suffix: string) {
   const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-final-review-')));
   applyMigrations(coreDb);
-  const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-  const turn = createAssignedTurn(
+  const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+  const turn = await createAssignedTurn(
     store,
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',

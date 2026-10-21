@@ -1,9 +1,10 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it, onTestFinished } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
@@ -24,7 +25,7 @@ describe('conversation navigation', () => {
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     });
-    const store = createDemoStore();
+    const store = await createDemoStore();
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -36,20 +37,20 @@ describe('conversation navigation', () => {
       workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
       expiresAt: '2099-01-01T00:00:00.000Z',
     }).secret;
-    store.archiveThread(
+    await store.archiveThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001'
     );
-    const older = store.createThread(
+    const older = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Older conversation'
     );
-    const newer = store.createThread(
+    const newer = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Newer conversation'
     );
-    const working = store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Working');
-    store.createThread(
+    const working = await store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Working');
+    await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Private outsider',
       undefined,
@@ -59,9 +60,12 @@ describe('conversation navigation', () => {
         privateOwnerUserId: 'usr_00000000-0000-76a2-91eb-629d90835e80',
       }
     );
-    const archived = store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Archived');
-    store.archiveThread('ws_00000000-0000-7000-8000-000000000001', archived.id);
-    const olderTurn = store.createTurn(
+    const archived = await store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Archived'
+    );
+    await store.archiveThread('ws_00000000-0000-7000-8000-000000000001', archived.id);
+    const olderTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       older.id,
       'Earlier input',
@@ -69,8 +73,8 @@ describe('conversation navigation', () => {
       null,
       { startedAt: '2026-09-15T00:00:00.000Z' }
     );
-    store.updateTurn(olderTurn.id, { agentId: 'quick-chat' });
-    store.createItem({
+    await store.updateTurn(olderTurn.id, { agentId: 'quick-chat' });
+    await store.createItem({
       id: 'it_00000000-0000-76ec-a4bd-a0ffd301133c',
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: older.id,
@@ -82,11 +86,11 @@ describe('conversation navigation', () => {
       createdAt: '2026-09-15T04:00:00.000Z',
       completedAt: '2026-09-15T04:00:00.000Z',
     });
-    store.updateTurn(olderTurn.id, {
+    await store.updateTurn(olderTurn.id, {
       status: 'completed',
       completedAt: '2026-09-15T01:00:00.000Z',
     });
-    const newerTurn = store.createTurn(
+    const newerTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       newer.id,
       'Newer input',
@@ -94,15 +98,20 @@ describe('conversation navigation', () => {
       null,
       { startedAt: '2026-09-15T02:00:00.000Z' }
     );
-    store.updateTurn(newerTurn.id, { agentId: 'agent_codex_host' });
-    store.updateTurn(newerTurn.id, {
+    await store.updateTurn(newerTurn.id, { agentId: 'agent_codex_host' });
+    await store.updateTurn(newerTurn.id, {
       status: 'completed',
       completedAt: '2026-09-15T03:00:00.000Z',
     });
-    store.createTurn('ws_00000000-0000-7000-8000-000000000001', working.id, 'Unassigned work', {
-      kind: 'user',
-      id: 'usr_00000000-0000-7000-8000-000000000001',
-    });
+    await store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      working.id,
+      'Unassigned work',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     const app = createAppWithWorkspaceAuthority({
       mode: 'server',
       coreDb,
@@ -142,13 +151,13 @@ describe('conversation navigation', () => {
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     });
-    const store = createDemoStore();
+    const store = await createDemoStore();
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const outsider = store.createThread(
+    const outsider = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Private outsider',
       undefined,
@@ -183,4 +192,9 @@ describe('conversation navigation', () => {
       (await adminResponse.json()).items.map((row: { thread: { id: string } }) => row.thread.id)
     ).toContain(outsider.id);
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

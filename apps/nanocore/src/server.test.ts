@@ -178,6 +178,7 @@ import {
   listSchedulerAdmissionEntriesForWorkspace,
 } from './scheduler-records.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
 import { readDataRootLayoutMarker, recordDataRootDeploymentMove } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
@@ -236,7 +237,8 @@ function artifactDigest(content: string): string {
 }
 
 const fixtureDatabases: ReturnType<typeof openCoreDb>[] = [];
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const coreDb of fixtureDatabases.splice(0)) {
     if (coreDb.sqlite.open) coreDb.sqlite.close();
     rmSync(coreDb.dataRoot, { recursive: true, force: true });
@@ -421,14 +423,14 @@ function recordProvenanceRequiredStaleBootPackage(
  * @param store Store that should own the fixture.
  * @param userId User id namespace for fixture ids.
  */
-function seedDemoWorkspace(store: FsStore, userId = LOCAL_USER_ID): void {
+async function seedDemoWorkspace(store: FsStore, userId = LOCAL_USER_ID): Promise<void> {
   const demo = createDemoWorkspaceForUser(userId);
 
   try {
     store.getWorkspace(demo.workspace.id);
     return;
   } catch {
-    store.importWorkspaceSnapshot({
+    await store.importWorkspaceSnapshot({
       ...notebookImportFixture({ workspaceId: demo.workspace.id, knowledge: demo.knowledge }),
       workspace: demo.workspace,
       threads: [demo.thread],
@@ -450,12 +452,12 @@ function seedDemoWorkspace(store: FsStore, userId = LOCAL_USER_ID): void {
  */
 const demoStoreRoots = new WeakMap<FsStore, string>();
 
-function createDemoStore(options: FsStoreOptions = {}): FsStore {
+async function createDemoStore(options: FsStoreOptions = {}): Promise<FsStore> {
   const dataRoot = options.dataRoot ?? mkdtempSync(join(tmpdir(), 'openkit-server-store-'));
   const store = new FsStore({ ...options, dataRoot });
   demoStoreRoots.set(store, dataRoot);
-  store.ensureQuickChatWorkspace(LOCAL_USER_ID);
-  seedDemoWorkspace(store, LOCAL_USER_ID);
+  await store.ensureQuickChatWorkspace(LOCAL_USER_ID);
+  await seedDemoWorkspace(store, LOCAL_USER_ID);
   return store;
 }
 
@@ -591,10 +593,10 @@ function chatAnsweringProvider(
  * @param options App options.
  * @returns Test app.
  */
-function createApp(
+async function createApp(
   options: CreateAppOptions = {},
   canonicalAuthority = false
-): ReturnType<typeof createNanoCoreApp> {
+): Promise<ReturnType<typeof createNanoCoreApp>> {
   if (options.turnExecutor instanceof FakeTurnExecutor && !options.coreDb) {
     const root = options.store ? demoStoreRoots.get(options.store) : undefined;
     const coreDb = root ? openCoreDb(root) : createCoreDb();
@@ -608,9 +610,10 @@ function createApp(
   }
 
   const store =
-    options.store ?? createDemoStore(options.coreDb ? { dataRoot: options.coreDb.dataRoot } : {});
+    options.store ??
+    (await createDemoStore(options.coreDb ? { dataRoot: options.coreDb.dataRoot } : {}));
 
-  seedDemoWorkspace(store);
+  await seedDemoWorkspace(store);
   if (options.coreDb) {
     for (const workspace of store.listWorkspaces()) {
       const registered = options.coreDb.sqlite
@@ -1114,13 +1117,13 @@ class FakeTurnExecutor implements TurnExecutor {
         /* Fresh prepared session. */
       }
       if (exists)
-        store.updateAgentSession(context.agentSessionId, {
+        await store.updateAgentSession(context.agentSessionId, {
           status: sessionInput.status,
           message: sessionInput.message,
           updatedAt: sessionInput.updatedAt,
           environmentPackageSnapshotId: sessionInput.environmentPackageSnapshotId,
         });
-      else store.createAgentSession(sessionInput);
+      else await store.createAgentSession(sessionInput);
     } finally {
       db.sqlite.close();
     }
@@ -1257,11 +1260,11 @@ class FakeTurnExecutor implements TurnExecutor {
           })
         : undefined);
     const agentSession = existingAgentSession
-      ? store.updateAgentSession(existingAgentSession.id, {
+      ? await store.updateAgentSession(existingAgentSession.id, {
           status: 'busy',
           updatedAt: timestamp,
         })
-      : store.createAgentSession({
+      : await store.createAgentSession({
           id: agentSessionId,
           agentId: turn.agentId,
           workspaceId: workspaceIdForOwner(turn.owner),
@@ -1272,8 +1275,8 @@ class FakeTurnExecutor implements TurnExecutor {
           createdAt: timestamp,
           updatedAt: timestamp,
         });
-    store.updateTurn(turnId, { agentSessionId: agentSession.id });
-    const userItem = store.createItem({
+    await store.updateTurn(turnId, { agentSessionId: agentSession.id });
+    const userItem = await store.createItem({
       id: deriveEntityId('it', ['task-user', turnId]),
       owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
       threadId: turn.threadId,
@@ -1285,7 +1288,7 @@ class FakeTurnExecutor implements TurnExecutor {
       createdAt: turn.startedAt ?? new Date().toISOString(),
       completedAt: turn.startedAt ?? new Date().toISOString(),
     });
-    const assistantItem = store.createItem({
+    const assistantItem = await store.createItem({
       // Match the simulator; worker-result belongs to the conversation status Item.
       id: deriveEntityId('it', ['assistant', turnId]),
       owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
@@ -1345,11 +1348,11 @@ class FakeTurnExecutor implements TurnExecutor {
       turnId,
       data: { type: 'item-completed', itemId: assistantItem.id, item: assistantItem },
     });
-    const completedTurn = store.updateTurn(turnId, {
+    const completedTurn = await store.updateTurn(turnId, {
       status: 'completed',
       completedAt: assistantItem.completedAt,
     });
-    store.updateAgentSession(agentSession.id, {
+    await store.updateAgentSession(agentSession.id, {
       status: 'idle',
       updatedAt: assistantItem.completedAt ?? timestamp,
     });
@@ -1376,7 +1379,7 @@ class FakeTurnExecutor implements TurnExecutor {
     turnId: string,
     context: TurnCommandRuntimeContext = { requestId: null }
   ): Promise<void> {
-    const turn = store.updateTurn(turnId, {
+    const turn = await store.updateTurn(turnId, {
       status: 'interrupted',
       completedAt: new Date().toISOString(),
     });
@@ -1552,8 +1555,8 @@ function observeExecutionAttempts(
 
 describe('nanocore server', () => {
   it('lists seeded workspaces', async () => {
-    const canonicalStore = createDemoStore();
-    const canonicalApp = createApp(
+    const canonicalStore = await createDemoStore();
+    const canonicalApp = await createApp(
       { ...{ turnExecutor: new FakeTurnExecutor() }, store: canonicalStore },
       true
     );
@@ -1568,7 +1571,7 @@ describe('nanocore server', () => {
 
   it('delegates an unclassified workspace listing failure to the safe HTTP error handler', async () => {
     const broken = new BrokenWorkspaceListStore();
-    const canonicalApp = createApp(
+    const canonicalApp = await createApp(
       {
         store: broken,
         turnExecutor: new FakeTurnExecutor(),
@@ -1587,8 +1590,8 @@ describe('nanocore server', () => {
   });
 
   it('rejects product work when boot readiness closes product admission', async () => {
-    const canonicalStore = createDemoStore();
-    const app = createApp({
+    const canonicalStore = await createDemoStore();
+    const app = await createApp({
       ...{
         bootReadiness: computeBootReadinessSnapshot({
           bootId: 'boot_failed',
@@ -1609,7 +1612,7 @@ describe('nanocore server', () => {
       },
       store: canonicalStore,
     });
-    const canonicalApp = createApp(
+    const canonicalApp = await createApp(
       {
         ...{
           bootReadiness: computeBootReadinessSnapshot({
@@ -1726,8 +1729,8 @@ describe('nanocore server', () => {
 
   it('uses the latest boot readiness for product admission and diagnostics', async () => {
     let bootReadiness = computeBootReadinessSnapshot({ bootId: 'boot_dynamic' });
-    const canonicalStore = createDemoStore();
-    const app = createApp(
+    const canonicalStore = await createDemoStore();
+    const app = await createApp(
       {
         store: canonicalStore,
         getBootReadiness: () => bootReadiness,
@@ -1805,7 +1808,7 @@ describe('nanocore server', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-storage-report-route-'));
     mkdirSync(join(dataRoot, 'server', 'quarantine'), { recursive: true });
     writeFileSync(join(dataRoot, 'server', 'quarantine', '1-core.sqlite'), 'demo');
-    const app = createApp({ dataRoot });
+    const app = await createApp({ dataRoot });
 
     const res = await app.request(...operationRequest('storage.layout-report', {}));
 
@@ -1832,7 +1835,7 @@ describe('nanocore server', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     coreDb.sqlite.close();
-    const app = createApp({ dataRoot });
+    const app = await createApp({ dataRoot });
 
     const createRes = await app.request(
       ...operationRequest('backup.create', {}, { method: 'POST' })
@@ -1870,12 +1873,12 @@ describe('nanocore server', () => {
 
   it('exports one workspace through the App API', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-export-route-'));
-    const store = createDemoStore({ dataRoot });
-    store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Export route thread');
+    const store = await createDemoStore({ dataRoot });
+    await store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Export route thread');
 
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     await createKnowledgeFixture(app, store, {
       title: 'Export route knowledge',
       content: 'Export this note.',
@@ -1944,10 +1947,10 @@ describe('nanocore server', () => {
 
   it('dry-runs workspace import through the App API without creating a workspace', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-dry-run-route-'));
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     const beforeCount = store.listWorkspaces().length;
     const exportRes = await app.request(
       ...operationRequest(
@@ -1992,10 +1995,10 @@ describe('nanocore server', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
-    store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Import source thread');
+    const store = await createDemoStore({ dataRoot });
+    await store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Import source thread');
 
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     await createKnowledgeFixture(app, store, {
       title: 'Import source knowledge',
       content: 'Import this knowledge.',
@@ -2094,7 +2097,7 @@ describe('nanocore server', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-audit-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const sourceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       recordWorkspaceAuditEvent({
@@ -2113,7 +2116,7 @@ describe('nanocore server', () => {
     } finally {
       sourceDb.sqlite.close();
     }
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     const exportRes = await app.request(
       ...operationRequest(
         'workspace.export',
@@ -2192,8 +2195,8 @@ describe('nanocore server', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     recordDataRootDeploymentMove(dataRoot, 'dep_00000000-0000-7198-9759-a2c549718546');
-    const store = createDemoStore({ dataRoot });
-    const app = createApp({ coreDb, dataRoot, store });
+    const store = await createDemoStore({ dataRoot });
+    const app = await createApp({ coreDb, dataRoot, store });
 
     try {
       const exportRes = await app.request(
@@ -2216,8 +2219,8 @@ describe('nanocore server', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-export-storage-usage-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
-    const app = createApp({ coreDb, dataRoot, store });
+    const store = await createDemoStore({ dataRoot });
+    const app = await createApp({ coreDb, dataRoot, store });
 
     try {
       const exportRes = await app.request(
@@ -2279,8 +2282,8 @@ describe('nanocore server', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-storage-usage-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
-    const app = createApp({ coreDb, dataRoot, store });
+    const store = await createDemoStore({ dataRoot });
+    const app = await createApp({ coreDb, dataRoot, store });
 
     try {
       const exportRes = await app.request(
@@ -2356,7 +2359,7 @@ describe('nanocore server', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-usage-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const sourceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     let callId = '';
     try {
@@ -2400,7 +2403,7 @@ describe('nanocore server', () => {
     } finally {
       sourceDb.sqlite.close();
     }
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     const exportRes = await app.request(
       ...operationRequest(
         'workspace.export',
@@ -2469,7 +2472,7 @@ describe('nanocore server', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-knowledge-state-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     ensureLocalUser(coreDb);
     recordWorkspaceOwnerMembership({
       coreDb,
@@ -2505,7 +2508,7 @@ describe('nanocore server', () => {
       originalSource.id,
       sourceNotebook.readSourcePointers(sourceNotebook.publishedRevision())[originalSource.id]!
     );
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     const exportRes = await app.request(
       ...operationRequest(
         'workspace.export',
@@ -2616,8 +2619,8 @@ describe('nanocore server', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-round-trip-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
-    store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Round trip thread');
+    const store = await createDemoStore({ dataRoot });
+    await store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Round trip thread');
     ensureLocalUser(coreDb);
     recordWorkspaceOwnerMembership({
       coreDb,
@@ -2675,7 +2678,7 @@ describe('nanocore server', () => {
     } finally {
       sourceDb.sqlite.close();
     }
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     await createKnowledgeFixture(app, store, {
       title: 'Round trip knowledge',
       content: 'Keep this entry through import.',
@@ -2829,7 +2832,7 @@ describe('nanocore server', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-vault-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const sourceReference = createVaultReference(coreDb, {
       backendKind: 'os-keychain' as never,
       backendLocator: 'os-keychain:redacted-source',
@@ -2840,7 +2843,7 @@ describe('nanocore server', () => {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       now: () => '2026-07-06T00:00:00.000Z',
     });
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     const exportRes = await app.request(
       ...operationRequest(
         'workspace.export',
@@ -2882,7 +2885,7 @@ describe('nanocore server', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-core-rollback-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     for (const suffix of ['1', '2']) {
       createVaultReference(coreDb, {
         backendKind: 'encrypted-file',
@@ -2908,7 +2911,7 @@ describe('nanocore server', () => {
       (SELECT COUNT(*) FROM vault_injection_plans) AS injectionPlans,
       (SELECT COUNT(*) FROM vault_injection_receipts) AS injectionReceipts`);
     const beforeCoreRows = coreRowCounts.get();
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     const exportRes = await app.request(
       ...operationRequest(
         'workspace.export',
@@ -2953,7 +2956,7 @@ describe('nanocore server', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-vault-use-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
       backendLocator: 'encrypted-file://redacted-source',
@@ -2982,7 +2985,7 @@ describe('nanocore server', () => {
     } finally {
       sourceDb.sqlite.close();
     }
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     const exportRes = await app.request(
       ...operationRequest(
         'workspace.export',
@@ -3043,7 +3046,7 @@ describe('nanocore server', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-vault-grant-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const sourceReference = createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
       backendLocator: 'encrypted-file://redacted-source',
@@ -3068,7 +3071,7 @@ describe('nanocore server', () => {
       expiresAt: '2026-07-07T00:00:00.000Z',
       now: () => '2026-07-06T00:11:00.000Z',
     });
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     const exportRes = await app.request(
       ...operationRequest(
         'workspace.export',
@@ -3162,7 +3165,7 @@ describe('nanocore server', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-injection-plan-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const sourceReference = createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
       backendLocator: 'encrypted-file://redacted-source',
@@ -3196,7 +3199,7 @@ describe('nanocore server', () => {
       backendCapabilityRequirement: 'runtime-file-upload',
       now: () => '2026-07-06T00:12:01.000Z',
     });
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     const exportRes = await app.request(
       ...operationRequest(
         'workspace.export',
@@ -3277,7 +3280,7 @@ describe('nanocore server', () => {
     );
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const sourceReference = createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
       backendLocator: 'encrypted-file://redacted-source',
@@ -3342,7 +3345,7 @@ describe('nanocore server', () => {
     } finally {
       sourceDb.sqlite.close();
     }
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     const exportRes = await app.request(
       ...operationRequest(
         'workspace.export',
@@ -3437,7 +3440,7 @@ describe('nanocore server', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-data-sources-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const catalogRoot = join(
       dataRoot,
       'workspaces',
@@ -3467,7 +3470,7 @@ describe('nanocore server', () => {
         2
       )}\n`
     );
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     const exportRes = await app.request(
       ...operationRequest(
         'workspace.export',
@@ -3521,10 +3524,10 @@ describe('nanocore server', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-sync-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const sourceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     const sourceReview = workspaceSyncReviewRouteItem();
-    const sourceTurn = store.createTurn(
+    const sourceTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Produce workspace sync review',
@@ -3534,7 +3537,7 @@ describe('nanocore server', () => {
         turnId: 'tu_00000000-0000-7134-8501-76dbee7ab54a',
       }
     );
-    store.createAgentSession({
+    await store.createAgentSession({
       agentId: 'agent_codex_host',
       createdAt: sourceReview.changeSet.createdAt,
       id: 'as_00000000-0000-73c1-85c9-e24cc662686d',
@@ -3548,7 +3551,7 @@ describe('nanocore server', () => {
       ...createOpenShellWorkerControlPackage(store, sourceTurn.id),
       snapshotId: `aepsnap_test_${sourceReview.changeSet.materializationRecordId}`,
     });
-    store.createArtifact({
+    await store.createArtifact({
       id: sourceReview.artifactId,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -3580,7 +3583,7 @@ describe('nanocore server', () => {
     } finally {
       sourceDb.sqlite.close();
     }
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     const exportRes = await app.request(
       ...operationRequest(
         'workspace.export',
@@ -3681,10 +3684,10 @@ describe('nanocore server', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-apply-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const sourceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     const sourceReview = workspaceSyncReviewRouteItem();
-    const sourceTurn = store.createTurn(
+    const sourceTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Produce workspace apply result',
@@ -3694,7 +3697,7 @@ describe('nanocore server', () => {
         turnId: 'tu_00000000-0000-7134-8501-76dbee7ab54a',
       }
     );
-    store.createAgentSession({
+    await store.createAgentSession({
       agentId: 'agent_codex_host',
       createdAt: sourceReview.changeSet.createdAt,
       id: 'as_00000000-0000-73c1-85c9-e24cc662686d',
@@ -3708,7 +3711,7 @@ describe('nanocore server', () => {
       ...createOpenShellWorkerControlPackage(store, sourceTurn.id),
       snapshotId: `aepsnap_test_${sourceReview.changeSet.materializationRecordId}`,
     });
-    store.createArtifact({
+    await store.createArtifact({
       id: sourceReview.artifactId,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -3756,7 +3759,7 @@ describe('nanocore server', () => {
     } finally {
       sourceDb.sqlite.close();
     }
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     const exportRes = await app.request(
       ...operationRequest(
         'workspace.export',
@@ -3813,8 +3816,8 @@ describe('nanocore server', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-permission-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
-    store.createTurn(
+    const store = await createDemoStore({ dataRoot });
+    await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Record permission decision',
@@ -3824,7 +3827,7 @@ describe('nanocore server', () => {
         turnId: 'tu_00000000-0000-77e3-bfde-66477d556f64',
       }
     );
-    store.createItem({
+    await store.createItem({
       approvalRequestId: 'ap_source_repo_push',
       completedAt: '2026-07-06T00:01:00.000Z',
       createdAt: '2026-07-06T00:01:00.000Z',
@@ -3838,7 +3841,7 @@ describe('nanocore server', () => {
       type: 'approval-request',
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     });
-    store.createItem({
+    await store.createItem({
       approvalRequestId: 'ap_source_repo_push',
       completedAt: '2026-07-06T00:01:01.000Z',
       createdAt: '2026-07-06T00:01:01.000Z',
@@ -3853,7 +3856,7 @@ describe('nanocore server', () => {
       type: 'approval-decision',
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     });
-    store.updateTurn('tu_00000000-0000-77e3-bfde-66477d556f64', {
+    await store.updateTurn('tu_00000000-0000-77e3-bfde-66477d556f64', {
       completedAt: '2026-07-06T00:01:01.000Z',
       status: 'completed',
     });
@@ -3905,7 +3908,7 @@ describe('nanocore server', () => {
     } finally {
       sourceDb.sqlite.close();
     }
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     const exportRes = await app.request(
       ...operationRequest(
         'workspace.export',
@@ -3999,8 +4002,8 @@ describe('nanocore server', () => {
       ownerUserId: LOCAL_USER_ID,
       workspaceId: 'ws_00000000-0000-71f5-922f-6fd42f52f580',
     });
-    const store = createDemoStore({ dataRoot });
-    const thread = store.createThread(
+    const store = await createDemoStore({ dataRoot });
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Scheduler admission read route'
     );
@@ -4059,7 +4062,7 @@ describe('nanocore server', () => {
       requestedAgentId: 'agent_codex_host',
       profileRef: 'agent_codex_host',
     });
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
 
     const res = await app.request(
       ...operationRequest('scheduler.list', {
@@ -4101,7 +4104,7 @@ describe('nanocore server', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-audit-events-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       recordWorkspaceAuditEvent({
@@ -4121,7 +4124,7 @@ describe('nanocore server', () => {
     } finally {
       workspaceDb.sqlite.close();
     }
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
 
     const res = await app.request(
       ...operationRequest(
@@ -4156,7 +4159,7 @@ describe('nanocore server', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-server-audit-events-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     recordServerAuditEvent({
       auditEventId: 'aud_00000000-0000-7199-ad5c-cef2e415ed6c',
       coreDb,
@@ -4168,7 +4171,7 @@ describe('nanocore server', () => {
       requestId: '00000000-0000-4000-8000-00000000a772',
       now: new Date('2026-07-07T00:00:30.000Z'),
     });
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
 
     const res = await app.request(...operationRequest('audit.server-list', {}, {}));
 
@@ -4192,8 +4195,8 @@ describe('nanocore server', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-evidence-bundle-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
-    const app = createApp({ coreDb, dataRoot, store });
+    const store = await createDemoStore({ dataRoot });
+    const app = await createApp({ coreDb, dataRoot, store });
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     const item = workspaceSyncReviewRouteItem();
 
@@ -4244,7 +4247,7 @@ describe('nanocore server', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-runtime-evidence-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       upsertWorkerCheckpoint(workspaceDb, {
@@ -4267,7 +4270,7 @@ describe('nanocore server', () => {
         stopReason: 'completed',
         now: () => '2026-07-07T00:05:00.000Z',
       });
-      const app = createApp({ coreDb, dataRoot, store });
+      const app = await createApp({ coreDb, dataRoot, store });
 
       const res = await app.request(
         ...operationRequest(
@@ -4304,7 +4307,7 @@ describe('nanocore server', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-permission-decisions-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       recordProductPermissionDecision({
@@ -4331,7 +4334,7 @@ describe('nanocore server', () => {
     } finally {
       workspaceDb.sqlite.close();
     }
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
 
     const res = await app.request(
       ...operationRequest(
@@ -4362,7 +4365,7 @@ describe('nanocore server', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-server-permission-decisions-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     recordProductPermissionDecision({
       action: 'llm.gateway.chat_completions',
       contextSummary: { route: '/v1/chat/completions' },
@@ -4378,7 +4381,7 @@ describe('nanocore server', () => {
       subjectSummary: { id: 'openai-compatible', kind: 'gateway-client' },
       now: new Date('2026-07-07T00:02:00.000Z'),
     });
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
 
     const res = await app.request(...operationRequest('permission.server-list', {}, {}));
 
@@ -4402,7 +4405,7 @@ describe('nanocore server', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-vault-use-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       createVaultUseRecord(workspaceDb, {
@@ -4422,7 +4425,7 @@ describe('nanocore server', () => {
     } finally {
       workspaceDb.sqlite.close();
     }
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
 
     const res = await app.request(
       ...operationRequest(
@@ -4454,7 +4457,7 @@ describe('nanocore server', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-server-vault-use-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     createVaultUseRecord(coreDb, {
       useId: 'vu_00000000-0000-7c95-9a54-b6ca32998c2c',
       ownerScope: 'server',
@@ -4468,7 +4471,7 @@ describe('nanocore server', () => {
       auditEventId: 'aud_00000000-0000-7631-a365-22a9115f9f7c',
       usedAt: '2026-07-07T00:00:00.000Z',
     });
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
 
     const res = await app.request(...operationRequest('vault.server-use-list', {}, {}));
 
@@ -4494,8 +4497,8 @@ describe('nanocore server', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-scheduler-admission-retry-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
-    const thread = store.createThread(
+    const store = await createDemoStore({ dataRoot });
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Scheduler admission retry route'
     );
@@ -4514,7 +4517,7 @@ describe('nanocore server', () => {
       queueEntryId: 'queue_retry_route',
       denialReason: 'authority-denied',
     });
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
 
     const retryRes = await app.request(
       ...operationRequest(
@@ -4565,8 +4568,8 @@ describe('nanocore server', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-scheduler-admission-cancel-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
-    const thread = store.createThread(
+    const store = await createDemoStore({ dataRoot });
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Scheduler admission cancel route'
     );
@@ -4581,7 +4584,7 @@ describe('nanocore server', () => {
       requestedAgentId: 'agent_codex_host',
       profileRef: 'agent_codex_host',
     });
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
 
     const cancelRes = await app.request(
       ...operationRequest(
@@ -4630,7 +4633,7 @@ describe('nanocore server', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-pending-user-turn-route-absence-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const app = createApp({ coreDb, dataRoot, store: createDemoStore({ dataRoot }) });
+    const app = await createApp({ coreDb, dataRoot, store: await createDemoStore({ dataRoot }) });
 
     try {
       const routes = [
@@ -4674,12 +4677,12 @@ describe('nanocore server', () => {
   });
 
   it('does not expose runtime config AgentSession restart through App API', async () => {
-    const store = createDemoStore();
-    const thread = store.createThread(
+    const store = await createDemoStore();
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Retire stale session'
     );
-    const session = store.createAgentSession({
+    const session = await store.createAgentSession({
       agentId: 'agent_codex_host',
       configVersion: 1,
       createdAt: '2026-07-07T00:00:00.000Z',
@@ -4697,7 +4700,7 @@ describe('nanocore server', () => {
     });
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const app = createApp({ coreDb, runtimeConfigManager, store });
+    const app = await createApp({ coreDb, runtimeConfigManager, store });
     const sessionBefore = store.getAgentSession(session.id);
 
     try {
@@ -4736,7 +4739,7 @@ describe('nanocore server', () => {
         },
       ],
     });
-    const app = createApp({ store: createDemoStore(), turnExecutor }, true);
+    const app = await createApp({ store: await createDemoStore(), turnExecutor }, true);
 
     const response = await app.request(
       ...operationRequest(
@@ -4760,12 +4763,12 @@ describe('nanocore server', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-reconnect-pending-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
-    const thread = store.createThread(
+    const store = await createDemoStore({ dataRoot });
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Reconnect pending retry route'
     );
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Reconnect original worker',
@@ -4775,7 +4778,7 @@ describe('nanocore server', () => {
       }
     );
     const agentSessionId = 'as_00000000-0000-7386-8d92-386b36b7b789';
-    store.createAgentSession({
+    await store.createAgentSession({
       agentId: 'agent_codex_host',
       createdAt: turn.startedAt ?? '2026-07-17T05:00:00.000Z',
       id: agentSessionId,
@@ -4785,7 +4788,7 @@ describe('nanocore server', () => {
       updatedAt: '2026-07-17T05:00:00.000Z',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    store.updateTurn(turn.id, { agentSessionId });
+    await store.updateTurn(turn.id, { agentSessionId });
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       upsertWorkerCheckpoint(workspaceDb, {
@@ -4825,7 +4828,7 @@ describe('nanocore server', () => {
       turn.id
     );
     checkpointDb.sqlite.close();
-    const app = createApp({
+    const app = await createApp({
       coreDb,
       dataRoot,
       store,
@@ -4872,8 +4875,8 @@ describe('nanocore server', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-checkpoint-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
-    store.createTurn(
+    const store = await createDemoStore({ dataRoot });
+    await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Checkpoint worker turn',
@@ -4884,7 +4887,7 @@ describe('nanocore server', () => {
       }
     );
     if (hasSourceSession)
-      store.createAgentSession({
+      await store.createAgentSession({
         id: 'as_00000000-0000-7652-8f43-7ca66c6bda3b',
         agentId: 'agent_codex_host',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -4913,7 +4916,7 @@ describe('nanocore server', () => {
     } finally {
       sourceDb.sqlite.close();
     }
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     const exportRes = await app.request(
       ...operationRequest(
         'workspace.export',
@@ -5005,7 +5008,7 @@ describe('nanocore server', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-mcp-schema-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const sourceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     const schemaTools = [
       {
@@ -5043,7 +5046,7 @@ describe('nanocore server', () => {
     } finally {
       sourceDb.sqlite.close();
     }
-    const app = createApp({ coreDb, dataRoot, store });
+    const app = await createApp({ coreDb, dataRoot, store });
     const exportRes = await app.request(
       ...operationRequest(
         'workspace.export',
@@ -5115,7 +5118,7 @@ describe('nanocore server', () => {
   });
 
   it('serves the App API OpenAPI projection', async () => {
-    const app = createApp();
+    const app = await createApp();
 
     const res = await app.request('/api/openapi.json');
 
@@ -5157,7 +5160,7 @@ describe('nanocore server', () => {
   });
 
   it('allows credentialed browser CORS requests for server-mode auth', async () => {
-    const app = createApp({ turnExecutor: new FakeTurnExecutor() });
+    const app = await createApp({ turnExecutor: new FakeTurnExecutor() });
     const res = await app.request('/api/app/operations/workspace.create', {
       method: 'OPTIONS',
       headers: {
@@ -5171,12 +5174,12 @@ describe('nanocore server', () => {
   });
 
   it('returns a thin workspace record and separate resources payload', async () => {
-    const canonicalStore = createDemoStore();
-    const app = createApp(
+    const canonicalStore = await createDemoStore();
+    const app = await createApp(
       { ...{ turnExecutor: new FakeTurnExecutor() }, store: canonicalStore },
       true
     );
-    const canonicalApp = createApp(
+    const canonicalApp = await createApp(
       { ...{ turnExecutor: new FakeTurnExecutor() }, store: canonicalStore },
       true
     );
@@ -5215,8 +5218,8 @@ describe('nanocore server', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-notebook-usage-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
-    const app = createApp({ coreDb, dataRoot, store, turnExecutor: new FakeTurnExecutor() });
+    const store = await createDemoStore({ dataRoot });
+    const app = await createApp({ coreDb, dataRoot, store, turnExecutor: new FakeTurnExecutor() });
     const createRes = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.notebook.create',
@@ -5357,7 +5360,7 @@ describe('nanocore server', () => {
         ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+      const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
       const before = {
         turns: store.listThreadTurns(
           'ws_00000000-0000-7000-8000-000000000001',
@@ -5421,7 +5424,7 @@ describe('nanocore server', () => {
   });
 
   it('native turn.start refuses missing durable scheduler storage before effects', async () => {
-    const store = createDemoStore();
+    const store = await createDemoStore();
     const before = store.listCommandRequests();
     await expect(
       startNativeTurn(
@@ -5470,7 +5473,7 @@ describe('nanocore server', () => {
     const providerCredentialResolver = vi.fn((secretRef: string) =>
       secretRef === 'vault://vault_00000000-0000-773b-907f-1cbec0ca03c0' ? 'test-key' : null
     );
-    const app = createApp({
+    const app = await createApp({
       agentManifests: [createTestAgentSetup().manifest],
       coreDb,
       providerCredentialResolver,
@@ -5527,7 +5530,7 @@ describe('nanocore server', () => {
 
   it('starts Task Mode through the worker coordinator and one bounded worker turn', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
 
     const executor = new FakeTurnExecutor();
     let launchedContextAssembly: ReturnType<typeof parseWorkerCheckpointContextAssembly> = null;
@@ -5562,7 +5565,7 @@ describe('nanocore server', () => {
     }).manifest;
     const providerRegistry = testProviderRegistry();
     const gatewayConfig = createTestGatewayConfig();
-    const app = createApp({
+    const app = await createApp({
       providerRegistry,
       gatewayConfig,
       agentManifests: [laterAgentManifest, opaqueAgentManifest],
@@ -5859,7 +5862,7 @@ describe('nanocore server', () => {
           )
         )
       ).toEqual(retrievalTrace);
-      expect(() => store.updateTurn(parsed.turn.id, { status: 'cancelled' })).toThrow(
+      await expect(store.updateTurn(parsed.turn.id, { status: 'cancelled' })).rejects.toThrow(
         /is terminal and does not admit this write/
       );
       expect(conflictRes.status).toBe(409);
@@ -5893,7 +5896,7 @@ describe('nanocore server', () => {
     requestId,
   }) => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
     const remoteCommit = '0123456789abcdef0123456789abcdef01234567';
     const remoteUrl = 'https://git.example.test/openkit/task-mode.git';
@@ -5957,7 +5960,7 @@ describe('nanocore server', () => {
       }
       return startTurn(...args);
     });
-    const app = createApp({
+    const app = await createApp({
       coreDb,
       runtimeConfigManager,
       store,
@@ -6051,7 +6054,7 @@ describe('nanocore server', () => {
     },
   ])('records the product-safe $entry failure in RuntimeEvidence', async ({ requestId }) => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
     vi.spyOn(executor, 'startTurn').mockImplementation(
       async (runtimeStore, turnId, input, context) => {
@@ -6064,7 +6067,7 @@ describe('nanocore server', () => {
         }
         const agentSessionId = context.agentSessionId ?? `session_${turn.threadId}`;
         const agentSession = runtimeStore.getAgentSession(agentSessionId);
-        runtimeStore.createItem({
+        await runtimeStore.createItem({
           id: deriveEntityId('it', ['task-user', turnId]),
           owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
           threadId: turn.threadId,
@@ -6076,13 +6079,13 @@ describe('nanocore server', () => {
           createdAt: turn.startedAt ?? completedAt,
           completedAt,
         });
-        const failedTurn = runtimeStore.updateTurn(turnId, {
+        const failedTurn = await runtimeStore.updateTurn(turnId, {
           agentSessionId: agentSession.id,
           completedAt,
           error: { code: 'worker_failed', message: 'Worker process exited with code 1.' },
           status: 'failed',
         });
-        runtimeStore.updateAgentSession(agentSession.id, {
+        await runtimeStore.updateAgentSession(agentSession.id, {
           message: 'Worker process exited with code 1.',
           status: 'failed',
           updatedAt: completedAt,
@@ -6102,7 +6105,7 @@ describe('nanocore server', () => {
         await executor.releaseTurn(context, 'turn-failed');
       }
     );
-    const app = createApp({ coreDb, store, turnExecutor: executor });
+    const app = await createApp({ coreDb, store, turnExecutor: executor });
 
     try {
       const response = await app.request(
@@ -6175,7 +6178,7 @@ describe('nanocore server', () => {
 
   it('keeps selected Artifact previews outside the exact Worker objective', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
     const start = vi.spyOn(executor, 'startTurn');
     const brief = 'Implement the selected report findings.';
@@ -6185,7 +6188,7 @@ describe('nanocore server', () => {
       body: 'Selected report text. '.repeat(300),
       requestId: 'worker-snapshot-report',
     });
-    const app = createApp({ coreDb, store, turnExecutor: executor });
+    const app = await createApp({ coreDb, store, turnExecutor: executor });
     try {
       const response = await app.request(
         ...operationRequest(
@@ -6257,7 +6260,7 @@ describe('nanocore server', () => {
     title,
   }) => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
     vi.spyOn(executor, 'startTurn').mockImplementation(
       async (runtimeStore, turnId, input, context) => {
@@ -6270,7 +6273,7 @@ describe('nanocore server', () => {
         }
         const agentSessionId = context.agentSessionId ?? `session_${turn.threadId}`;
         const agentSession = runtimeStore.getAgentSession(agentSessionId);
-        runtimeStore.createItem({
+        await runtimeStore.createItem({
           id: deriveEntityId('it', ['task-user', turnId]),
           owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
           threadId: turn.threadId,
@@ -6282,13 +6285,13 @@ describe('nanocore server', () => {
           createdAt: turn.startedAt ?? completedAt,
           completedAt,
         });
-        const terminalTurn = runtimeStore.updateTurn(turnId, {
+        const terminalTurn = await runtimeStore.updateTurn(turnId, {
           agentSessionId: agentSession.id,
           completedAt,
           error,
           status,
         });
-        runtimeStore.updateAgentSession(agentSession.id, {
+        await runtimeStore.updateAgentSession(agentSession.id, {
           message: error?.message ?? 'The selected Worker was interrupted.',
           status: 'failed',
           updatedAt: completedAt,
@@ -6308,7 +6311,7 @@ describe('nanocore server', () => {
         await executor.releaseTurn(context, status === 'failed' ? 'turn-failed' : 'turn-cancelled');
       }
     );
-    const app = createApp({ coreDb, store, turnExecutor: executor });
+    const app = await createApp({ coreDb, store, turnExecutor: executor });
     const requestBody = JSON.stringify({
       artifactRefs: [],
       input: 'Implement the focused Task Mode fix.',
@@ -6392,9 +6395,9 @@ describe('nanocore server', () => {
       expect(SubmitConversationResponseSchema.parse(await replay.json())).toEqual(result);
       await executor.waitForFinished(store, 1);
       expect(executor.startContexts).toHaveLength(1);
-      expect(() => store.updateItem(result.item.id, { title: 'Worker Turn accepted' })).toThrow(
-        /is terminal and does not admit this write/
-      );
+      await expect(
+        store.updateItem(result.item.id, { title: 'Worker Turn accepted' })
+      ).rejects.toThrow(/is terminal and does not admit this write/);
     } finally {
       vi.restoreAllMocks();
       coreDb.sqlite.close();
@@ -6403,9 +6406,9 @@ describe('nanocore server', () => {
 
   it('recovers a direct Task receipt from its terminal checkpoint without another worker turn', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
-    const app = createApp({ coreDb, store, turnExecutor: executor });
+    const app = await createApp({ coreDb, store, turnExecutor: executor });
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-task-receipt-recovery-'));
     const requestId = '0190f4c8-0000-7000-8000-000000000302';
     const input = 'Implement the focused Task receipt recovery fix.';
@@ -6600,7 +6603,7 @@ describe('nanocore server', () => {
     stopReason,
   }) => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const chatThreadId = 'th_00000000-0000-7000-8000-000000000001';
     const taskThreadId = 'th_00000000-0000-7347-94e1-85120ad74455';
     const turnId = 'tu_00000000-0000-79f9-80b1-8d99a98b413d';
@@ -6609,12 +6612,12 @@ describe('nanocore server', () => {
     const agentSessionId = 'as_00000000-0000-7dd5-985e-c3d36d7f78a9';
     const failed = stopReason === 'error';
     const completedAt = '2026-09-10T09:11:15.000Z';
-    store.createThread(
+    await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Conversation worker Task thread',
       taskThreadId
     );
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       taskThreadId,
       'Conversation-owned worker Turn',
@@ -6622,7 +6625,7 @@ describe('nanocore server', () => {
       null,
       { turnId }
     );
-    store.createAgentSession({
+    await store.createAgentSession({
       agentId: 'agent_codex_host',
       createdAt: turn.startedAt ?? completedAt,
       id: agentSessionId,
@@ -6632,7 +6635,7 @@ describe('nanocore server', () => {
       updatedAt: completedAt,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const closedTurn = store.updateTurn(turn.id, {
+    const closedTurn = await store.updateTurn(turn.id, {
       agentId: 'agent_codex_host',
       agentSessionId,
       completedAt,
@@ -6756,17 +6759,17 @@ describe('nanocore server', () => {
     'cancelled',
   ] as const)('clears a terminal Task checkpoint with no scheduler lease when the product Turn is %s', async (status) => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const threadId = testEntityId('th', `th_task_stale_boot_${status}`);
     const turnId = testEntityId('tu', `turn_stale_boot_no_lease_${status}`);
     const requestId = `0190f4c8-0000-7000-8000-00000000048${status === 'failed' ? '9' : status === 'completed' ? 'a' : 'b'}`;
     const completedAt = '2026-09-15T13:38:10.000Z';
-    store.createThread(
+    await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Stale boot Task thread',
       threadId
     );
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       threadId,
       'Stale boot Task Turn',
@@ -6774,7 +6777,7 @@ describe('nanocore server', () => {
       null,
       { turnId }
     );
-    store.updateTurn(turn.id, {
+    await store.updateTurn(turn.id, {
       completedAt,
       ...(status === 'failed'
         ? {
@@ -6824,18 +6827,18 @@ describe('nanocore server', () => {
 
   it('clears a terminal Task checkpoint whose failed lease session does not match a null worker session', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const threadId = 'th_00000000-0000-7095-8f0a-79db5b085747';
     const turnId = 'tu_00000000-0000-7471-bee9-f6246fce36d6';
     const requestId = '0190f4c8-0000-7000-8000-000000000490';
     const requestInputHash = 'sha256:stale-boot-failed-lease';
     const completedAt = '2026-09-15T11:29:35.000Z';
-    store.createThread(
+    await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Stale failed-lease Task thread',
       threadId
     );
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       threadId,
       'Stale failed-lease Task Turn',
@@ -6843,7 +6846,7 @@ describe('nanocore server', () => {
       null,
       { turnId }
     );
-    store.updateTurn(turn.id, {
+    await store.updateTurn(turn.id, {
       completedAt,
       error: { code: 'turn_start_failed', message: 'Worker start failed.' },
       status: 'failed',
@@ -6896,18 +6899,18 @@ describe('nanocore server', () => {
     'cancelled',
   ] as const)('clears a null-session turn-start-failed needs-evidence checkpoint without retained provenance when the Turn is %s', async (status) => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const threadId = testEntityId('th', `th_task_provenance_skip_${status}`);
     const turnId = testEntityId('tu', `turn_provenance_skip_${status}`);
     const requestId = `0190f4c8-0000-7000-8000-0000000004c${status === 'failed' ? '1' : status === 'completed' ? '2' : '3'}`;
     const agentSessionId = testEntityId('as', `as_provenance_skip_${status}`);
     const completedAt = '2026-09-15T13:38:10.000Z';
-    store.createThread(
+    await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Provenance skip Task thread',
       threadId
     );
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       threadId,
       'Provenance skip Task Turn',
@@ -6915,7 +6918,7 @@ describe('nanocore server', () => {
       null,
       { turnId }
     );
-    store.updateTurn(turn.id, {
+    await store.updateTurn(turn.id, {
       completedAt,
       ...(status === 'failed'
         ? {
@@ -6991,18 +6994,18 @@ describe('nanocore server', () => {
     suffix,
   }) => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const threadId = testEntityId('th', `th_task_provenance_keep_${suffix}`);
     const turnId = testEntityId('tu', `turn_provenance_keep_${suffix}`);
     const requestId = `0190f4c8-0000-7000-8000-0000000004c${suffix === 'release' ? '4' : '5'}`;
     const agentSessionId = testEntityId('as', `as_provenance_keep_${suffix}`);
     const completedAt = '2026-09-15T13:38:10.000Z';
-    store.createThread(
+    await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Provenance keep Task thread',
       threadId
     );
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       threadId,
       'Provenance keep Task Turn',
@@ -7010,7 +7013,7 @@ describe('nanocore server', () => {
       null,
       { turnId }
     );
-    store.updateTurn(turn.id, {
+    await store.updateTurn(turn.id, {
       completedAt,
       error: { code: 'turn_start_failed', message: 'Worker start failed.' },
       status: 'failed',
@@ -7061,16 +7064,16 @@ describe('nanocore server', () => {
 
   it('keeps a preparing Task checkpoint without a scheduler lease fail-closed', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const threadId = 'th_00000000-0000-7ac7-8afe-2264d0396929';
     const turnId = 'tu_00000000-0000-7b20-b263-86274c775e46';
     const requestId = '0190f4c8-0000-7000-8000-000000000491';
-    store.createThread(
+    await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Live boot Task thread',
       threadId
     );
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       threadId,
       'Live boot Task Turn',
@@ -7119,16 +7122,16 @@ describe('nanocore server', () => {
     'running',
   ] as const)('keeps a failed Task checkpoint fail-closed with distinct %s product Turn diagnostics', async (status) => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const threadId = 'th_00000000-0000-7065-b733-8240c3f973b0';
     const turnId = 'tu_00000000-0000-77b0-97df-a1e64305ddde';
     const requestId = '0190f4c8-0000-7000-8000-000000000492';
-    store.createThread(
+    await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Interrupted boot Task thread',
       threadId
     );
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       threadId,
       'Interrupted boot Task Turn',
@@ -7136,7 +7139,7 @@ describe('nanocore server', () => {
       null,
       { turnId }
     );
-    store.updateTurn(turn.id, { status });
+    await store.updateTurn(turn.id, { status });
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
@@ -7179,16 +7182,16 @@ describe('nanocore server', () => {
 
   it('keeps a failed Task checkpoint fail-closed when a live scheduler lease remains', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const threadId = 'th_00000000-0000-7635-be9d-80ef1f46fc5a';
     const turnId = 'tu_00000000-0000-7e97-9051-38eca141e03f';
     const requestId = '0190f4c8-0000-7000-8000-000000000493';
-    store.createThread(
+    await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Live-lease boot Task thread',
       threadId
     );
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       threadId,
       'Live-lease boot Task Turn',
@@ -7196,7 +7199,7 @@ describe('nanocore server', () => {
       null,
       { turnId }
     );
-    store.updateTurn(turn.id, {
+    await store.updateTurn(turn.id, {
       completedAt: '2026-09-15T13:38:10.000Z',
       error: { code: 'worker_failed', message: 'Worker failed.' },
       status: 'failed',
@@ -7248,10 +7251,10 @@ describe('nanocore server', () => {
 
   it('keeps a failed Task checkpoint fail-closed when its product Turn is missing', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const threadId = 'th_00000000-0000-72f9-9bf5-d8f3e1bcbbb3';
     const turnId = 'tu_00000000-0000-7048-94de-ab52d2f9b039';
-    store.createThread(
+    await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Missing-turn boot Task thread',
       threadId
@@ -7296,9 +7299,12 @@ describe('nanocore server', () => {
   it('admits Task Mode in the ordinary personal Workspace', async () => {
     const coreDb = createCoreDb();
     const executor = new FakeTurnExecutor();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const thread = store.createThread('ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28', 'Personal Task');
-    const app = createApp({ coreDb, store, turnExecutor: executor });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const thread = await store.createThread(
+      'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+      'Personal Task'
+    );
+    const app = await createApp({ coreDb, store, turnExecutor: executor });
 
     try {
       const res = await app.request(
@@ -7342,7 +7348,7 @@ describe('nanocore server', () => {
         const timestamp = runningTurn.startedAt ?? new Date().toISOString();
         const patchText = 'diff --git a/docs/task.md b/docs/task.md\n';
         const patchDigest = `sha256:${createHash('sha256').update(patchText).digest('hex')}`;
-        const artifact = store.createArtifact({
+        const artifact = await store.createArtifact({
           id: testEntityId('ar', `ar_task_review_${turnId}`),
           workspaceId: workspaceIdForOwner(runningTurn.owner),
           threadId: runningTurn.threadId,
@@ -7423,7 +7429,7 @@ describe('nanocore server', () => {
         }
       }
     })();
-    const app = createApp({ coreDb, turnExecutor: executor });
+    const app = await createApp({ coreDb, turnExecutor: executor });
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-task-mode-review-repository-'));
 
     seedWritableGitRepository(repositoryPath);
@@ -7486,9 +7492,9 @@ describe('nanocore server', () => {
 
   it('proposes a Goal through the model Tool and waits for exact human selection before shared admission', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
-    const timeline = store.createThread(
+    const timeline = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Goal proposal Timeline',
       undefined,
@@ -7504,7 +7510,7 @@ describe('nanocore server', () => {
     const gatewayConfig = createTestGatewayConfig();
     const intent = 'Prepare a reviewed release plan. Do not deploy anything.';
     let assistantCalls = 0;
-    const app = createApp({
+    const app = await createApp({
       coreDb,
       store,
       turnExecutor: executor,
@@ -7631,10 +7637,10 @@ describe('nanocore server', () => {
 
   it('answers the exact live Goal Web report prompt from an attached Artifact in Quick Chat', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
     const prompts: string[] = [];
-    const thread = store.createThread(
+    const thread = await store.createThread(
       'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
       'Live Goal Web report',
       undefined,
@@ -7654,7 +7660,7 @@ describe('nanocore server', () => {
       body: reportBody,
       requestId: 'artifact-import-live-goal-web-1',
     });
-    const app = createApp({
+    const app = await createApp({
       coreDb,
       store,
       turnExecutor: executor,
@@ -7705,10 +7711,10 @@ describe('nanocore server', () => {
     'Search this attached report for the acceptance marker.',
   ])('answers Chat Mode topic or local-report reading without external-search refusal: %s', async (input) => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
     const prompts: string[] = [];
-    const thread = store.createThread(
+    const thread = await store.createThread(
       'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
       'Topic mention',
       undefined,
@@ -7718,7 +7724,7 @@ describe('nanocore server', () => {
         privateOwnerUserId: LOCAL_USER_ID,
       }
     );
-    const app = createApp({
+    const app = await createApp({
       coreDb,
       store,
       turnExecutor: executor,
@@ -7757,7 +7763,7 @@ describe('nanocore server', () => {
 
   it('retains no old Goal entry route', async () => {
     const coreDb = createCoreDb();
-    const app = createApp({ coreDb, turnExecutor: new FakeTurnExecutor() });
+    const app = await createApp({ coreDb, turnExecutor: new FakeTurnExecutor() });
     try {
       const response = await app.request(
         '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/threads/th_00000000-0000-7000-8000-000000000001/goal',
@@ -7807,10 +7813,10 @@ describe('nanocore server', () => {
     clarifies,
   }) => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
     const prompts: string[] = [];
-    const app = createApp({
+    const app = await createApp({
       coreDb,
       store,
       turnExecutor: executor,
@@ -7853,9 +7859,9 @@ describe('nanocore server', () => {
 
   it('refuses explicit Task when no worker is ready without worker effects', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
-    const app = createApp({
+    const app = await createApp({
       coreDb,
       store,
       turnExecutor: executor,
@@ -7908,19 +7914,19 @@ describe('nanocore server', () => {
 
   it('refuses a Task receipt outside the current direct command lineage without new work', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
-    const app = createApp({ coreDb, store, turnExecutor: executor });
+    const app = await createApp({ coreDb, store, turnExecutor: executor });
     const requestId = '0190f4c8-0000-7000-8000-000000000604';
     const input = 'Plan a multi-step release goal for NanoCore.';
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       input,
       { kind: 'user', id: LOCAL_USER_ID }
     );
     const at = new Date().toISOString();
-    store.updateTurn(turn.id, { status: 'completed', completedAt: at });
+    await store.updateTurn(turn.id, { status: 'completed', completedAt: at });
     store.recordCommandRequest({
       command: 'task.start',
       requestId,
@@ -7981,9 +7987,9 @@ describe('nanocore server', () => {
     'Plan a multi-step release goal for NanoCore.',
   ])('admits one explicit Task attempt for "%s" without keyword Goal creation', async (input) => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
-    const app = createApp({ coreDb, store, turnExecutor: executor });
+    const app = await createApp({ coreDb, store, turnExecutor: executor });
     const requestId = '0190f4c8-0000-7000-8000-000000000302';
     const submit = () =>
       app.request(
@@ -8022,7 +8028,7 @@ describe('nanocore server', () => {
 
   it('returns a typed 400 error for unsupported turn model overrides', async () => {
     const coreDb = createCoreDb();
-    const app = createApp({ coreDb, turnExecutor: new FakeTurnExecutor() });
+    const app = await createApp({ coreDb, turnExecutor: new FakeTurnExecutor() });
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-turn-model-override-'));
 
     seedWritableGitRepository(repositoryPath);
@@ -8059,12 +8065,12 @@ describe('nanocore server', () => {
   it('admits explicit worker turns in the ordinary personal Workspace', async () => {
     const coreDb = createCoreDb();
     const executor = new FakeTurnExecutor();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const thread = store.createThread(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const thread = await store.createThread(
       'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
       'Personal worker turn'
     );
-    const app = createApp({ coreDb, store, turnExecutor: executor });
+    const app = await createApp({ coreDb, store, turnExecutor: executor });
 
     try {
       const res = await app.request(
@@ -8096,7 +8102,7 @@ describe('nanocore server', () => {
   });
 
   it('returns protocol-valid meta event families', async () => {
-    const app = createApp({ turnExecutor: new FakeTurnExecutor() });
+    const app = await createApp({ turnExecutor: new FakeTurnExecutor() });
     const res = await app.request('/api/meta');
 
     expect(res.status).toBe(200);
@@ -8139,8 +8145,8 @@ describe('nanocore server', () => {
   });
 
   it('creates a thread from the name field used by the protocol package', async () => {
-    const canonicalStore = createDemoStore();
-    const canonicalApp = createApp(
+    const canonicalStore = await createDemoStore();
+    const canonicalApp = await createApp(
       { ...{ turnExecutor: new FakeTurnExecutor() }, store: canonicalStore },
       true
     );
@@ -8175,9 +8181,9 @@ describe('nanocore server', () => {
   });
 
   it('deduplicates repeated workspace, knowledge, and thread commands', async () => {
-    const store = createDemoStore();
-    const app = createApp({ store, turnExecutor: new FakeTurnExecutor() }, true);
-    const canonicalApp = createApp({ store, turnExecutor: new FakeTurnExecutor() }, true);
+    const store = await createDemoStore();
+    const app = await createApp({ store, turnExecutor: new FakeTurnExecutor() }, true);
+    const canonicalApp = await createApp({ store, turnExecutor: new FakeTurnExecutor() }, true);
 
     const workspaceBody = {
       requestId: '0190f4c8-0000-7000-8000-000000000501',
@@ -8494,9 +8500,9 @@ describe('nanocore server', () => {
 
   it('deduplicates concurrent start-turn commands by request id', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new DelayedTurnExecutor();
-    const app = createApp({ coreDb, store, turnExecutor: executor });
+    const app = await createApp({ coreDb, store, turnExecutor: executor });
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-idempotent-turn-repository-'));
     const body = {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -8575,24 +8581,26 @@ describe('nanocore server', () => {
 
   it('rejects implicit turn submission while active and allows the same request after terminal', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
-    const app = createApp({ coreDb, store, turnExecutor: executor });
+    const app = await createApp({ coreDb, store, turnExecutor: executor });
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-active-turn-steering-repository-'));
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
-    const thread = store.createThread(
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Active turn steering'
     );
-    const activeTurn = store.updateTurn(
-      store.createTurn(
-        'ws_00000000-0000-7000-8000-000000000001',
-        thread.id,
-        'Keep this turn active',
-        {
-          kind: 'user',
-          id: 'usr_00000000-0000-7000-8000-000000000001',
-        }
+    const activeTurn = await store.updateTurn(
+      (
+        await store.createTurn(
+          'ws_00000000-0000-7000-8000-000000000001',
+          thread.id,
+          'Keep this turn active',
+          {
+            kind: 'user',
+            id: 'usr_00000000-0000-7000-8000-000000000001',
+          }
+        )
       ).id,
       { status: 'running' }
     );
@@ -8649,7 +8657,7 @@ describe('nanocore server', () => {
           .map((turn) => turn.id)
       ).toEqual([activeTurn.id]);
 
-      store.updateTurn(activeTurn.id, {
+      await store.updateTurn(activeTurn.id, {
         status: 'completed',
         completedAt: new Date().toISOString(),
       });
@@ -8689,8 +8697,8 @@ describe('nanocore server', () => {
   });
 
   it('returns an idempotency conflict for the same request id with different input', async () => {
-    const canonicalStore = createDemoStore();
-    const canonicalApp = createApp(
+    const canonicalStore = await createDemoStore();
+    const canonicalApp = await createApp(
       { ...{ turnExecutor: new FakeTurnExecutor() }, store: canonicalStore },
       true
     );
@@ -8732,10 +8740,10 @@ describe('nanocore server', () => {
   });
 
   it('returns invalid_request for missing request ids on all protocol mutating routes', async () => {
-    const store = createDemoStore();
-    const app = createApp({ store, turnExecutor: new ApprovalTurnExecutor() });
-    const canonicalApp = createApp({ store, turnExecutor: new ApprovalTurnExecutor() }, true);
-    const turn = store.createTurn(
+    const store = await createDemoStore();
+    const app = await createApp({ store, turnExecutor: new ApprovalTurnExecutor() });
+    const canonicalApp = await createApp({ store, turnExecutor: new ApprovalTurnExecutor() }, true);
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Need input',
@@ -8911,7 +8919,7 @@ describe('nanocore server', () => {
   });
 
   it('updates and archives threads with request-correlated command schemas', async () => {
-    const app = createApp({ turnExecutor: new FakeTurnExecutor() }, true);
+    const app = await createApp({ turnExecutor: new FakeTurnExecutor() }, true);
 
     const missingRequestId = await app.request(
       ...operationRequest(
@@ -8978,8 +8986,8 @@ describe('nanocore server', () => {
   });
 
   it('does not expose generic Artifact metadata mutation', async () => {
-    const store = createDemoStore();
-    const app = createApp({ store, turnExecutor: new FakeTurnExecutor() });
+    const store = await createDemoStore();
+    const app = await createApp({ store, turnExecutor: new FakeTurnExecutor() });
     const timestamp = new Date().toISOString();
     store.createArtifact({
       id: 'ar_00000000-0000-78d6-833a-4ae1472d520a',
@@ -9034,9 +9042,9 @@ describe('nanocore server', () => {
   });
   it('lists and reads workspace synchronization reviews from review artifacts', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
-    store.createTurn(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const app = await createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+    await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Produce workspace review',
@@ -9098,7 +9106,7 @@ describe('nanocore server', () => {
       },
     };
 
-    store.createArtifact({
+    await store.createArtifact({
       id: 'ar_00000000-0000-7e93-b881-32f3f8c0b14a',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -9120,7 +9128,7 @@ describe('nanocore server', () => {
       createdAt: timestamp,
       updatedAt: timestamp,
     });
-    store.createArtifact({
+    await store.createArtifact({
       id: 'ar_00000000-0000-7732-af1b-aa93662fc3b3',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -9209,9 +9217,9 @@ describe('nanocore server', () => {
         undefined
       )
     );
-    const restartedApp = createApp({
+    const restartedApp = await createApp({
       coreDb,
-      store: createDemoStore(),
+      store: await createDemoStore(),
       turnExecutor: new FakeTurnExecutor(),
     });
     const persistedDetail = await restartedApp.request(
@@ -9269,10 +9277,10 @@ describe('nanocore server', () => {
 
   it('keeps artifact-only workspace review reads free of durable side effects', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const app = await createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const item = workspaceSyncReviewRouteItem();
-    store.createTurn(
+    await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Produce artifact-only workspace review',
@@ -9283,7 +9291,7 @@ describe('nanocore server', () => {
       }
     );
 
-    store.createArtifact({
+    await store.createArtifact({
       id: item.artifactId,
       workspaceId: item.review.workspaceId,
       threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -9351,10 +9359,10 @@ describe('nanocore server', () => {
 
   it('prefers durable workspace review decisions over older artifact snapshots', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const app = await createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const item = workspaceSyncReviewRouteItem();
-    store.createTurn(
+    await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Produce durable workspace review',
@@ -9365,7 +9373,7 @@ describe('nanocore server', () => {
       }
     );
 
-    store.createArtifact({
+    await store.createArtifact({
       id: item.artifactId,
       workspaceId: item.review.workspaceId,
       threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -9434,9 +9442,9 @@ describe('nanocore server', () => {
 
   it('records workspace sync decisions idempotently and blocks dual-owner replay', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const workspace = store.createWorkspace('Durable workspace review decision');
-    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const workspace = await store.createWorkspace('Durable workspace review decision');
+    const app = await createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const timestamp = new Date().toISOString();
     const patchText = 'diff --git a/docs/decision.md b/docs/decision.md\n';
     const patchDigest = `sha256:${createHash('sha256').update(patchText).digest('hex')}`;
@@ -9651,9 +9659,9 @@ describe('nanocore server', () => {
 
   it('records workspace recovery decisions idempotently', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const workspace = store.createWorkspace('Workspace recovery decision');
-    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const workspace = await store.createWorkspace('Workspace recovery decision');
+    const app = await createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const timestamp = new Date().toISOString();
 
     try {
@@ -9746,9 +9754,9 @@ describe('nanocore server', () => {
 
   it('resumes workspace recovery collection from durable workspace sync records', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const workspace = store.createWorkspace('Workspace recovery resume');
-    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const workspace = await store.createWorkspace('Workspace recovery resume');
+    const app = await createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const timestamp = new Date().toISOString();
     const routeItem = workspaceSyncReviewRouteItem();
     const item: Parameters<typeof recordWorkspaceSyncReview>[1]['item'] = {
@@ -9845,10 +9853,10 @@ describe('nanocore server', () => {
 
   it('reads durable Agent Environment Package snapshots through App API routes', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const workspace = store.createWorkspace('AEP snapshot readback');
-    const thread = store.createThread(workspace.id, 'AEP snapshot readback');
-    const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const workspace = await store.createWorkspace('AEP snapshot readback');
+    const thread = await store.createThread(workspace.id, 'AEP snapshot readback');
+    const app = await createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const createdAt = '2026-07-06T00:00:01.000Z';
     const environmentPackage = AgentEnvironmentPackageSchema.parse(
       resolveAgentEnvironmentPackage({
@@ -9931,11 +9939,11 @@ describe('nanocore server', () => {
 
   it('denies foreign and missing workspace review child lineage before reads or decisions', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const authorizedWorkspace = store
       .listWorkspaces()
       .find((workspace) => workspace.kind === 'personal');
-    const foreignWorkspace = store.createWorkspace('Foreign workspace review owner');
+    const foreignWorkspace = await store.createWorkspace('Foreign workspace review owner');
     const app = createNanoCoreApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const baseReview = workspaceSyncReviewRouteItem();
     const reviewId = 'swr_foreign_child_lineage';
@@ -10045,11 +10053,11 @@ describe('nanocore server', () => {
 
   it('denies foreign and missing workspace recovery child lineage without resolving the owner', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const authorizedWorkspace = store
       .listWorkspaces()
       .find((workspace) => workspace.kind === 'personal');
-    const foreignWorkspace = store.createWorkspace('Foreign workspace recovery owner');
+    const foreignWorkspace = await store.createWorkspace('Foreign workspace recovery owner');
     const app = createNanoCoreApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const reconciliationRecordId = 'wrr_foreign_child_lineage';
     const timestamp = '2026-07-19T00:00:00.000Z';
@@ -10132,11 +10140,11 @@ describe('nanocore server', () => {
 
   it('denies foreign and missing workspace apply-result child lineage', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const authorizedWorkspace = store
       .listWorkspaces()
       .find((workspace) => workspace.kind === 'personal');
-    const foreignWorkspace = store.createWorkspace('Foreign workspace apply-result owner');
+    const foreignWorkspace = await store.createWorkspace('Foreign workspace apply-result owner');
     const app = createNanoCoreApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const applyResultId = 'war_foreign_child_lineage';
 
@@ -10195,11 +10203,11 @@ describe('nanocore server', () => {
 
   it('denies foreign and missing Agent Environment Package snapshot child lineage', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const authorizedWorkspace = store
       .listWorkspaces()
       .find((workspace) => workspace.kind === 'personal');
-    const foreignWorkspace = store.createWorkspace('Foreign AEP snapshot owner');
+    const foreignWorkspace = await store.createWorkspace('Foreign AEP snapshot owner');
     const app = createNanoCoreApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const environmentPackage = AgentEnvironmentPackageSchema.parse(
       resolveAgentEnvironmentPackage({
@@ -10272,12 +10280,12 @@ describe('nanocore server', () => {
   });
 
   it('does not expose the unversioned Artifact Review command', async () => {
-    const store = createDemoStore();
-    const thread = store.createThread(
+    const store = await createDemoStore();
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Unversioned Artifact Review'
     );
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Produce artifact',
@@ -10287,7 +10295,7 @@ describe('nanocore server', () => {
       }
     );
     const timestamp = new Date().toISOString();
-    store.createArtifact({
+    await store.createArtifact({
       id: testEntityId('ar', 'artifact_unversioned_review'),
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
@@ -10309,7 +10317,7 @@ describe('nanocore server', () => {
       createdAt: timestamp,
       updatedAt: timestamp,
     });
-    const app = createApp({ store, turnExecutor: new FakeTurnExecutor() });
+    const app = await createApp({ store, turnExecutor: new FakeTurnExecutor() });
 
     const response = await app.request(
       '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/artifacts/artifact_unversioned_review/review',
@@ -10327,8 +10335,8 @@ describe('nanocore server', () => {
   });
   it('applies only accepted fixed proposals and refuses unavailable published evidence', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const app = createApp({ coreDb, store });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const app = await createApp({ coreDb, store });
 
     try {
       const accepted = await draftKnowledgeProposalFixture(app, store, 'accepted');
@@ -10465,8 +10473,8 @@ describe('nanocore server', () => {
 
   it('fails closed when an applied proposal lacks its receipt or Audit evidence', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const app = createApp({ coreDb, store });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const app = await createApp({ coreDb, store });
 
     try {
       for (const missingEvidence of ['receipt', 'audit'] as const) {
@@ -10535,8 +10543,8 @@ describe('nanocore server', () => {
 
   it('rejects host-path-bearing proposal text without durable mutation', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const app = createApp({ coreDb, store }, true);
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const app = await createApp({ coreDb, store }, true);
     const sourceResponse = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.source.register',
@@ -10626,8 +10634,8 @@ describe('nanocore server', () => {
 
   it('reverses only the unchanged proposal-created page and replays without another effect', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const app = createApp({ coreDb, store });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const app = await createApp({ coreDb, store });
 
     try {
       const accepted = await draftKnowledgeProposalFixture(app, store, 'reverse');
@@ -10760,8 +10768,8 @@ describe('nanocore server', () => {
   }, 60_000);
 
   it('rejects edited knowledge proposal decisions without mutation', async () => {
-    const store = createDemoStore();
-    const app = createApp({ store }, true);
+    const store = await createDemoStore();
+    const app = await createApp({ store }, true);
 
     const res = await app.request(
       ...knowledgeOperationRequest(
@@ -10787,10 +10795,10 @@ describe('nanocore server', () => {
 
   it('applies accepted filesystem workspace synchronization reviews through opaque staging', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const workspace = store.createWorkspace('Filesystem workspace sync apply');
-    const thread = store.createThread(workspace.id, 'Apply filesystem workspace review');
-    const turn = store.createTurn(workspace.id, thread.id, 'Produce filesystem changes', {
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const workspace = await store.createWorkspace('Filesystem workspace sync apply');
+    const thread = await store.createThread(workspace.id, 'Apply filesystem workspace review');
+    const turn = await store.createTurn(workspace.id, thread.id, 'Produce filesystem changes', {
       kind: 'user',
       id: 'usr_00000000-0000-7000-8000-000000000001',
     });
@@ -10872,7 +10880,7 @@ describe('nanocore server', () => {
     } finally {
       workspaceDb.sqlite.close();
     }
-    store.createArtifact({
+    await store.createArtifact({
       id: 'ar_00000000-0000-7b2c-824d-ba72c092c396',
       workspaceId: workspace.id,
       threadId: thread.id,
@@ -10895,7 +10903,7 @@ describe('nanocore server', () => {
       updatedAt: timestamp,
     });
 
-    const restartedApp = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+    const restartedApp = await createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
     const acceptRes = await restartedApp.request(
       ...operationRequest(
         'sync.review-decide',
@@ -11011,7 +11019,11 @@ describe('nanocore server', () => {
     const listSyncEvidenceBundles = await restartedApp.request(
       `/api/app/workspaces/${workspace.id}/workspace-sync/evidence-bundles`
     );
-    const postApplicationApp = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+    const postApplicationApp = await createApp({
+      coreDb,
+      store,
+      turnExecutor: new FakeTurnExecutor(),
+    });
     const persistedApplyResult = await postApplicationApp.request(
       ...operationRequest(
         'sync.apply-result-read',
@@ -11064,10 +11076,10 @@ describe('nanocore server', () => {
 
   it('restores filesystem state when accepted review persistence fails', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const workspace = store.createWorkspace('Filesystem apply persistence rollback');
-    const thread = store.createThread(workspace.id, 'Rollback filesystem workspace review');
-    const turn = store.createTurn(workspace.id, thread.id, 'Produce filesystem changes', {
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const workspace = await store.createWorkspace('Filesystem apply persistence rollback');
+    const thread = await store.createThread(workspace.id, 'Rollback filesystem workspace review');
+    const turn = await store.createTurn(workspace.id, thread.id, 'Produce filesystem changes', {
       kind: 'user',
       id: 'usr_00000000-0000-7000-8000-000000000001',
     });
@@ -11153,7 +11165,7 @@ describe('nanocore server', () => {
       } finally {
         workspaceDb.sqlite.close();
       }
-      store.createArtifact({
+      await store.createArtifact({
         id: 'ar_00000000-0000-736f-926f-6331033b1f4f',
         workspaceId: workspace.id,
         threadId: thread.id,
@@ -11176,7 +11188,7 @@ describe('nanocore server', () => {
         updatedAt: timestamp,
       });
 
-      const app = createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+      const app = await createApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
       const response = await app.request(
         ...operationRequest(
           'sync.review-decide',
@@ -11220,8 +11232,8 @@ describe('nanocore server', () => {
 
   it('routes interrupts through the turn executor', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const turn = store.createTurn(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Interrupt this running turn',
@@ -11231,7 +11243,7 @@ describe('nanocore server', () => {
       }
     );
     const executor = new FakeTurnExecutor();
-    const app = createApp({ coreDb, store, turnExecutor: executor }, true);
+    const app = await createApp({ coreDb, store, turnExecutor: executor }, true);
     const entry = createSchedulerAdmissionEntry(coreDb, {
       backendId: 'nanohost',
       triggerActor: turn.triggerActor,
@@ -11254,7 +11266,7 @@ describe('nanocore server', () => {
       now: () => new Date().toISOString(),
       operationId: 'original:interrupt_route',
     });
-    store.createAgentSession({
+    await store.createAgentSession({
       id: 'as_00000000-0000-7b1e-829e-a7d5f9fefd0d',
       agentId: 'agent_codex_host',
       workspaceId: workspaceIdForOwner(turn.owner),
@@ -11264,7 +11276,7 @@ describe('nanocore server', () => {
       createdAt: turn.startedAt!,
       updatedAt: turn.startedAt!,
     });
-    store.updateTurn(turn.id, {
+    await store.updateTurn(turn.id, {
       agentId: 'agent_codex_host',
       agentSessionId: 'as_00000000-0000-7b1e-829e-a7d5f9fefd0d',
       status: 'running',
@@ -11308,8 +11320,8 @@ describe('nanocore server', () => {
 
   it('lists workspace vault grant injection metadata through App API', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const workspace = store.createWorkspace('Vault injection metadata route');
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const workspace = await store.createWorkspace('Vault injection metadata route');
     createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
       backendLocator: 'encrypted-file://server/vault/vault_00000000-0000-7d14-9747-33948cb59d1e',
@@ -11349,7 +11361,7 @@ describe('nanocore server', () => {
       receiptId: 'receipt_github_read_route',
       revocationStatus: 'active',
     });
-    const app = createApp({ coreDb, store });
+    const app = await createApp({ coreDb, store });
 
     const grants = await app.request(
       ...operationRequest('vault.grant-list', { workspaceId: workspace.id }, {})
@@ -11390,7 +11402,7 @@ describe('nanocore server', () => {
 
   it('passes authored manifest source refs from runtime config to worker turn startup', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
     const remoteCommit = '0123456789abcdef0123456789abcdef01234567';
     const catalog = parseWorkspaceDataSourceCatalog({
@@ -11444,7 +11456,7 @@ describe('nanocore server', () => {
     });
 
     try {
-      const app = createApp({
+      const app = await createApp({
         coreDb,
         dataRoot: coreDb.dataRoot,
         store,
@@ -11492,7 +11504,7 @@ describe('nanocore server', () => {
 
   it('selects the Workspace MCP catalog for product-turn worker startup', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
     const agentManifest = createTestAgentSetup({ mcpIds: ['echo'] }).manifest;
     const catalog = parseWorkspaceMcpServerCatalog({
@@ -11532,7 +11544,7 @@ describe('nanocore server', () => {
     });
 
     try {
-      const app = createApp({
+      const app = await createApp({
         coreDb,
         dataRoot: coreDb.dataRoot,
         runtimeConfigManager,
@@ -11568,7 +11580,7 @@ describe('nanocore server', () => {
 
   it('rejects authored manifest source refs with a blocked data source diagnostic', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
     const catalog = parseWorkspaceDataSourceCatalog({
       schemaVersion: 1,
@@ -11620,7 +11632,7 @@ describe('nanocore server', () => {
     });
 
     try {
-      const app = createApp({
+      const app = await createApp({
         coreDb,
         dataRoot: coreDb.dataRoot,
         store,
@@ -11657,7 +11669,7 @@ describe('nanocore server', () => {
   });
 
   it('returns a protocol API error when interrupting with an invalid request body', async () => {
-    const app = createApp({ turnExecutor: new FakeTurnExecutor() });
+    const app = await createApp({ turnExecutor: new FakeTurnExecutor() });
     const res = await app.request(
       ...operationRequest(
         'turn.interrupt',
@@ -11683,7 +11695,7 @@ describe('nanocore server', () => {
   });
 
   it('has no stateless Assistant operation after the Timeline cutover', async () => {
-    const app = createApp({ turnExecutor: new FakeTurnExecutor() });
+    const app = await createApp({ turnExecutor: new FakeTurnExecutor() });
     const response = await app.request('/api/app/operations/chat.quick', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -11693,8 +11705,8 @@ describe('nanocore server', () => {
   });
 
   it('emits SSE events that conform to the shared protocol schema', async () => {
-    const store = createDemoStore();
-    const app = createApp({ store, turnExecutor: new FakeTurnExecutor() });
+    const store = await createDemoStore();
+    const app = await createApp({ store, turnExecutor: new FakeTurnExecutor() });
     const res = await app.request(
       ...operationRequest(
         'turn.start',

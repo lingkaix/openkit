@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createModels, fauxAssistantMessage, fauxProvider } from '@earendil-works/pi-ai';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listServerAuditEvents } from '../audit-events.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import {
@@ -14,6 +14,7 @@ import {
 } from '../capability/usage-ledger.js';
 import { listServerPermissionDecisions } from '../policy/permission-decisions.js';
 import { type ProviderCredentialResolver, ProviderRegistry } from '../providers/registry.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
@@ -27,10 +28,10 @@ import { LLMGatewayProviderDispatcher } from './provider-dispatcher.js';
 
 const requestId = '12345678-1234-4234-8234-123456789abc';
 /** Actual public routes, stock synthetic models and Workspace ledger; no ledger double. */
-function fixture(missingKey = false, enabled = true) {
+async function fixture(missingKey = false, enabled = true) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'gateway-lineage-'));
-  const store = createDemoStore({ dataRoot });
-  const workspaceId = store.createWorkspace('Lineage').id;
+  const store = await createDemoStore({ dataRoot });
+  const workspaceId = (await store.createWorkspace('Lineage')).id;
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
@@ -160,7 +161,7 @@ describe('public Gateway decision Audit call linkage', () => {
   for (const endpoint of ['responses', 'chat/completions']) {
     for (const attributed of [true, false]) {
       it(`${endpoint} ${attributed ? 'Workspace' : 'Server'} decision links the exact assigned call`, async () => {
-        const f = fixture();
+        const f = await fixture();
         f.primary.setResponses([fauxAssistantMessage('served')]);
         try {
           const response = await f.post(endpoint, false, attributed);
@@ -196,7 +197,7 @@ describe('public Gateway decision Audit call linkage', () => {
       });
 
       it(`${endpoint} ${attributed ? 'Workspace' : 'Server'} Audit write failure blocks credentials and Provider effects and settles opened calls`, async () => {
-        const f = fixture(true);
+        const f = await fixture(true);
         f.backup.setResponses([fauxAssistantMessage('must not run')]);
         try {
           // Fail only the required allowed-decision Audit crossing, leaving call closeout writable.
@@ -235,7 +236,7 @@ describe('public Gateway decision Audit call linkage', () => {
     }
 
     it(`${endpoint} disabled policy denies without a call link or Provider effects`, async () => {
-      const f = fixture(true, false);
+      const f = await fixture(true, false);
       try {
         const response = await f.post(endpoint);
         expect(response.status).toBe(403);
@@ -263,7 +264,7 @@ describe('public Gateway decision Audit call linkage', () => {
     });
 
     it(`${endpoint} denied Workspace access creates no call or false Audit join`, async () => {
-      const f = fixture(true);
+      const f = await fixture(true);
       try {
         const response = await f.app.request(`/v1/${endpoint}`, {
           method: 'POST',
@@ -293,7 +294,7 @@ describe('public Gateway decision Audit call linkage', () => {
     });
 
     it(`${endpoint} reused request creates no new call and cannot link a new decision to the earlier call`, async () => {
-      const f = fixture();
+      const f = await fixture();
       f.primary.setResponses([fauxAssistantMessage('served')]);
       try {
         expect((await f.post(endpoint)).status).toBe(200);
@@ -325,7 +326,7 @@ describe('public Gateway decision Audit call linkage', () => {
 
 describe('public durable logical Gateway lineage', () => {
   it('retains a public call without Workspace metadata in the Server ledger and keeps Core open', async () => {
-    const f = fixture(true);
+    const f = await fixture(true);
     try {
       f.primary.setResponses([
         fauxAssistantMessage([], { stopReason: 'error', errorMessage: 'invalid_api_key' }),
@@ -394,7 +395,7 @@ describe('public durable logical Gateway lineage', () => {
   for (const endpoint of ['responses', 'chat/completions']) {
     for (const stream of [false, true]) {
       it(`${endpoint} stream=${stream}: one call releases the backup after primary rejection and carries deadline`, async () => {
-        const f = fixture();
+        const f = await fixture();
         const spy = vi.spyOn(
           f.dispatcher,
           endpoint === 'responses'
@@ -468,7 +469,7 @@ describe('public durable logical Gateway lineage', () => {
     { requestedEffort: 'medium', effectiveEffort: 'high' },
     { requestedEffort: 'medium', effectiveEffortReason: 'model_without_reasoning' },
   ])('audit.read projects route explanation without Provider identity, effort facts or raw extensions: %j', async (effortFacts) => {
-    const f = fixture();
+    const f = await fixture();
     f.primary.setResponses([fauxAssistantMessage('served')]);
     try {
       expect((await f.post('responses')).status).toBe(200);
@@ -520,7 +521,7 @@ describe('public durable logical Gateway lineage', () => {
     }
   });
   it('usage.read omits another user private Thread for a readonly member while preserving administrator eligibility', async () => {
-    const f = fixture();
+    const f = await fixture();
     const memberApp = createApp({
       coreDb: f.coreDb,
       dataRoot: f.dataRoot,
@@ -533,7 +534,7 @@ describe('public durable logical Gateway lineage', () => {
       workspaceIds: [f.workspaceId],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
-    const thread = f.store.createThread(f.workspaceId, 'Private', undefined, 'conversation', {
+    const thread = await f.store.createThread(f.workspaceId, 'Private', undefined, 'conversation', {
       visibility: 'private',
       privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
     });
@@ -579,7 +580,7 @@ describe('public durable logical Gateway lineage', () => {
   });
   it('same-member retry keeps one call and deduplicates identical usage references', async () => {
     vi.useFakeTimers();
-    const f = fixture();
+    const f = await fixture();
     f.primary.setResponses([
       Object.assign(
         fauxAssistantMessage([], { stopReason: 'error', errorMessage: 'rate_limit_exceeded' }),
@@ -605,7 +606,7 @@ describe('public durable logical Gateway lineage', () => {
     }
   });
   it('refuses a reused running request before any Provider invocation and preserves its bytes', async () => {
-    const f = fixture();
+    const f = await fixture();
     f.primary.setResponses([fauxAssistantMessage('must not run')]);
     const db = openWorkspaceDb(f.dataRoot, f.workspaceId);
     try {
@@ -637,7 +638,7 @@ describe('public durable logical Gateway lineage', () => {
     }
   });
   it('identical backend usage collapses to one measurement cited by both retry entries', async () => {
-    const f = fixture();
+    const f = await fixture();
     vi.useFakeTimers();
     const dispatch = vi
       .spyOn(f.dispatcher, 'createResponses')
@@ -674,7 +675,7 @@ describe('public durable logical Gateway lineage', () => {
     }
   });
   it('a released stream without terminal evidence fails without replay and retains unknown lineage', async () => {
-    const f = fixture();
+    const f = await fixture();
     vi.spyOn(f.dispatcher, 'createResponsesStream').mockResolvedValue(
       new ReadableStream({
         start(controller) {
@@ -706,7 +707,7 @@ describe('public durable logical Gateway lineage', () => {
     }
   });
   it('public calls without Workspace metadata keep Workspace history empty', async () => {
-    const f = fixture();
+    const f = await fixture();
     f.primary.setResponses([fauxAssistantMessage('blind')]);
     try {
       expect((await f.post('responses', false, false)).status).toBe(200);
@@ -720,7 +721,7 @@ describe('public durable logical Gateway lineage', () => {
 describe('slice 1d round 2 terminal frame closeout', () => {
   for (const failed of [true, false])
     it(`public released ${failed ? 'failed' : 'incomplete'} frame keeps its logical outcome`, async () => {
-      const f = fixture();
+      const f = await fixture();
       const frames = [
         { type: 'response.output_text.delta', delta: 'released' },
         {
@@ -767,7 +768,7 @@ describe('slice 1d round 2 terminal frame closeout', () => {
 });
 
 it('skips a missing API key with auth_rejected lineage and only backup effort levels', async () => {
-  const f = fixture(true);
+  const f = await fixture(true);
   f.backup.setResponses([fauxAssistantMessage('backup served')]);
   try {
     const diagnostics = await (
@@ -797,4 +798,9 @@ it('skips a missing API key with auth_rejected lineage and only backup effort le
   } finally {
     f.close();
   }
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

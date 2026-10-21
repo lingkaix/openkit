@@ -11,11 +11,13 @@ import { createKernelOperationImplementations } from '../kernel-operation-implem
 import { createLightAppDefinitionOperationImplementations } from '../light-app-definition-operations.js';
 import type { AdmittedOperationContext } from '../operation-contract.js';
 import { openExistingAppDb } from '../storage/app-db.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 
 const roots: string[] = [];
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
@@ -38,11 +40,11 @@ const schema: LightAppSchemaInput = {
 };
 
 /** Exercises the admitted native seam against the real app-local Audit owner. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-a15-'));
   roots.push(dataRoot);
-  const store = createDemoStore({ dataRoot });
-  const turn = store.createTurn(workspaceId, threadId, 'Native work', actor);
+  const store = await createDemoStore({ dataRoot });
+  const turn = await store.createTurn(workspaceId, threadId, 'Native work', actor);
   const dependencies = {
     store,
     coreDb: undefined,
@@ -80,7 +82,7 @@ function fixture() {
 }
 
 it('retains the executing Worker Turn on native create, record writes, batch and lifecycle Audit without relabeling replay', async () => {
-  const f = fixture();
+  const f = await fixture();
   const created = await f.operations['kernel.apps.create'](
     { ...schema, workspaceId, requestId: randomUUID() },
     f.context
@@ -153,7 +155,7 @@ it('retains the executing Worker Turn on native create, record writes, batch and
 });
 
 it('retains trusted internal Turn context, leaves direct human execution unknown and refuses mismatched Turn scope before writes', async () => {
-  const f = fixture();
+  const f = await fixture();
   const human: AdmittedOperationContext = {
     kind: 'public',
     actor: { kind: 'local', userId: actor.id },
@@ -206,7 +208,7 @@ it('retains trusted internal Turn context, leaves direct human execution unknown
 });
 
 it('carries trusted execution through definition instantiation and schema activation', async () => {
-  const f = fixture();
+  const f = await fixture();
   const operations = createLightAppDefinitionOperationImplementations(f.dependencies);
   const imported = importWorkspaceLightAppDefinition({
     dataRoot: f.dataRoot,

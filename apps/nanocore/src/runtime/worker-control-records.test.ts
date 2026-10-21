@@ -3,9 +3,10 @@ import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { WorkerCanonicalEventRecord, WorkerLineage } from '@openkit/worker-protocol';
-import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { readWorkObservationBody } from '../evidence-bundles.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { readThreadRuntimeActivity, readWorkObservations } from '../storage/work-observations.js';
@@ -610,13 +611,13 @@ it.each([
 });
 
 /** Real Turn, named retained AEP, token-authenticated gateway, receipts and restricted body store. */
-function nativeReceiver(captureValue: 'on' | 'off' = 'on', bound: number | null = 8) {
+async function nativeReceiver(captureValue: 'on' | 'off' = 'on', bound: number | null = 8) {
   const root = mkdtempSync(join(tmpdir(), 'openkit-ret2-receiver-'));
   let coreDb = openCoreDb(root);
   applyMigrations(coreDb);
-  const store = createDemoStore({ dataRoot: root });
+  const store = await createDemoStore({ dataRoot: root });
   store.setLiveCaptureCoverage({ scope: 'server', value: captureValue });
-  const turn = store.createTurn(
+  const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',
     'Native receiver',
@@ -637,7 +638,7 @@ function nativeReceiver(captureValue: 'on' | 'off' = 'on', bound: number | null 
   pkg.observability.evidence = { ...pkg.observability.evidence };
   delete pkg.observability.evidence.nativeLogMaxBytes;
   if (bound !== null) pkg.observability.evidence.nativeLogMaxBytes = bound;
-  store.createAgentSession({
+  await store.createAgentSession({
     id: agentSessionId,
     agentId: pkg.agent.agentId,
     workspaceId: pkg.scope.workspaceId,
@@ -647,7 +648,7 @@ function nativeReceiver(captureValue: 'on' | 'off' = 'on', bound: number | null 
     createdAt: turn.startedAt!,
     updatedAt: turn.startedAt!,
   });
-  store.updateTurn(turn.id, { agentSessionId });
+  await store.updateTurn(turn.id, { agentSessionId });
   const db = openWorkspaceDb(root, pkg.scope.workspaceId);
   applyScopedMigrations(db);
   recordAgentEnvironmentPackageSnapshot(db, { environmentPackage: pkg, createdAt: pkg.createdAt });
@@ -908,8 +909,8 @@ function nativeImageBinding(
 }
 
 // WCP §Authentication: each registered package must prove its own token and exact lineage.
-it('RET-2 authenticates the second package with its own token before and after reopen', () => {
-  const f = nativeReceiver();
+it('RET-2 authenticates the second package with its own token before and after reopen', async () => {
+  const f = await nativeReceiver();
   f.secondPackage();
   expect(
     f.send(
@@ -927,8 +928,8 @@ it('RET-2 authenticates the second package with its own token before and after r
 });
 
 // RET §Native Transcripts And Runtime Logs: admitted image identity belongs to the backend owner.
-it('RET-2 retains the exact trusted backend image binding independently of native metadata', () => {
-  const f = nativeReceiver();
+it('RET-2 retains the exact trusted backend image binding independently of native metadata', async () => {
+  const f = await nativeReceiver();
   const binding = nativeImageBinding(f, `registry.test/worker@sha256:${'a'.repeat(64)}`);
   f.restart();
   expect(getWorkerBackendSession(f.coreDb, binding.attemptId)).toEqual(binding);
@@ -936,8 +937,8 @@ it('RET-2 retains the exact trusted backend image binding independently of nativ
 });
 
 // RET §Native Transcripts And Runtime Logs: only the exact trusted binding can verify an image claim.
-it('RET-2 accepts a trusted image match and unknown identity but refuses a fresh-source wrong digest', () => {
-  const f = nativeReceiver();
+it('RET-2 accepts a trusted image match and unknown identity but refuses a fresh-source wrong digest', async () => {
+  const f = await nativeReceiver();
   const trustedDigest = `sha256:${'a'.repeat(64)}`;
   nativeImageBinding(f, `registry.test/worker@${trustedDigest}`);
   const match = nativeMetadata(f, 'trusted-match', Buffer.from('x'));
@@ -972,8 +973,8 @@ it.each([
   'foreign-package',
   'foreign-session',
   'non-digest',
-] as const)('RET-2 a %s trusted image binding cannot verify or authorize a Worker image claim', (binding) => {
-  const f = nativeReceiver();
+] as const)('RET-2 a %s trusted image binding cannot verify or authorize a Worker image claim', async (binding) => {
+  const f = await nativeReceiver();
   if (binding !== 'missing') {
     nativeImageBinding(
       f,
@@ -1034,8 +1035,8 @@ it.each([
 it.each([
   'off',
   'unavailable',
-] as const)('RET-2 a sole native %s observation cannot project collecting, partial or progress', (state) => {
-  const f = nativeReceiver(state === 'off' ? 'off' : 'on');
+] as const)('RET-2 a sole native %s observation cannot project collecting, partial or progress', async (state) => {
+  const f = await nativeReceiver(state === 'off' ? 'off' : 'on');
   const value = nativeMetadata(f, 'sole-source', Buffer.alloc(0));
   const observation = {
     ...value,
@@ -1063,8 +1064,8 @@ it.each([
 });
 
 // RET §Native Transcripts And Runtime Logs: a truncated prefix is incomplete; Web §Runtime Activity In The Thread Timeline: partial capture stays partial.
-it('RET-2 projects an unavailable native source with a published truncated prefix as partial without progress', () => {
-  const f = nativeReceiver('on', 3);
+it('RET-2 projects an unavailable native source with a published truncated prefix as partial without progress', async () => {
+  const f = await nativeReceiver('on', 3);
   const bytes = Buffer.from('abc');
   const value = nativeMetadata(f, 'published-truncated-prefix', bytes, { start: 64 });
   const observation = {
@@ -1108,8 +1109,8 @@ it('RET-2 projects an unavailable native source with a published truncated prefi
 it.each([
   'semantic-control',
   'native',
-] as const)('RET-2 %s publishes exact binary and split UTF-8 only after verified chunks, with safe receipts and no ordinary body', (mode) => {
-  const f = nativeReceiver();
+] as const)('RET-2 %s publishes exact binary and split UTF-8 only after verified chunks, with safe receipts and no ordinary body', async (mode) => {
+  const f = await nativeReceiver();
   const bytes = Buffer.concat([Buffer.from([255, 0]), Buffer.from('雪\r\n')]);
   const native = nativeMetadata(f, 'binary', bytes, { chunkCount: 2 });
   const metadata =
@@ -1182,8 +1183,8 @@ it.each([
 });
 
 // RET §Native Transcripts And Runtime Logs: combined per-Turn budget, immutable admission, transcripts independent.
-it('RET-2 shares the cap across concurrent stderr/stdout sources and packages; reopen and replay cannot recharge it', () => {
-  const f = nativeReceiver();
+it('RET-2 shares the cap across concurrent stderr/stdout sources and packages; reopen and replay cannot recharge it', async () => {
+  const f = await nativeReceiver();
   const stderr = nativeMetadata(f, 'stderr', Buffer.from('abcd'));
   const stdout = nativeMetadata(f, 'stdout', Buffer.from('efgh'), { sourceKind: 'stdout-log' });
   expect(f.send(1, 'observation.recorded', stderr).accepted).toBe(true);
@@ -1255,8 +1256,8 @@ it('RET-2 shares the cap across concurrent stderr/stdout sources and packages; r
 });
 
 // WCP §Authentication and §Incremental Work Observations: outer lineage and storage-owned publication authority.
-it('RET-2 rejects foreign scope/package/source, forged publication and divergent content without acknowledging it', () => {
-  const f = nativeReceiver();
+it('RET-2 rejects foreign scope/package/source, forged publication and divergent content without acknowledging it', async () => {
+  const f = await nativeReceiver();
   const bytes = Buffer.from('safe');
   const metadata = nativeMetadata(f, 'authorized', bytes);
   expect(f.send(1, 'observation.recorded', metadata).accepted).toBe(true);
@@ -1320,8 +1321,8 @@ it('RET-2 rejects foreign scope/package/source, forged publication and divergent
 });
 
 // RET §Capture Publication, Restart And Disposal: committed prefix and unavailability survive interrupted publication.
-it('RET-2 retains an interrupted prefix and explicit failure; missing chunks and digest mismatch never publish', () => {
-  const f = nativeReceiver();
+it('RET-2 retains an interrupted prefix and explicit failure; missing chunks and digest mismatch never publish', async () => {
+  const f = await nativeReceiver();
   const first = nativeMetadata(f, 'prefix', Buffer.from('ok'));
   expect(f.send(1, 'observation.recorded', first).accepted).toBe(true);
   expect(
@@ -1373,8 +1374,8 @@ it('RET-2 retains an interrupted prefix and explicit failure; missing chunks and
 });
 
 // RET §§Capture Coverage, Native Transcripts And Runtime Logs: OFF, missing source, failure and truncation are facts, not bodies.
-it('RET-2 retains OFF/missing/failure/truncation distinctions and refuses content without named native authority', () => {
-  const f = nativeReceiver('off');
+it('RET-2 retains OFF/missing/failure/truncation distinctions and refuses content without named native authority', async () => {
+  const f = await nativeReceiver('off');
   const value = nativeMetadata(f, 'disabled', Buffer.alloc(0));
   const off = {
     ...value,
@@ -1416,7 +1417,7 @@ it('RET-2 retains OFF/missing/failure/truncation distinctions and refuses conten
     readThreadRuntimeActivity(f.db, { threadId: f.owner.threadId, turnIds: [f.owner.turnId] })[0]!
       .contentCapture
   ).toBe('off');
-  const historical = nativeReceiver('on', null);
+  const historical = await nativeReceiver('on', null);
   expect(
     historical.send(
       1,
@@ -1425,4 +1426,9 @@ it('RET-2 retains OFF/missing/failure/truncation distinctions and refuses conten
     ).accepted
   ).toBe(false);
   expect(historical.rows()).toEqual([]);
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

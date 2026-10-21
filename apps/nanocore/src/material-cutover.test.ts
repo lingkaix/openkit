@@ -2,7 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { expect, it } from 'vitest';
+import { afterEach, expect, it } from 'vitest';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -13,12 +14,12 @@ import { createWorkspaceMaterial, saveWorkspaceMaterialRevision } from './worksp
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /** Isolated native records with explicit local Workspace authority. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'material-cutover-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({
     coreDb,
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -50,7 +51,7 @@ function fixture() {
 }
 
 it('removes all eleven authorized former Material bindings without a row or receipt write', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const base = '/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001';
     const material = `${base}/materials/${f.materialId}`;
@@ -117,7 +118,7 @@ it('removes all eleven authorized former Material bindings without a row or rece
 });
 
 it('reaches all eleven canonical Material outcomes and exact binding replay', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const selectors = {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -220,4 +221,9 @@ it('reaches all eleven canonical Material outcomes and exact binding replay', as
     f.db.sqlite.close();
     f.coreDb.sqlite.close();
   }
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

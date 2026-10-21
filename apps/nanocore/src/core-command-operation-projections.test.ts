@@ -9,6 +9,7 @@ import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { computeBootReadinessSnapshot } from './bootstrap/readiness.js';
 import { FsStore } from './lib/store.js';
 import { feedbackFilePath } from './runtime/feedback.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createAppWithWorkspaceAuthority } from './test-support/app.js';
@@ -19,17 +20,18 @@ import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const roots: string[] = [];
 const ownedDatabases: Array<ReturnType<typeof openCoreDb>> = [];
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const coreDb of ownedDatabases.splice(0)) coreDb.sqlite.close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
 /** Each request reaches a concrete owner response under real local Workspace authority. */
-function fixture(bootReadiness?: BootReadinessSnapshot) {
+async function fixture(bootReadiness?: BootReadinessSnapshot) {
   const root = mkdtempSync(join(tmpdir(), 'openkit-core-command-cutover-'));
   roots.push(root);
-  const store = createDemoStore({ dataRoot: root });
-  const thread = store.createThread(
+  const store = await createDemoStore({ dataRoot: root });
+  const thread = await store.createThread(
     'ws_00000000-0000-7000-8000-000000000001',
     'Commands',
     undefined,
@@ -38,7 +40,7 @@ function fixture(bootReadiness?: BootReadinessSnapshot) {
       visibility: 'workspace',
     }
   );
-  const turn = store.createTurn(
+  const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     thread.id,
     'Interrupt me',
@@ -47,7 +49,7 @@ function fixture(bootReadiness?: BootReadinessSnapshot) {
       id: 'usr_00000000-0000-7000-8000-000000000001',
     }
   );
-  const idle = store.createThread(
+  const idle = await store.createThread(
     'ws_00000000-0000-7000-8000-000000000001',
     'Idle',
     undefined,
@@ -153,7 +155,7 @@ function fixture(bootReadiness?: BootReadinessSnapshot) {
 describe('core command operation cutover', () => {
   for (let index = 0; index < 10; index++) {
     it(`retires former route ${index + 1} after an authorized owner response on the base`, async () => {
-      const { app, rows, store } = fixture();
+      const { app, rows, store } = await fixture();
       const [id, method, path, body] = rows[index]!;
       const before = store.listCommandRequests();
       const response = await app.request(path, {
@@ -168,7 +170,7 @@ describe('core command operation cutover', () => {
     });
     for (const projection of ['http', 'client', 'cli'] as const) {
       it(`preserves owner outcome ${index + 1} through ${projection}`, async () => {
-        const { app, rows, store, thread, turn } = fixture();
+        const { app, rows, store, thread, turn } = await fixture();
         const [id, , , body, status] = rows[index]!;
         const selectors =
           id === 'workspace.create'
@@ -252,7 +254,7 @@ describe('core command operation cutover', () => {
 
 for (const index of [0, 2, 5, 6]) {
   it(`replays command ${index + 1} without a second canonical receipt`, async () => {
-    const { app, rows, store, thread } = fixture();
+    const { app, rows, store, thread } = await fixture();
     const [id, , , body, status] = rows[index]!;
     const selectors =
       id === 'workspace.create'
@@ -286,7 +288,7 @@ it('gates every migrated HTTP mutation before Workspace, Turn, feedback or recei
       },
     },
   });
-  const { app, rows, store, thread, turn } = fixture(bootReadiness);
+  const { app, rows, store, thread, turn } = await fixture(bootReadiness);
   const workspaces = store.listWorkspaces();
   const threads = store.listThreads('ws_00000000-0000-7000-8000-000000000001');
   const receipts = store.listCommandRequests();
@@ -319,7 +321,7 @@ it('gates every migrated HTTP mutation before Workspace, Turn, feedback or recei
 it('admits member Workspace updates once and refuses readonly or removed authority before writes', async () => {
   const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-update-member-'));
   roots.push(root);
-  const store = createDemoStore({ dataRoot: root });
+  const store = await createDemoStore({ dataRoot: root });
   const coreDb = openCoreDb(root);
   try {
     applyMigrations(coreDb);
@@ -438,7 +440,7 @@ it('admits member Workspace updates once and refuses readonly or removed authori
 it.each([
   0, 2,
 ])('preserves command %s fallback after its receipt commits but count projection fails', async (index) => {
-  const { app, rows, store } = fixture();
+  const { app, rows, store } = await fixture();
   const [id, , , body] = rows[index]!;
   let committed = false;
   const recordCommandRequest = store.recordCommandRequest.bind(store);
@@ -484,7 +486,7 @@ it.each([
   try {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = createDemoStore({ dataRoot: root });
+    const store = await createDemoStore({ dataRoot: root });
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',

@@ -2,8 +2,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { workspaceIdForOwner } from '@openkit/protocol';
-import { describe, expect, it, vi } from 'vitest';
-
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { serializeStructuredWorkerDelegationRequest } from '../internal-agents/delegation.js';
@@ -16,6 +15,7 @@ import {
   createSchedulerAdmissionEntry,
   requireSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
@@ -57,12 +57,12 @@ import { bindWorkerCheckpointToPreparedSession, runWorkerTurnLoop } from './work
  *
  * @returns Migrated Core database handles.
  */
-function createCoreDb(): CoreDb {
+async function createCoreDb(): Promise<CoreDb> {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-turn-loop-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  createDemoStore({ dataRoot });
+  await createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({
     coreDb,
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -109,9 +109,9 @@ function preparedWorkerTurn(reviewRequired: boolean) {
 
 describe('worker turn loop', () => {
   it('runs one worker turn and persists its checkpoint', async () => {
-    const coreDb = createCoreDb();
+    const coreDb = await createCoreDb();
     const workspaceDb = createWorkspaceDb(coreDb);
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
 
     try {
       const prepareCalls: unknown[][] = [];
@@ -190,9 +190,9 @@ describe('worker turn loop', () => {
   });
 
   it('records a redacted failed checkpoint when the worker boundary throws', async () => {
-    const coreDb = createCoreDb();
+    const coreDb = await createCoreDb();
     const workspaceDb = createWorkspaceDb(coreDb);
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
 
     try {
       await expect(
@@ -238,9 +238,9 @@ describe('worker turn loop', () => {
   });
 
   it('keeps the preparing checkpoint when product recovery is required after worker cleanup', async () => {
-    const coreDb = createCoreDb();
+    const coreDb = await createCoreDb();
     const workspaceDb = createWorkspaceDb(coreDb);
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
 
     try {
       await expect(
@@ -289,9 +289,9 @@ describe('worker turn loop', () => {
   });
 
   it('rejects removed authority before reservation, decision, checkpoint, or worker effects', async () => {
-    const coreDb = createCoreDb();
+    const coreDb = await createCoreDb();
     const workspaceDb = createWorkspaceDb(coreDb);
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const timestamp = '2026-07-19T00:00:00.000Z';
     const now = Date.parse(timestamp);
     coreDb.sqlite
@@ -365,9 +365,9 @@ describe('worker turn loop', () => {
   });
 
   it('admits usable presented server-admin bearer for runtime.launch without membership', async () => {
-    const coreDb = createCoreDb();
+    const coreDb = await createCoreDb();
     const workspaceDb = createWorkspaceDb(coreDb);
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const now = Date.now();
     coreDb.sqlite
       .prepare(
@@ -469,9 +469,9 @@ function latestPermissionDecision(workspaceDb: WorkspaceDb): {
 }
 
 it('bounds quoting worker errors in the loop checkpoint before rethrowing', async () => {
-  const coreDb = createCoreDb();
+  const coreDb = await createCoreDb();
   const workspaceDb = createWorkspaceDb(coreDb);
-  const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+  const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
   const error = new SyntaxError('ROW_SECRET_X9');
   try {
     await expect(
@@ -610,7 +610,7 @@ function admittedWorker(
           .listThreadAgentSessions(workspaceIdForOwner(turn.owner), turn.threadId)
           .find((session) => session.id === agentSessionId);
         if (!existing)
-          store.createAgentSession({
+          await store.createAgentSession({
             id: agentSessionId,
             agentId: manifest.id,
             workspaceId: workspaceIdForOwner(turn.owner),
@@ -622,7 +622,7 @@ function admittedWorker(
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
           });
-        const terminal = store.updateTurn(id, {
+        const terminal = await store.updateTurn(id, {
           status: 'completed',
           agentSessionId,
           completedAt: new Date().toISOString(),
@@ -725,16 +725,16 @@ it.each([
   'fresh',
   'reused',
 ] as const)('binds the exact %s lease before executor entry and acknowledgement', async (kind) => {
-  const coreDb = createCoreDb();
+  const coreDb = await createCoreDb();
   const workspaceDb = createWorkspaceDb(coreDb);
-  const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+  const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
   const sessionId =
     kind === 'reused'
       ? 'as_00000000-0000-754f-9277-4058a2a883d1'
       : 'as_00000000-0000-7df9-8dd9-3222dd5f7145';
   const at = '2026-10-06T00:00:00.000Z';
   if (kind === 'reused')
-    store.createAgentSession({
+    await store.createAgentSession({
       id: sessionId,
       sessionCompatibilityKey: 'sha256:fixture',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -830,9 +830,9 @@ it.each([
   'restart-cleanup',
   'incomplete-lease',
 ] as const)('preserves admitted interruption through %s and reopened classification without a second launch', async (failure) => {
-  const coreDb = createCoreDb();
+  const coreDb = await createCoreDb();
   const workspaceDb = createWorkspaceDb(coreDb);
-  const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+  const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
   const error = new TurnStartValidationError(
     'workspace_access_denied',
     'Workspace access denied.',
@@ -866,7 +866,7 @@ it.each([
             execute: async (turnId) => {
               launches++;
               const at = new Date().toISOString();
-              store.createAgentSession({
+              await store.createAgentSession({
                 id: sessionId,
                 workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
                 threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -876,7 +876,7 @@ it.each([
                 createdAt: at,
                 updatedAt: at,
               });
-              const terminal = store.updateTurn(turnId, {
+              const terminal = await store.updateTurn(turnId, {
                 status: 'interrupted',
                 agentSessionId: sessionId,
                 completedAt: at,
@@ -948,7 +948,7 @@ it.each([
       'ws_00000000-0000-7000-8000-000000000001'
     );
     try {
-      const reopenedStore = createDemoStore({ dataRoot: coreDb.dataRoot });
+      const reopenedStore = await createDemoStore({ dataRoot: coreDb.dataRoot });
       expect(
         getWorkerCheckpoint(
           reopenedWorkspace,
@@ -999,9 +999,9 @@ it.each([
 });
 
 it('refuses mismatched callback lineage before acknowledgement or executor effects', async () => {
-  const coreDb = createCoreDb();
+  const coreDb = await createCoreDb();
   const workspaceDb = createWorkspaceDb(coreDb);
-  const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+  const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
   let acknowledgements = 0;
   let launches = 0;
   try {
@@ -1064,9 +1064,9 @@ it('refuses mismatched callback lineage before acknowledgement or executor effec
 });
 
 it('late admission callbacks cannot erase or recreate a terminal checkpoint binding', async () => {
-  const coreDb = createCoreDb();
+  const coreDb = await createCoreDb();
   const workspaceDb = createWorkspaceDb(coreDb);
-  const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+  const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
   let callback!: WorkerTurnLoopStartWorkerInput['onAdmitted'];
   try {
     await runWorkerTurnLoop({
@@ -1145,9 +1145,9 @@ it('late admission callbacks cannot erase or recreate a terminal checkpoint bind
 });
 
 it('a late completion error preserves an already terminal checkpoint and its exact session', async () => {
-  const coreDb = createCoreDb();
+  const coreDb = await createCoreDb();
   const workspaceDb = createWorkspaceDb(coreDb);
-  const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+  const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
   const error = new Error('Late completion failure');
   let terminal: ReturnType<typeof getWorkerCheckpoint>;
   try {
@@ -1204,9 +1204,9 @@ it('a late completion error preserves an already terminal checkpoint and its exa
 });
 
 it('removes only its live never-leased cancelled preparation and retains cancellation before refusal', async () => {
-  const coreDb = createCoreDb();
+  const coreDb = await createCoreDb();
   const workspaceDb = createWorkspaceDb(coreDb);
-  const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+  const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
   try {
     const independent = await runWorkerTurnLoop({
       coreDb,
@@ -1374,16 +1374,16 @@ it.each([
   'cancellation-failed',
   'rollback',
 ] as const)('preserves cancelled preparation when %s defeats the no-execution proof', async (kind) => {
-  const coreDb = createCoreDb();
+  const coreDb = await createCoreDb();
   const workspaceDb = createWorkspaceDb(coreDb);
-  const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+  const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
   const at = '2026-10-06T00:00:00.000Z';
   let before: ReturnType<typeof getWorkerCheckpoint>;
   if (kind === 'cancellation-failed')
     coreDb.sqlite.exec(`CREATE TRIGGER refuse_cancel
       BEFORE UPDATE OF status ON scheduler_admission_entries WHEN NEW.status='cancelled'
       BEGIN SELECT RAISE(ABORT, 'Cancellation storage failure'); END`);
-  const input = cancelledLoopInput(coreDb, workspaceDb, store, () => {
+  const input = cancelledLoopInput(coreDb, workspaceDb, store, async () => {
     if (kind === 'lease') {
       const row = coreDb.sqlite
         .prepare('SELECT queue_entry_id AS id FROM scheduler_admission_entries WHERE turn_id=?')
@@ -1407,9 +1407,9 @@ it.each([
     if (kind === 'turn' || kind === 'global-turn') {
       const threadId =
         kind === 'global-turn'
-          ? store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Other owner').id
+          ? (await store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Other owner')).id
           : 'th_00000000-0000-7000-8000-000000000001';
-      store.createTurn(
+      await store.createTurn(
         'ws_00000000-0000-7000-8000-000000000001',
         threadId,
         'Contradictory execution',
@@ -1605,9 +1605,9 @@ it.each([
 });
 
 it('cancelled request replay cannot prepare or launch again after checkpoint removal, including reopened storage', async () => {
-  const coreDb = createCoreDb();
+  const coreDb = await createCoreDb();
   const workspaceDb = createWorkspaceDb(coreDb);
-  const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+  const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
   await expect(runWorkerTurnLoop(cancelledLoopInput(coreDb, workspaceDb, store))).rejects.toThrow();
   workspaceDb.sqlite.close();
   coreDb.sqlite.close();
@@ -1620,7 +1620,7 @@ it('cancelled request replay cannot prepare or launch again after checkpoint rem
     const replay = cancelledLoopInput(
       reopenedCore,
       reopenedWorkspace,
-      createDemoStore({ dataRoot: coreDb.dataRoot })
+      await createDemoStore({ dataRoot: coreDb.dataRoot })
     );
     const prepare = vi.fn(replay.prepare);
     const startWorker = vi.fn(replay.startWorker);
@@ -1650,9 +1650,9 @@ it.each([
   'usr_00000000-0000-73d4-904a-d4c4b905df7c',
   'usr_00000000-0000-7000-8000-000000000001',
 ])('an unrelated admission with the same request ID does not block or erase this reserved Turn (%s)', async (actorId) => {
-  const coreDb = createCoreDb();
+  const coreDb = await createCoreDb();
   const workspaceDb = createWorkspaceDb(coreDb);
-  const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+  const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
   try {
     // Request UUID alone is not command identity: actor and Thread scope remain exact.
     const unrelated = createSchedulerAdmissionEntry(coreDb, {
@@ -1708,9 +1708,9 @@ it.each([
 });
 
 it('process loss after durable cancellation leaves preparation for fail-closed restart inspection', async () => {
-  const coreDb = createCoreDb();
+  const coreDb = await createCoreDb();
   const workspaceDb = createWorkspaceDb(coreDb);
-  const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+  const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
   const input = cancelledLoopInput(coreDb, workspaceDb, store);
   let signalCancellation!: () => void;
   const cancellation = new Promise<void>((resolve) => {
@@ -1781,9 +1781,9 @@ it('process loss after durable cancellation leaves preparation for fail-closed r
 });
 
 it('a changed reservation cannot overwrite the declared command Turn identity', async () => {
-  const coreDb = createCoreDb();
+  const coreDb = await createCoreDb();
   const workspaceDb = createWorkspaceDb(coreDb);
-  const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+  const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
   try {
     const input = cancelledLoopInput(coreDb, workspaceDb, store);
     const startWorker = vi.fn(input.startWorker);
@@ -1805,4 +1805,9 @@ it('a changed reservation cannot overwrite the declared command Turn identity', 
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();
   }
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

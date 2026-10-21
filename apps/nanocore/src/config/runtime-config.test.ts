@@ -1,13 +1,12 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
 import { parseWorkspaceMcpServerCatalog } from '@openkit/config-schema';
 import { RETAINED_FORMAT_VERSION } from '@openkit/protocol';
-import { describe, expect, it } from 'vitest';
-
+import { afterEach, describe, expect, it } from 'vitest';
 import { replaceWorkspaceEffectiveMcpCatalog } from '../catalog/resource-catalog.js';
 import { resolveLogicalModelCatalog } from '../llm/logical-models.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { ensureConfigTemplateSurface } from '../storage/fs-layout.js';
 
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -1000,13 +999,16 @@ describe('runtime config loading and reload planning', () => {
     expect(snapshot.providerRegistry.get('google')?.models).toEqual(['gemini-3.8-flash']);
   });
 
-  it('applies server.jsonc workDataCapture to later Turns without interrupting a running Turn', () => {
+  it('applies server.jsonc workDataCapture to later Turns without interrupting a running Turn', async () => {
     const dataRoot = createDataRoot();
     writeConfiguredServer(dataRoot, 'openai/gpt-5.1');
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const manager = createRuntimeConfigManager({ captureCoverage: store, dataRoot });
-    const thread = store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Capture reload');
-    const running = store.createTurn(
+    const thread = await store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Capture reload'
+    );
+    const running = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Keep historical pair',
@@ -1035,7 +1037,7 @@ describe('runtime config loading and reload planning', () => {
     expect(store.getTurnById(running.id).status).toBe('running');
     expect(store.getTurnCaptureCoverage(running.id)).toEqual({ scope: 'server', value: 'off' });
 
-    const next = store.createTurn(
+    const next = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Next turn sees on',
@@ -1067,14 +1069,14 @@ it('reload warns by route name when its required API key is missing', () => {
 });
 
 // RET §Native Transcripts And Runtime Logs: the operator can adjust the combined limit.
-it('RET-2 reload selects a checked log bound without changing a running Turn capture binding', () => {
+it('RET-2 reload selects a checked log bound without changing a running Turn capture binding', async () => {
   const dataRoot = createDataRoot();
   try {
     writeConfiguredServer(dataRoot, 'openai/gpt-5.1', ', "policy": { "workDataCapture": {} }');
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const manager = createRuntimeConfigManager({ dataRoot, captureCoverage: store });
     const prior = manager.current();
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Native log policy',
@@ -1106,4 +1108,9 @@ it('RET-2 reload selects a checked log bound without changing a running Turn cap
   } finally {
     rmSync(dataRoot, { recursive: true, force: true });
   }
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

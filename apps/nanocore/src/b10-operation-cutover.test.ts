@@ -6,11 +6,12 @@ import {
   type OperationId,
   workerEnvironmentActivationConfirmation,
 } from '@openkit/app-api-schemas';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listServerAuditEvents } from './audit-events.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { computeBootReadinessSnapshot } from './bootstrap/readiness.js';
 import { quickChatWorkspaceIdForUser } from './lib/store.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -114,7 +115,7 @@ describe('B10 retired routes', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     for (const workspace of store.listWorkspaces())
       recordWorkspaceOwnerMembership({
         coreDb,
@@ -138,12 +139,12 @@ describe('B10 retired routes', () => {
 });
 
 /** Builds real credential and storage authority with a host spy that cannot perform external effects. */
-function admittedFixture() {
+async function admittedFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-b10-admission-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   for (const workspace of store.listWorkspaces())
     recordWorkspaceOwnerMembership({
       coreDb,
@@ -218,7 +219,7 @@ function admittedFixture() {
 
 describe('B10 admission and family errors', () => {
   it('gates all eight mutations through HTTP and MCP before receipts, private Threads or host effects change', async () => {
-    const f = admittedFixture();
+    const f = await admittedFixture();
     const quickChatId = quickChatWorkspaceIdForUser('usr_00000000-0000-7000-8000-000000000001');
     const beforeThreads = f.store.listThreads(quickChatId);
     const beforeAudit = listServerAuditEvents(f.coreDb).filter((event) =>
@@ -283,7 +284,7 @@ describe('B10 admission and family errors', () => {
   });
 
   it('refuses model-mediated App update before host handoff and start audit publication', async () => {
-    const f = admittedFixture();
+    const f = await admittedFixture();
     try {
       for (const [operation, input] of [
         ['app-update.prepare', inputs[8][2]],
@@ -319,7 +320,7 @@ describe('B10 admission and family errors', () => {
         },
       })
     );
-    const f = admittedFixture();
+    const f = await admittedFixture();
     try {
       const response = await f.http('worker-environment.list', {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -366,4 +367,9 @@ describe('B10 admission and family errors', () => {
       f.close();
     }
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

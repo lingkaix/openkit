@@ -10,6 +10,7 @@ import {
 } from '../internal-agents/delegation.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { resolveDataRootPath } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
@@ -83,13 +84,18 @@ describe('worker Context Package read projection', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-material-compact-trace-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
     const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
     applyScopedMigrations(workspaceDb);
-    const thread = store.createThread(workspaceId, 'Compact trace Material projection');
+    const thread = await store.createThread(workspaceId, 'Compact trace Material projection');
     const actor = { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' };
-    const turn = store.createTurn(workspaceId, thread.id, 'Read the selected revision.', actor);
+    const turn = await store.createTurn(
+      workspaceId,
+      thread.id,
+      'Read the selected revision.',
+      actor
+    );
     const agentSessionId = 'as_00000000-0000-7000-8000-000000000004';
     const itemId = 'it_00000000-0000-7000-8000-000000000003';
     const requestId = 'material_compact_trace';
@@ -105,7 +111,7 @@ describe('worker Context Package read projection', () => {
       sensitivity: 'internal' as const,
     };
     try {
-      store.updateTurn(turn.id, { agentSessionId });
+      await store.updateTurn(turn.id, { agentSessionId });
       const files = createWorkerContextPackageFiles({
         workspaceId,
         threadId: thread.id,
@@ -371,18 +377,18 @@ describe('worker Context Package read projection', () => {
   it.each([
     'accepted-turn',
     'admission',
-  ] as const)('fails closed when %s authority lacks its canonical trace', (authority) => {
+  ] as const)('fails closed when %s authority lacks its canonical trace', async (authority) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-context-missing-trace-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(workspaceDb);
-    const thread = store.createThread(
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Missing accepted context trace'
     );
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Run accepted worker turn.',
@@ -394,7 +400,9 @@ describe('worker Context Package read projection', () => {
 
     try {
       if (authority === 'accepted-turn') {
-        store.updateTurn(turn.id, { agentSessionId: 'as_00000000-0000-7b9a-ba85-578bca58899d' });
+        await store.updateTurn(turn.id, {
+          agentSessionId: 'as_00000000-0000-7b9a-ba85-578bca58899d',
+        });
       } else {
         createSchedulerAdmissionEntry(coreDb, {
           backendId: 'nanohost',
@@ -459,23 +467,24 @@ function structuredRequestText(objective: string): string {
 }
 
 describe('thread taskInputs projection', () => {
-  afterEach(() => {
+  afterEach(async () => {
+    await shutdownControlStoreWorkerClient();
     vi.mocked(createWorkerContextPackageAuthorityReader).mockRestore();
     vi.mocked(readWorkerContextPackageTrace).mockRestore();
   });
 
-  it('maps the objective from a verified trace through the exact request Item', () => {
+  it('maps the objective from a verified trace through the exact request Item', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-task-inputs-valid-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(workspaceDb);
-    const thread = store.createThread(
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Proven initiating request'
     );
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Run proven worker request.',
@@ -486,7 +495,7 @@ describe('thread taskInputs projection', () => {
     );
     const requestText = structuredRequestText('Implement the bounded dashboard projection.');
     const otherText = structuredRequestText('Ignore this unproven matching JSON.');
-    const item = store.createItem({
+    const item = await store.createItem({
       id: 'it_00000000-0000-7b9d-9e1a-2632c3b76ed5',
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
@@ -498,7 +507,7 @@ describe('thread taskInputs projection', () => {
       createdAt: turn.startedAt!,
       completedAt: turn.startedAt,
     });
-    store.createItem({
+    await store.createItem({
       id: 'it_00000000-0000-7275-b9e3-6a2e51407254',
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
@@ -551,18 +560,18 @@ describe('thread taskInputs projection', () => {
     }
   });
 
-  it('omits a summary when the shared verifier throws missing or corrupt proof', () => {
+  it('omits a summary when the shared verifier throws missing or corrupt proof', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-task-inputs-corrupt-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(workspaceDb);
-    const thread = store.createThread(
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Corrupt initiating request'
     );
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Run unproven worker request.',
@@ -571,7 +580,7 @@ describe('thread taskInputs projection', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    store.createItem({
+    await store.createItem({
       id: 'it_00000000-0000-75e6-8332-7e496922d8d5',
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,

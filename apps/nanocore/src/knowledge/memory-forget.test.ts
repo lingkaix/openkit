@@ -12,7 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { deflateSync } from 'node:zlib';
-import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import type { Actor } from '../auth/identity.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
@@ -22,6 +22,7 @@ import { createPendingRequestOperationImplementations } from '../pending-request
 import { projectApprovalEffect } from '../runtime/pending-request-disclosure.js';
 import { installPendingRequestAdmission } from '../runtime/pending-request-flow.js';
 import { readPendingRequest } from '../runtime/pending-requests.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { userDbPath } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
@@ -72,7 +73,7 @@ async function fixture(sourceBacked = false) {
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
   const actor = { kind: 'local' as const, userId };
-  const store = createDemoStore();
+  const store = await createDemoStore();
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId: userId, workspaceId: DEMO_WORKSPACE_ID });
   const userDb = openUserDb(dataRoot, userId);
   const workspaceDb = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
@@ -127,7 +128,7 @@ async function fixture(sourceBacked = false) {
     summary: 'Save my preference',
   });
   const thread = openAssistantTimeline(store, DEMO_WORKSPACE_ID, userId, 'Private Timeline');
-  const turn = store.createTurn(
+  const turn = await store.createTurn(
     DEMO_WORKSPACE_ID,
     thread.id,
     'Forget my preference',
@@ -272,7 +273,7 @@ describe('Item-confirmed self Memory forget', () => {
         summary: 'Do not revive',
       })
     ).rejects.toThrow('Memory page unavailable.');
-    f.writer.store.updateTurn(f.turn.id, {
+    await f.writer.store.updateTurn(f.turn.id, {
       status: 'completed',
       completedAt: new Date().toISOString(),
     });
@@ -455,7 +456,7 @@ describe('Item-confirmed self Memory forget', () => {
 
   it('prepares an idle user command on one truthful local Turn and reuses its canonical lineage on replay', async () => {
     const f = await fixture();
-    f.writer.store.updateTurn(f.turn.id, {
+    await f.writer.store.updateTurn(f.turn.id, {
       status: 'completed',
       completedAt: new Date().toISOString(),
     });
@@ -608,7 +609,7 @@ describe('Item-confirmed self Memory forget', () => {
     await f.decide(prepared.pendingRequestId);
     const removed = await f.apply(prepared.pendingRequestId);
     // Deliver the person decision after apply: the shared pending owner clears its held result.
-    f.writer.store.updateTurn(f.turn.id, {
+    await f.writer.store.updateTurn(f.turn.id, {
       status: 'completed',
       completedAt: new Date().toISOString(),
     });
@@ -665,4 +666,9 @@ describe('Item-confirmed self Memory forget', () => {
       })
     ).toMatchObject({ status: 'unavailable' });
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

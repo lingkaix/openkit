@@ -11,7 +11,7 @@ import {
   TurnSchema,
   workspaceIdForOwner,
 } from '@openkit/protocol';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentManifest } from './agents/manifest.js';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import type { BetterAuthServer } from './auth/middleware.js';
@@ -38,6 +38,7 @@ import type {
   TurnStartRuntimeContext,
 } from './runtime/types.js';
 import * as schedulerOwners from './scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import type { CoreDb } from './storage/db.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
@@ -144,7 +145,7 @@ class RecordingTurnExecutor implements TurnExecutor {
     this.startCalls += 1;
     await this.beginModeledTurn(store, turnId, _context);
     if (this.completeStarts) {
-      this.publishCompletedTurn(store, turnId, _context);
+      await this.publishCompletedTurn(store, turnId, _context);
       await this.releaseModeledTurn(store, turnId);
     }
   }
@@ -159,7 +160,7 @@ class RecordingTurnExecutor implements TurnExecutor {
       throw new Error('Modeled Turn has no exact Core preparation.');
     const turn = store.getTurnById(turnId);
     const timestamp = new Date().toISOString();
-    store.createAgentSession({
+    await store.createAgentSession({
       id: context.agentSessionId,
       agentId: turn.agentId!,
       workspaceId: workspaceIdForOwner(turn.owner),
@@ -185,12 +186,12 @@ class RecordingTurnExecutor implements TurnExecutor {
   }
 
   /** Publishes terminal product state while retaining execution until the fixture's closeout gate. */
-  protected publishCompletedTurn(
+  protected async publishCompletedTurn(
     store: FsStore,
     turnId: string,
     context: TurnStartRuntimeContext
-  ): void {
-    const turn = store.updateTurn(turnId, {
+  ): Promise<void> {
+    const turn = await store.updateTurn(turnId, {
       completedAt: new Date().toISOString(),
       status: 'completed',
     });
@@ -258,7 +259,7 @@ class RecordingTurnExecutor implements TurnExecutor {
     _context: TurnCommandRuntimeContext = { requestId: null }
   ): Promise<void> {
     this.interruptCalls += 1;
-    store.updateTurn(turnId, {
+    await store.updateTurn(turnId, {
       completedAt: new Date().toISOString(),
       status: 'interrupted',
     });
@@ -308,7 +309,7 @@ class HoldingTurnExecutor extends RecordingTurnExecutor {
     try {
       await this.completion.promise;
       if (this.fail) {
-        store.updateTurn(turnId, {
+        await store.updateTurn(turnId, {
           completedAt: new Date().toISOString(),
           status: 'failed',
           error: { code: 'worker_start_failed', message: 'Controlled admitted failure.' },
@@ -316,7 +317,7 @@ class HoldingTurnExecutor extends RecordingTurnExecutor {
         throw new Error('Controlled admitted failure.');
       }
       // The recording fixture has no backend cleanup or evidence to materialize.
-      this.publishCompletedTurn(store, turnId, context);
+      await this.publishCompletedTurn(store, turnId, context);
       this.terminalPublished.resolve();
       await this.cleanup.promise;
       await this.releaseModeledTurn(store, turnId);
@@ -347,7 +348,7 @@ async function createSchedulerFixture(
   const dataRoot = mkdtempSync(join(tmpdir(), `openkit-turn-routes-${slug}-`));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
-  const store = createDemoStore({ dataRoot, ...(persist ? { coreDb } : {}) });
+  const store = await createDemoStore({ dataRoot, ...(persist ? { coreDb } : {}) });
   executor.coreDb = coreDb;
   executor.executionBackend = new SimulatedTurnExecutor({ coreDb });
   ensureLocalUser(coreDb);
@@ -409,7 +410,7 @@ async function createSharedSchedulerFixture(executor: RecordingTurnExecutor, slu
     )
     .run(timestamp, timestamp, timestamp);
 
-  const store = createDemoStore({ dataRoot, coreDb });
+  const store = await createDemoStore({ dataRoot, coreDb });
   executor.coreDb = coreDb;
   executor.executionBackend = new SimulatedTurnExecutor({ coreDb });
   const app = createApp({
@@ -503,8 +504,8 @@ describe('generic turn routes', () => {
     }
   });
   it('reads one turn through its owning workspace and thread path', async () => {
-    const store = createDemoStore();
-    const turn = store.createTurn(
+    const store = await createDemoStore();
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Read this turn',
@@ -530,14 +531,14 @@ describe('generic turn routes', () => {
   });
 
   it('omits AgentSession identity from ordinary turn reads while the durable Turn retains it', async () => {
-    const store = createDemoStore();
-    const turn = store.createTurn(
+    const store = await createDemoStore();
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Hide AgentSession identity',
       LOCAL_ACTOR
     );
-    store.updateTurn(turn.id, { agentSessionId: 'as_00000000-0000-7271-8ba3-bea82b217022' });
+    await store.updateTurn(turn.id, { agentSessionId: 'as_00000000-0000-7271-8ba3-bea82b217022' });
     const app = createApp({ store, turnExecutor: new RecordingTurnExecutor() });
 
     const response = await app.request('/api/app/operations/turn.read', {
@@ -563,8 +564,8 @@ describe('generic turn routes', () => {
   });
 
   it('does not read a turn through a different workspace or thread path', async () => {
-    const store = createDemoStore();
-    const turn = store.createTurn(
+    const store = await createDemoStore();
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Keep this turn scoped',
@@ -589,8 +590,8 @@ describe('generic turn routes', () => {
   });
 
   it('rejects an interrupt scope mismatch before executor or store mutation', async () => {
-    const store = createDemoStore();
-    const turn = store.createTurn(
+    const store = await createDemoStore();
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Do not interrupt across scopes',
@@ -703,14 +704,14 @@ describe('generic turn routes', () => {
   });
 
   it('does not rewrite a terminal turn through a new interrupt command', async () => {
-    const store = createDemoStore();
-    const created = store.createTurn(
+    const store = await createDemoStore();
+    const created = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Already complete',
       LOCAL_ACTOR
     );
-    const turn = store.updateTurn(created.id, {
+    const turn = await store.updateTurn(created.id, {
       completedAt: '2026-07-12T00:00:00.000Z',
       status: 'completed',
     });
@@ -788,7 +789,7 @@ describe('generic turn routes', () => {
       await vi.waitFor(() => expect(executor.startCalls).toBe(1));
       await setImmediate();
       const acceptedAt = turn.startedAt ?? new Date().toISOString();
-      const requestItem = fixture.store.createItem({
+      const requestItem = await fixture.store.createItem({
         id: testEntityId('it', `it_responsible_user_${turn.id}`),
         owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
         threadId: turn.threadId,
@@ -1520,7 +1521,11 @@ describe('Core Turn durable admission response', () => {
       });
       // A second store reads the already-published receipt from Workspace SQLite.
       expect(
-        createDemoStore({ dataRoot, coreDb }).getCommandRequest('turn.start', requestId, scope)
+        (await createDemoStore({ dataRoot, coreDb })).getCommandRequest(
+          'turn.start',
+          requestId,
+          scope
+        )
       ).toEqual(receipt);
 
       const replay = await submit();
@@ -1683,7 +1688,7 @@ describe('Core Turn receipt recovery boundary', () => {
       ).toEqual(admissions);
       expect(store.getCommandRequest('turn.start', input.requestId, scope)).toEqual(corrupted);
       expect(
-        createDemoStore({ dataRoot, coreDb }).getCommandRequest(
+        (await createDemoStore({ dataRoot, coreDb })).getCommandRequest(
           'turn.start',
           input.requestId,
           scope
@@ -1773,4 +1778,9 @@ describe('Core Turn fast terminal admission', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

@@ -3,7 +3,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import type { KernelCommandContext } from '../generative-kernel/commands.js';
 import {
   createLightApp,
@@ -12,6 +12,7 @@ import {
   getRecord,
 } from '../generative-kernel/commands.js';
 import { createDemoStore } from '../test-support/demo-store.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { ensureWorkspaceLayout } from './fs-layout.js';
 import {
   importLightAppFamilies,
@@ -62,7 +63,7 @@ const MAPPING_SCHEMA: LightAppSchemaInput = {
 describe('Light App portability', () => {
   it('exports native records and reconstructs them under reminted app identity', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-light-app-portability-'));
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const context: KernelCommandContext = {
       store,
       inflightCommands: new WeakMap(),
@@ -124,7 +125,7 @@ describe('Light App portability', () => {
 
   it('rejects a definition whose digest does not match its bytes', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-light-app-portability-stale-'));
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const context: KernelCommandContext = {
       store,
       inflightCommands: new WeakMap(),
@@ -160,7 +161,7 @@ describe('Light App portability', () => {
 
   it('rejects a coerced boolean value instead of mapping it to false', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-light-app-portability-bool-'));
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const context: KernelCommandContext = {
       store,
       inflightCommands: new WeakMap(),
@@ -214,7 +215,7 @@ describe('Light App portability', () => {
 
   it('rejects imported values that Kernel field validation would refuse', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-light-app-portability-types-'));
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const context: KernelCommandContext = {
       store,
       inflightCommands: new WeakMap(),
@@ -314,4 +315,9 @@ describe('Light App portability', () => {
     }
     expect(record.id).toBeTruthy();
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

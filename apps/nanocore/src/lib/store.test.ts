@@ -19,9 +19,10 @@ import {
   writeRetainedV1,
 } from '@openkit/protocol';
 import Database from 'better-sqlite3';
-import { describe, expect, it, onTestFinished } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished } from 'vitest';
 import { uuidv5 } from '../generative-kernel/uuid.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { userDbPath, workspaceDbPath } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
@@ -133,17 +134,17 @@ function createImportedArtifact(
 }
 
 describe('FsStore persistence', () => {
-  it('creates conversation Threads by default and preserves an administration entry path', () => {
+  it('creates conversation Threads by default and preserves an administration entry path', async () => {
     const store = new FsStore();
-    store.ensureQuickChatWorkspace(LOCAL_ACTOR.id);
-    const conversation = store.createThread(
+    await store.ensureQuickChatWorkspace(LOCAL_ACTOR.id);
+    const conversation = await store.createThread(
       'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
       'Conversation',
       undefined,
       'conversation',
       { visibility: 'private', privateOwnerUserId: LOCAL_ACTOR.id }
     );
-    const administration = store.createThread(
+    const administration = await store.createThread(
       'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
       'Administration',
       'th_00000000-0000-7624-b3fa-287b4af56d2a',
@@ -155,24 +156,24 @@ describe('FsStore persistence', () => {
     expect(administration.entryPath).toBe('administration');
   });
 
-  it('keeps Turn and human-input attribution immutable', () => {
+  it('keeps Turn and human-input attribution immutable', async () => {
     const store = new FsStore();
-    store.ensureQuickChatWorkspace(LOCAL_ACTOR.id);
-    const thread = store.createThread(
+    await store.ensureQuickChatWorkspace(LOCAL_ACTOR.id);
+    const thread = await store.createThread(
       'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
       'Attribution ownership',
       undefined,
       'conversation',
       { visibility: 'private', privateOwnerUserId: LOCAL_ACTOR.id }
     );
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
       thread.id,
       'Record exact actor',
       LOCAL_ACTOR
     );
     const createdAt = turn.startedAt ?? new Date().toISOString();
-    const message = store.createItem({
+    const message = await store.createItem({
       id: 'it_00000000-0000-76cc-a288-2e47ea36ba13',
       owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
       threadId: turn.threadId,
@@ -184,7 +185,7 @@ describe('FsStore persistence', () => {
       createdAt,
       completedAt: createdAt,
     });
-    const request = store.createItem({
+    const request = await store.createItem({
       id: 'it_00000000-0000-76bd-82f1-334f95d2a847',
       owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
       threadId: turn.threadId,
@@ -207,7 +208,7 @@ describe('FsStore persistence', () => {
       createdAt,
       completedAt: createdAt,
     });
-    expect(() =>
+    await expect(
       store.createItem({
         id: 'it_00000000-0000-7d2f-9a91-7f939865f0c2',
         owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
@@ -223,8 +224,8 @@ describe('FsStore persistence', () => {
         createdAt,
         completedAt: createdAt,
       })
-    ).toThrow('User-input response has invalid responsible user');
-    const response = store.createItem({
+    ).rejects.toThrow('User-input response has invalid responsible user');
+    const response = await store.createItem({
       id: 'it_00000000-0000-79dc-91a5-2f09af6d2edb',
       owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
       threadId: turn.threadId,
@@ -241,30 +242,30 @@ describe('FsStore persistence', () => {
     });
 
     expect(turn.triggerActor).toEqual(LOCAL_ACTOR);
-    expect(() =>
+    await expect(
       store.createItem({
         ...message,
         actor: { kind: 'user', id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' },
       })
-    ).toThrow('Item attribution cannot change');
-    expect(() =>
+    ).rejects.toThrow('Item attribution cannot change');
+    await expect(
       store.updateItem(message.id, {
         actor: { kind: 'user', id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' },
       })
-    ).toThrow('Item attribution cannot change');
-    expect(() =>
+    ).rejects.toThrow('Item attribution cannot change');
+    await expect(
       store.updateItem(request.id, {
         responsibleUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
       })
-    ).toThrow('Item attribution cannot change');
-    expect(() => store.updateItem(response.id, { causationId: 'request_other' })).toThrow(
+    ).rejects.toThrow('Item attribution cannot change');
+    await expect(store.updateItem(response.id, { causationId: 'request_other' })).rejects.toThrow(
       'Item attribution cannot change'
     );
   });
 
-  it('seeds only the personal Workspace for a new user', () => {
+  it('seeds only the personal Workspace for a new user', async () => {
     const store = new FsStore();
-    store.ensureQuickChatWorkspace(LOCAL_ACTOR.id);
+    await store.ensureQuickChatWorkspace(LOCAL_ACTOR.id);
     const workspaces = store.listWorkspaces();
 
     expect(workspaces).toHaveLength(1);
@@ -275,9 +276,9 @@ describe('FsStore persistence', () => {
     });
   });
 
-  it('creates new user workspaces without a duplicate runtime catalog', () => {
+  it('creates new user workspaces without a duplicate runtime catalog', async () => {
     const store = new FsStore();
-    const workspace = store.createWorkspace('Runnable workspace');
+    const workspace = await store.createWorkspace('Runnable workspace');
     const resources = store.getWorkspaceResources(workspace.id);
 
     expect(workspace).not.toHaveProperty('defaults');
@@ -285,10 +286,10 @@ describe('FsStore persistence', () => {
     expect(resources.agents).toEqual([]);
   });
 
-  it('uses an explicit Turn start timestamp without changing the default clock path', () => {
+  it('uses an explicit Turn start timestamp without changing the default clock path', async () => {
     const store = new FsStore();
-    store.ensureQuickChatWorkspace(LOCAL_ACTOR.id);
-    const thread = store.createThread(
+    await store.ensureQuickChatWorkspace(LOCAL_ACTOR.id);
+    const thread = await store.createThread(
       'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
       'Turn timestamp ownership',
       undefined,
@@ -296,7 +297,7 @@ describe('FsStore persistence', () => {
       { visibility: 'private', privateOwnerUserId: LOCAL_ACTOR.id }
     );
     const beforeDefault = Date.now();
-    const defaultTurn = store.createTurn(
+    const defaultTurn = await store.createTurn(
       'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
       thread.id,
       'Use the store clock',
@@ -304,7 +305,7 @@ describe('FsStore persistence', () => {
     );
     const afterDefault = Date.now();
     const explicitStartedAt = '2026-07-18T03:00:00.000Z';
-    const explicitTurn = store.createTurn(
+    const explicitTurn = await store.createTurn(
       'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
       thread.id,
       'Use the accepted command time',
@@ -318,17 +319,17 @@ describe('FsStore persistence', () => {
     expect(explicitTurn.startedAt).toBe(explicitStartedAt);
   });
 
-  it('reserves portable-import Approval identities for historical rows', () => {
+  it('reserves portable-import Approval identities for historical rows', async () => {
     const store = new FsStore();
-    store.ensureQuickChatWorkspace(LOCAL_ACTOR.id);
-    const thread = store.createThread(
+    await store.ensureQuickChatWorkspace(LOCAL_ACTOR.id);
+    const thread = await store.createThread(
       'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
       'Reserved approval identity',
       undefined,
       'conversation',
       { visibility: 'private', privateOwnerUserId: LOCAL_ACTOR.id }
     );
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
       thread.id,
       'Do not create imported authority',
@@ -351,16 +352,16 @@ describe('FsStore persistence', () => {
     ).toThrow('Approval id uses the reserved portable-import authority namespace.');
   });
 
-  it('records exact immutable provenance and one deterministic producing-Turn reference', () => {
+  it('records exact immutable provenance and one deterministic producing-Turn reference', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-artifact-reference-'));
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Artifact lineage workspace');
-    const thread = store.createThread(workspace.id, 'Artifact lineage thread');
-    const turn = store.createTurn(workspace.id, thread.id, 'Create an Artifact', LOCAL_ACTOR);
+    const workspace = await store.createWorkspace('Artifact lineage workspace');
+    const thread = await store.createThread(workspace.id, 'Artifact lineage thread');
+    const turn = await store.createTurn(workspace.id, thread.id, 'Create an Artifact', LOCAL_ACTOR);
     const timestamp = turn.startedAt ?? new Date().toISOString();
     const requestId = 'artifact-create-lineage-1';
     const body = 'Artifact version one.';
-    const artifact = store.createArtifact({
+    const artifact = await store.createArtifact({
       id: 'ar_00000000-0000-750a-93de-0d8fc440eadc',
       workspaceId: workspace.id,
       threadId: thread.id,
@@ -403,11 +404,11 @@ describe('FsStore persistence', () => {
     ).toEqual(lineage);
   });
 
-  it('requires completed exact projections while preserving one historical v1 proof', () => {
+  it('requires completed exact projections while preserving one historical v1 proof', async () => {
     const store = new FsStore();
-    const workspace = store.createWorkspace('Artifact revision lineage workspace');
-    const thread = store.createThread(workspace.id, 'Artifact revision lineage thread');
-    const producingTurn = store.createTurn(
+    const workspace = await store.createWorkspace('Artifact revision lineage workspace');
+    const thread = await store.createThread(workspace.id, 'Artifact revision lineage thread');
+    const producingTurn = await store.createTurn(
       workspace.id,
       thread.id,
       'Create version one',
@@ -415,7 +416,7 @@ describe('FsStore persistence', () => {
     );
     const createdAt = producingTurn.startedAt ?? '2026-07-18T00:00:00.000Z';
     const versionOneBody = 'Artifact version one.';
-    const artifact = store.createArtifact({
+    const artifact = await store.createArtifact({
       id: 'ar_00000000-0000-7d63-be2e-21670a5f6326',
       workspaceId: workspace.id,
       threadId: thread.id,
@@ -437,7 +438,7 @@ describe('FsStore persistence', () => {
       createdAt,
       updatedAt: createdAt,
     });
-    const communicatingTurn = store.createTurn(
+    const communicatingTurn = await store.createTurn(
       workspace.id,
       thread.id,
       'Communicate version two',
@@ -548,9 +549,9 @@ describe('FsStore persistence', () => {
     }
   });
 
-  it('does not invent an Item for a workspace-only Artifact', () => {
+  it('does not invent an Item for a workspace-only Artifact', async () => {
     const store = new FsStore();
-    const workspace = store.createWorkspace('Workspace-only artifact');
+    const workspace = await store.createWorkspace('Workspace-only artifact');
     let error: unknown;
     try {
       createImportedArtifact(
@@ -584,12 +585,12 @@ describe('FsStore persistence', () => {
     expect(store.listAllItems()).toEqual([]);
   });
 
-  it('introduces one imported Artifact through deterministic completed Core-local Turns', () => {
+  it('introduces one imported Artifact through deterministic completed Core-local Turns', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-artifact-introduction-'));
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Artifact introduction workspace');
-    const thread = store.createThread(workspace.id, 'Artifact introduction thread');
-    const busyThread = store.createThread(workspace.id, 'Busy Artifact introduction thread');
+    const workspace = await store.createWorkspace('Artifact introduction workspace');
+    const thread = await store.createThread(workspace.id, 'Artifact introduction thread');
+    const busyThread = await store.createThread(workspace.id, 'Busy Artifact introduction thread');
     const artifact = createImportedArtifact(store, workspace.id, 'artifact-import-introduction');
     const firstInput = {
       workspaceId: workspace.id,
@@ -608,7 +609,7 @@ describe('FsStore persistence', () => {
       turnId: 'tu_00000000-0000-76b7-b19d-0ee254bc0460',
     } as const;
 
-    store.createTurn(workspace.id, busyThread.id, 'Keep this Thread active', LOCAL_ACTOR);
+    await store.createTurn(workspace.id, busyThread.id, 'Keep this Thread active', LOCAL_ACTOR);
     let error: unknown;
     try {
       store.introduceArtifact({
@@ -673,8 +674,8 @@ describe('FsStore persistence', () => {
 
     expect(() => new FsStore({ dataRoot })).not.toThrow();
 
-    const healthy = store.createWorkspace('Healthy introduction sibling');
-    const healthyThread = store.createThread(healthy.id, 'Retained sibling history');
+    const healthy = await store.createWorkspace('Healthy introduction sibling');
+    const healthyThread = await store.createThread(healthy.id, 'Retained sibling history');
     const duplicate = {
       ...firstReference,
       id: 'it_00000000-0000-7154-8cae-61e44aa74095',
@@ -715,9 +716,9 @@ describe('FsStore persistence', () => {
     const refusal = expect.objectContaining({ code: 'recovery_required' });
     expect(() => refused.getWorkspace(workspace.id)).toThrow(refusal);
     expect(() => refused.listThreadItems(workspace.id, thread.id)).toThrow(refusal);
-    expect(() => refused.createThread(workspace.id, 'Must not publish')).toThrow(refusal);
+    await expect(refused.createThread(workspace.id, 'Must not publish')).rejects.toThrow(refusal);
     expect(refused.getThread(healthy.id, healthyThread.id)).toEqual(healthyThread);
-    const added = refused.createThread(healthy.id, 'New sibling history');
+    const added = await refused.createThread(healthy.id, 'New sibling history');
     expect(new FsStore({ dataRoot: restartRoot }).getThread(healthy.id, added.id)).toEqual(added);
     expect(readFileSync(copiedLog)).toEqual(bytes);
     expect(readFileSync(join(copiedWorkspaceRoot, 'db', 'workspace.sqlite'))).toEqual(database);
@@ -730,14 +731,14 @@ describe('FsStore persistence', () => {
     expect(() => new FsStore({ dataRoot })).not.toThrow();
   });
 
-  it('does not retain a turn when its owning thread is missing', () => {
+  it('does not retain a turn when its owning thread is missing', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
     const store = new FsStore({ dataRoot });
     const orphanTurnId = 'tu_00000000-0000-7b75-ac5e-5a48515fb117';
 
-    seedDemoWorkspace(store);
+    await seedDemoWorkspace(store);
 
-    expect(() =>
+    await expect(
       store.createTurn(
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-70ca-938d-c2a0530f9882',
@@ -748,18 +749,18 @@ describe('FsStore persistence', () => {
           turnId: orphanTurnId,
         }
       )
-    ).toThrow('Thread not found: th_00000000-0000-70ca-938d-c2a0530f9882');
+    ).rejects.toThrow('Thread not found: th_00000000-0000-70ca-938d-c2a0530f9882');
 
     let inMemoryOrphan: ReturnType<FsStore['getTurnById']> | null = null;
     try {
       inMemoryOrphan = store.getTurnById(orphanTurnId);
     } catch {}
 
-    const validThread = store.createThread(
+    const validThread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Persist after rejected turn'
     );
-    store.createTurn(
+    await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       validThread.id,
       'Persist valid work',
@@ -776,11 +777,11 @@ describe('FsStore persistence', () => {
     expect.soft(restartedOrphan).toBeNull();
   });
 
-  it('persists an immutable actual retained-storage attachment beside native proof', () => {
+  it('persists an immutable actual retained-storage attachment beside native proof', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-retained-'));
     const store = new FsStore({ dataRoot });
-    seedDemoWorkspace(store);
-    const session = store.createAgentSession({
+    await seedDemoWorkspace(store);
+    const session = await store.createAgentSession({
       id: 'as_00000000-0000-7042-83a0-3127fd547a0c',
       agentId: 'agent_codex_host',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -794,22 +795,25 @@ describe('FsStore persistence', () => {
       storageRef: 'wst_00000000-0000-7ac8-9f6c-13552db6aa87',
       workSlotRef: 'slot-exact',
     };
-    store.updateAgentSession(session.id, { retainedStorage });
-    store.updateAgentSession(session.id, { nativeHandleDigest: 'a'.repeat(64), status: 'closed' });
+    await store.updateAgentSession(session.id, { retainedStorage });
+    await store.updateAgentSession(session.id, {
+      nativeHandleDigest: 'a'.repeat(64),
+      status: 'closed',
+    });
     const restarted = new FsStore({ dataRoot });
     expect(restarted.getAgentSession(session.id)).toMatchObject({
       retainedStorage,
       nativeHandleDigest: 'a'.repeat(64),
     });
-    expect(() => restarted.updateAgentSession(session.id, { retainedStorage })).not.toThrow();
-    expect(() =>
+    await restarted.updateAgentSession(session.id, { retainedStorage });
+    await expect(
       restarted.updateAgentSession(session.id, {
         retainedStorage: { ...retainedStorage, workSlotRef: 'different' },
       })
-    ).toThrow('attachment cannot change');
-    expect(() => restarted.updateAgentSession(session.id, { retainedStorage: null })).toThrow(
-      'attachment cannot change'
-    );
+    ).rejects.toThrow('attachment cannot change');
+    await expect(
+      restarted.updateAgentSession(session.id, { retainedStorage: null })
+    ).rejects.toThrow('attachment cannot change');
     // Private attachment provenance does not enter the public protocol projection.
     expect(AgentSessionSchema.parse(restarted.getAgentSession(session.id))).not.toHaveProperty(
       'retainedStorage'
@@ -819,12 +823,12 @@ describe('FsStore persistence', () => {
   it('restores thread, turn, event, knowledge, artifact, and AgentSession history after restart', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
     const store = new FsStore({ dataRoot });
-    seedDemoWorkspace(store);
-    const thread = store.createThread(
+    await seedDemoWorkspace(store);
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Persistent thread'
     );
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Persist this work',
@@ -865,7 +869,7 @@ describe('FsStore persistence', () => {
       },
       content: knowledgeSourceContent,
     });
-    const agentSession = store.createAgentSession({
+    const agentSession = await store.createAgentSession({
       id: 'as_00000000-0000-75c9-856b-dc71ec901f44',
       agentId: 'agent_codex_host',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -878,7 +882,7 @@ describe('FsStore persistence', () => {
     });
     const artifactBody = 'History survived restart.';
     const artifactRequestId = 'artifact-create-persisted';
-    const artifact = store.createArtifact({
+    const artifact = await store.createArtifact({
       id: 'ar_00000000-0000-7120-a42f-20aff7c025d4',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
@@ -1006,15 +1010,15 @@ describe('FsStore persistence', () => {
     ).toEqual([]);
   });
 
-  it('projects AgentSession events before returning or notifying listeners', () => {
+  it('projects AgentSession events before returning or notifying listeners', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
     const store = new FsStore({ dataRoot });
-    seedDemoWorkspace(store);
-    const thread = store.createThread(
+    await seedDemoWorkspace(store);
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Product-safe session events'
     );
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Emit a product-safe session',
@@ -1022,7 +1026,7 @@ describe('FsStore persistence', () => {
     );
     const timestamp = '2026-07-12T00:00:00.000Z';
     const sourcePath = '/safe/fake/internal/sse-host-path-marker';
-    const agentSession = store.createAgentSession({
+    const agentSession = await store.createAgentSession({
       id: 'as_00000000-0000-7f97-a4ef-1ea5a4eed1e2',
       agentId: 'agent_codex_host',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -1069,30 +1073,30 @@ describe('FsStore persistence', () => {
     }
   });
 
-  it('emits non-UUID completion and failure envelopes with one scoped protocol request id', () => {
+  it('emits non-UUID completion and failure envelopes with one scoped protocol request id', async () => {
     const store = new FsStore();
-    seedDemoWorkspace(store);
-    const thread = store.createThread(
+    await seedDemoWorkspace(store);
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Goal step event projection'
     );
-    const otherThread = store.createThread(
+    const otherThread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Other scoped command id'
     );
-    const completionTurn = store.createTurn(
+    const completionTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Complete projection',
       LOCAL_ACTOR
     );
-    const failureTurn = store.createTurn(
+    const failureTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Fail projection',
       LOCAL_ACTOR
     );
-    const otherTurn = store.createTurn(
+    const otherTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       otherThread.id,
       'Same command id different thread',
@@ -1116,11 +1120,11 @@ describe('FsStore persistence', () => {
       turnId: completionTurn.id,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const completedTurn = store.updateTurn(completionTurn.id, {
+    const completedTurn = await store.updateTurn(completionTurn.id, {
       completedAt: completionTurn.startedAt ?? new Date().toISOString(),
       status: 'completed',
     });
-    const failedTurn = store.updateTurn(failureTurn.id, {
+    const failedTurn = await store.updateTurn(failureTurn.id, {
       completedAt: failureTurn.startedAt ?? new Date().toISOString(),
       error: { code: 'worker_governance_turn_failed', message: 'Worker execution failed.' },
       status: 'failed',
@@ -1171,21 +1175,21 @@ describe('FsStore persistence', () => {
     ]);
   });
 
-  it('leaves a canonical protocol UUID request id unchanged on turn events', () => {
+  it('leaves a canonical protocol UUID request id unchanged on turn events', async () => {
     const store = new FsStore();
-    seedDemoWorkspace(store);
-    const thread = store.createThread(
+    await seedDemoWorkspace(store);
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Canonical request id'
     );
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Keep UUID identity',
       LOCAL_ACTOR
     );
     const requestId = '0190f4c8-0000-7000-8000-000000000701';
-    const completedTurn = store.updateTurn(turn.id, {
+    const completedTurn = await store.updateTurn(turn.id, {
       completedAt: turn.startedAt ?? new Date().toISOString(),
       status: 'completed',
     });
@@ -1202,20 +1206,20 @@ describe('FsStore persistence', () => {
     expect(emitted.requestId).toBe(requestId);
   });
 
-  it('still rejects blank turn event request ids', () => {
+  it('still rejects blank turn event request ids', async () => {
     const store = new FsStore();
-    seedDemoWorkspace(store);
-    const thread = store.createThread(
+    await seedDemoWorkspace(store);
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Blank request id'
     );
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Reject blank identity',
       LOCAL_ACTOR
     );
-    const completedTurn = store.updateTurn(turn.id, {
+    const completedTurn = await store.updateTurn(turn.id, {
       completedAt: turn.startedAt ?? new Date().toISOString(),
       status: 'completed',
     });
@@ -1240,10 +1244,10 @@ describe('FsStore persistence', () => {
     expect(store.getTurnEvents(turn.id)).toEqual([]);
   });
 
-  it('persists command idempotency records and prunes expired entries after restart', () => {
+  it('persists command idempotency records and prunes expired entries after restart', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Idempotency workspace');
+    const workspace = await store.createWorkspace('Idempotency workspace');
 
     store.recordCommandRequest({
       command: 'conversation.submit',
@@ -1372,10 +1376,10 @@ describe('FsStore persistence', () => {
     expect(existsSync(join(dataRoot, 'workspaces', workspaceId))).toBe(false);
   });
 
-  it('homes durable command idempotency in its user or workspace database', () => {
+  it('homes durable command idempotency in its user or workspace database', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
     const store = new FsStore({ dataRoot });
-    seedDemoWorkspace(store);
+    await seedDemoWorkspace(store);
     const userDb = openUserDb(dataRoot, 'usr_00000000-0000-7000-8000-000000000001');
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     try {
@@ -1449,10 +1453,10 @@ describe('FsStore persistence', () => {
     expect.soft(findStorageFilesContaining(fileBackedRecordsRoot, userRequestId)).toEqual([]);
   });
 
-  it('does not serialize dynamic execution resources under workspace storage', () => {
+  it('does not serialize dynamic execution resources under workspace storage', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-'));
     const store = new FsStore({ dataRoot });
-    seedDemoWorkspace(store);
+    await seedDemoWorkspace(store);
     const marker = 'runtime_only_test_marker';
     const resources = store.getWorkspaceResources('ws_00000000-0000-7000-8000-000000000001');
 
@@ -1493,25 +1497,30 @@ describe('FsStore persistence', () => {
     ).toEqual([]);
   });
 
-  it('clamps derived turn duration when completion time is earlier than start time', () => {
+  it('clamps derived turn duration when completion time is earlier than start time', async () => {
     const store = new FsStore();
-    seedDemoWorkspace(store);
-    const thread = store.createThread(
+    await seedDemoWorkspace(store);
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Clock drift thread'
     );
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Close under clock drift',
       LOCAL_ACTOR
     );
 
-    const updated = store.updateTurn(turn.id, {
+    const updated = await store.updateTurn(turn.id, {
       completedAt: '2000-01-01T00:00:00.000Z',
       status: 'failed',
     });
 
     expect(updated.durationMs).toBe(0);
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

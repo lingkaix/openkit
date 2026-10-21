@@ -51,6 +51,7 @@ import { readRetrievalTrace } from './retrieval-traces.js';
 
 const fixtureRoots: string[] = [];
 afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   await closeRetrievalServices();
   await shutdownControlStoreWorkerClient();
   for (const root of fixtureRoots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -169,10 +170,10 @@ function publishedPage(workspaceRoot: string, path: string): string {
   return notebook.readRevision(notebook.publishedRevision(), [path]).files[path]!;
 }
 
-it('discovers native Workspaces and rebuilds indexes without former Workspace metadata files', () => {
+it('discovers native Workspaces and rebuilds indexes without former Workspace metadata files', async () => {
   const dataRoot = createDataRoot();
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Native index owner');
+  const workspace = await store.createWorkspace('Native index owner');
   const formerMetadata = join(dataRoot, 'workspaces', workspace.id, 'workspace-record.json');
   rmSync(formerMetadata, { force: true });
 
@@ -187,10 +188,10 @@ it('discovers native Workspaces and rebuilds indexes without former Workspace me
   expect(existsSync(formerMetadata)).toBe(false);
 });
 
-it('refuses missing native Workspace authority rather than using a former metadata file', () => {
+it('refuses missing native Workspace authority rather than using a former metadata file', async () => {
   const dataRoot = createDataRoot();
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Native authority must exist');
+  const workspace = await store.createWorkspace('Native authority must exist');
   const formerMetadata = join(dataRoot, 'workspaces', workspace.id, 'workspace-record.json');
   writeFileSync(formerMetadata, JSON.stringify({ id: workspace.id, name: 'Not authority' }));
   const db = openWorkspaceDb(dataRoot, workspace.id);
@@ -240,8 +241,8 @@ function notebookInitialization() {
 
 describe('workspace derived index rebuild', () => {
   it('keeps equal Workspace ids in distinct data roots on distinct native bindings', async () => {
-    const first = createDemoStore({ dataRoot: createDataRoot() });
-    const second = createDemoStore({ dataRoot: createDataRoot() });
+    const first = await createDemoStore({ dataRoot: createDataRoot() });
+    const second = await createDemoStore({ dataRoot: createDataRoot() });
     const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
     const left = await first.createThread(workspaceId, 'First root');
     const right = await second.createThread(workspaceId, 'Second root');
@@ -251,9 +252,9 @@ describe('workspace derived index rebuild', () => {
     expect(second.listThreads(workspaceId).some((thread) => thread.id === left.id)).toBe(false);
   });
 
-  it('retains the imported starter Thread as native metadata before its private scope is published', () => {
+  it('retains the imported starter Thread as native metadata before its private scope is published', async () => {
     const dataRoot = createDataRoot();
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
     const threadId = 'th_00000000-0000-7000-8000-000000000001';
     const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
@@ -279,7 +280,7 @@ describe('workspace derived index rebuild', () => {
   });
   it('uses the same registered-source resolution for validation and reference indexing', async () => {
     const dataRoot = createDataRoot();
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     const sourceId = 'ks_00000000-0000-7e28-9211-1f67fd14ca84';
     const missingId = 'ks_00000000-0000-799e-8f8f-c45b5a7f6de6';
@@ -426,7 +427,7 @@ describe('workspace derived index rebuild', () => {
 
   it('rebuilds an accepted matching-pin Page without rewriting bytes or contradicting resolution', async () => {
     const dataRoot = createDataRoot();
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const material = 'Registered capture evidence.';
     const source = await captureIndexSource(
       dataRoot,
@@ -483,9 +484,9 @@ describe('workspace derived index rebuild', () => {
     ).toContain('accepted-pin');
   });
 
-  it('excludes reserved index and log files at every Knowledge bundle depth', () => {
+  it('excludes reserved index and log files at every Knowledge bundle depth', async () => {
     const dataRoot = createDataRoot();
-    createDemoStore({ dataRoot });
+    await createDemoStore({ dataRoot });
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     publishPage(workspaceRoot, 'nested/index.md', '# Nested index\n\nNavigation only.\n');
     publishPage(workspaceRoot, 'nested/log.md', '# Nested log\n\n## 2026-09-06\n* Update.\n');
@@ -512,7 +513,7 @@ describe('workspace derived index rebuild', () => {
   });
   it('persists the exact governed retrieval row and omits unaddressed pages', async () => {
     const dataRoot = createDataRoot();
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     const createdAt = '2026-07-12T00:00:00.000Z';
     const sourceId = 'ks_00000000-0000-7a5f-abd1-664e5a6aadee';
@@ -685,7 +686,7 @@ describe('workspace derived index rebuild', () => {
 
   it('keeps exact saved pages after original loss and refuses a later Source audience revocation', async () => {
     const dataRoot = createDataRoot();
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     const knowledgePageId = 'reviewed-task-proof';
     const material = 'The current registered source supplies exact evidence.';
@@ -839,7 +840,7 @@ describe('workspace derived index rebuild', () => {
 
   it('does not expose unpublished physical page identity from accepted metadata', async () => {
     const dataRoot = createDataRoot();
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     const knowledgePageId = 'accepted-without-proof';
     const content = [
@@ -913,7 +914,10 @@ describe('workspace derived index rebuild', () => {
   it('publishes one immutable trace beside an interrupted temporary file', async () => {
     const dataRoot = createDataRoot();
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Retrieval trace recovery', notebookInitialization());
+    const workspace = await store.createWorkspace(
+      'Retrieval trace recovery',
+      notebookInitialization()
+    );
     const thread = await store.createThread(workspace.id, 'Retrieval owner');
     const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
     const traceRoot = join(workspaceRoot, 'threads', thread.id, 'retrieval-traces');
@@ -953,7 +957,10 @@ describe('workspace derived index rebuild', () => {
   it('rejects a symlinked immutable retrieval-trace target without writing outside', async () => {
     const dataRoot = createDataRoot();
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Retrieval trace symlink', notebookInitialization());
+    const workspace = await store.createWorkspace(
+      'Retrieval trace symlink',
+      notebookInitialization()
+    );
     const thread = await store.createThread(workspace.id, 'Retrieval owner');
     const traceId = 'krt_00000000-0000-77b7-88ff-44dd0f21d48d';
     const tracePath = join(
@@ -993,9 +1000,9 @@ describe('workspace derived index rebuild', () => {
     ).toThrow(`Native Workspace metadata is missing: ${testEntityId('ws', 'missing')}`);
   });
 
-  it('rejects a symlinked canonical subtree instead of reading external content', () => {
+  it('rejects a symlinked canonical subtree instead of reading external content', async () => {
     const dataRoot = createDataRoot();
-    createDemoStore({ dataRoot });
+    await createDemoStore({ dataRoot });
     const pagesRoot = join(
       dataRoot,
       'workspaces',
@@ -1020,9 +1027,9 @@ describe('workspace derived index rebuild', () => {
     ).toThrow();
   });
 
-  it('rejects a symlinked indexes directory without deleting its external target', () => {
+  it('rejects a symlinked indexes directory without deleting its external target', async () => {
     const dataRoot = createDataRoot();
-    createDemoStore({ dataRoot });
+    await createDemoStore({ dataRoot });
     const indexesRoot = join(
       dataRoot,
       'workspaces',
@@ -1053,9 +1060,9 @@ describe('workspace derived index rebuild', () => {
     }).toEqual({ rejected: true, sentinel: 'outside sentinel\n' });
   });
 
-  it('rebuilds validation reports for file-backed knowledge pages', () => {
+  it('rebuilds validation reports for file-backed knowledge pages', async () => {
     const dataRoot = createDataRoot();
-    createDemoStore({ dataRoot });
+    await createDemoStore({ dataRoot });
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     const timestamp = '2026-07-07T00:00:00.000Z';
 
@@ -1171,9 +1178,9 @@ describe('workspace derived index rebuild', () => {
     });
   });
 
-  it('uses the workspace schema when rebuilding extension knowledge pages', () => {
+  it('uses the workspace schema when rebuilding extension knowledge pages', async () => {
     const dataRoot = createDataRoot();
-    createDemoStore({ dataRoot });
+    await createDemoStore({ dataRoot });
     publishFixturePage(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
       title: 'Seed knowledge',
       content: 'Seed body.',
@@ -1230,9 +1237,9 @@ describe('workspace derived index rebuild', () => {
     );
   });
 
-  it('does not rebuild knowledge pages when the workspace schema is invalid', () => {
+  it('does not rebuild knowledge pages when the workspace schema is invalid', async () => {
     const dataRoot = createDataRoot();
-    createDemoStore({ dataRoot });
+    await createDemoStore({ dataRoot });
     publishFixturePage(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
       title: 'Schema blocked knowledge',
       content: 'This body should not be indexed.',
@@ -1258,7 +1265,7 @@ describe('workspace derived index rebuild', () => {
 
   it('requires active knowledge page source references to resolve to registered records', async () => {
     const dataRoot = createDataRoot();
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     const timestamp = '2026-07-07T00:00:00.000Z';
     const knowledge = publishFixturePage(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
@@ -1459,9 +1466,9 @@ describe('workspace derived index rebuild', () => {
     });
   });
 
-  it('verifies canonical page-source pins against exact Notebook bytes in every static index', () => {
+  it('verifies canonical page-source pins against exact Notebook bytes in every static index', async () => {
     const dataRoot = createDataRoot();
-    createDemoStore({ dataRoot });
+    await createDemoStore({ dataRoot });
     const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
     const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
     const target = publishFixturePage(dataRoot, workspaceId, {
@@ -1539,7 +1546,7 @@ describe('workspace derived index rebuild', () => {
 
   it('rebuilds the knowledge source-reference index from file-backed pages', async () => {
     const dataRoot = createDataRoot();
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     const timestamp = '2026-07-07T00:00:00.000Z';
     const knowledge = publishFixturePage(dataRoot, 'ws_00000000-0000-7000-8000-000000000001', {
@@ -1703,9 +1710,9 @@ describe('workspace derived index rebuild', () => {
     });
   });
 
-  it('rebuilds the knowledge link graph from active file-backed pages', () => {
+  it('rebuilds the knowledge link graph from active file-backed pages', async () => {
     const dataRoot = createDataRoot();
-    createDemoStore({ dataRoot });
+    await createDemoStore({ dataRoot });
     const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
     const timestamp = '2026-07-07T00:00:00.000Z';
 
@@ -1796,7 +1803,7 @@ describe('workspace derived index rebuild', () => {
 
   it('rebuilds existing workspace indexes during boot scan', async () => {
     const dataRoot = createDataRoot();
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     await store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Boot rebuild thread');
     const indexesRoot = join(
       dataRoot,
@@ -1855,9 +1862,9 @@ describe('workspace derived index rebuild', () => {
     expect(rebuildExistingWorkspaceDerivedIndexes(dataRoot)).toEqual([]);
   });
 
-  it('leaves a current derived index set byte-identical during the conditional boot scan', () => {
+  it('leaves a current derived index set byte-identical during the conditional boot scan', async () => {
     const dataRoot = createDataRoot();
-    createDemoStore({ dataRoot });
+    await createDemoStore({ dataRoot });
     const keptAt = '2026-07-05T00:00:00.000Z';
     const demoIndexes = join(
       dataRoot,
@@ -1891,12 +1898,12 @@ describe('workspace derived index rebuild', () => {
 
   it.each(
     invalidDerivedIndexCases
-  )('rebuilds only an index set with $name and keeps a current sibling byte-identical', ({
+  )('rebuilds only an index set with $name and keeps a current sibling byte-identical', async ({
     mutate,
     throws,
   }) => {
     const dataRoot = createDataRoot();
-    createDemoStore({ dataRoot });
+    await createDemoStore({ dataRoot });
     const keptAt = '2026-07-05T00:00:00.000Z';
     const siblingId = 'ws_00000000-0000-7000-8000-000000000001';
     const badId = quickChatWorkspaceIdForUser(LOCAL_USER_ID);
@@ -1940,7 +1947,7 @@ describe('workspace derived index rebuild', () => {
 
   it('rebuilds stale nonlexical indexes before kernel retrieval reads canonical pages', async () => {
     const dataRoot = createDataRoot();
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const indexesRoot = join(
       dataRoot,
       'workspaces',

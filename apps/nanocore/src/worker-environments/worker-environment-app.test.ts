@@ -9,7 +9,7 @@ import type {
 import { AuthoredAgentConfigSchema } from '@openkit/config-schema';
 import { workspaceIdForOwner } from '@openkit/protocol';
 import { parse } from 'jsonc-parser';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import type { BetterAuthServer } from '../auth/middleware.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
@@ -41,6 +41,7 @@ import {
   type WorkerStorageLayout,
 } from '../runtime/worker-storage-bindings.js';
 import { listSchedulerAdmissionEntriesForWorkspace } from '../scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
@@ -132,9 +133,9 @@ class DeferredInterruptTurnExecutor extends SimulatedTurnExecutor {
     }
     const now = new Date().toISOString();
     if (session) {
-      store.updateAgentSession(agentSessionId, { status: 'busy', updatedAt: now });
+      await store.updateAgentSession(agentSessionId, { status: 'busy', updatedAt: now });
     } else {
-      store.createAgentSession({
+      await store.createAgentSession({
         id: agentSessionId,
         agentId: context.agentSetup?.manifest.id ?? AGENT_ID,
         workspaceId: workspaceIdForOwner(turn.owner),
@@ -145,7 +146,7 @@ class DeferredInterruptTurnExecutor extends SimulatedTurnExecutor {
         updatedAt: now,
       });
     }
-    store.updateTurn(turnId, { agentSessionId, status: 'running' });
+    await store.updateTurn(turnId, { agentSessionId, status: 'running' });
     if (!context?.attemptId) throw new Error('Current execution attempt is absent.');
     // This consumer fixture models a submitted resident worker; production still owns its Core correlation.
     const attempt = recordSchedulerExecutionOperation(this.fixtureCoreDb, {
@@ -211,7 +212,7 @@ class DeferredInterruptTurnExecutor extends SimulatedTurnExecutor {
     if (terminalStatus === 'cancelled') {
       const running = pending.store.getTurnById(pending.turnId);
       if (running.agentSessionId) {
-        const agentSession = pending.store.updateAgentSession(running.agentSessionId, {
+        const agentSession = await pending.store.updateAgentSession(running.agentSessionId, {
           // terminalizeGovernedWorkerTurn maps a cancelled outcome to an interrupted AgentSession.
           message: 'The worker turn was cancelled.',
           status: 'interrupted',
@@ -226,7 +227,7 @@ class DeferredInterruptTurnExecutor extends SimulatedTurnExecutor {
           workspaceId: workspaceIdForOwner(running.owner),
         });
       }
-      const cancelled = pending.store.updateTurn(pending.turnId, {
+      const cancelled = await pending.store.updateTurn(pending.turnId, {
         completedAt: new Date().toISOString(),
         status: 'cancelled',
       });
@@ -520,8 +521,8 @@ describe('Worker environment App composition', () => {
       insertCanonicalUser(coreDb);
       const store = new FsStore({ dataRoot });
       ensureUserQuickChatWorkspace({ coreDb, store, userId: USER_ID });
-      const privateWorkspace = store.ensureQuickChatWorkspace(USER_ID);
-      const administrationThread = store.createThread(
+      const privateWorkspace = await store.ensureQuickChatWorkspace(USER_ID);
+      const administrationThread = await store.createThread(
         privateWorkspace.id,
         'Administration',
         testEntityId('th', 'thread_worker_environment_app'),
@@ -753,8 +754,8 @@ describe('Worker environment App composition', () => {
         )
         .run(foreignUserId, Date.now(), Date.now());
       ensureUserQuickChatWorkspace({ coreDb, store, userId: foreignUserId });
-      const foreignHome = store.ensureQuickChatWorkspace(foreignUserId);
-      const foreignThread = store.createThread(
+      const foreignHome = await store.ensureQuickChatWorkspace(foreignUserId);
+      const foreignThread = await store.createThread(
         foreignHome.id,
         'Foreign administration',
         testEntityId('th', 'thread_foreign_administration'),
@@ -946,10 +947,10 @@ describe('Worker environment App composition', () => {
     try {
       applyMigrations(coreDb);
       insertCanonicalUser(coreDb);
-      const store = createDemoStore({ dataRoot }, USER_ID);
+      const store = await createDemoStore({ dataRoot }, USER_ID);
       ensureUserQuickChatWorkspace({ coreDb, store, userId: USER_ID });
-      const privateWorkspace = store.ensureQuickChatWorkspace(USER_ID);
-      const administrationThread = store.createThread(
+      const privateWorkspace = await store.ensureQuickChatWorkspace(USER_ID);
+      const administrationThread = await store.createThread(
         privateWorkspace.id,
         'Administration',
         testEntityId('th', 'thread_worker_environment_replacement'),
@@ -1229,4 +1230,9 @@ describe('Worker environment App composition', () => {
       coreDb.sqlite.close();
     }
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { expect, it } from 'vitest';
+import { afterEach, expect, it } from 'vitest';
 import { recordServerAuditEvent } from '../audit-events.js';
 import { ensureLocalUser } from '../auth/identity.js';
 import { AutomationStore } from '../lib/automation-store.js';
@@ -12,6 +12,7 @@ import { operationRequest } from '../test-support/operation-request.js';
 import { readWorkspaceDeletionRequest } from '../workspace-deletion-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb } from './db.js';
 import { ensureLayout } from './fs-layout.js';
 import { applyMigrations } from './migrate.js';
@@ -22,14 +23,14 @@ it('seals the complete recurring graph before deletion removes its Core rows and
   try {
     applyMigrations(coreDb);
     const localUserId = ensureLocalUser(coreDb);
-    const store = createDemoStore({ dataRoot });
-    const workspace = store.createWorkspace('Recurring deletion');
+    const store = await createDemoStore({ dataRoot });
+    const workspace = await store.createWorkspace('Recurring deletion');
     recordWorkspaceOwnerMembership({
       coreDb,
       workspaceId: workspace.id,
       ownerUserId: localUserId,
     });
-    const thread = store.createThread(workspace.id, 'Historical worker');
+    const thread = await store.createThread(workspace.id, 'Historical worker');
     let instant = '2026-10-16T00:00:00.000Z';
     const automationStore = new AutomationStore(
       coreDb,
@@ -140,4 +141,9 @@ it('seals the complete recurring graph before deletion removes its Core rows and
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
   }
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

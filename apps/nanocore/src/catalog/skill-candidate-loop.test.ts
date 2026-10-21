@@ -25,6 +25,7 @@ import { FsStore } from '../lib/store.js';
 import { listExportableAgentEnvironmentPackageSnapshots } from '../runtime/aep-snapshot-ledger.js';
 import { readSkillCandidateArtifact } from '../skill-candidate-artifact.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import {
@@ -58,7 +59,8 @@ const createdAt = '2026-10-16T09:00:00Z';
 const digest = (body: string | Buffer) =>
   `sha256:${createHash('sha256').update(body).digest('hex')}`;
 const cleanup: Array<() => void> = [];
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   vi.restoreAllMocks();
   for (const close of cleanup.splice(0).reverse()) close();
 });
@@ -82,38 +84,38 @@ function packageTree(root: string, prefix = ''): CatalogTreeFile[] {
 }
 
 /** Real retained Artifact and catalog owners; this fixture does not simulate native Task admission. */
-function fixture(privateOwnerUserId?: string) {
+async function fixture(privateOwnerUserId?: string) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-skill-candidate-component-'));
   cleanup.push(() => rmSync(dataRoot, { recursive: true, force: true }));
   const coreDb = openCoreDb(dataRoot);
   cleanup.push(() => coreDb.sqlite.close());
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   const workspaceId = store.listWorkspaces().find((workspace) => workspace.kind !== 'personal')!.id;
   recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: LOCAL_USER_ID });
   const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
   cleanup.push(() => workspaceDb.sqlite.close());
   applyScopedMigrations(workspaceDb);
   const actor: Actor = { kind: 'session', userId: LOCAL_USER_ID };
-  const thread = store.createThread(
+  const thread = await store.createThread(
     workspaceId,
     'Synthetic Skill candidate output',
     undefined,
     'conversation',
     privateOwnerUserId ? { visibility: 'private', privateOwnerUserId } : { visibility: 'workspace' }
   );
-  const turn = store.createTurn(
+  const turn = await store.createTurn(
     workspaceId,
     thread.id,
     'Prepare a synthetic workshop Skill candidate. Do not activate it.',
     { kind: 'user', id: LOCAL_USER_ID }
   );
   // This is explicit fake Worker output in ordinary retained records, not evidence of a scheduler or physical Worker run.
-  store.updateTurn(turn.id, { agentId: 'ag_synthetic_author' });
+  await store.updateTurn(turn.id, { agentId: 'ag_synthetic_author' });
   const tree = packageTree(join(fixtureRoot, 'workshop'));
   const body = JSON.stringify(tree);
-  const artifact = store.createArtifact({
+  const artifact = await store.createArtifact({
     id: allocateEntityId('ar'),
     workspaceId,
     threadId: thread.id,
@@ -223,7 +225,7 @@ describe('synthetic Skill Artifact/catalog component', () => {
     cleanup.push(() => coreDb.sqlite.close());
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const workspaceId = DEMO_WORKSPACE_ID;
     recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: LOCAL_USER_ID });
     const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
@@ -307,7 +309,7 @@ describe('synthetic Skill Artifact/catalog component', () => {
         ...operationRequest(operation, {}, { body: JSON.stringify({ workspaceId, ...input }) })
       );
     const start = async (agentId: string, input: string) => {
-      const thread = store.createThread(workspaceId, 'SYNTHETIC Skill candidate Task');
+      const thread = await store.createThread(workspaceId, 'SYNTHETIC Skill candidate Task');
       const requestId = randomUUID();
       const response = await call('task.start', { threadId: thread.id, requestId, agentId, input });
       expect(response.status, await response.clone().text()).toBe(202);
@@ -408,11 +410,11 @@ describe('synthetic Skill Artifact/catalog component', () => {
     expect(catalog.skills.pins[0]?.digest).toBe(submitted.candidate.candidateDigest);
   }, 60_000);
 
-  it('admits only the test fixture without activation and keeps the retired author package absent', () => {
+  it('admits only the test fixture without activation and keeps the retired author package absent', async () => {
     expect(
       existsSync(fileURLToPath(new URL('../../../../skills/openkit-bwm-author/', import.meta.url)))
     ).toBe(false);
-    const f = fixture();
+    const f = await fixture();
     const tree = packageTree(producerFixtureRoot);
     expect(tree.map((entry) => entry.path)).toEqual(['SKILL.md']);
     const imported = importWorkspaceSkill({
@@ -440,8 +442,8 @@ describe('synthetic Skill Artifact/catalog component', () => {
     expect(imported.catalog.skills.entries[0]?.currentDigest).toBeNull();
   });
 
-  it('retains source/work attribution, requires explicit human promotion and keeps an exact pin after default advancement', () => {
-    const f = fixture();
+  it('retains source/work attribution, requires explicit human promotion and keeps an exact pin after default advancement', async () => {
+    const f = await fixture();
     expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspaceId).skills.candidates).toEqual([]);
     const submitted = submit(f);
     const { candidate } = submitted;
@@ -559,8 +561,8 @@ describe('synthetic Skill Artifact/catalog component', () => {
     'foreign-private',
     'revoked',
     'changed-source',
-  ] as const)('refuses %s Artifact admission without a candidate or selection effect', (reason) => {
-    const f = fixture(reason === 'foreign-private' ? allocateEntityId('usr') : undefined);
+  ] as const)('refuses %s Artifact admission without a candidate or selection effect', async (reason) => {
+    const f = await fixture(reason === 'foreign-private' ? allocateEntityId('usr') : undefined);
     if (reason === 'revoked')
       f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, LOCAL_USER_ID))();
     if (reason === 'changed-source') f.selection.version += 1;
@@ -575,8 +577,8 @@ describe('synthetic Skill Artifact/catalog component', () => {
     });
   });
 
-  it('rejects stale candidate promotion and a changed expected pin instead of following current values', () => {
-    const f = fixture();
+  it('rejects stale candidate promotion and a changed expected pin instead of following current values', async () => {
+    const f = await fixture();
     const submitted = submit(f);
     const imported = importWorkspaceSkill({
       dataRoot: f.dataRoot,

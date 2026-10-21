@@ -6,6 +6,7 @@ import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { lightAppDbPath, lightAppRoot } from '../storage/app-db.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import {
   createLightApp,
@@ -25,17 +26,18 @@ import { admitLightAppDefinition, admitLightAppSchema } from './schema.js';
 import { readLightAppSnapshots } from './snapshots.js';
 
 const roots: string[] = [];
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
 /** Creates one isolated Core caller. */
-function context(): KernelCommandContext {
+async function context(): Promise<KernelCommandContext> {
   const dataRoot = mkdtempSync(join(tmpdir(), 'light-app-migrations-'));
   roots.push(dataRoot);
   return {
     dataRoot,
-    store: createDemoStore({ dataRoot }),
+    store: await createDemoStore({ dataRoot }),
     inflightCommands: new WeakMap(),
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
@@ -78,7 +80,7 @@ function proposal(app: Awaited<ReturnType<typeof createLightApp>>): LightAppSche
 
 describe('Light App migration recovery', () => {
   it('refuses missing or unknown recovery metadata versions before decoding core fields', async () => {
-    const ctx = context();
+    const ctx = await context();
     const app = await createLightApp(ctx, schema);
     const next = proposal(app);
     next.title = 'Updated title';
@@ -115,7 +117,7 @@ describe('Light App migration recovery', () => {
   });
 
   it('binds catalog request replay to the raw selector and direct replay to the effective source', async () => {
-    const ctx = context();
+    const ctx = await context();
     const source = { entryId: 'contacts-template', digest: `sha256:${'a'.repeat(64)}` };
     const changedSource = { ...source, digest: `sha256:${'b'.repeat(64)}` };
     const requested = { entryId: source.entryId };
@@ -152,7 +154,7 @@ describe('Light App migration recovery', () => {
   });
 
   it('adds collections and optional fields, renames and removes fields, then restores snapshot data after restart', async () => {
-    const ctx = context();
+    const ctx = await context();
     const app = await createLightApp(ctx, schema, {
       entryId: 'contacts-template',
       digest: `sha256:${'a'.repeat(64)}`,
@@ -237,7 +239,7 @@ describe('Light App migration recovery', () => {
     });
     const restarted = {
       ...ctx,
-      store: createDemoStore({ dataRoot: ctx.dataRoot }),
+      store: await createDemoStore({ dataRoot: ctx.dataRoot }),
       inflightCommands: new WeakMap(),
     };
     expect(
@@ -260,7 +262,7 @@ describe('Light App migration recovery', () => {
   });
 
   it('preserves inbound and surviving outbound relations when a field removal rebuilds its table', async () => {
-    const ctx = context();
+    const ctx = await context();
     const related: LightAppSchemaInput = structuredClone(schema);
     related.collections[0]!.fields.push({
       name: 'peer',
@@ -322,7 +324,7 @@ describe('Light App migration recovery', () => {
   });
 
   it('closes committed command handles before a restore can replace the app file', async () => {
-    const ctx = context();
+    const ctx = await context();
     const app = await createLightApp(ctx, schema);
     const next = proposal(app);
     next.title = 'Renamed';
@@ -339,7 +341,7 @@ describe('Light App migration recovery', () => {
   });
 
   it('refuses fresh snapshot restore and format upgrade after retirement while preserving completed restore replay', async () => {
-    const ctx = context();
+    const ctx = await context();
     const app = await createLightApp(ctx, schema);
     const next = proposal(app);
     next.title = 'Updated contacts';
@@ -390,7 +392,7 @@ describe('Light App migration recovery', () => {
   });
 
   it('rejects unsupported changes and dangling references, and a snapshot publication failure preserves original data', async () => {
-    const ctx = context();
+    const ctx = await context();
     const app = await createLightApp(ctx, schema);
     const bad = proposal(app);
     bad.collections[0]!.fields[0]!.required = false;
@@ -423,7 +425,7 @@ describe('Light App migration recovery', () => {
   });
 
   it('captures a pending post-reset native migration and restores its journal without silent re-upgrade', async () => {
-    const ctx = context();
+    const ctx = await context();
     const app = await createLightApp(ctx, schema);
     const path = lightAppDbPath(ctx.dataRoot, ctx.workspaceId, app.appId);
     const db = new Database(path);
@@ -460,7 +462,7 @@ describe('Light App migration recovery', () => {
     interrupted.mockRestore();
     const restarted = {
       ...upgrade,
-      store: createDemoStore({ dataRoot: ctx.dataRoot }),
+      store: await createDemoStore({ dataRoot: ctx.dataRoot }),
       inflightCommands: new WeakMap(),
     };
     const upgraded = await upgradeLightAppFormat(restarted, app.appId, 1);

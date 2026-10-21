@@ -8,6 +8,7 @@ import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { createBootReadinessSnapshot } from './bootstrap/readiness.js';
 import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
 import { readPendingRequest, validateCanonicalLoad } from './runtime/pending-requests.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -17,7 +18,7 @@ import { ensureLocalUser } from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /** Real authority and durable requests; every differing audience/admission fact is explicit. */
-function fixture(
+async function fixture(
   options: { privateThread?: boolean; responsibleUserId?: string; accepting?: boolean } = {}
 ) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-task-pending-projections-'));
@@ -29,13 +30,13 @@ function fixture(
       "INSERT INTO users (id, kind, display_name, email, email_verified, created_at, updated_at, last_seen_at) SELECT 'usr_00000000-0000-7ed5-9b62-226e0a66887f', 'human', display_name, 'foreign@local.openkit.invalid', email_verified, created_at, updated_at, last_seen_at FROM users WHERE id = 'usr_00000000-0000-7000-8000-000000000001'"
     )
     .run();
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({
     coreDb,
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
-  const thread = store.createThread(
+  const thread = await store.createThread(
     'ws_00000000-0000-7000-8000-000000000001',
     'Projection',
     undefined,
@@ -44,7 +45,7 @@ function fixture(
       ? { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-7ed5-9b62-226e0a66887f' }
       : { visibility: 'workspace' }
   );
-  const turn = store.createTurn(
+  const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     thread.id,
     'Request input',
@@ -62,7 +63,7 @@ function fixture(
     responsibleUserId: options.responsibleUserId ?? 'usr_00000000-0000-7000-8000-000000000001',
     now: turn.startedAt!,
   };
-  store.createItem({
+  await store.createItem({
     id: 'it_00000000-0000-7a40-898b-989ad9a320c9',
     owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
     threadId: thread.id,
@@ -105,7 +106,7 @@ function fixture(
         isSecret,
       },
     ];
-    store.createItem({
+    await store.createItem({
       id: testEntityId('it', `it_${requestId}`),
       owner: turn.owner,
       threadId: thread.id,
@@ -310,7 +311,7 @@ describe('Task conversation and Pending Request definition projections', () => {
     'workspace',
     'server-admin',
   ] as const)('preserves authorized request decisions and read results across HTTP client and CLI for %s', async (scope) => {
-    const f = fixture(
+    const f = await fixture(
       scope === 'server-admin'
         ? { privateThread: true, responsibleUserId: 'usr_00000000-0000-7ed5-9b62-226e0a66887f' }
         : {}
@@ -344,7 +345,7 @@ describe('Task conversation and Pending Request definition projections', () => {
   });
 
   it('preserves unauthorized Workspace and foreign private Thread refusals across projections', async () => {
-    const f = fixture({ privateThread: true });
+    const f = await fixture({ privateThread: true });
     try {
       const projectors = await projections(f);
       for (const [id, input] of Object.entries(inputs(f))) {
@@ -376,15 +377,15 @@ describe('Task conversation and Pending Request definition projections', () => {
   });
 
   it('preserves opaque Approval denial and body-scoped decision recovery in another authorized Workspace', async () => {
-    const f = fixture();
+    const f = await fixture();
     try {
-      const other = f.store.createWorkspace('Other authorized Workspace');
+      const other = await f.store.createWorkspace('Other authorized Workspace');
       recordWorkspaceOwnerMembership({
         coreDb: f.coreDb,
         ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         workspaceId: other.id,
       });
-      const otherThread = f.store.createThread(other.id, 'Other visible Thread');
+      const otherThread = await f.store.createThread(other.id, 'Other visible Thread');
       const db = openWorkspaceDb(f.dataRoot, other.id);
       applyScopedMigrations(db);
       db.sqlite.close();
@@ -419,7 +420,7 @@ describe('Task conversation and Pending Request definition projections', () => {
   });
 
   it('preserves missing canonical-owner recovery through Approval-map and body Workspace admission', async () => {
-    const f = fixture();
+    const f = await fixture();
     try {
       const db = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       db.sqlite
@@ -439,7 +440,7 @@ describe('Task conversation and Pending Request definition projections', () => {
   });
 
   it('preserves missing Approval denial and body-scoped decision recovery without recording a command', async () => {
-    const f = fixture();
+    const f = await fixture();
     try {
       const beforeCommands = f.store.listCommandRequests();
       const projectors = await projections(f);
@@ -466,7 +467,7 @@ describe('Task conversation and Pending Request definition projections', () => {
     'readonly',
     'closed admission',
   ] as const)('refuses every migrated mutation under %s before a protected write', async (condition) => {
-    const f = fixture({ accepting: condition !== 'closed admission' });
+    const f = await fixture({ accepting: condition !== 'closed admission' });
     try {
       const projectors = await projections(
         f,
@@ -500,7 +501,7 @@ describe('Task conversation and Pending Request definition projections', () => {
   });
 
   it('refuses decisions by another ordinary member through the responsible-user owner', async () => {
-    const f = fixture({ responsibleUserId: 'usr_00000000-0000-7ed5-9b62-226e0a66887f' });
+    const f = await fixture({ responsibleUserId: 'usr_00000000-0000-7ed5-9b62-226e0a66887f' });
     try {
       const projectors = await projections(f);
       for (const [id, input] of Object.entries(inputs(f)).filter(([id]) =>
@@ -517,7 +518,7 @@ describe('Task conversation and Pending Request definition projections', () => {
   });
 
   it('refuses a secret question before writing a resolution or command receipt', async () => {
-    const f = fixture();
+    const f = await fixture();
     try {
       const beforeCommands = f.store.listCommandRequests();
       const projectors = await projections(f);
@@ -570,7 +571,7 @@ describe('Task conversation and Pending Request definition projections', () => {
     ['POST', '/api/user-input-requests/ui_projection/answer', 'question.answer'],
     ['POST', '/api/pending-requests/ui_withdraw/withdraw', 'pending-request.withdraw'],
   ] as const)('removes %s %s with HTTP 404 for an authenticated valid request', async (method, path, id) => {
-    const f = fixture();
+    const f = await fixture();
     try {
       const token = createOpenKitAccessTokenRecord(f.coreDb, {
         ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -598,4 +599,9 @@ describe('Task conversation and Pending Request definition projections', () => {
       f.close();
     }
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

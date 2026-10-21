@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { operationToolName } from '@openkit/app-api-schemas';
 import { WorkspaceConfigSchema } from '@openkit/config-schema';
-import { expect, it, onTestFinished, vi } from 'vitest';
+import { afterEach, expect, it, onTestFinished, vi } from 'vitest';
 import { listWorkspaceAuditEvents } from '../audit-events.js';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import {
@@ -17,6 +17,7 @@ import * as knowledgeManager from '../internal-agents/knowledge-manager-agent.js
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestGatewayConfig } from '../test-support/agent-environment.js';
@@ -30,9 +31,9 @@ import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook } from './notebook.js';
 import { updateOkfFrontmatter } from './okf.js';
 
 /** Real operation admission, notebooks and runtime; only Provider transport is replaced. */
-function fixture(enableMaintenance = false) {
+async function fixture(enableMaintenance = false) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'km-result-api-'));
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
@@ -141,7 +142,7 @@ function markdown() {
 }
 
 it('returns a typed HTTP refusal with the retained KM Turn after one failed repair', async () => {
-  const f = fixture();
+  const f = await fixture();
   f.createResponses.mockImplementation(async () => markdown());
   const response = await f.app.request(
     ...operationRequest('knowledge.ask', {
@@ -181,7 +182,7 @@ it('returns a typed HTTP refusal with the retained KM Turn after one failed repa
 
 // Real Git publication and the bounded role use the existing 120-second execution budget.
 it('repairs maintenance output without repeating the accepted notebook submission', async () => {
-  const f = fixture();
+  const f = await fixture();
   const notebook = new KnowledgeNotebook({
     repositoryPath: join(f.dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'knowledge', 'notebook.git'),
   });
@@ -230,7 +231,7 @@ it('repairs maintenance output without repeating the accepted notebook submissio
 
 // The Provider first omits the native no-change outcome, then uses actual Tool feedback to repair it.
 it('repairs a premature maintenance result with one native no-change submission', async () => {
-  const f = fixture();
+  const f = await fixture();
   const notebook = new KnowledgeNotebook({
     repositoryPath: join(f.dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'knowledge', 'notebook.git'),
   });
@@ -284,7 +285,7 @@ it('repairs a premature maintenance result with one native no-change submission'
 
 // A repair may finish after a refused duplicate, but cannot repeat the native submission.
 it('refuses a duplicate notebook submission during maintenance result repair', async () => {
-  const f = fixture();
+  const f = await fixture();
   const notebook = new KnowledgeNotebook({
     repositoryPath: join(f.dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'knowledge', 'notebook.git'),
   });
@@ -333,7 +334,7 @@ it('refuses a duplicate notebook submission during maintenance result repair', a
 
 // Organizing an empty overview is a separate editing run; the existing human fact must keep its bytes.
 it('organizes the initial root index around an existing human fact through the real editor and publisher', async () => {
-  const f = fixture();
+  const f = await fixture();
   const notebook = new KnowledgeNotebook({
     repositoryPath: join(f.dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'knowledge', 'notebook.git'),
   });
@@ -410,7 +411,7 @@ it.each([
   false,
   true,
 ])('exposes a safe notebook Tool failure when the log sink throws=%s', async (sinkThrows) => {
-  const f = fixture();
+  const f = await fixture();
   const notebook = new KnowledgeNotebook({
     repositoryPath: join(f.dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'knowledge', 'notebook.git'),
   });
@@ -499,7 +500,7 @@ it.each([
   'malformed summary',
   'non-admitted Source',
 ] as const)('diagnostic floor RED 1: categorizes %s without candidate or publication effects', async (failure) => {
-  const f = fixture(true);
+  const f = await fixture(true);
   const observed = observeNotebookTools();
   const repositoryPath = join(
     f.dataRoot,
@@ -606,7 +607,7 @@ it.each([
   { category: 'notebook.script_syntax_error', script: 'if true; then' },
   { category: 'notebook.script_limit_exceeded', script: `#${'x'.repeat(64 * 1024)}` },
 ])('diagnostic floor RED 2: preserves $category exactly', async ({ category, script }) => {
-  const f = fixture();
+  const f = await fixture();
   const observed = observeNotebookTools();
   let feedback = '';
   f.createResponses.mockImplementation(async () => {
@@ -640,7 +641,7 @@ it.each([
 }, 120_000);
 
 it('makes the actual script path refusal actionable with exact native feedback', async () => {
-  const f = fixture();
+  const f = await fixture();
   const observed = observeNotebookTools();
   let feedback = '';
   f.createResponses.mockImplementation(async () => {
@@ -676,7 +677,7 @@ it('makes the actual script path refusal actionable with exact native feedback',
 }, 120_000);
 
 it('keeps exception text and paths out of model and process failure diagnostics', async () => {
-  const f = fixture();
+  const f = await fixture();
   const marker = 'PRIVATE-EXCEPTION-CONTENT';
   const prepare = vi.spyOn(KnowledgeNotebook.prototype, 'prepare').mockImplementation(() => {
     throw new TypeError(`${marker} ${f.dataRoot}`);
@@ -735,7 +736,7 @@ it('keeps exception text and paths out of model and process failure diagnostics'
 });
 
 it('makes the actual Claim confidence refusal actionable without publishing', async () => {
-  const f = fixture();
+  const f = await fixture();
   const notebook = new KnowledgeNotebook({
     repositoryPath: join(f.dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'knowledge', 'notebook.git'),
   });
@@ -794,7 +795,7 @@ it('makes the actual Claim confidence refusal actionable without publishing', as
 });
 
 it('corrects Claim confidence before result submission through the real KM Tools', async () => {
-  const f = fixture();
+  const f = await fixture();
   const notebook = new KnowledgeNotebook({
     repositoryPath: join(f.dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'knowledge', 'notebook.git'),
   });
@@ -894,7 +895,7 @@ it('corrects Claim confidence before result submission through the real KM Tools
 }, 120_000);
 
 it('Final-Tree Validation: same-author bounded link feedback permits one repair and publication without omitted referrer disclosure', async () => {
-  const f = fixture(true);
+  const f = await fixture(true);
   const notebook = new KnowledgeNotebook({
     repositoryPath: join(f.dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'knowledge', 'notebook.git'),
   });
@@ -1084,3 +1085,8 @@ it('Final-Tree Validation: same-author bounded link feedback permits one repair 
   );
   expect(JSON.stringify(result)).not.toContain('linkDiagnostics');
 }, 120_000);
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
+});

@@ -1,7 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createDefaultWorkerControlGateway } from '../app.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import {
@@ -11,6 +11,7 @@ import {
   requireSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
@@ -79,7 +80,7 @@ function attempts(db: ReturnType<typeof openCoreDb>): Record<string, unknown>[] 
 }
 
 /** Composes the real queue, dispatch, Store and maintenance with an external-effect double. */
-function fixture(
+async function fixture(
   disposition: Observation['disposition'] = 'accepted',
   _placement: 'local' | 'remote' = 'local',
   holdSubmitResponse = false
@@ -87,7 +88,7 @@ function fixture(
   const db = openCoreDb(mkdtempSync(join(tmpdir(), 'route-b-port-')));
   applyMigrations(db);
   ensureLocalUser(db);
-  const store = createDemoStore({ dataRoot: db.dataRoot });
+  const store = await createDemoStore({ dataRoot: db.dataRoot });
   recordWorkspaceOwnerMembership({
     coreDb: db,
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -242,11 +243,11 @@ function fixture(
       status: store.getTurnById(subject.turnId).status as 'failed',
     }),
   };
-  const queue = (suffix: string, threadId = 'th_00000000-0000-7000-8000-000000000001') => {
+  const queue = async (suffix: string, threadId = 'th_00000000-0000-7000-8000-000000000001') => {
     const turnId = testEntityId('tu', `turn_port_${suffix}`);
     if (threadId !== 'th_00000000-0000-7000-8000-000000000001')
-      store.createThread('ws_00000000-0000-7000-8000-000000000001', suffix, threadId);
-    store.createTurn(
+      await store.createThread('ws_00000000-0000-7000-8000-000000000001', suffix, threadId);
+    await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       threadId,
       'Execute exactly once.',
@@ -317,7 +318,7 @@ function fixture(
 
 describe('execution backend port through real Core coordination', () => {
   it('keeps the second FIFO Task sessionless while real NanoHost image acquisition is pending', async () => {
-    const f = fixture();
+    const f = await fixture();
     f.port.id = 'nanohost';
     const setup = createTestAgentSetup({
       requiredCapabilities: ['trusted-worker-inference-relay'],
@@ -347,8 +348,8 @@ describe('execution backend port through real Core coordination', () => {
         },
       },
     });
-    const first = f.queue('native-first');
-    const second = f.queue('native-second', testEntityId('th', 'thread_native_second'));
+    const first = await f.queue('native-first');
+    const second = await f.queue('native-second', testEntityId('th', 'thread_native_second'));
     const input = {
       ...f.dispatchInput,
       now: () => new Date().toISOString(),
@@ -392,9 +393,9 @@ describe('execution backend port through real Core coordination', () => {
     'local',
     'remote',
   ] as const)('uses the same configured backend id for %s with adapter-specific proof kept opaque', async (placement) => {
-    const f = fixture('accepted', placement);
+    const f = await fixture('accepted', placement);
     try {
-      f.queue('configured');
+      await f.queue('configured');
       await f.dispatch();
       expect(f.port.submit).toHaveBeenCalledOnce();
       expect(f.effectCalls[0]).toMatchObject({ backendId: 'fixture-backend' });
@@ -414,10 +415,10 @@ describe('execution backend port through real Core coordination', () => {
   });
 
   it('closes definite busy only after no reservation, keeping the same queued admission and Turn for a new attempt', async () => {
-    const f = fixture('accepted');
+    const f = await fixture('accepted');
     try {
       f.setPhysicalCapacityAvailable(false);
-      const entry = f.queue('busy');
+      const entry = await f.queue('busy');
       await f.dispatch();
       expect(f.port.submit).not.toHaveBeenCalled();
       const first = attempts(f.db)[0]!;
@@ -459,9 +460,9 @@ describe('execution backend port through real Core coordination', () => {
     'accepted',
     'unknown',
   ] as const)('inspects %s pending work across maintenance and restart without another native start', async (disposition) => {
-    const f = fixture(disposition);
+    const f = await fixture(disposition);
     try {
-      const entry = f.queue('pending');
+      const entry = await f.queue('pending');
       await f.dispatch();
       expect(f.port.submit).toHaveBeenCalledOnce();
       const original = f.effectCalls[0]!;
@@ -491,7 +492,7 @@ describe('execution backend port through real Core coordination', () => {
     'open',
     'closing',
   ] as const)('keeps %s exclusion local while an independent Thread gets a durable queued receipt', async (phase) => {
-    const f = fixture('unknown', 'local', true);
+    const f = await fixture('unknown', 'local', true);
     f.port.cancel.mockImplementation(async (correlation) => ({
       ...correlation,
       disposition: 'unknown',
@@ -500,7 +501,7 @@ describe('execution backend port through real Core coordination', () => {
       outcomeRef: null,
     }));
     try {
-      const a = f.queue('exclusive');
+      const a = await f.queue('exclusive');
       await f.dispatch();
       expect(f.port.submit).toHaveBeenCalledOnce();
       const original = f.effectCalls[0]!;
@@ -542,7 +543,7 @@ describe('execution backend port through real Core coordination', () => {
         'function'
       );
       // Positive control prevents a missing prerequisite or unconditional refusal from proving exclusion.
-      const control = f.queue('control', 'th_00000000-0000-7a11-83a9-10eb8b400194');
+      const control = await f.queue('control', 'th_00000000-0000-7a11-83a9-10eb8b400194');
       const candidateFor = (entry: typeof control, attemptId: string, sessionId: string) => ({
         entry,
         attemptId,
@@ -568,7 +569,7 @@ describe('execution backend port through real Core coordination', () => {
         const entry =
           collision === 'turn'
             ? a
-            : f.queue(
+            : await f.queue(
                 `collision-${collision}`,
                 collision === 'thread' ? a.threadId : 'th_00000000-0000-751d-bedc-6ab13a59afef'
               );
@@ -609,7 +610,7 @@ describe('execution backend port through real Core coordination', () => {
       // Acquisition made this control admitted; retain that history after its no-effect close.
       expect(requireSchedulerAdmissionEntry(f.db, control.queueEntryId).status).toBe('admitted');
       const setup = createTestAgentSetup();
-      f.store.createThread(
+      await f.store.createThread(
         'ws_00000000-0000-7000-8000-000000000001',
         'Independent',
         'th_00000000-0000-7034-bb1e-225363d49699'
@@ -709,7 +710,7 @@ describe('execution backend port through real Core coordination', () => {
         try {
           const recovery = {
             ...f.recoveryInput,
-            store: createDemoStore({ dataRoot: f.db.dataRoot }),
+            store: await createDemoStore({ dataRoot: f.db.dataRoot }),
           };
           const _boot = await runSchedulerRestartRecovery(reloaded, recovery);
           await runSchedulerRecoveryMaintenance(reloaded, recovery);
@@ -742,9 +743,9 @@ describe('execution backend port through real Core coordination', () => {
     'wrong-backend',
     'wrong-binding',
   ] as const)('keeps the exact fence on %s inspection evidence', async (kind) => {
-    const f = fixture('unknown');
+    const f = await fixture('unknown');
     try {
-      f.queue('inspect');
+      await f.queue('inspect');
       await f.dispatch();
       expect(f.port.submit).toHaveBeenCalledOnce();
       const original = f.effectCalls[0]!;
@@ -784,9 +785,9 @@ describe('execution backend port through real Core coordination', () => {
     'exact',
     'conflicting',
   ] as const)('keeps the first closed outcome immutable after a %s late result and storage reload', async (kind) => {
-    const f = fixture('not_accepted');
+    const f = await fixture('not_accepted');
     try {
-      const entry = f.queue('late-closed');
+      const entry = await f.queue('late-closed');
       await f.dispatch();
       expect(f.port.submit).toHaveBeenCalledOnce();
       const correlation = f.effectCalls[0]!;
@@ -848,7 +849,7 @@ describe('execution backend port through real Core coordination', () => {
       const root = f.db.dataRoot;
       const reloaded = openCoreDb(root);
       try {
-        const recovery = { ...f.recoveryInput, store: createDemoStore({ dataRoot: root }) };
+        const recovery = { ...f.recoveryInput, store: await createDemoStore({ dataRoot: root }) };
         const _boot = await runSchedulerRestartRecovery(reloaded, recovery);
         await runSchedulerRecoveryMaintenance(reloaded, recovery);
         await runSchedulerDispatchLoop({
@@ -868,9 +869,9 @@ describe('execution backend port through real Core coordination', () => {
   });
 
   it('lets durable queued cancellation win without preparation or backend submission', async () => {
-    const f = fixture();
+    const f = await fixture();
     try {
-      const entry = f.queue('cancelled');
+      const entry = await f.queue('cancelled');
       cancelSchedulerAdmissionEntry(f.db, {
         queueEntryId: entry.queueEntryId,
         workspaceId: entry.workspaceId,
@@ -888,9 +889,9 @@ describe('execution backend port through real Core coordination', () => {
   });
 
   it('revokes a possibly submitted attempt before exact cancellation and cannot reopen it from a late accepted result', async () => {
-    const f = fixture('accepted');
+    const f = await fixture('accepted');
     try {
-      const entry = f.queue('cancel-after-submit');
+      const entry = await f.queue('cancel-after-submit');
       await f.dispatch();
       expect(f.port.submit).toHaveBeenCalledOnce();
       const original = f.effectCalls[0]!;
@@ -952,10 +953,10 @@ describe('execution backend port through real Core coordination', () => {
   });
 
   it('fixes the submit deadline at 7200 seconds and never extends it while inspecting unresolved work', async () => {
-    const f = fixture('unknown');
+    const f = await fixture('unknown');
     try {
       // This single case obtains the submit budget from production, not this legacy fixture option.
-      f.queue('absolute-deadline');
+      await f.queue('absolute-deadline');
       await f.dispatch();
       expect(f.port.submit).toHaveBeenCalledOnce();
       const submitted = f.port.submit.mock.calls[0]![0];
@@ -984,9 +985,9 @@ describe('execution backend port through real Core coordination', () => {
   });
 
   it('does no port effects during pre-listen classification and serializes original-operation inspection after listen', async () => {
-    const f = fixture('unknown');
+    const f = await fixture('unknown');
     try {
-      f.queue('boot');
+      await f.queue('boot');
       await f.dispatch();
       expect(f.port.submit).toHaveBeenCalledOnce();
       // Settle the live failed closeout first, so this check measures only pre-listen recovery effects.
@@ -1036,9 +1037,9 @@ describe('execution backend port through real Core coordination', () => {
   });
 
   it('does not release on native terminal or stop acknowledgement without complete Core handoff barriers', async () => {
-    const f = fixture('accepted');
+    const f = await fixture('accepted');
     try {
-      const entry = f.queue('terminal');
+      const entry = await f.queue('terminal');
       await f.dispatch();
       expect(f.port.submit).toHaveBeenCalledOnce();
       const correlation = f.effectCalls[0]!;
@@ -1059,4 +1060,9 @@ describe('execution backend port through real Core coordination', () => {
       f.db.sqlite.close();
     }
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

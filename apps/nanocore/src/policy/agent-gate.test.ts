@@ -9,6 +9,7 @@ import { createAdministrationConfiguration } from '../config/administration-conf
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import { quickChatWorkspaceIdForUser } from '../lib/store.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -182,7 +183,8 @@ function kernel(allow = true) {
 }
 
 const cleanup: (() => void)[] = [];
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   vi.restoreAllMocks();
   vi.useRealTimers();
   for (const close of cleanup.splice(0)) close();
@@ -211,13 +213,13 @@ function fixture(document: PolicyDocumentV1) {
 }
 
 /** Real human candidate, confirmation, CAS, reload and private Artifact owners. */
-function configurationFixture() {
+async function configurationFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-agent-activation-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: userId });
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
   cleanup.push(() => {
     workspaceDb.sqlite.close();
@@ -226,14 +228,14 @@ function configurationFixture() {
   });
   const actor = { kind: 'local' as const, userId };
   const personalWorkspaceId = quickChatWorkspaceIdForUser(userId);
-  const thread = store.createThread(
+  const thread = await store.createThread(
     personalWorkspaceId,
     'Review agent Policy',
     allocateEntityId('th'),
     'administration',
     { visibility: 'private', privateOwnerUserId: userId }
   );
-  const turn = store.createTurn(
+  const turn = await store.createTurn(
     personalWorkspaceId,
     thread.id,
     'Review this agent gate.',
@@ -336,8 +338,8 @@ describe('agent gate at native I16', () => {
     ).toBe(0);
   });
 
-  it('refuses direct active configuration preparation without prior exact completed shadow evidence', () => {
-    const f = configurationFixture();
+  it('refuses direct active configuration preparation without prior exact completed shadow evidence', async () => {
+    const f = await configurationFixture();
     const original = readFileSync(f.serverPath, 'utf8');
     expect(() =>
       preparePolicyConfiguration({
@@ -350,7 +352,7 @@ describe('agent gate at native I16', () => {
   });
 
   it('activates only the exact completed shadow gate through a separate human-confirmed candidate', async () => {
-    const f = configurationFixture();
+    const f = await configurationFixture();
     const shadow = agentDocument();
     admittedBinding(shadow).state = 'shadow';
     const original = readFileSync(f.serverPath, 'utf8');

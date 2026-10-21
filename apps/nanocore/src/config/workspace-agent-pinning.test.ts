@@ -7,6 +7,7 @@ import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from '../auth/access-token-store.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
@@ -24,13 +25,14 @@ const cleanups: (() => void)[] = [];
 const workspaceFileId = 'workspaces/ws_00000000-0000-7000-8000-000000000001/workspace.jsonc';
 const unrelatedBinding = { agentId: 'agent_kept', profileId: 'default', skills: [] };
 
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   vi.restoreAllMocks();
   for (const cleanup of cleanups.splice(0)) cleanup();
 });
 
 /** Uses real file, reload, authorization and catalog owners; inference supply is fixture-owned. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-pin-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -39,13 +41,16 @@ function fixture() {
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
   });
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({
     coreDb,
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
-  const thread = store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Pin admission');
+  const thread = await store.createThread(
+    'ws_00000000-0000-7000-8000-000000000001',
+    'Pin admission'
+  );
   const write = (relativePath: string, content: string) => {
     const path = join(dataRoot, relativePath);
     mkdirSync(dirname(path), { recursive: true });
@@ -191,7 +196,7 @@ function pinContent(content: string, profileId: string | null) {
 
 describe('Workspace Agent pins through existing runtime configuration', () => {
   it('keeps general inventory broad and applies exact-revision pin, profile change and unpin only after reload', async () => {
-    const f = fixture();
+    const f = await fixture();
     const inventory = await f.call('agent.list', {}, f.member.secret);
     expect(inventory.status).toBe(200);
     expect((await inventory.json()).items).toContainEqual(
@@ -325,7 +330,7 @@ describe('Workspace Agent pins through existing runtime configuration', () => {
   });
 
   it('keeps persisted pin separate from last-known-good catalog after a failed reload', async () => {
-    const f = fixture();
+    const f = await fixture();
     const original = await f.read();
     const before = await f.targets();
     const content = pinContent(original.content, 'review');
@@ -362,7 +367,7 @@ describe('Workspace Agent pins through existing runtime configuration', () => {
   });
 
   it('rechecks administrator authority and refuses unavailable or unauthorized supply before work', async () => {
-    const f = fixture();
+    const f = await fixture();
     const original = await f.read();
     const update = {
       id: workspaceFileId,

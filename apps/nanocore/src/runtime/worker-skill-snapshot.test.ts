@@ -24,6 +24,7 @@ import {
   setWorkspaceSkillPin,
   skillSnapshotPath,
 } from '../catalog/resource-catalog.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -110,13 +111,13 @@ describe('exact retained Worker Skill delivery', () => {
     });
   }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-exact-worker-skill-')));
     applyMigrations(coreDb);
     userId = ensureLocalUser(coreDb);
     agentSessionId = allocateEntityId('as');
     const demo = createDemoWorkspaceForUser(userId);
-    store = createDemoStore({ dataRoot: coreDb.dataRoot }, userId);
+    store = await createDemoStore({ dataRoot: coreDb.dataRoot }, userId);
     turn = store.createTurn(demo.workspace.id, demo.thread.id, 'Use exact retained Skill', {
       kind: 'user',
       id: userId,
@@ -134,7 +135,8 @@ describe('exact retained Worker Skill delivery', () => {
     environmentPackage = resolvePackage();
   }, 60_000);
 
-  afterEach(() => {
+  afterEach(async () => {
+    await shutdownControlStoreWorkerClient();
     vi.restoreAllMocks();
     syncBuiltinESMExports();
     coreDb.sqlite.close();

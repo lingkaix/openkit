@@ -3,11 +3,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseWorkspaceDataSourceCatalog } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import type { AgentManifest } from '../agents/manifest.js';
 import { requireResolvedAgentSetup } from '../agents/setup-ledger.js';
 import { FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import {
@@ -119,7 +120,7 @@ function localProviderRegistry(): ProviderRegistry {
 
 describe('startTurn orchestrator', () => {
   it('reports conflicting exact Skill setup before creating a Turn or starting its executor', async () => {
-    const store = createDemoStore();
+    const store = await createDemoStore();
     const turnExecutor = new RecordingTurnExecutor();
     const configured = manifest('agent_codex_host');
     configured.skills = [{ id: 'review-skill', digest: `sha256:${'a'.repeat(64)}` }];
@@ -153,7 +154,7 @@ describe('startTurn orchestrator', () => {
     'agent_pi',
     'agent_fourth_runtime',
   ])('starts opaque manifest agent %s without a duplicate Store catalog entry', async (agentId) => {
-    const store = createDemoStore();
+    const store = await createDemoStore();
     const turnExecutor = new RecordingTurnExecutor();
     const configuredManifest = manifest(agentId);
     const handle = await startTurn({
@@ -175,7 +176,7 @@ describe('startTurn orchestrator', () => {
   });
 
   it('selects an agent before creating and starting a turn', async () => {
-    const store = createDemoStore();
+    const store = await createDemoStore();
     const turnExecutor = new RecordingTurnExecutor();
     const handle = await startTurn({
       gatewayConfig: createTestGatewayConfig(),
@@ -229,7 +230,7 @@ describe('startTurn orchestrator', () => {
     'blocked',
     'unknown',
   ] as const)('rejects %s agent readiness before creating a turn or starting the executor', async (status) => {
-    const store = createDemoStore();
+    const store = await createDemoStore();
     const turnExecutor = new RecordingTurnExecutor();
 
     await expect(
@@ -265,7 +266,7 @@ describe('startTurn orchestrator', () => {
   });
 
   it('rejects generic degraded readiness before creating a turn or starting the executor', async () => {
-    const store = createDemoStore();
+    const store = await createDemoStore();
     const turnExecutor = new RecordingTurnExecutor();
 
     await expect(
@@ -301,7 +302,7 @@ describe('startTurn orchestrator', () => {
   });
 
   it('applies a per-turn model override only to the explicitly selected Agent', async () => {
-    const store = createDemoStore();
+    const store = await createDemoStore();
     const turnExecutor = new RecordingTurnExecutor();
     const providerRegistry = localProviderRegistry();
     const codexManifest = {
@@ -346,7 +347,7 @@ describe('startTurn orchestrator', () => {
   });
 
   it('does not use a model override to bypass a disabled default Agent', async () => {
-    const store = createDemoStore();
+    const store = await createDemoStore();
     const turnExecutor = new RecordingTurnExecutor();
     const providerRegistry = localProviderRegistry();
     const models = {
@@ -377,7 +378,7 @@ describe('startTurn orchestrator', () => {
   });
 
   it('rejects an explicit agent whose manifest provider does not support the model override', async () => {
-    const store = createDemoStore();
+    const store = await createDemoStore();
     const turnExecutor = new RecordingTurnExecutor();
     const providerRegistry = localProviderRegistry();
     const configuredManifests = [
@@ -424,17 +425,17 @@ describe('startTurn orchestrator', () => {
       /**
        * Records turn creation order.
        */
-      public override createTurn(
+      public override async createTurn(
         workspaceId: string,
         threadId: string,
         input: string,
         triggerActor: ActorRef
       ) {
         sequence.push('store.createTurn');
-        return super.createTurn(workspaceId, threadId, input, triggerActor);
+        return await super.createTurn(workspaceId, threadId, input, triggerActor);
       }
     })();
-    seedDemoWorkspace(store);
+    await seedDemoWorkspace(store);
     const turnExecutor = new (class extends RecordingTurnExecutor {
       /**
        * Records executor startup order.
@@ -474,7 +475,7 @@ describe('startTurn orchestrator', () => {
   });
 
   it('fails before creating a turn when selected agent is missing', async () => {
-    const store = createDemoStore();
+    const store = await createDemoStore();
     const turnExecutor = new RecordingTurnExecutor();
 
     await expect(
@@ -496,7 +497,7 @@ describe('startTurn orchestrator', () => {
   });
 
   it('resolves setup for a selected authored agent config without changing turn execution', async () => {
-    const store = createDemoStore();
+    const store = await createDemoStore();
     const turnExecutor = new RecordingTurnExecutor();
     const configuredManifest = manifest('agent_codex_host', {});
     const handle = await startTurn({
@@ -525,7 +526,7 @@ describe('startTurn orchestrator', () => {
   });
 
   it('records resolved setup when a workspace setup ledger is provided', async () => {
-    const store = createDemoStore();
+    const store = await createDemoStore();
     const turnExecutor = new RecordingTurnExecutor();
     const configuredManifest = manifest('agent_codex_host', {});
     const workspaceDb = openWorkspaceDb(
@@ -572,7 +573,7 @@ describe('startTurn orchestrator', () => {
   });
 
   it('passes authored backend requirements into the executor start context', async () => {
-    const store = createDemoStore();
+    const store = await createDemoStore();
     const turnExecutor = new RecordingTurnExecutor();
     const configuredManifest = manifest('agent_codex_host', {
       requiredCapabilities: ['dynamic-network-policy'],
@@ -604,7 +605,7 @@ describe('startTurn orchestrator', () => {
   });
 
   it('passes authored workspace source refs into the executor start context', async () => {
-    const store = createDemoStore();
+    const store = await createDemoStore();
     const turnExecutor = new RecordingTurnExecutor();
     const catalog = parseWorkspaceDataSourceCatalog({
       schemaVersion: 1,
@@ -684,7 +685,7 @@ describe('startTurn orchestrator', () => {
   });
 
   it('blocks authored workspace source refs before creating a turn when the catalog source is missing', async () => {
-    const store = createDemoStore();
+    const store = await createDemoStore();
     const turnExecutor = new RecordingTurnExecutor();
     const config: AgentManifest = {
       ...manifest('agent_codex_host', {}),
@@ -741,7 +742,7 @@ describe('startTurn orchestrator', () => {
   });
 
   it('passes scheduler lease lineage into the executor start context', async () => {
-    const store = createDemoStore();
+    const store = await createDemoStore();
     const turnExecutor = new RecordingTurnExecutor();
     const handle = await startTurn({
       gatewayConfig: createTestGatewayConfig(),
@@ -777,4 +778,9 @@ describe('startTurn orchestrator', () => {
       },
     ]);
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

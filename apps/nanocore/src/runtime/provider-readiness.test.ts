@@ -13,6 +13,7 @@ import {
   createSchedulerAdmissionEntry,
   requireSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -43,7 +44,8 @@ type SupplyCase =
   | 'enabled-backup';
 
 const cleanups: Array<() => void> = [];
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const cleanup of cleanups.splice(0).reverse()) cleanup();
 });
 
@@ -116,14 +118,14 @@ function supply(kind: SupplyCase) {
 }
 
 /** Opens real admission owners with an external runtime that can report capacity without effects. */
-function fixture(kind: SupplyCase) {
+async function fixture(kind: SupplyCase) {
   const current = supply(kind);
   const manifest = createTestAgentSetup({ logicalModelId: 'readiness-model' }).manifest;
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-provider-readiness-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({
     coreDb,
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -249,7 +251,7 @@ describe('provider readiness at Turn boundaries', () => {
     'unavailable-account',
     'dormant-backup',
   ] as const)('orchestrator refuses %s before creating a Turn or starting its executor', async (kind) => {
-    const f = fixture(kind);
+    const f = await fixture(kind);
     expect(f.setup().setup).toBeNull();
     const result = startTurn({
       ...f.hooks,
@@ -279,7 +281,7 @@ describe('provider readiness at Turn boundaries', () => {
     'unavailable-account',
     'dormant-backup',
   ] as const)('product admission refuses %s before durable admission', async (kind) => {
-    const f = fixture(kind);
+    const f = await fixture(kind);
     expect(f.setup().setup).toBeNull();
     const admitted = vi.fn(() => {
       throw new Error('Unexpected durable admission.');
@@ -319,7 +321,7 @@ describe('provider readiness at Turn boundaries', () => {
     'unavailable-account',
     'dormant-backup',
   ] as const)('scheduler refuses %s before backend preparation', async (kind) => {
-    const f = fixture(kind);
+    const f = await fixture(kind);
     expect(f.setup().setup).toBeNull();
     enqueue(f);
     const result = runSchedulerDispatchLoop({
@@ -341,7 +343,7 @@ describe('provider readiness at Turn boundaries', () => {
     'healthy-account',
     'enabled-backup',
   ] as const)('orchestrator starts with %s supply', async (kind) => {
-    const f = fixture(kind);
+    const f = await fixture(kind);
     expect(f.setup().diagnostics).toEqual([]);
     const result = await startTurn({
       ...f.hooks,
@@ -365,7 +367,7 @@ describe('provider readiness at Turn boundaries', () => {
     'healthy-account',
     'enabled-backup',
   ] as const)('product admits %s supply before the controlled dispatch boundary', async (kind) => {
-    const f = fixture(kind);
+    const f = await fixture(kind);
     expect(f.setup().diagnostics).toEqual([]);
     const stopAfterAdmission = new Error('Stop at the admission boundary.');
     const admitted = vi.fn(() => {
@@ -401,7 +403,7 @@ describe('provider readiness at Turn boundaries', () => {
     'healthy-account',
     'enabled-backup',
   ] as const)('scheduler reaches the backend capacity boundary with %s supply', async (kind) => {
-    const f = fixture(kind);
+    const f = await fixture(kind);
     expect(f.setup().diagnostics).toEqual([]);
     enqueue(f);
     const result = await runSchedulerDispatchLoop({
@@ -426,7 +428,7 @@ describe('scheduler to orchestrator readiness handoff', () => {
     'healthy',
     'healthy-account',
   ] as const)('rechecks %s supply after preparation and before executor start', async (kind) => {
-    const f = fixture(kind);
+    const f = await fixture(kind);
     expect(f.setup().diagnostics).toEqual([]);
     enqueue(f);
     f.prepare.mockImplementation(async (_store, input) => {
@@ -466,7 +468,7 @@ describe('product admission to queued dispatch readiness handoff', () => {
     'healthy',
     'healthy-account',
   ] as const)('rechecks %s supply after admission without preparing the backend', async (kind) => {
-    const f = fixture(kind);
+    const f = await fixture(kind);
     expect(f.setup().diagnostics).toEqual([]);
     const prepared = Promise.withResolvers<void>();
     f.prepare.mockImplementation(async () => {

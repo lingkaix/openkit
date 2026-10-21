@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Hono } from 'hono';
-import { expect, it, vi } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
@@ -13,6 +13,7 @@ import { quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { digestLlmSystemPrompt } from '../llm/system-prompt-digest.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
@@ -48,9 +49,9 @@ it('binds the actual Administration prompt and ordered tools before model access
       tokenId: 'tok_00000000-0000-788c-8362-50ad2f3e3257',
       workspaceIds: [],
     });
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const workspaceId = quickChatWorkspaceIdForUser('usr_00000000-0000-7000-8000-000000000001');
-    const thread = store.createThread(
+    const thread = await store.createThread(
       workspaceId,
       'Administration',
       'th_00000000-0000-7eb0-81a4-c2a65cc0dcba',
@@ -244,4 +245,9 @@ it('binds the actual Administration prompt and ordered tools before model access
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
   }
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

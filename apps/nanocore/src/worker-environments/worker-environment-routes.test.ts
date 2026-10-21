@@ -5,6 +5,7 @@ import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AuthVariables } from '../auth/middleware.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -19,14 +20,15 @@ import {
 } from './worker-environment-operations.js';
 
 const fixtures: Array<{ coreDb: CoreDb; dataRoot: string }> = [];
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const { coreDb, dataRoot } of fixtures.splice(0)) {
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
   }
 });
 /** Uses real admission and explicit membership for the isolated family owner. */
-function registerFamilyFixture(input: {
+async function registerFamilyFixture(input: {
   app: Hono<{ Variables: AuthVariables }>;
   operations: WorkerEnvironmentOperations | null;
   prepare?: NonNullable<
@@ -38,7 +40,7 @@ function registerFamilyFixture(input: {
   fixtures.push({ coreDb, dataRoot });
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({
     coreDb,
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -58,7 +60,7 @@ const STORAGE_REF = 'wst_00000000-0000-7b39-9ec2-cb19893c9f63';
 const REQUEST_ID = '11111111-1111-4111-8111-111111111111';
 
 /** Creates an isolated route surface with one authenticated local actor. */
-function fixture() {
+async function fixture() {
   const app = new Hono<{ Variables: AuthVariables }>();
   app.use('*', async (context, next) => {
     context.set('actor', { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' });
@@ -79,7 +81,7 @@ function fixture() {
       storageRef: input.storageRef,
     })),
   };
-  registerFamilyFixture({ app, operations });
+  await registerFamilyFixture({ app, operations });
   return { app, operations };
 }
 
@@ -90,7 +92,7 @@ describe('Worker environment routes', () => {
       context.set('actor', { kind: 'local', userId: 'usr_00000000-0000-7000-8000-000000000001' });
       await next();
     });
-    registerFamilyFixture({ app, operations: null });
+    await registerFamilyFixture({ app, operations: null });
 
     const response = await app.request(
       ...operationRequest('worker-environment.list', {
@@ -105,7 +107,7 @@ describe('Worker environment routes', () => {
   });
 
   it('parses bounded list pagination before invoking the shared operation', async () => {
-    const { app, operations } = fixture();
+    const { app, operations } = await fixture();
     const response = await app.request(
       ...operationRequest('worker-environment.list', {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -124,7 +126,7 @@ describe('Worker environment routes', () => {
   });
 
   it('rejects a purge confirmation/logical reference mismatch before any destructive operation', async () => {
-    const { app, operations } = fixture();
+    const { app, operations } = await fixture();
     const otherRef = 'wst_00000000-0000-70f5-ad2b-7e500cbfa6ba';
     const response = await app.request(
       ...operationRequest(
@@ -148,7 +150,7 @@ describe('Worker environment routes', () => {
   });
 
   it('rejects an invalid status reference before invoking the shared operation', async () => {
-    const { app, operations } = fixture();
+    const { app, operations } = await fixture();
     const response = await app.request(
       ...operationRequest('worker-environment.status', {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -161,7 +163,7 @@ describe('Worker environment routes', () => {
   });
 
   it('keeps preparation and activation visibly unavailable until their owners are composed', async () => {
-    const { app } = fixture();
+    const { app } = await fixture();
     const response = await app.request(
       ...operationRequest(
         'worker-environment.recover',
@@ -199,7 +201,7 @@ describe('Worker environment routes', () => {
         'Image result is unavailable.'
       );
     });
-    registerFamilyFixture({ app, operations: null, prepare });
+    await registerFamilyFixture({ app, operations: null, prepare });
     const input = {
       administrationThreadId: testEntityId('th', 'thread_admin'),
       requestId: REQUEST_ID,

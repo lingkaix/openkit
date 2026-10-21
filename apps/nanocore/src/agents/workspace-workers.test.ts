@@ -7,13 +7,14 @@ import {
   AgentEnvironmentPackageSchema,
 } from '@openkit/config-schema';
 import { WorkspaceResourcesResponseSchema } from '@openkit/protocol';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import * as usageLedger from '../capability/usage-ledger.js';
 import { recordUsage, startCapabilityCall } from '../capability/usage-ledger.js';
 import { FsStore } from '../lib/store.js';
 import { recordAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import { clearWorkerCheckpoint, upsertWorkerCheckpoint } from '../runtime/worker-checkpoints.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -91,7 +92,7 @@ function createAuthorizedApp(
  * @param input Thread, Turn, Agent, and session identity.
  * @returns Created AgentSession.
  */
-function createCurrentWorkerSession(
+async function createCurrentWorkerSession(
   store: FsStore,
   input: {
     readonly agentId: string;
@@ -101,7 +102,7 @@ function createCurrentWorkerSession(
     readonly turnId: string;
   }
 ) {
-  const turn = store.createTurn(
+  const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     input.threadId,
     'Worker turn',
@@ -112,7 +113,7 @@ function createCurrentWorkerSession(
     null,
     { startedAt: timestamp, turnId: input.turnId }
   );
-  const session = store.createAgentSession({
+  const session = await store.createAgentSession({
     agentId: input.agentId,
     createdAt: timestamp,
     id: input.sessionId,
@@ -122,7 +123,7 @@ function createCurrentWorkerSession(
     updatedAt: timestamp,
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
-  store.updateTurn(turn.id, { agentId: input.agentId, agentSessionId: session.id });
+  await store.updateTurn(turn.id, { agentId: input.agentId, agentSessionId: session.id });
   return session;
 }
 
@@ -285,16 +286,21 @@ function recordSessionLlmUsage(
 describe('worker.list operation', () => {
   it('keeps catalog-only supply and internal-role Turns out of current Worker inventory', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const thread = store.createThread(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Assistant conversation'
     );
-    const turn = store.createTurn('ws_00000000-0000-7000-8000-000000000001', thread.id, 'Hello', {
-      kind: 'user',
-      id: 'usr_00000000-0000-7000-8000-000000000001',
-    });
-    store.updateTurn(turn.id, { agentId: 'quick-chat' });
+    const turn = await store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Hello',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
+    await store.updateTurn(turn.id, { agentId: 'quick-chat' });
     const app = createAuthorizedApp(coreDb, store);
 
     try {
@@ -330,31 +336,34 @@ describe('worker.list operation', () => {
 
   it('keeps a removed-catalog Agent visible and omits terminal predecessors, prelaunch, idle history, and incomplete lineage', async () => {
     let coreDb = createCoreDb();
-    let store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const liveThread = store.createThread(
+    let store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const liveThread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Removed catalog Worker ghp_publicFixture'
     );
-    const closedThread = store.createThread(
+    const closedThread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Closed predecessor'
     );
-    const idleThread = store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Idle Worker');
-    const prelaunchThread = store.createThread(
+    const idleThread = await store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Idle Worker'
+    );
+    const prelaunchThread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Prelaunch Worker'
     );
-    const halfNullThread = store.createThread(
+    const halfNullThread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Half null Worker'
     );
-    const liveSession = createCurrentWorkerSession(store, {
+    const liveSession = await createCurrentWorkerSession(store, {
       agentId: 'agent_removed_codex',
       sessionId: 'as_00000000-0000-7285-8900-19db303a73c0',
       threadId: liveThread.id,
       turnId: 'tu_00000000-0000-70ac-880b-8087adbcb6c1',
     });
-    store.createAgentSession({
+    await store.createAgentSession({
       agentId: 'agent_removed_codex',
       createdAt: timestamp,
       id: 'as_00000000-0000-70b4-8d5f-3842173f113d',
@@ -364,20 +373,20 @@ describe('worker.list operation', () => {
       updatedAt: timestamp,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const idleSession = createCurrentWorkerSession(store, {
+    const idleSession = await createCurrentWorkerSession(store, {
       agentId: 'agent_removed_codex',
       sessionId: 'as_00000000-0000-780a-a435-d0f1f7a9c9b2',
       status: 'idle',
       threadId: idleThread.id,
       turnId: 'tu_00000000-0000-7e72-a456-0270c65934a6',
     });
-    const prelaunchSession = createCurrentWorkerSession(store, {
+    const prelaunchSession = await createCurrentWorkerSession(store, {
       agentId: 'agent_removed_codex',
       sessionId: 'as_00000000-0000-70f1-aa0b-7c49c5a815d5',
       threadId: prelaunchThread.id,
       turnId: 'tu_00000000-0000-7a5b-bdc1-1800ee3a79ba',
     });
-    const halfNullSession = createCurrentWorkerSession(store, {
+    const halfNullSession = await createCurrentWorkerSession(store, {
       agentId: 'agent_removed_codex',
       sessionId: 'as_00000000-0000-7176-8240-cb8e2db56a9b',
       threadId: halfNullThread.id,
@@ -394,7 +403,7 @@ describe('worker.list operation', () => {
         threadId: liveThread.id,
         turnId: 'tu_00000000-0000-70ac-880b-8087adbcb6c1',
       });
-      store.updateAgentSession(liveSession.id, { environmentPackageSnapshotId: snapshotId });
+      await store.updateAgentSession(liveSession.id, { environmentPackageSnapshotId: snapshotId });
       upsertWorkerCheckpoint(workspaceDb, {
         goalId: 'goal_removed',
         iteration: 1,
@@ -504,12 +513,12 @@ describe('worker.list operation', () => {
 
   it('reports missing Turns and conflicting checkpoint session lineage as unavailable', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const thread = store.createThread(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Incomplete worker'
     );
-    const session = createCurrentWorkerSession(store, {
+    const session = await createCurrentWorkerSession(store, {
       agentId: 'agent_codex_host',
       sessionId: 'as_00000000-0000-70c0-addb-3f25fbfb971f',
       threadId: thread.id,
@@ -565,20 +574,23 @@ describe('worker.list operation', () => {
 
   it('labels current-session model usage for an active readonly member and refuses it after removal', async () => {
     const coreDb = createCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const thread = store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Model Worker');
-    const predecessorThread = store.createThread(
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const thread = await store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Model Worker'
+    );
+    const predecessorThread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Predecessor Worker'
     );
-    const session = createCurrentWorkerSession(store, {
+    const session = await createCurrentWorkerSession(store, {
       agentId: 'agent_codex_host',
       sessionId: 'as_00000000-0000-7c5d-93c5-ea2808ca86f7',
       status: 'idle',
       threadId: thread.id,
       turnId: 'tu_00000000-0000-7b64-ab5a-4855db181097',
     });
-    store.createAgentSession({
+    await store.createAgentSession({
       agentId: 'agent_codex_host',
       createdAt: timestamp,
       id: 'as_00000000-0000-7709-bb38-c94cb60bb065',
@@ -588,7 +600,7 @@ describe('worker.list operation', () => {
       updatedAt: timestamp,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const predecessorTurn = store.createTurn(
+    const predecessorTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       predecessorThread.id,
       'Predecessor turn',
@@ -596,7 +608,7 @@ describe('worker.list operation', () => {
       null,
       { startedAt: timestamp, turnId: 'tu_00000000-0000-74fc-b0da-01927fa8e961' }
     );
-    store.updateTurn(predecessorTurn.id, {
+    await store.updateTurn(predecessorTurn.id, {
       agentId: 'agent_codex_host',
       agentSessionId: 'as_00000000-0000-7709-bb38-c94cb60bb065',
     });
@@ -610,7 +622,7 @@ describe('worker.list operation', () => {
         threadId: thread.id,
         turnId: 'tu_00000000-0000-7b64-ab5a-4855db181097',
       });
-      store.updateAgentSession(session.id, { environmentPackageSnapshotId: snapshotId });
+      await store.updateAgentSession(session.id, { environmentPackageSnapshotId: snapshotId });
       recordSessionLlmUsage(workspaceDb, {
         agentId: 'agent_codex_host',
         callId: 'cap_00000000-0000-7682-9329-8d28c3eddeef',
@@ -781,15 +793,15 @@ describe('worker.list operation', () => {
 
 it('admits current administrators to foreign private Threads under the accepted rule with HTTP and MCP Worker field parity', async () => {
   const coreDb = createCoreDb();
-  const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-  const foreign = store.createThread(
+  const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+  const foreign = await store.createThread(
     'ws_00000000-0000-7000-8000-000000000001',
     'Foreign private Worker',
     undefined,
     'conversation',
     { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-7ed5-9b62-226e0a66887f' }
   );
-  createCurrentWorkerSession(store, {
+  await createCurrentWorkerSession(store, {
     agentId: 'agent_codex_host',
     sessionId: 'as_00000000-0000-7a52-acda-ab0e51b27751',
     threadId: foreign.id,
@@ -883,4 +895,9 @@ it('admits current administrators to foreign private Threads under the accepted 
   } finally {
     coreDb.sqlite.close();
   }
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { createLightApp, getLightApp, listLightApps } from './commands.js';
 
@@ -12,7 +13,7 @@ describe('native Light App semantic discovery', () => {
   it('discovers exact namespaces, relationships and constraints without inventing freshness', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-generative-discovery-'));
     try {
-      const store = createDemoStore({ dataRoot });
+      const store = await createDemoStore({ dataRoot });
       const schema: LightAppSchemaInput = {
         format: 'openkit.light-app',
         schemaVersion: 1,
@@ -128,4 +129,9 @@ describe('native Light App semantic discovery', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

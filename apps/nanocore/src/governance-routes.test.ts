@@ -1,8 +1,9 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { expect, it } from 'vitest';
+import { afterEach, expect, it } from 'vitest';
 import { recordWorkspaceEvidenceBundle } from './evidence-bundles.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -30,7 +31,7 @@ it.each([
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
-  const app = createApp({ coreDb, dataRoot, store: createDemoStore() });
+  const app = createApp({ coreDb, dataRoot, store: await createDemoStore() });
   try {
     recordWorkspaceEvidenceBundle(db, {
       id: 'evb_probe',
@@ -107,7 +108,7 @@ it('lists a Workspace grant runtime-env injection plan through the public route'
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const app = createApp({ coreDb, dataRoot, store: createDemoStore() });
+    const app = createApp({ coreDb, dataRoot, store: await createDemoStore() });
     createVaultReference(coreDb, {
       backendKind: 'encrypted-file',
       displayName: 'Worker GitHub token',
@@ -149,4 +150,9 @@ it('lists a Workspace grant runtime-env injection plan through the public route'
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
   }
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

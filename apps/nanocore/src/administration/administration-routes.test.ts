@@ -17,6 +17,7 @@ import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { createProviderCredentialConfigured } from '../providers/vault-credential-resolver.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -51,7 +52,8 @@ vi.mock('../internal-agents/profile-resolver.js', async (importOriginal) => {
 
 const openDatabases: CoreDb[] = [];
 
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const database of openDatabases.splice(0)) database.sqlite.close();
   profileResolverFixture.resolveInternalRoleProfile.mockReset();
   if (profileResolverFixture.actual) {
@@ -91,9 +93,9 @@ describe('administration conversation route', () => {
       tokenWorkspaceIds: [],
       userId: 'usr_00000000-0000-7000-8000-000000000001',
     };
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const workspaceId = quickChatWorkspaceIdForUser(actor.userId);
-    const thread = store.createThread(
+    const thread = await store.createThread(
       workspaceId,
       'Administration',
       testEntityId('th', 'thread_administration_private_context'),
@@ -331,7 +333,7 @@ describe('administration conversation route', () => {
       tokenWorkspaceIds: [],
       userId: 'usr_00000000-0000-7000-8000-000000000001',
     };
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const providerProfile = {
       baseUrl: 'https://provider.invalid/v1',
       displayName: 'Provider',
@@ -511,7 +513,7 @@ describe('administration conversation route', () => {
         userId: 'usr_00000000-0000-7000-8000-000000000001',
       },
     };
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const providerProfile = {
       baseUrl: 'https://provider.invalid/v1',
       displayName: 'Provider',
@@ -685,19 +687,19 @@ describe('administration conversation route', () => {
     expect(missingUserReplay.status).toBe(409);
     await expect(missingUserReplay.json()).resolves.toMatchObject({ code: 'recovery_required' });
 
-    expect(() =>
+    await expect(
       store.updateTurn(firstBody.turn.id, { status: 'running', completedAt: null, error: null })
-    ).toThrow(/is terminal and does not admit this write/);
+    ).rejects.toThrow(/is terminal and does not admit this write/);
 
     const updateTurn = store.updateTurn.bind(store);
     let completionFailureInjected = false;
-    vi.spyOn(store, 'updateTurn').mockImplementation((turnId, input, admission) => {
+    vi.spyOn(store, 'updateTurn').mockImplementation(async (turnId, input, admission) => {
       // Admission pins internalExecution first; fail the terminal publication this case exercises.
       if (!completionFailureInjected && input.status === 'completed') {
         completionFailureInjected = true;
         throw new Error('completion persistence failed');
       }
-      return updateTurn(turnId, input, admission);
+      return await updateTurn(turnId, input, admission);
     });
     const partialRequest = {
       input: 'Inspect another Worker environment.',
@@ -758,10 +760,10 @@ describe('administration conversation route', () => {
       tokenWorkspaceIds: [],
       userId: 'usr_00000000-0000-7000-8000-000000000001',
     };
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const actorWorkspaceId = quickChatWorkspaceIdForUser(actor.userId);
-    store.ensureQuickChatWorkspace('usr_00000000-0000-73d4-904a-d4c4b905df7c');
-    const foreignPrivateThread = store.createThread(
+    await store.ensureQuickChatWorkspace('usr_00000000-0000-73d4-904a-d4c4b905df7c');
+    const foreignPrivateThread = await store.createThread(
       quickChatWorkspaceIdForUser('usr_00000000-0000-73d4-904a-d4c4b905df7c'),
       'Foreign private administration',
       undefined,
@@ -976,9 +978,9 @@ async function postAdministrationAdmissionTurn(options: {
     tokenWorkspaceIds: [],
     userId: 'usr_00000000-0000-7000-8000-000000000001',
   };
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   const workspaceId = quickChatWorkspaceIdForUser(actor.userId);
-  const thread = store.createThread(
+  const thread = await store.createThread(
     workspaceId,
     'Administration',
     testEntityId('th', `thread_administration_${options.label}`),

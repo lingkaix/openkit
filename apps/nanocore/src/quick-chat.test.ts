@@ -11,7 +11,7 @@ import {
 } from '@openkit/app-api-schemas';
 import { InternalRoleProfilesConfigSchema } from '@openkit/config-schema';
 import { allocateEntityId, formatReferenceUri, workspaceIdForOwner } from '@openkit/protocol';
-import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { BUILT_IN_SYSTEM_PROMPTS } from './internal-agents/builtin-prompts.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
@@ -27,6 +27,7 @@ import { ProviderRegistry } from './providers/registry.js';
 import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
 import { pendingRequestItemId, readPendingRequest } from './runtime/pending-requests.js';
 import type { TurnExecutor } from './runtime/types.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { readWorkObservations } from './storage/work-observations.js';
@@ -297,7 +298,7 @@ describe('quick chat app API', () => {
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     });
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -538,7 +539,7 @@ describe('quick chat app API', () => {
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     });
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -622,7 +623,7 @@ describe('quick chat app API', () => {
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     });
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -668,10 +669,10 @@ describe('quick chat app API', () => {
       'th_00000000-0000-7000-8000-000000000001'
     )[0]!;
     const originalUpdate = store.updateTurn.bind(store);
-    const update = vi.spyOn(store, 'updateTurn').mockImplementation((...args) => {
+    const update = vi.spyOn(store, 'updateTurn').mockImplementation(async (...args) => {
       if (failure === 'Turn' && args[1].status === 'interrupted')
         throw new Error('private persist refusal');
-      return originalUpdate(...args);
+      return await originalUpdate(...args);
     });
     const originalRecord = store.recordCommandRequest.bind(store);
     const record = vi.spyOn(store, 'recordCommandRequest').mockImplementation((...args) => {
@@ -835,7 +836,7 @@ describe('quick chat app API', () => {
   });
 
   it('scopes existing Worker targets to this conversation and preserves truthful availability', async () => {
-    const store = createDemoStore();
+    const store = await createDemoStore();
     const workerSetup = createTestAgentSetup({
       logicalModelId: 'quick-chat',
       privateRoute: { providerProfileId: 'ollama', providerModel: 'openai/gpt-5.2' },
@@ -852,12 +853,12 @@ describe('quick chat app API', () => {
       'closed',
     ] as const;
     const sessionIds = states.map(() => allocateEntityId('as'));
-    const threads = states.map((status, index) => {
-      const thread = store.createThread(
+    const threads = states.map(async (status, index) => {
+      const thread = await store.createThread(
         'ws_00000000-0000-7000-8000-000000000001',
         `Worker ${status}`
       );
-      store.createAgentSession({
+      await store.createAgentSession({
         id: sessionIds[index]!,
         agentId: workerSetup.manifest.id,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -907,7 +908,7 @@ describe('quick chat app API', () => {
     }
 
     for (const index of [0, 2]) {
-      store.updateAgentSession(sessionIds[index]!, { stale: true });
+      await store.updateAgentSession(sessionIds[index]!, { stale: true });
       const stale = await app.request(
         ...operationRequest(
           'conversation.targets',
@@ -968,8 +969,8 @@ describe('quick chat app API', () => {
   });
 
   it('rejects an administration Thread at the ordinary conversation entry', async () => {
-    const store = createDemoStore();
-    const thread = store.createThread(
+    const store = await createDemoStore();
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Private administration',
       undefined,
@@ -1014,7 +1015,7 @@ describe('quick chat app API', () => {
         profiles: [],
       },
       openKitConfig: { defaults: { defaultAgentId: workerSetup.manifest.id } },
-      store: createDemoStore(),
+      store: await createDemoStore(),
       turnExecutor: new ThrowingTurnExecutor(),
     });
 
@@ -1063,7 +1064,7 @@ describe('quick chat app API', () => {
       ...createQuickChatProviderOptions(),
       coreDb,
       dataRoot,
-      store: createDemoStore({ dataRoot }),
+      store: await createDemoStore({ dataRoot }),
       turnExecutor: new ThrowingTurnExecutor(),
       llmPiAiClient: {
         createResponses: async (provider, request) => {
@@ -1218,8 +1219,8 @@ describe('quick chat app API', () => {
     });
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = createDemoStore({ dataRoot });
-    const otherThread = store.createThread(
+    const store = await createDemoStore({ dataRoot });
+    const otherThread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Unrelated conversation'
     );
@@ -1289,17 +1290,19 @@ describe('quick chat app API', () => {
       expect(answer.turn.status).toBe('completed');
     }
     expect(calls).toHaveLength(2);
-    const priorTurn = store.createTurn(
-      'ws_00000000-0000-7000-8000-000000000001',
-      'th_00000000-0000-7000-8000-000000000001',
-      'Interrupted worker attempt',
-      {
-        kind: 'user',
-        id: 'usr_00000000-0000-7000-8000-000000000001',
-      }
+    const priorTurn = (
+      await store.createTurn(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
+        'Interrupted worker attempt',
+        {
+          kind: 'user',
+          id: 'usr_00000000-0000-7000-8000-000000000001',
+        }
+      )
     ).id;
     for (const status of ['in_progress', 'failed'] as const) {
-      store.createItem({
+      await store.createItem({
         id: allocateEntityId('it'),
         owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -1311,7 +1314,7 @@ describe('quick chat app API', () => {
         completedAt: null,
       });
     }
-    store.updateTurn(priorTurn, { status: 'failed', completedAt: new Date().toISOString() });
+    await store.updateTurn(priorTurn, { status: 'failed', completedAt: new Date().toISOString() });
     const priorItems = store.listThreadItems(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001'
@@ -1385,7 +1388,7 @@ describe('quick chat app API', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     onTestFinished(() => coreDb.sqlite.close());
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const calls: Array<{
       request: Parameters<PiAiGatewayClient['createResponses']>[1];
     }> = [];
@@ -1478,9 +1481,9 @@ describe('quick chat app API', () => {
     ensureLocalUser(coreDb);
 
     try {
-      const store = createDemoStore({ dataRoot });
-      const workspace = store.createWorkspace('Chat usage lineage');
-      const thread = store.createThread(workspace.id, 'Chat usage lineage');
+      const store = await createDemoStore({ dataRoot });
+      const workspace = await store.createWorkspace('Chat usage lineage');
+      const thread = await store.createThread(workspace.id, 'Chat usage lineage');
       const requestId = '11111111-1111-4111-8111-111111111111';
       const app = createAppWithWorkspaceAuthority({
         ...createQuickChatProviderOptions(),
@@ -1655,7 +1658,7 @@ describe('quick chat app API', () => {
       ...providerOptions,
       coreDb,
       dataRoot,
-      store: createDemoStore({ dataRoot }),
+      store: await createDemoStore({ dataRoot }),
       turnExecutor: new ThrowingTurnExecutor(),
       llmGatewayDispatcher: { createResponses } as unknown as LLMGatewayProviderDispatcher,
     });
@@ -1794,7 +1797,7 @@ describe('quick chat app API', () => {
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     });
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -1916,7 +1919,7 @@ describe('quick chat app API', () => {
         ...createQuickChatProviderOptions(),
         dataRoot,
         coreDb,
-        store: createDemoStore({ dataRoot }),
+        store: await createDemoStore({ dataRoot }),
         turnExecutor: new ThrowingTurnExecutor(),
         llmPiAiClient: {
           createResponses: async (_provider, request) => {
@@ -2056,7 +2059,7 @@ describe('quick chat app API', () => {
     });
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -2196,13 +2199,13 @@ describe('quick chat app API', () => {
     });
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const raisingTurn = store.createTurn(
+    const raisingTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'A bounded clarification.',
@@ -2226,7 +2229,7 @@ describe('quick chat app API', () => {
       },
     ];
     // The existing Pending Request producer owns this prior question; no keyword vote or receipt is fabricated.
-    const question = store.createItem({
+    const question = await store.createItem({
       id: pendingRequestItemId(pendingId, 'request'),
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -2258,7 +2261,7 @@ describe('quick chat app API', () => {
     } finally {
       db.sqlite.close();
     }
-    store.updateTurn(raisingTurn.id, { status: 'completed', completedAt: at });
+    await store.updateTurn(raisingTurn.id, { status: 'completed', completedAt: at });
     let modelCalls = 0;
     const app = createAppWithWorkspaceAuthority({
       ...createQuickChatProviderOptions(),
@@ -2351,7 +2354,7 @@ describe('quick chat app API', () => {
       if (coreDb.sqlite.open) coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     });
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const callProvider = vi.fn(async () => providerAnswer('OpenKit is a shared agent workspace.'));
     recordWorkspaceOwnerMembership({
       coreDb,
@@ -2496,8 +2499,8 @@ describe('quick chat app API', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = createDemoStore({ dataRoot });
-    const thread = store.createThread(
+    const store = await createDemoStore({ dataRoot });
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Private Goal discussion',
       undefined,
@@ -2507,7 +2510,7 @@ describe('quick chat app API', () => {
         privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    const privateTurn = store.createTurn(
+    const privateTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Private background.',
@@ -2518,7 +2521,7 @@ describe('quick chat app API', () => {
     );
     const at = privateTurn.startedAt!;
     const marker = 'AMBIENT_PRIVATE_GOAL_CONTEXT';
-    store.createItem({
+    await store.createItem({
       id: allocateEntityId('it'),
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
@@ -2530,7 +2533,7 @@ describe('quick chat app API', () => {
       createdAt: at,
       completedAt: at,
     });
-    store.updateTurn(privateTurn.id, { status: 'completed', completedAt: at });
+    await store.updateTurn(privateTurn.id, { status: 'completed', completedAt: at });
     // Goal's existing request schema trims its intent before the human selects that exact payload.
     const intent = 'Prepare a release plan for NanoCore.\nKeep deployment pending human review.';
     const provider = goalProposalProvider(`  ${intent}  `);
@@ -2715,8 +2718,8 @@ describe('quick chat app API', () => {
       if (coreDb.sqlite.open) coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     });
-    const store = createDemoStore({ dataRoot });
-    const thread = store.createThread(
+    const store = await createDemoStore({ dataRoot });
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Private assistant',
       undefined,
@@ -2727,7 +2730,7 @@ describe('quick chat app API', () => {
       }
     );
     const marker = 'PRIVATE-GOAL-MARKER';
-    const old = store.createTurn(
+    const old = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Private source.',
@@ -2740,7 +2743,7 @@ describe('quick chat app API', () => {
     const artifactId = allocateEntityId('ar');
     if (source === 'private-artifact') {
       const mutationId = randomUUID();
-      store.createArtifact({
+      await store.createArtifact({
         id: artifactId,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: thread.id,
@@ -2758,7 +2761,7 @@ describe('quick chat app API', () => {
         updatedAt: at,
       });
     } else
-      store.createItem({
+      await store.createItem({
         id: allocateEntityId('it'),
         owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: thread.id,
@@ -2770,7 +2773,7 @@ describe('quick chat app API', () => {
         createdAt: at,
         completedAt: at,
       });
-    store.updateTurn(old.id, { status: 'completed', completedAt: at });
+    await store.updateTurn(old.id, { status: 'completed', completedAt: at });
     const intent = 'Prepare a public release documentation plan.';
     const provider = goalProposalProvider(intent);
     const app = createAppWithWorkspaceAuthority({
@@ -3394,4 +3397,9 @@ describe('Assistant execution deadline', () => {
       vi.useRealTimers();
     }
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

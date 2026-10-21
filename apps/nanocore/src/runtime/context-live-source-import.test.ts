@@ -8,7 +8,7 @@ import {
   planSessionWorkspaceMaterialization,
 } from '@openkit/config-schema';
 import { allocateEntityId } from '@openkit/protocol';
-import { expect, it } from 'vitest';
+import { afterEach, expect, it } from 'vitest';
 import { prepareTurnFileSourceInputs } from '../context/turn-source-files.js';
 import {
   buildWorkerContextPackageWorkspaceInput,
@@ -16,6 +16,7 @@ import {
   writeWorkerContextPackageFiles,
 } from '../context/worker-context-package.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { turnFilePayloadPath } from '../storage/workspace-file-records.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -70,14 +71,14 @@ it('streams a complete admitted Turn ZIP into the live Context input without ret
   );
   const dataRoot = mkdtempSync(join(tmpdir(), 'context-live-source-import-'));
   try {
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const workspace = store.listWorkspaces().find((entry) => entry.kind === 'code')!;
-    const thread = store.createThread(workspace.id, 'Inspect the admitted ZIP');
+    const thread = await store.createThread(workspace.id, 'Inspect the admitted ZIP');
     const stagingPath = join(dataRoot, 'selected.zip');
     writeFileSync(stagingPath, original);
     const admission = new FileStorageAdmission(dataRoot, () => 0n);
     const request = 'Inspect the complete selected ZIP input.';
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       workspace.id,
       thread.id,
       request,
@@ -100,7 +101,7 @@ it('streams a complete admitted Turn ZIP into the live Context input without ret
     expect(readFileSync(turnFilePayloadPath(workspaceRoot, thread.id, turn.id, 0))).toEqual(
       original
     );
-    const item = store.createItem({
+    const item = await store.createItem({
       id: allocateEntityId('it'),
       owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: thread.id,
@@ -260,4 +261,9 @@ it('streams a complete admitted Turn ZIP into the live Context input without ret
   } finally {
     rmSync(dataRoot, { recursive: true, force: true });
   }
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

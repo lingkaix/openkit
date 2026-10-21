@@ -4,6 +4,7 @@ import { basename, dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { workObservationBodyBundleId } from '../evidence-bundles.js';
 import { withTurnModelCapture } from '../llm/model-capture.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { appendWorkObservation, readWorkObservations } from '../storage/work-observations.js';
@@ -118,7 +119,8 @@ vi.mock('node:fs', async (importOriginal) => {
 });
 
 const syncFailureRoots: string[] = [];
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   syncFailure.target = null;
   syncFailure.directoryTarget = null;
   syncFailure.failures = 0;
@@ -134,9 +136,9 @@ describe('Turn capture coverage binding', () => {
   ] as const)('blocks governed collection when admission coverage %s sync fails', async (stage) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capture-sync-'));
     syncFailureRoots.push(dataRoot);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     store.setLiveCaptureCoverage({ scope: 'server', value: 'on' });
-    const thread = store.createThread(
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Capture sync failure'
     );
@@ -158,7 +160,7 @@ describe('Turn capture coverage binding', () => {
 
     await expect(
       (async () => {
-        const turn = store.createTurn(
+        const turn = await store.createTurn(
           'ws_00000000-0000-7000-8000-000000000001',
           thread.id,
           'Must not collect',
@@ -181,15 +183,15 @@ describe('Turn capture coverage binding', () => {
   it.each([
     'file',
     'directory',
-  ] as const)('retains no observation or body when required Turn manifest %s sync fails', (stage) => {
+  ] as const)('retains no observation or body when required Turn manifest %s sync fails', async (stage) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capture-manifest-sync-'));
     syncFailureRoots.push(dataRoot);
-    const store = createDemoStore({ dataRoot });
-    const thread = store.createThread(
+    const store = await createDemoStore({ dataRoot });
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Manifest sync failure'
     );
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Admitted',
@@ -274,10 +276,13 @@ describe('Turn capture coverage binding', () => {
     }
   });
 
-  it('records the off pair at admission by default', () => {
-    const store = createDemoStore();
-    const thread = store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Capture off');
-    const turn = store.createTurn(
+  it('records the off pair at admission by default', async () => {
+    const store = await createDemoStore();
+    const thread = await store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Capture off'
+    );
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Default off',
@@ -288,11 +293,14 @@ describe('Turn capture coverage binding', () => {
     expect(store.getLiveCaptureCoverage()).toEqual({ scope: 'server', value: 'off' });
   });
 
-  it('records the on pair when the live switch is on at admission', () => {
-    const store = createDemoStore();
+  it('records the on pair when the live switch is on at admission', async () => {
+    const store = await createDemoStore();
     store.setLiveCaptureCoverage({ scope: 'workspace', value: 'on' });
-    const thread = store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Capture on');
-    const turn = store.createTurn(
+    const thread = await store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Capture on'
+    );
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Switch on',
@@ -302,13 +310,13 @@ describe('Turn capture coverage binding', () => {
     expect(store.getTurnCaptureCoverage(turn.id)).toEqual({ scope: 'workspace', value: 'on' });
   });
 
-  it('keeps a running Turn pair unchanged and does not interrupt when the live switch changes', () => {
-    const store = createDemoStore();
-    const thread = store.createThread(
+  it('keeps a running Turn pair unchanged and does not interrupt when the live switch changes', async () => {
+    const store = await createDemoStore();
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Capture mid-turn'
     );
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Keep historical pair',
@@ -318,7 +326,7 @@ describe('Turn capture coverage binding', () => {
 
     expect(store.getTurnById(turn.id).status).toBe('running');
     expect(store.getTurnCaptureCoverage(turn.id)).toEqual(DEFAULT_CAPTURE_COVERAGE_BINDING);
-    const next = store.createTurn(
+    const next = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Next turn sees the new pair',
@@ -328,12 +336,15 @@ describe('Turn capture coverage binding', () => {
     expect(store.getTurnById(turn.id).status).toBe('running');
   });
 
-  it('reads the recorded pair back from turn.json after restart', () => {
+  it('reads the recorded pair back from turn.json after restart', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capture-coverage-'));
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     store.setLiveCaptureCoverage({ scope: 'task', value: 'on' });
-    const thread = store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Capture restart');
-    const turn = store.createTurn(
+    const thread = await store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Capture restart'
+    );
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Persist the pair',
@@ -361,7 +372,7 @@ describe('Turn capture coverage binding', () => {
     expect(reloaded.getTurnById(turn.id).status).toBe('running');
   });
 
-  it('records on from server.jsonc policy.workDataCapture at the next admitted Turn', () => {
+  it('records on from server.jsonc policy.workDataCapture at the next admitted Turn', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capture-config-on-'));
     mkdirSync(join(dataRoot, 'config'), { recursive: true });
     writeFileSync(
@@ -371,12 +382,12 @@ describe('Turn capture coverage binding', () => {
         policy: { workDataCapture: { value: 'on' } },
       })
     );
-    const store = createDemoStore({ dataRoot });
-    const thread = store.createThread(
+    const store = await createDemoStore({ dataRoot });
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Configured capture'
     );
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Operator switch on',

@@ -22,6 +22,7 @@ import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { stageArtifactPayload } from '../storage/artifacts/file-payload.js';
 import { artifactFilePayloadPath } from '../storage/artifacts/file-records.js';
 import { withCanonicalFileWriteAdmission } from '../storage/canonical-write-capacity.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { prepareArtifactSourceInputs } from './artifact-source-files.js';
 import {
@@ -33,7 +34,8 @@ import {
 type Artifact = z.infer<typeof ArtifactSchema>;
 
 const roots: string[] = [];
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -52,7 +54,7 @@ async function fixture(
   const artifactId = 'ar_00000000-0000-7000-8000-0000000003ea';
   const root = mkdtempSync(join(tmpdir(), 'artifact-source-files-'));
   roots.push(root);
-  const store = createDemoStore({ dataRoot: root });
+  const store = await createDemoStore({ dataRoot: root });
   const workspace = store.listWorkspaces().find((entry) => entry.kind === 'code')!;
   const workspaceRoot = join(root, 'workspaces', workspace.id);
   const admission = new FileStorageAdmission(root, () => 0n);

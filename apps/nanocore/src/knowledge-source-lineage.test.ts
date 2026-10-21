@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCoreClient } from '@openkit/core-client';
 import { allocateEntityId } from '@openkit/protocol';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
@@ -15,6 +15,7 @@ import {
   updateOkfFrontmatter,
 } from './knowledge/okf.js';
 import { FsStore } from './lib/store.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -30,12 +31,12 @@ import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 const timestamp = '2026-10-19T00:00:00.000Z';
 
 /** Uses real disk, current authorization and operation dispatch without an HTTP replacement. */
-function sourceFixture() {
+async function sourceFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-source-lineage-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({
     coreDb,
     workspaceId: DEMO_WORKSPACE_ID,
@@ -61,9 +62,12 @@ function sourceFixture() {
 /** Keeps explicit registered-source selection distinct from coincidentally equal page bytes. */
 describe('direct Knowledge saved-source lineage', () => {
   it('withholds published page identities and content after a registered Source becomes private', async () => {
-    const f = sourceFixture();
+    const f = await sourceFixture();
     try {
-      const origin = f.store.createThread(DEMO_WORKSPACE_ID, 'Initially shared source audience');
+      const origin = await f.store.createThread(
+        DEMO_WORKSPACE_ID,
+        'Initially shared source audience'
+      );
       const { source } = await f.client.operations['knowledge.source.register']({
         workspaceId: DEMO_WORKSPACE_ID,
         requestId: crypto.randomUUID(),
@@ -138,9 +142,9 @@ describe('direct Knowledge saved-source lineage', () => {
   });
 
   it('filters private Source identities and refuses private metadata for a current ordinary readonly member', async () => {
-    const f = sourceFixture();
+    const f = await sourceFixture();
     try {
-      const privateThread = f.store.createThread(
+      const privateThread = await f.store.createThread(
         DEMO_WORKSPACE_ID,
         'Private source title',
         undefined,
@@ -205,7 +209,7 @@ describe('direct Knowledge saved-source lineage', () => {
   });
 
   it('withholds Source data when its native usage write revokes the presented credential', async () => {
-    const f = sourceFixture();
+    const f = await sourceFixture();
     try {
       const { source } = await f.client.operations['knowledge.source.register']({
         workspaceId: DEMO_WORKSPACE_ID,
@@ -256,9 +260,9 @@ describe('direct Knowledge saved-source lineage', () => {
   });
 
   it('requires current originating Thread audience for new registration and exact registration replay', async () => {
-    const f = sourceFixture();
+    const f = await sourceFixture();
     try {
-      const thread = f.store.createThread(
+      const thread = await f.store.createThread(
         DEMO_WORKSPACE_ID,
         'Private capture',
         undefined,
@@ -312,9 +316,9 @@ describe('direct Knowledge saved-source lineage', () => {
   });
 
   it('keeps private Sources out of shared Knowledge while permitting their owner-only personal Workspace', async () => {
-    const f = sourceFixture();
+    const f = await sourceFixture();
     try {
-      const thread = f.store.createThread(
+      const thread = await f.store.createThread(
         DEMO_WORKSPACE_ID,
         'Own private capture',
         undefined,
@@ -359,13 +363,13 @@ describe('direct Knowledge saved-source lineage', () => {
       expect(
         await f.client.operations['knowledge.notebook.list']({ workspaceId: DEMO_WORKSPACE_ID })
       ).toEqual(before);
-      const personal = f.store.ensureQuickChatWorkspace(LOCAL_USER_ID);
+      const personal = await f.store.ensureQuickChatWorkspace(LOCAL_USER_ID);
       recordWorkspaceOwnerMembership({
         coreDb: f.coreDb,
         workspaceId: personal.id,
         ownerUserId: LOCAL_USER_ID,
       });
-      const personalThread = f.store.createThread(personal.id, 'Personal capture');
+      const personalThread = await f.store.createThread(personal.id, 'Personal capture');
       const { source: personalSource } = await f.client.operations['knowledge.source.register']({
         workspaceId: personal.id,
         requestId: crypto.randomUUID(),
@@ -434,7 +438,7 @@ describe('direct Knowledge saved-source lineage', () => {
   });
 
   it('retains the selected exact Source relationship through public indexes and restart', async () => {
-    const f = sourceFixture();
+    const f = await sourceFixture();
     const { client, coreDb, dataRoot } = f;
     try {
       const { source } = await client.operations['knowledge.source.register']({
@@ -514,11 +518,11 @@ describe('direct Knowledge saved-source lineage', () => {
     'stale-digest',
     'foreign',
   ] as const)('refuses %s Source evidence before publishing a page', async (condition) => {
-    const f = sourceFixture();
+    const f = await sourceFixture();
     try {
       const targetWorkspaceId =
         condition === 'foreign'
-          ? f.store.createWorkspace('Foreign source owner').id
+          ? (await f.store.createWorkspace('Foreign source owner')).id
           : DEMO_WORKSPACE_ID;
       if (targetWorkspaceId !== DEMO_WORKSPACE_ID)
         recordWorkspaceOwnerMembership({
@@ -584,7 +588,7 @@ describe('direct Knowledge saved-source lineage', () => {
     'changed',
     'missing',
   ] as const)('keeps an exact Source-backed saved page when original bytes are %s', async (condition) => {
-    const f = sourceFixture();
+    const f = await sourceFixture();
     try {
       const { source } = await f.client.operations['knowledge.source.register']({
         workspaceId: DEMO_WORKSPACE_ID,
@@ -661,7 +665,7 @@ describe('direct Knowledge saved-source lineage', () => {
   });
 
   it('rechecks the current actor before an exact successful command can be replayed', async () => {
-    const f = sourceFixture();
+    const f = await sourceFixture();
     try {
       const { source } = await f.client.operations['knowledge.source.register']({
         workspaceId: DEMO_WORKSPACE_ID,
@@ -727,4 +731,9 @@ describe('direct Knowledge saved-source lineage', () => {
       f.close();
     }
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

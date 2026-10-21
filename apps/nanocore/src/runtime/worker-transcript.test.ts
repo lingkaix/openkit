@@ -2,8 +2,9 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, expectTypeOf, it, onTestFinished } from 'vitest';
+import { afterEach, describe, expect, expectTypeOf, it, onTestFinished } from 'vitest';
 import type { WorkerContextPackageTrace } from '../context/worker-context-package.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -35,10 +36,10 @@ import {
  *
  * @returns Store, turn id, and environment package.
  */
-function createTranscriptFixture() {
+async function createTranscriptFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-transcript-'));
-  const store = createDemoStore({ dataRoot });
-  const turn = store.createTurn(
+  const store = await createDemoStore({ dataRoot });
+  const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',
     'Import transcript',
@@ -61,7 +62,7 @@ function createTranscriptFixture() {
     workspaceCwd: '/workspace/repo',
     workspaceRoots: [],
   });
-  store.updateTurn(turn.id, {
+  await store.updateTurn(turn.id, {
     agentId: environmentPackage.agent.agentId,
     agentSessionId: 'as_00000000-0000-73fb-927c-5d84e16d5481',
   });
@@ -188,8 +189,8 @@ describe('worker transcript product-safe diagnostics', () => {
   it.each([
     'malformed-json',
     'descriptive-addition',
-  ])('keeps Item %s candidate bytes out of persistence and diagnostics alongside a guarded reply', (failure) => {
-    const fixture = createTranscriptFixture();
+  ])('keeps Item %s candidate bytes out of persistence and diagnostics alongside a guarded reply', async (failure) => {
+    const fixture = await createTranscriptFixture();
     const value = 'privateZ';
     const payload = credentialItemPayload(
       fixture,
@@ -221,7 +222,7 @@ describe('worker transcript product-safe diagnostics', () => {
       references: 0,
       reviews: { count: 0 },
     });
-    const reopened = createDemoStore({ dataRoot: fixture.store.getDataRoot() as string });
+    const reopened = await createDemoStore({ dataRoot: fixture.store.getDataRoot() as string });
     expect(
       JSON.stringify(
         reopened.listThreadItems(
@@ -256,11 +257,11 @@ describe('worker transcript product-safe diagnostics', () => {
     { failure: 'descriptive-addition', evidence: 'complete' },
     { failure: 'malformed-json', evidence: 'unavailable' },
     { failure: 'missing-live-receipt', evidence: 'unavailable' },
-  ])('reconciles event $failure without persisting candidate bytes with $evidence evidence and retains the guarded reply', ({
+  ])('reconciles event $failure without persisting candidate bytes with $evidence evidence and retains the guarded reply', async ({
     failure,
     evidence,
   }) => {
-    const fixture = createTranscriptFixture();
+    const fixture = await createTranscriptFixture();
     const value = 'privateZ';
     const payload = credentialItemPayload(
       fixture,
@@ -377,7 +378,7 @@ describe('worker transcript product-safe diagnostics', () => {
       references: 0,
       reviews: { count: 0 },
     });
-    const reopened = createDemoStore({ dataRoot: fixture.store.getDataRoot() as string });
+    const reopened = await createDemoStore({ dataRoot: fixture.store.getDataRoot() as string });
     expect(
       JSON.stringify(
         reopened.listThreadItems(
@@ -392,9 +393,9 @@ describe('worker transcript product-safe diagnostics', () => {
 describe('worker transcript Item exact-value admission', () => {
   // Owner: Worker Control Protocol, Exact-Value Protection At Transcript Item Admission.
   // The real importer and file-backed store are the deciding seam; no diagnostic regex is used.
-  it('keeps explicit local no-injection evidence outside Worker admission and preserves local candidate bytes', () => {
+  it('keeps explicit local no-injection evidence outside Worker admission and preserves local candidate bytes', async () => {
     expectTypeOf<LocalSimulatorTranscriptPayload>().not.toExtend<WorkerTranscriptPayload>();
-    const fixture = createTranscriptFixture();
+    const fixture = await createTranscriptFixture();
     const before = transcriptItemHistory(fixture);
     const text = 'Local output sk-not-injected and aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
     const payload: LocalSimulatorTranscriptPayload = {
@@ -431,8 +432,8 @@ describe('worker transcript Item exact-value admission', () => {
     ).toContainEqual(expect.objectContaining({ id: result.itemIds[0], text }));
   });
 
-  it('refuses absent or reconstructed local proof before any local transcript writes', () => {
-    const fixture = createTranscriptFixture();
+  it('refuses absent or reconstructed local proof before any local transcript writes', async () => {
+    const fixture = await createTranscriptFixture();
     const before = transcriptItemHistory(fixture);
     const proof = createLocalSimulatorCredentialCheckValues();
     for (const invalid of [null, {}, { ...proof }]) {
@@ -458,8 +459,8 @@ describe('worker transcript Item exact-value admission', () => {
     'direct-provider',
     'worker-control',
     'trusted-relay',
-  ])('replaces an exact %s injected value before canonical persistence', (source) => {
-    const fixture = createTranscriptFixture();
+  ])('replaces an exact %s injected value before canonical persistence', async (source) => {
+    const fixture = await createTranscriptFixture();
     const value = `synthetic-${source}-injected-value`;
     const payload = credentialItemPayload(
       fixture,
@@ -487,7 +488,7 @@ describe('worker transcript Item exact-value admission', () => {
       })
     );
     expect(transcriptItemHistory(fixture)).not.toContain(value);
-    const reopened = createDemoStore({ dataRoot: fixture.store.getDataRoot() as string });
+    const reopened = await createDemoStore({ dataRoot: fixture.store.getDataRoot() as string });
     expect(
       reopened.listThreadItems(
         'ws_00000000-0000-7000-8000-000000000001',
@@ -501,8 +502,8 @@ describe('worker transcript Item exact-value admission', () => {
     );
   });
 
-  it('checks concatenated parts, including an injected value split across their boundary', () => {
-    const fixture = createTranscriptFixture();
+  it('checks concatenated parts, including an injected value split across their boundary', async () => {
+    const fixture = await createTranscriptFixture();
     const value = 'synthetic-split-credential';
     const payload = credentialItemPayload(
       fixture,
@@ -527,8 +528,8 @@ describe('worker transcript Item exact-value admission', () => {
     );
   });
 
-  it('stores uninjected credential-looking text unchanged without a heuristic', () => {
-    const fixture = createTranscriptFixture();
+  it('stores uninjected credential-looking text unchanged without a heuristic', async () => {
+    const fixture = await createTranscriptFixture();
     const text = 'Authorization: Bearer sk-synthetic-uninjected-key; password=ordinary-example';
     const result = importWorkerTranscript(
       fixture.store,
@@ -546,8 +547,10 @@ describe('worker transcript Item exact-value admission', () => {
     expect(transcriptItemHistory(fixture)).toContain(text);
   });
 
-  it.each([0, 1])('checks session loopback digest %s inside a longer alphabet run', (index) => {
-    const fixture = createTranscriptFixture();
+  it.each([
+    0, 1,
+  ])('checks session loopback digest %s inside a longer alphabet run', async (index) => {
+    const fixture = await createTranscriptFixture();
     const credential = index === 0 ? 'a'.repeat(43) : 'b'.repeat(43);
     const payload = credentialItemPayload(fixture, { text: `prefix_${credential}_suffix` });
     const result = importWorkerTranscript(fixture.store, fixture.environmentPackage, payload);
@@ -567,10 +570,10 @@ describe('worker transcript Item exact-value admission', () => {
     ['worker-control', 17],
     ['inference', 34],
     ['capability', 51],
-  ] as const)('admits a guarded %s echo with only original route hashes in a reopened Store', (_route, byte) => {
-    const fixture = createTranscriptFixture();
+  ] as const)('admits a guarded %s echo with only original route hashes in a reopened Store', async (_route, byte) => {
+    const fixture = await createTranscriptFixture();
     // Reopening FsStore exercises durable Item admission, not executor evidence reconstruction.
-    const reopened = createDemoStore({ dataRoot: fixture.store.getDataRoot() as string });
+    const reopened = await createDemoStore({ dataRoot: fixture.store.getDataRoot() as string });
     const token = Buffer.alloc(32, byte).toString('base64url');
     // An alternate final character decodes identically but is not the injected literal spelling.
     const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
@@ -603,7 +606,7 @@ describe('worker transcript Item exact-value admission', () => {
       })
     );
     expect(transcriptItemHistory(fixture)).not.toContain(token);
-    const rereopened = createDemoStore({ dataRoot: fixture.store.getDataRoot() as string });
+    const rereopened = await createDemoStore({ dataRoot: fixture.store.getDataRoot() as string });
     expect(
       rereopened.listThreadItems(
         'ws_00000000-0000-7000-8000-000000000001',
@@ -626,9 +629,9 @@ describe('worker transcript Item exact-value admission', () => {
       'missing-worker-control-route-hash',
       'missing-inference-route-hash',
       'missing-capability-route-hash',
-    ])('fails closed before transcript writes with %s in a reopened Store', (missing) => {
-      const fixture = createTranscriptFixture();
-      const reopened = createDemoStore({ dataRoot: fixture.store.getDataRoot() as string });
+    ])('fails closed before transcript writes with %s in a reopened Store', async (missing) => {
+      const fixture = await createTranscriptFixture();
+      const reopened = await createDemoStore({ dataRoot: fixture.store.getDataRoot() as string });
       const before = transcriptItemHistory(fixture);
       const payload = credentialItemPayload(fixture, { text: 'Unchecked recovered reply.' });
       if (missing === 'missing-set') payload.credentialCheckValues = null;
@@ -668,8 +671,8 @@ describe('worker transcript Item exact-value admission', () => {
 });
 
 describe('worker transcript import', () => {
-  it('rejects transcript records whose lineage does not match the package scope', () => {
-    const { environmentPackage, store, turn } = createTranscriptFixture();
+  it('rejects transcript records whose lineage does not match the package scope', async () => {
+    const { environmentPackage, store, turn } = await createTranscriptFixture();
     const result = importWorkerTranscript(store, environmentPackage, {
       credentialCheckValues: transcriptCredentialChecks(),
       itemsJsonl: `${JSON.stringify({
@@ -710,8 +713,8 @@ describe('worker transcript import', () => {
     ).toBe(false);
   });
 
-  it('deduplicates event transcript records already accepted through live append', () => {
-    const { environmentPackage, store, turn } = createTranscriptFixture();
+  it('deduplicates event transcript records already accepted through live append', async () => {
+    const { environmentPackage, store, turn } = await createTranscriptFixture();
     const lineage = {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -753,8 +756,8 @@ describe('worker transcript import', () => {
     });
   });
 
-  it('rejects event transcript records that were never accepted live', () => {
-    const { environmentPackage, store, turn } = createTranscriptFixture();
+  it('rejects event transcript records that were never accepted live', async () => {
+    const { environmentPackage, store, turn } = await createTranscriptFixture();
     const eventRecord = {
       event: {
         data: { status: 'running' },
@@ -787,8 +790,8 @@ describe('worker transcript import', () => {
     ]);
   });
 
-  it('rejects event transcript records that conflict with accepted live events', () => {
-    const { environmentPackage, store, turn } = createTranscriptFixture();
+  it('rejects event transcript records that conflict with accepted live events', async () => {
+    const { environmentPackage, store, turn } = await createTranscriptFixture();
     const lineage = {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -842,8 +845,8 @@ describe('worker transcript import', () => {
     ]);
   });
 
-  it('rejects transcript events from a different request in the same package scope', () => {
-    const { environmentPackage, store, turn } = createTranscriptFixture();
+  it('rejects transcript events from a different request in the same package scope', async () => {
+    const { environmentPackage, store, turn } = await createTranscriptFixture();
     const acceptedRecord = {
       event: { data: { status: 'running' }, type: 'worker.heartbeat' as const },
       kind: 'event' as const,
@@ -884,8 +887,8 @@ describe('worker transcript import', () => {
     );
   });
 
-  it('rejects durable live events that are absent from the transcript', () => {
-    const { environmentPackage, store, turn } = createTranscriptFixture();
+  it('rejects durable live events that are absent from the transcript', async () => {
+    const { environmentPackage, store, turn } = await createTranscriptFixture();
     const liveRecord = {
       event: { data: { status: 'running' }, type: 'worker.heartbeat' as const },
       kind: 'event' as const,
@@ -922,8 +925,8 @@ describe('worker transcript import', () => {
 });
 
 describe('retired Artifact declaration admission', () => {
-  it('does not publish Artifacts from agent-authored transcript declarations', () => {
-    const fixture = createTranscriptFixture();
+  it('does not publish Artifacts from agent-authored transcript declarations', async () => {
+    const fixture = await createTranscriptFixture();
     const before = importedOwnerCounts(fixture);
     const payload = {
       credentialCheckValues: transcriptCredentialChecks(),
@@ -968,9 +971,9 @@ function prepareCandidate(
 }
 
 describe('live Artifact Material candidate validation', () => {
-  it('requires exact canonical source assignment before candidate publication', () => {
-    const fixture = createTranscriptFixture();
-    fixture.store.updateTurn(fixture.turn.id, { agentId: 'other-agent' });
+  it('requires exact canonical source assignment before candidate publication', async () => {
+    const fixture = await createTranscriptFixture();
+    await fixture.store.updateTurn(fixture.turn.id, { agentId: 'other-agent' });
     expect(() => prepareCandidate(fixture)).toThrowError(
       expect.objectContaining({ code: 'recovery_required' })
     );
@@ -981,8 +984,8 @@ describe('live Artifact Material candidate validation', () => {
     });
   });
 
-  it('binds the proposal to its actual base revision and detects contradictory Material authority', () => {
-    const fixture = createTranscriptFixture();
+  it('binds the proposal to its actual base revision and detects contradictory Material authority', async () => {
+    const fixture = await createTranscriptFixture();
     const material = createWorkspaceMaterial(fixture.workspaceDb, {
       acceptedAt: '2026-10-05T00:00:00.000Z',
       actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
@@ -1048,8 +1051,8 @@ describe('live Artifact Material candidate validation', () => {
     { name: 'duplicate selection', code: 'invalid_request' },
     { name: 'incompatible media', code: 'invalid_request' },
     { name: 'JSON proposal', code: 'invalid_request' },
-  ])('rejects $name before any canonical write', ({ name, code }) => {
-    const fixture = createTranscriptFixture();
+  ])('rejects $name before any canonical write', async ({ name, code }) => {
+    const fixture = await createTranscriptFixture();
     const proposal = {
       materialId: 'mat_00000000-0000-7aed-981f-d98411b7cd79',
       baseRevisionId: 'mrev_00000000-0000-7ab7-8a57-afda5d5abfd6',
@@ -1096,4 +1099,9 @@ describe('live Artifact Material candidate validation', () => {
       reviews: { count: 0 },
     });
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

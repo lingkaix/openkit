@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import type { FsStore } from '../lib/store.js';
 import {
   createSchedulerExecutionAttempt,
@@ -12,6 +12,7 @@ import {
   createSchedulerAdmissionEntry,
   denySchedulerAdmissionEntry,
 } from '../scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
@@ -22,18 +23,18 @@ import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { observeAppUpdatePreflight } from './preflight.js';
 
 describe('content-free deployment maintenance preflight', () => {
-  it('counts pending, queued, open, closing and in-flight owners independently, excluding denied work', () => {
+  it('counts pending, queued, open, closing and in-flight owners independently, excluding denied work', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-preflight-owners-'));
     const coreDb = openCoreDb(root);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = createDemoStore({ dataRoot: root });
+    const store = await createDemoStore({ dataRoot: root });
     recordWorkspaceOwnerMembership({
       coreDb,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     });
-    const thread = store.createThread(
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Private pending work',
       undefined,
@@ -43,7 +44,7 @@ describe('content-free deployment maintenance preflight', () => {
         privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    store.createTurn(
+    await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Private pending prompt',
@@ -58,7 +59,7 @@ describe('content-free deployment maintenance preflight', () => {
     );
     try {
       for (const phase of ['queued', 'open', 'closing', 'denied'] as const) {
-        const executionThread = store.createThread(
+        const executionThread = await store.createThread(
           'ws_00000000-0000-7000-8000-000000000001',
           `Private queue ${phase}`
         );
@@ -113,8 +114,8 @@ describe('content-free deployment maintenance preflight', () => {
     const coreDb = openCoreDb(root);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = createDemoStore({ dataRoot: root });
-    const thread = store.createThread(
+    const store = await createDemoStore({ dataRoot: root });
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Private title must stay private',
       undefined,
@@ -124,7 +125,7 @@ describe('content-free deployment maintenance preflight', () => {
         privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    store.createTurn(
+    await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Private prompt must stay private',
@@ -172,4 +173,9 @@ describe('content-free deployment maintenance preflight', () => {
     expect(response.status).toBe(503);
     expect(await response.json()).toMatchObject({ code: 'app_update_unavailable' });
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

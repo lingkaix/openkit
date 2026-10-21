@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { connect, createServer, type ServerHttp2Session } from 'node:http2';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getNanoHostTransportSessionAuthority } from './app.js';
 import transportRevision from './auth/nanohost-transport-revision.json' with { type: 'json' };
 import { createNanoHostTransportTokenRecord } from './auth/nanohost-transport-token-store.js';
@@ -15,6 +15,7 @@ import {
   getNanoHostRuntimeTarget,
   upsertNanoHostRuntimeTarget,
 } from './runtime/nanohost-runtime-target.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { readDataRootLayoutMarker } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
@@ -104,7 +105,7 @@ describe('NanoHost restart-required reload fencing', () => {
       try {
         applyMigrations(coreDb);
         const localUserId = ensureLocalUser(coreDb);
-        const store = createDemoStore({ dataRoot });
+        const store = await createDemoStore({ dataRoot });
         const deploymentId = readDataRootLayoutMarker(dataRoot).deploymentId;
         const host = {
           bind: { host: '127.0.0.1', port: 3101 },
@@ -290,7 +291,7 @@ describe('NanoHost restart-required reload fencing', () => {
 describe('runtime config reload API', () => {
   it('hydrates the joined Workspace name after an accepted config reload', async () => {
     const dataRoot = createConfiguredDataRoot('openai/gpt-5.1');
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const workspaceConfigPath = join(
       dataRoot,
       'workspaces',
@@ -393,7 +394,7 @@ describe('runtime config reload API', () => {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const agentSetup = createTestAgentSetup({
       logicalModelId: 'reasoning',
       privateRoute: {
@@ -547,4 +548,9 @@ vi.mock('./runtime/agent-environment.js', async (importOriginal) => {
     './test-support/native-environment.js'
   );
   return withTestPreparedNativeEnvironment(actual);
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

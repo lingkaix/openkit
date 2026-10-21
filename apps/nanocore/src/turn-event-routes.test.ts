@@ -1,6 +1,7 @@
 import { ApiErrorSchema, SseEventEnvelopeSchema } from '@openkit/protocol';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { FsStore } from './lib/store.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { createApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
@@ -34,20 +35,20 @@ function parseSseEvents(text: string): unknown[] {
  * @param workspaceId Workspace that should own the replay fixture.
  * @returns Identifiers needed to open the turn event stream.
  */
-function createReplayTurn(
+async function createReplayTurn(
   store: FsStore,
   workspaceId = 'ws_00000000-0000-7000-8000-000000000001'
-): {
+): Promise<{
   workspaceId: string;
   threadId: string;
   turnId: string;
-} {
-  const thread = store.createThread(workspaceId, 'Replay thread');
-  const turn = store.createTurn(workspaceId, thread.id, 'Replay this stream', {
+}> {
+  const thread = await store.createThread(workspaceId, 'Replay thread');
+  const turn = await store.createTurn(workspaceId, thread.id, 'Replay this stream', {
     kind: 'user',
     id: 'usr_00000000-0000-7000-8000-000000000001',
   });
-  const assistantItem = store.createItem({
+  const assistantItem = await store.createItem({
     id: testEntityId('it', `it_assistant_${turn.id}`),
     owner: { kind: 'workspace', workspaceId: workspaceId },
     threadId: thread.id,
@@ -92,7 +93,7 @@ function createReplayTurn(
       delta: 'Second replay delta.',
     },
   });
-  const completedTurn = store.updateTurn(turn.id, {
+  const completedTurn = await store.updateTurn(turn.id, {
     status: 'completed',
     completedAt: turn.startedAt,
   });
@@ -109,9 +110,9 @@ function createReplayTurn(
 
 describe('turn event routes', () => {
   it('replays turn events after the since cursor without duplicates', async () => {
-    const store = createDemoStore();
+    const store = await createDemoStore();
     const app = createApp({ store });
-    const { workspaceId, threadId, turnId } = createReplayTurn(store);
+    const { workspaceId, threadId, turnId } = await createReplayTurn(store);
 
     const coldRes = await app.request(
       `/api/workspaces/${workspaceId}/threads/${threadId}/events?turnId=${turnId}&since=0`
@@ -137,9 +138,9 @@ describe('turn event routes', () => {
   });
 
   it('returns no content when the since cursor is already terminal', async () => {
-    const store = createDemoStore();
+    const store = await createDemoStore();
     const app = createApp({ store });
-    const { workspaceId, threadId, turnId } = createReplayTurn(store);
+    const { workspaceId, threadId, turnId } = await createReplayTurn(store);
     const terminalSequence = store
       .getTurnEvents(turnId)
       .find((event) => event.event === 'turn.completed')?.sequence;
@@ -154,15 +155,15 @@ describe('turn event routes', () => {
   });
 
   it('keeps non-terminal empty replays open instead of returning no content', async () => {
-    const store = createDemoStore();
+    const store = await createDemoStore();
     const unsubscribe = vi.fn();
 
     vi.spyOn(store, 'addTurnListener').mockReturnValue(unsubscribe);
 
     const app = createApp({ store });
     const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
-    const thread = store.createThread(workspaceId, 'Open replay thread');
-    const turn = store.createTurn(workspaceId, thread.id, 'Keep streaming', {
+    const thread = await store.createThread(workspaceId, 'Open replay thread');
+    const turn = await store.createTurn(workspaceId, thread.id, 'Keep streaming', {
       kind: 'user',
       id: 'usr_00000000-0000-7000-8000-000000000001',
     });
@@ -185,14 +186,14 @@ describe('turn event routes', () => {
   });
 
   it('preserves events emitted while retained events are being replayed', async () => {
-    const store = createDemoStore();
+    const store = await createDemoStore();
     const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
-    const thread = store.createThread(workspaceId, 'Replay race thread');
-    const turn = store.createTurn(workspaceId, thread.id, 'Preserve replay ordering', {
+    const thread = await store.createThread(workspaceId, 'Replay race thread');
+    const turn = await store.createTurn(workspaceId, thread.id, 'Preserve replay ordering', {
       kind: 'user',
       id: 'usr_00000000-0000-7000-8000-000000000001',
     });
-    const assistantItem = store.createItem({
+    const assistantItem = await store.createItem({
       id: testEntityId('it', `it_assistant_${turn.id}`),
       owner: { kind: 'workspace', workspaceId: workspaceId },
       threadId: thread.id,
@@ -249,7 +250,7 @@ describe('turn event routes', () => {
 
     await vi.waitFor(() => expect(listenerSpy).toHaveBeenCalledTimes(1));
 
-    const completedTurn = store.updateTurn(turn.id, {
+    const completedTurn = await store.updateTurn(turn.id, {
       status: 'completed',
       completedAt: turn.startedAt,
     });
@@ -271,13 +272,13 @@ describe('turn event routes', () => {
   });
 
   it('returns cursor_expired when since is older than the retained event window', async () => {
-    const store = createDemoStore();
+    const store = await createDemoStore();
     const app = createApp({ store });
-    const thread = store.createThread(
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Overflow replay thread'
     );
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Fill the retained window',
@@ -289,7 +290,7 @@ describe('turn event routes', () => {
     const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
     const threadId = thread.id;
     const turnId = turn.id;
-    store.createItem({
+    await store.createItem({
       id: testEntityId('it', `it_assistant_${turnId}`),
       owner: { kind: 'workspace', workspaceId: workspaceId },
       threadId,
@@ -327,9 +328,9 @@ describe('turn event routes', () => {
   });
 
   it('does not replay a turn through a different workspace and thread path', async () => {
-    const store = createDemoStore();
-    const otherWorkspace = store.createWorkspace('Other event workspace');
-    const { turnId } = createReplayTurn(store, otherWorkspace.id);
+    const store = await createDemoStore();
+    const otherWorkspace = await store.createWorkspace('Other event workspace');
+    const { turnId } = await createReplayTurn(store, otherWorkspace.id);
     const app = createApp({ store });
 
     const res = await app.request(
@@ -341,13 +342,13 @@ describe('turn event routes', () => {
   });
 
   it('omits AgentSession identity from ordinary SSE while retained events may still carry it', async () => {
-    const store = createDemoStore();
+    const store = await createDemoStore();
     const app = createApp({ store });
-    const thread = store.createThread(
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Hidden AgentSession stream'
     );
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Hide AgentSession from SSE',
@@ -356,7 +357,7 @@ describe('turn event routes', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    const agentSession = store.createAgentSession({
+    const agentSession = await store.createAgentSession({
       id: 'as_00000000-0000-7271-8ba3-bea82b217022',
       agentId: 'agent_codex_host',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -366,7 +367,7 @@ describe('turn event routes', () => {
       createdAt: turn.startedAt ?? new Date().toISOString(),
       updatedAt: turn.startedAt ?? new Date().toISOString(),
     });
-    const hiddenTurn = store.updateTurn(turn.id, { agentSessionId: agentSession.id });
+    const hiddenTurn = await store.updateTurn(turn.id, { agentSessionId: agentSession.id });
     store.emitTurnEvent(turn.id, {
       event: 'agent.session.updated',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -381,7 +382,7 @@ describe('turn event routes', () => {
       turnId: turn.id,
       data: { type: 'turn-updated', turn: hiddenTurn },
     });
-    const completedTurn = store.updateTurn(turn.id, {
+    const completedTurn = await store.updateTurn(turn.id, {
       status: 'completed',
       completedAt: turn.startedAt,
     });
@@ -409,4 +410,9 @@ describe('turn event routes', () => {
       store.getTurn('ws_00000000-0000-7000-8000-000000000001', thread.id, turn.id).agentSessionId
     ).toBe('as_00000000-0000-7271-8ba3-bea82b217022');
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

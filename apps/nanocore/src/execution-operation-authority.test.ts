@@ -2,7 +2,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Hono } from 'hono';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
@@ -16,6 +16,7 @@ import {
   denySchedulerAdmissionEntry,
   requireSchedulerAdmissionEntry,
 } from './scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
@@ -34,7 +35,7 @@ describe('execution operation authority', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const localUserId = ensureLocalUser(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       workspaceId: DEMO_WORKSPACE_ID,
@@ -49,7 +50,7 @@ describe('execution operation authority', () => {
       threadId: DEMO_THREAD_ID,
       prompt: 'Work',
     });
-    const thread = store.createThread(
+    const thread = await store.createThread(
       DEMO_WORKSPACE_ID,
       'Private queue',
       undefined,
@@ -198,4 +199,9 @@ describe('execution operation authority', () => {
       coreDb.sqlite.close();
     }
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

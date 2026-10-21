@@ -21,6 +21,7 @@ import type { PendingRequestRecord } from './runtime/pending-requests.js';
 import * as productTurns from './runtime/product-turn-start.js';
 import { getSchedulerPreparationClaims } from './runtime/scheduler-dispatch-loop.js';
 import { WorkerGovernanceCapacityUnavailableError } from './runtime/worker-governance-backend.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
@@ -44,12 +45,12 @@ const timestamp = '2026-10-15T00:00:00.000Z';
 afterEach(() => vi.restoreAllMocks());
 
 /** Composes real App owners over isolated metadata, with no Worker execution or Provider call. */
-function fixture(supply: 'local' | 'api-key' | 'subscription' = 'local') {
+async function fixture(supply: 'local' | 'api-key' | 'subscription' = 'local') {
   const dataRoot = mkdtempSync(join(tmpdir(), 'provider-readiness-composition-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({
     coreDb,
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -114,7 +115,7 @@ function fixture(supply: 'local' | 'api-key' | 'subscription' = 'local') {
       ],
     }),
   });
-  store.createAgentSession({
+  await store.createAgentSession({
     id: 'as_00000000-0000-7260-9908-7d6a85734e99',
     agentId: running.id,
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -245,7 +246,7 @@ describe('live Provider readiness composition', () => {
     ['pending-outcome', 'api-key'],
     ['pending-outcome', 'subscription'],
   ] as const)('refuses unavailable %s %s supply through real App admission before effects', async (entry, supply) => {
-    const f = fixture(supply);
+    const f = await fixture(supply);
     try {
       if (supply === 'subscription') {
         f.vault.unlock({ masterKey: Buffer.alloc(32, 7) });
@@ -262,7 +263,7 @@ describe('live Provider readiness composition', () => {
       }
       const frozen =
         entry === 'pending-outcome'
-          ? f.store.createTurn(
+          ? await f.store.createTurn(
               'ws_00000000-0000-7000-8000-000000000001',
               'th_00000000-0000-7000-8000-000000000001',
               'Receive pending request outcomes.',
@@ -388,7 +389,7 @@ describe('live Provider readiness composition', () => {
   });
 
   it('rechecks restored and revoked API-key supply on public Turns without reloading App', async () => {
-    const f = fixture('api-key');
+    const f = await fixture('api-key');
     try {
       const version = f.manager.current().version;
       for (const [index, phase] of ['missing', 'restored', 'revoked'].entries()) {
@@ -404,7 +405,7 @@ describe('live Provider readiness composition', () => {
           revokeVaultReference(f.coreDb, {
             referenceId: 'vault_00000000-0000-778d-b94a-e2ca3936439b',
           });
-        const thread = f.store.createThread(
+        const thread = await f.store.createThread(
           'ws_00000000-0000-7000-8000-000000000001',
           `Live supply ${phase}`
         );
@@ -458,7 +459,7 @@ describe('live Provider readiness composition', () => {
   });
 
   it('forwards current App owners through setup diagnostics without freezing availability', async () => {
-    const f = fixture();
+    const f = await fixture();
     const pair = { subscriptionProviderId: 'openai-codex', accountSlotId: 'fixture' } as const;
     try {
       for (const phase of ['missing', 'configured', 'revoked'] as const) {
@@ -510,7 +511,7 @@ describe('live Provider readiness composition', () => {
   });
 
   it('forwards the same live owners to warm, running and default conversation targets', async () => {
-    const f = fixture();
+    const f = await fixture();
     try {
       const response = await f.app.request(
         ...operationRequest('conversation.targets', {
@@ -546,8 +547,8 @@ describe('live Provider readiness composition', () => {
     }
   });
 
-  it('forwards the same live owners to the App captured-call setup evaluation', () => {
-    const f = fixture();
+  it('forwards the same live owners to the App captured-call setup evaluation', async () => {
+    const f = await fixture();
     const workspaceDb = openWorkspaceDb(f.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       const services = f.registration.mock.calls.at(-1)![0].pendingRequestServices!;
@@ -573,4 +574,9 @@ describe('live Provider readiness composition', () => {
       f.cleanup();
     }
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

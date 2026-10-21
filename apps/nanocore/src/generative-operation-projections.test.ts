@@ -3,11 +3,12 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { BootReadinessSnapshot } from '@openkit/app-api-schemas';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listSqliteAuditEvents } from './audit-events.js';
 import { computeBootReadinessSnapshot } from './bootstrap/readiness.js';
 import { StoreRecordNotFoundError } from './lib/store.js';
 import { openExistingAppDb } from './storage/app-db.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -153,7 +154,7 @@ const cases = [
 ] as const;
 
 /** Explicit local membership and retained Workspace authority, without a permissive request helper. */
-function fixture(getBootReadiness?: () => BootReadinessSnapshot) {
+async function fixture(getBootReadiness?: () => BootReadinessSnapshot) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-generative-cutover-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -163,7 +164,7 @@ function fixture(getBootReadiness?: () => BootReadinessSnapshot) {
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   return {
     coreDb,
     store,
@@ -175,7 +176,7 @@ describe('Generative operation cutover', () => {
   it.each(
     cases
   )('retires the authorized former binding for %s', async (_id, method, path, body) => {
-    const f = fixture();
+    const f = await fixture();
     try {
       const response = await f.app.request(`${base}${path}`, {
         method,
@@ -192,7 +193,7 @@ describe('Generative operation cutover', () => {
   it.each(
     cases
   )('reaches the same native outcome through %s', async (id, _method, _path, body, selectors, status) => {
-    const f = fixture();
+    const f = await fixture();
     try {
       const response = await f.app.request(`/api/app/operations/${id}`, {
         method: 'POST',
@@ -220,7 +221,7 @@ describe('Generative operation cutover', () => {
 });
 
 it('keeps native revisions, replay and atomic batch outcomes through the typed client and derived CLI', async () => {
-  const f = fixture();
+  const f = await fixture();
   const { createCoreClient } = await import('../../../packages/core-client/src/index.js');
   const { operationCatalog } = await import(
     new URL('../../../skills/openkit-operations.mjs', import.meta.url).href
@@ -345,7 +346,7 @@ it('keeps native revisions, replay and atomic batch outcomes through the typed c
 
 it('preserves publication, JSON resources, refresh and conditional action receipts across HTTP and remote MCP', async () => {
   let acceptingProductWork = true;
-  const f = fixture(() => ({
+  const f = await fixture(() => ({
     ...computeBootReadinessSnapshot({ bootId: 'boot_ui' }),
     acceptingProductWork,
   }));
@@ -402,7 +403,7 @@ it('preserves publication, JSON resources, refresh and conditional action receip
       data: { note: 'Original' },
     });
     const collection = created.schema!.collections[0]!;
-    const turn = f.store.createTurn(
+    const turn = await f.store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Edit note',
@@ -572,7 +573,7 @@ it('preserves publication, JSON resources, refresh and conditional action receip
 });
 
 it('retains Workspace availability failures and refuses before any app or presentation write', async () => {
-  const f = fixture();
+  const f = await fixture();
   const available = f.store.getWorkspace.bind(f.store);
   const lookup = vi.spyOn(f.store, 'getWorkspace').mockImplementation(() => {
     throw new StoreRecordNotFoundError('Workspace record is missing.');
@@ -618,7 +619,7 @@ it('retains Workspace availability failures and refuses before any app or presen
 });
 
 it('refuses read-only and revoked credentials before any newly migrated Kernel or UI write', async () => {
-  const f = fixture();
+  const f = await fixture();
   const server = createApp({
     mode: 'server',
     coreDb: f.coreDb,
@@ -670,7 +671,7 @@ it('refuses read-only and revoked credentials before any newly migrated Kernel o
 });
 
 it('refuses caller-supplied executing lineage in the native public mutation input', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const requestId = randomUUID();
     const response = await f.app.request('/api/app/operations/kernel.apps.create', {
@@ -695,4 +696,9 @@ it('refuses caller-supplied executing lineage in the native public mutation inpu
   } finally {
     f.coreDb.sqlite.close();
   }
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

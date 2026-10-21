@@ -3,10 +3,11 @@ import { appendFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ProductTurnSchema } from '@openkit/protocol';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import * as evidenceBundles from './evidence-bundles.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import * as database from './storage/db.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
@@ -20,12 +21,12 @@ import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /** Creates the real in-process Thread operation with current ordinary-user Workspace authority. */
-function ordinaryActivityFixture() {
+async function ordinaryActivityFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-f1-thread-activity-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
   const actor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId: actor.id, workspaceId });
@@ -86,14 +87,15 @@ function publishActivityBody(
 
 describe('thread dashboard app API', () => {
   it('projects each interleaved Turn latest admitted reply without a native message association or raw read', async () => {
-    const f = ordinaryActivityFixture();
-    const thread = f.store.createThread(f.workspaceId, 'Ordinary source boundary');
-    const turns = ['First', 'Second', 'No Item', 'Capture off'].map((title, index) =>
-      f.store.createTurn(f.workspaceId, thread.id, title, f.actor, null, {
-        captureCoverage: { scope: 'server', value: index === 3 ? 'off' : 'on' },
-      })
+    const f = await ordinaryActivityFixture();
+    const thread = await f.store.createThread(f.workspaceId, 'Ordinary source boundary');
+    const turns = ['First', 'Second', 'No Item', 'Capture off'].map(
+      async (title, index) =>
+        await f.store.createTurn(f.workspaceId, thread.id, title, f.actor, null, {
+          captureCoverage: { scope: 'server', value: index === 3 ? 'off' : 'on' },
+        })
     );
-    const addReply = (turnIndex: number, name: string, second: number) => {
+    const addReply = async (turnIndex: number, name: string, second: number) => {
       const item = {
         id: testEntityId('it', name),
         owner: { kind: 'workspace', workspaceId: f.workspaceId },
@@ -105,14 +107,14 @@ describe('thread dashboard app API', () => {
         createdAt: `2026-09-22T00:00:${second}.000Z`,
         completedAt: `2026-09-22T00:00:${second}.000Z`,
       } as const;
-      f.store.createItem(item);
+      await f.store.createItem(item);
       return item;
     };
-    const old = addReply(0, 'Earlier first reply.', 10);
-    const second = addReply(1, 'Second Turn ordinary canary.', 20);
-    const latest = addReply(0, 'Latest first Turn ordinary canary.', 30);
-    const off = addReply(3, 'Capture-off ordinary canary.', 40);
-    f.store.createItem({
+    const old = await addReply(0, 'Earlier first reply.', 10);
+    const second = await addReply(1, 'Second Turn ordinary canary.', 20);
+    const latest = await addReply(0, 'Latest first Turn ordinary canary.', 30);
+    const off = await addReply(3, 'Capture-off ordinary canary.', 40);
+    await f.store.createItem({
       id: testEntityId('it', 'later-user-input'),
       owner: { kind: 'workspace', workspaceId: f.workspaceId },
       threadId: thread.id,
@@ -205,8 +207,8 @@ describe('thread dashboard app API', () => {
   });
 
   it('refuses real private and foreign Thread activity before ordinary Item or raw-body projection', async () => {
-    const f = ordinaryActivityFixture();
-    const privateThread = f.store.createThread(
+    const f = await ordinaryActivityFixture();
+    const privateThread = await f.store.createThread(
       f.workspaceId,
       'Other private work',
       undefined,
@@ -216,17 +218,24 @@ describe('thread dashboard app API', () => {
         privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
       }
     );
-    const foreignWorkspace = f.store.createWorkspace('Foreign');
-    const foreignThread = f.store.createThread(foreignWorkspace.id, 'Foreign work');
+    const foreignWorkspace = await f.store.createWorkspace('Foreign');
+    const foreignThread = await f.store.createThread(foreignWorkspace.id, 'Foreign work');
     for (const [workspaceId, thread] of [
       [f.workspaceId, privateThread],
       [foreignWorkspace.id, foreignThread],
     ] as const) {
-      const turn = f.store.createTurn(workspaceId, thread.id, 'Protected work', f.actor, null, {
-        captureCoverage: { scope: 'server', value: 'on' },
-      });
+      const turn = await f.store.createTurn(
+        workspaceId,
+        thread.id,
+        'Protected work',
+        f.actor,
+        null,
+        {
+          captureCoverage: { scope: 'server', value: 'on' },
+        }
+      );
       const itemId = testEntityId('it', `private-${turn.id}`);
-      f.store.createItem({
+      await f.store.createItem({
         id: itemId,
         owner: { kind: 'workspace', workspaceId },
         threadId: thread.id,
@@ -277,7 +286,7 @@ describe('thread dashboard app API', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -294,15 +303,15 @@ describe('thread dashboard app API', () => {
         )
         .run(id, name, `${id}@example.com`, Date.now(), Date.now());
     }
-    const thread = store.createThread(
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Group conversation'
     );
-    store.createTurn('ws_00000000-0000-7000-8000-000000000001', thread.id, 'My input', {
+    await store.createTurn('ws_00000000-0000-7000-8000-000000000001', thread.id, 'My input', {
       kind: 'user',
       id: 'usr_00000000-0000-7000-8000-000000000001',
     });
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Other input',
@@ -311,24 +320,34 @@ describe('thread dashboard app API', () => {
         id: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
       }
     );
-    store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
-    store.createTurn('ws_00000000-0000-7000-8000-000000000001', thread.id, 'Missing profile', {
-      kind: 'user',
-      id: 'usr_00000000-0000-7241-80d8-0d46cb74b40d',
-    });
-    const foreign = store.createThread(
+    await store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
+    await store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Missing profile',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7241-80d8-0d46cb74b40d',
+      }
+    );
+    const foreign = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Unrelated conversation'
     );
-    store.createTurn('ws_00000000-0000-7000-8000-000000000001', foreign.id, 'Unrelated input', {
-      kind: 'user',
-      id: 'usr_00000000-0000-76a2-91eb-629d90835e80',
-    });
+    await store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      foreign.id,
+      'Unrelated input',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-76a2-91eb-629d90835e80',
+      }
+    );
     for (const candidate of [
       ...store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', thread.id),
       ...store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', foreign.id),
     ]) {
-      store.createItem({
+      await store.createItem({
         id: testEntityId('it', `message_${candidate.id}`),
         owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: candidate.threadId,
@@ -400,20 +419,25 @@ describe('thread dashboard app API', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const thread = store.createThread(
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Retained activity'
     );
-    const turn = store.createTurn('ws_00000000-0000-7000-8000-000000000001', thread.id, 'Work', {
-      kind: 'user',
-      id: 'usr_00000000-0000-7000-8000-000000000001',
-    });
+    const turn = await store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Work',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     const workspaceDb = database.openWorkspaceDb(
       dataRoot,
       'ws_00000000-0000-7000-8000-000000000001'
@@ -487,7 +511,7 @@ describe('thread dashboard app API', () => {
         createdAt: timestamp,
         resolvedAt: null,
       });
-      store.createItem({
+      await store.createItem({
         id: 'it_00000000-0000-74cd-8ec9-23e9d64367b4',
         owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: thread.id,
@@ -546,18 +570,23 @@ describe('thread dashboard app API', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const thread = store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Activity');
-    const turn = store.createTurn('ws_00000000-0000-7000-8000-000000000001', thread.id, 'Work', {
-      kind: 'user',
-      id: 'usr_00000000-0000-7000-8000-000000000001',
-    });
-    const privateThread = store.createThread(
+    const thread = await store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Activity');
+    const turn = await store.createTurn(
+      'ws_00000000-0000-7000-8000-000000000001',
+      thread.id,
+      'Work',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
+    const privateThread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Other private activity',
       undefined,
@@ -659,9 +688,9 @@ describe('thread dashboard app API', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = createDemoStore({ dataRoot });
-    const foreignWorkspace = store.createWorkspace('Foreign Workspace');
-    const foreignThread = store.createThread(foreignWorkspace.id, 'Foreign Thread');
+    const store = await createDemoStore({ dataRoot });
+    const foreignWorkspace = await store.createWorkspace('Foreign Workspace');
+    const foreignThread = await store.createThread(foreignWorkspace.id, 'Foreign Thread');
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -690,12 +719,12 @@ describe('thread dashboard app API', () => {
   });
 
   it('returns thread info, turn history, artifacts, and composer context', async () => {
-    const store = createDemoStore();
-    const thread = store.createThread(
+    const store = await createDemoStore();
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Dashboard thread'
     );
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Run dashboard turn',
@@ -705,7 +734,7 @@ describe('thread dashboard app API', () => {
       }
     );
     const agentSessionId = testEntityId('as', `session_sim_turn_${turn.id}`);
-    store.createAgentSession({
+    await store.createAgentSession({
       id: agentSessionId,
       agentId: 'agent_codex_host',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -715,12 +744,12 @@ describe('thread dashboard app API', () => {
       createdAt: turn.startedAt ?? new Date().toISOString(),
       updatedAt: turn.startedAt ?? new Date().toISOString(),
     });
-    store.updateTurn(turn.id, {
+    await store.updateTurn(turn.id, {
       agentId: 'agent_codex_host',
       agentProfileId: 'default',
       agentSessionId,
     });
-    const artifact = store.createArtifact({
+    const artifact = await store.createArtifact({
       id: 'ar_00000000-0000-7ac7-b330-01ee34662a73',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
@@ -777,12 +806,12 @@ describe('thread dashboard app API', () => {
   });
 
   it('does not expose lineage from a different persisted AgentSession', async () => {
-    const store = createDemoStore();
-    const thread = store.createThread(
+    const store = await createDemoStore();
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Fresh simulator session'
     );
-    store.createTurn(
+    await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Run fresh simulator turn',
@@ -791,7 +820,7 @@ describe('thread dashboard app API', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    store.createAgentSession({
+    await store.createAgentSession({
       id: testEntityId('as', 'session_old'),
       agentId: 'agent_codex_host',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -830,12 +859,12 @@ describe('thread dashboard app API', () => {
   });
 
   it('selects the first equally newest Thread Artifact without reordering the inventory', async () => {
-    const store = createDemoStore();
-    const thread = store.createThread(
+    const store = await createDemoStore();
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Artifact selection'
     );
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Select newest output',
@@ -844,11 +873,11 @@ describe('thread dashboard app API', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    const foreignThread = store.createThread(
+    const foreignThread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Other Thread'
     );
-    const foreignTurn = store.createTurn(
+    const foreignTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       foreignThread.id,
       'Unrelated output',
@@ -864,7 +893,7 @@ describe('thread dashboard app API', () => {
       ['ar_00000000-0000-73d7-8e3d-4d56af3ad75f', '2026-07-19T00:03:00.000Z', foreignTurn],
     ] as const;
     for (const [id, updatedAt, owner] of artifacts) {
-      store.createArtifact({
+      await store.createArtifact({
         id,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         threadId: owner.threadId,
@@ -919,15 +948,15 @@ describe('thread dashboard app API', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = createDemoStore({ dataRoot });
-    const thread = store.createThread(
+    const store = await createDemoStore({ dataRoot });
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Actor-scoped dashboard',
       undefined,
       'conversation',
       { visibility: 'workspace' }
     );
-    const approvalTurn = store.createTurn(
+    const approvalTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Request approval',
@@ -948,7 +977,7 @@ describe('thread dashboard app API', () => {
       createdAt: '2026-07-19T00:00:00.000Z',
       resolvedAt: null,
     });
-    store.createItem({
+    await store.createItem({
       id: 'it_00000000-0000-7f72-83a7-ba302bd2b905',
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
@@ -962,12 +991,12 @@ describe('thread dashboard app API', () => {
       createdAt: '2026-07-19T00:00:00.000Z',
       completedAt: '2026-07-19T00:00:00.000Z',
     });
-    store.updateTurn(approvalTurn.id, {
+    await store.updateTurn(approvalTurn.id, {
       agentId: 'agent_codex_host',
       status: 'completed',
       completedAt: '2026-07-19T00:00:00.000Z',
     });
-    const questionTurn = store.createTurn(
+    const questionTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Request responsible input',
@@ -976,7 +1005,7 @@ describe('thread dashboard app API', () => {
         id: 'usr_00000000-0000-7eb0-931a-b5d2be1d760f',
       }
     );
-    store.createItem({
+    await store.createItem({
       id: 'it_00000000-0000-7f92-b6e6-35cd138b85b4',
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
@@ -999,12 +1028,12 @@ describe('thread dashboard app API', () => {
       createdAt: '2026-07-19T00:01:00.000Z',
       completedAt: '2026-07-19T00:01:00.000Z',
     });
-    store.updateTurn(questionTurn.id, {
+    await store.updateTurn(questionTurn.id, {
       agentId: 'agent_codex_host',
       status: 'completed',
       completedAt: '2026-07-19T00:01:00.000Z',
     });
-    const failedTurn = store.createTurn(
+    const failedTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Preserve shared failure',
@@ -1013,7 +1042,7 @@ describe('thread dashboard app API', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    store.updateTurn(failedTurn.id, {
+    await store.updateTurn(failedTurn.id, {
       agentId: 'agent_codex_host',
       completedAt: '2026-07-19T00:02:00.000Z',
       error: { code: 'worker_failed', message: 'Shared worker failure.' },
@@ -1107,12 +1136,12 @@ describe('thread dashboard app API', () => {
   });
 
   it('returns product work status for the thread workbench', async () => {
-    const store = createDemoStore();
-    const thread = store.createThread(
+    const store = await createDemoStore();
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Routed worker thread'
     );
-    const approvalTurn = store.createTurn(
+    const approvalTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Run delegated work',
@@ -1135,7 +1164,7 @@ describe('thread dashboard app API', () => {
       resolvedAt: null,
     });
 
-    store.createItem({
+    await store.createItem({
       id: 'it_00000000-0000-7bf5-b660-d0ccc86e0d44',
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
@@ -1149,8 +1178,8 @@ describe('thread dashboard app API', () => {
       createdAt: timestamp,
       completedAt: timestamp,
     });
-    store.updateTurn(approvalTurn.id, { agentId: 'agent_codex_host' });
-    const questionTurn = store.createTurn(
+    await store.updateTurn(approvalTurn.id, { agentId: 'agent_codex_host' });
+    const questionTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Ask for input',
@@ -1159,7 +1188,7 @@ describe('thread dashboard app API', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    store.createItem({
+    await store.createItem({
       id: 'it_00000000-0000-75a6-828f-8513af34689a',
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
@@ -1182,8 +1211,8 @@ describe('thread dashboard app API', () => {
       createdAt: timestamp,
       completedAt: timestamp,
     });
-    store.updateTurn(questionTurn.id, { agentId: 'agent_codex_host' });
-    store.createArtifact({
+    await store.updateTurn(questionTurn.id, { agentId: 'agent_codex_host' });
+    await store.createArtifact({
       id: 'ar_00000000-0000-735b-b1c6-b15d19a639c2',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       threadId: thread.id,
@@ -1256,13 +1285,13 @@ describe('thread dashboard app API', () => {
   });
 
   it('does not count ungated or duplicate-question decision items', async () => {
-    const store = createDemoStore();
-    const thread = store.createThread(
+    const store = await createDemoStore();
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Invalid decision items'
     );
     const timestamp = '2026-07-19T00:00:00.000Z';
-    const approvalTurn = store.createTurn(
+    const approvalTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Ungated approval',
@@ -1283,7 +1312,7 @@ describe('thread dashboard app API', () => {
       createdAt: timestamp,
       resolvedAt: null,
     });
-    store.createItem({
+    await store.createItem({
       id: 'it_00000000-0000-7c2d-912e-4ee20b9b582b',
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
@@ -1297,7 +1326,7 @@ describe('thread dashboard app API', () => {
       createdAt: timestamp,
       completedAt: timestamp,
     });
-    const duplicateTurn = store.createTurn(
+    const duplicateTurn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
       'Malformed question',
@@ -1306,7 +1335,7 @@ describe('thread dashboard app API', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    store.createItem({
+    await store.createItem({
       id: 'it_00000000-0000-72bf-96f3-cd99b62271df',
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: thread.id,
@@ -1337,7 +1366,7 @@ describe('thread dashboard app API', () => {
       createdAt: timestamp,
       completedAt: timestamp,
     });
-    store.updateTurn(duplicateTurn.id, { agentId: 'agent_codex_host' });
+    await store.updateTurn(duplicateTurn.id, { agentId: 'agent_codex_host' });
     const app = createApp({ store, turnExecutor: new SimulatedTurnExecutor() });
 
     const response = await app.request('/api/app/operations/thread.dashboard', {
@@ -1357,4 +1386,9 @@ describe('thread dashboard app API', () => {
       },
     });
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

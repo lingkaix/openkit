@@ -20,6 +20,7 @@ import {
   requireSchedulerExecutionAttemptAdmissionContext,
 } from '../scheduler-records';
 import * as schedulerRecords from '../scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db';
 import { insertExternalTriggerAdmission } from '../storage/external-trigger-admissions.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate';
@@ -71,7 +72,8 @@ import { WorkerGovernanceCapacityUnavailableError } from './worker-governance-ba
 import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
 
 const extraCoreHandles: ReturnType<typeof openCoreDb>[] = [];
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const handle of extraCoreHandles.splice(0)) if (handle.sqlite.open) handle.sqlite.close();
 });
 
@@ -394,7 +396,7 @@ async function admitTestProductTurn(input: Parameters<typeof executeProductTurn>
 describe('route B durable intent before effects', () => {
   it('prepares the accepted immutable admission once without imposing static helper order', async () => {
     const coreDb = createMigratedCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new RecordingTurnExecutor(coreDb);
     const snapshot = createInMemoryRuntimeConfigSnapshot({
       agentManifests: [agentManifest()],
@@ -442,7 +444,7 @@ describe('route B durable intent before effects', () => {
 
   it('retains unknown operation ownership after a lost native response instead of releasing a possibly accepted execution', async () => {
     const coreDb = createMigratedCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new RecordingTurnExecutor(coreDb);
     executor.submit = async () => {
       throw new Error('Response lost after the native boundary was entered.');
@@ -500,10 +502,10 @@ describe('scheduler dispatch loop', () => {
   it('dispatches one monthly UTC occurrence in its existing Thread through the ordinary modeled Worker port', async () => {
     const coreDb = createMigratedCoreDb();
     const root = coreDb.dataRoot;
-    const store = createDemoStore({ dataRoot: root });
+    const store = await createDemoStore({ dataRoot: root });
     const manifest = agentManifest();
     const executor = new RecordingTurnExecutor(coreDb);
-    const thread = store.createThread(DEMO_WORKSPACE_ID, 'Monthly existing target');
+    const thread = await store.createThread(DEMO_WORKSPACE_ID, 'Monthly existing target');
     const instant = '2026-10-28T09:30:00.000Z';
     const schedules = new AutomationStore(coreDb, new WorkspaceMutationAdmission(), () => instant);
     const schedule = schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
@@ -594,10 +596,10 @@ describe('scheduler dispatch loop', () => {
   ] as const)('refuses a same-Store cached recurring Turn contradiction after failed persistence: %s', async (consumer) => {
     const coreDb = createMigratedCoreDb();
     const root = coreDb.dataRoot;
-    const store = createDemoStore({ dataRoot: root });
+    const store = await createDemoStore({ dataRoot: root });
     const manifest = agentManifest();
     const executor = new RecordingTurnExecutor(coreDb);
-    const thread = store.createThread(DEMO_WORKSPACE_ID, 'Retain canonical recurring Turn');
+    const thread = await store.createThread(DEMO_WORKSPACE_ID, 'Retain canonical recurring Turn');
     const instant = '2026-10-16T00:00:00.000Z';
     const schedules = new AutomationStore(coreDb, new WorkspaceMutationAdmission(), () => instant);
     const schedule = schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
@@ -666,7 +668,7 @@ describe('scheduler dispatch loop', () => {
           throw new Error('Turn persistence interrupted');
         });
       try {
-        expect(() => store.updateTurn(entry.turnId, { agentId: 'other-worker' })).toThrow(
+        await expect(store.updateTurn(entry.turnId, { agentId: 'other-worker' })).rejects.toThrow(
           'Turn persistence interrupted'
         );
       } finally {
@@ -742,10 +744,10 @@ describe('scheduler dispatch loop', () => {
     'stale-cache',
   ] as const)('dispatches event-linked work without a receipt and preserves faulty publication: %s', async (fault) => {
     const coreDb = createMigratedCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new RecordingTurnExecutor(coreDb);
     const manifest = agentManifest();
-    const pollThread = store.createThread(DEMO_WORKSPACE_ID, 'Scheduled source poll');
+    const pollThread = await store.createThread(DEMO_WORKSPACE_ID, 'Scheduled source poll');
     const schedules = new AutomationStore(
       coreDb,
       new WorkspaceMutationAdmission(),
@@ -776,7 +778,7 @@ describe('scheduler dispatch loop', () => {
       },
     });
     const source = schedules.getOccurrence(occurrence.id);
-    store.createTurn(
+    await store.createTurn(
       DEMO_WORKSPACE_ID,
       pollThread.id,
       'Read the selected source.',
@@ -788,7 +790,7 @@ describe('scheduler dispatch loop', () => {
       workspaceId: DEMO_WORKSPACE_ID,
       queueEntryId: source.queueEntryId!,
     });
-    const caseThread = store.createThread(
+    const caseThread = await store.createThread(
       DEMO_WORKSPACE_ID,
       'Isolated event case',
       undefined,
@@ -817,12 +819,19 @@ describe('scheduler dispatch loop', () => {
       });
       return accepted;
     })();
-    store.createTurn(DEMO_WORKSPACE_ID, caseThread.id, entry.turnInput, schedule.actor, null, {
-      turnId: entry.turnId,
-      status: 'pending',
-      agentId: manifest.id,
-      executorKind: 'worker',
-    });
+    await store.createTurn(
+      DEMO_WORKSPACE_ID,
+      caseThread.id,
+      entry.turnInput,
+      schedule.actor,
+      null,
+      {
+        turnId: entry.turnId,
+        status: 'pending',
+        agentId: manifest.id,
+        executorKind: 'worker',
+      }
+    );
     const app = createApp({ coreDb, dataRoot: coreDb.dataRoot, store, automationStore: schedules });
     const published = readPublishedTurnFileRecords(
       coreDb.dataRoot,
@@ -850,7 +859,7 @@ describe('scheduler dispatch loop', () => {
           throw new Error('Turn persistence interrupted');
         });
       try {
-        expect(() => store.updateTurn(entry.turnId, { agentId: 'other-worker' })).toThrow(
+        await expect(store.updateTurn(entry.turnId, { agentId: 'other-worker' })).rejects.toThrow(
           'Turn persistence interrupted'
         );
       } finally {
@@ -944,10 +953,10 @@ describe('scheduler dispatch loop', () => {
   ] as const)('inspects initial recurring publication without repairing it after restart: %s', async (fault) => {
     let coreDb = createMigratedCoreDb();
     const root = coreDb.dataRoot;
-    const store = createDemoStore({ dataRoot: root });
+    const store = await createDemoStore({ dataRoot: root });
     const manifest = agentManifest();
     const initialExecutor = new RecordingTurnExecutor(coreDb);
-    const thread = store.createThread(DEMO_WORKSPACE_ID, 'Recurring worker');
+    const thread = await store.createThread(DEMO_WORKSPACE_ID, 'Recurring worker');
     const mutationAdmission = new WorkspaceMutationAdmission();
     let instant = '2026-10-16T00:00:00.000Z';
     const schedules = new AutomationStore(coreDb, mutationAdmission, () => instant);
@@ -964,9 +973,9 @@ describe('scheduler dispatch loop', () => {
       scheduledAt: instant,
     });
     const originalCreate = store.createTurn.bind(store);
-    const initialCreate = vi.spyOn(store, 'createTurn').mockImplementationOnce((...args) => {
+    const initialCreate = vi.spyOn(store, 'createTurn').mockImplementationOnce(async (...args) => {
       if (fault === 'before-publication') throw new Error('Interrupted initial publication');
-      const turn = originalCreate(...args);
+      const turn = await originalCreate(...args);
       const path = join(
         root,
         'workspaces',
@@ -1027,7 +1036,7 @@ describe('scheduler dispatch loop', () => {
       initialCreate.mockRestore();
       coreDb.sqlite.close();
       coreDb = openCoreDb(root);
-      const reopened = createDemoStore({ dataRoot: root });
+      const reopened = await createDemoStore({ dataRoot: root });
       const executor = new RecordingTurnExecutor(coreDb);
       const restored = new AutomationStore(coreDb, mutationAdmission, () => instant);
       const create = vi.spyOn(reopened, 'createTurn');
@@ -1099,7 +1108,7 @@ describe('scheduler dispatch loop', () => {
         expect(cancelled.status, await cancelled.clone().text()).toBe(200);
         // Use an authorized paused target edit after cancellation; contradictory old history cannot authorize a repair.
         if (fault === 'contradictory') {
-          const nextThread = reopened.createThread(DEMO_WORKSPACE_ID, 'Next target');
+          const nextThread = await reopened.createThread(DEMO_WORKSPACE_ID, 'Next target');
           restored.updateAutomation(FIXTURE_LOCAL_USER_ID, schedule.id, {
             expectedRevision: 2,
             status: 'paused',
@@ -1168,7 +1177,7 @@ describe('scheduler dispatch loop', () => {
     outcome,
   }) => {
     const coreDb = createMigratedCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new RecordingTurnExecutor(coreDb, separateHandle);
     const manifest = agentManifest();
     const gate = Promise.withResolvers<void>();
@@ -1390,7 +1399,7 @@ describe('scheduler dispatch loop', () => {
     false,
   ])('does not wait for or disclose a foreign claimed admission, separate Core handle %s', async (separateHandle) => {
     const coreDb = createMigratedCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const manifest = agentManifest();
     const executor = new RecordingTurnExecutor(coreDb, separateHandle);
     const gate = Promise.withResolvers<void>();
@@ -1401,8 +1410,8 @@ describe('scheduler dispatch loop', () => {
       await gate.promise;
       throw failure;
     };
-    const foreignWorkspace = store.createWorkspace('Foreign Workspace');
-    const foreignThread = store.createThread(foreignWorkspace.id, 'Foreign Thread');
+    const foreignWorkspace = await store.createWorkspace('Foreign Workspace');
+    const foreignThread = await store.createThread(foreignWorkspace.id, 'Foreign Thread');
     coreDb.sqlite
       .prepare(`INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind)
       VALUES ('usr_00000000-0000-7417-adb6-8c98a2b20e22', 'Foreign', 'claim-foreign@example.invalid', false, ?, ?, 'human')`)
@@ -1503,7 +1512,7 @@ describe('scheduler dispatch loop', () => {
 
   it('excludes a second FIFO preparation after image operation intent until submission', async () => {
     const coreDb = createMigratedCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new RecordingTurnExecutor(coreDb);
     const manifest = agentManifest();
     const gate = Promise.withResolvers<void>();
@@ -1550,7 +1559,7 @@ describe('scheduler dispatch loop', () => {
       maxDispatches: 1,
     };
     for (const suffix of ['first', 'second']) {
-      const thread = store.createThread('ws_00000000-0000-7000-8000-000000000001', suffix);
+      const thread = await store.createThread('ws_00000000-0000-7000-8000-000000000001', suffix);
       publishTestAdmission(
         store,
         createSchedulerAdmissionEntry(coreDb, {
@@ -1606,7 +1615,7 @@ describe('scheduler dispatch loop', () => {
 
   it('ends overlapping background passes and later dispatches queued admissions in FIFO order', async () => {
     const coreDb = createMigratedCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new RecordingTurnExecutor(coreDb);
     const manifest = agentManifest();
     const gate = Promise.withResolvers<void>();
@@ -1646,7 +1655,7 @@ describe('scheduler dispatch loop', () => {
       clearInterval: () => {},
     });
     for (const [index, suffix] of ['first', 'second', 'third'].entries()) {
-      const thread = store.createThread('ws_00000000-0000-7000-8000-000000000001', suffix);
+      const thread = await store.createThread('ws_00000000-0000-7000-8000-000000000001', suffix);
       publishTestAdmission(
         store,
         createSchedulerAdmissionEntry(coreDb, {
@@ -1716,9 +1725,9 @@ describe('scheduler dispatch loop', () => {
     failureStage,
   }) => {
     const coreDb = createMigratedCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const workspace = store.createWorkspace('Foreign Workspace');
-    const thread = store.createThread(workspace.id, 'Foreign Thread');
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const workspace = await store.createWorkspace('Foreign Workspace');
+    const thread = await store.createThread(workspace.id, 'Foreign Thread');
     const turnExecutor = new RecordingTurnExecutor(coreDb, separateHandle);
     const manifest = agentManifest();
     const privateText = 'FOREIGN-PRIVATE queue_foreign_race';
@@ -1836,10 +1845,13 @@ describe('scheduler dispatch loop', () => {
     false,
   ])('preserves original acceptance when cancellation after acquisition refuses and later work is queued, separate Core handle %s', async (separateHandle) => {
     const coreDb = createMigratedCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const turnExecutor = new RecordingTurnExecutor(coreDb, separateHandle);
     const manifest = agentManifest();
-    const thread = store.createThread('ws_00000000-0000-7000-8000-000000000001', 'Later Thread');
+    const thread = await store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Later Thread'
+    );
     const prepare = turnExecutor.prepareAgentSessionForTurn.bind(turnExecutor);
     let ownQueueEntryId = '';
     turnExecutor.prepareAgentSessionForTurn = async (ownerStore, preparation) => {
@@ -1927,9 +1939,9 @@ describe('scheduler dispatch loop', () => {
     failureStage,
   }) => {
     const coreDb = createMigratedCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const workspace = store.createWorkspace('Other User Workspace');
-    const thread = store.createThread(workspace.id, 'Other User Thread');
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const workspace = await store.createWorkspace('Other User Workspace');
+    const thread = await store.createThread(workspace.id, 'Other User Thread');
     const turnExecutor = new RecordingTurnExecutor(coreDb, separateHandle);
     const manifest = agentManifest();
     const failureMessage = `Private diagnostics for ${workspace.id}, usr_00000000-0000-73d4-904a-d4c4b905df7c: ${failureStage}`;
@@ -2038,11 +2050,11 @@ describe('scheduler dispatch loop', () => {
     false,
   ])('keeps its accepted work after a later foreign row is corrupted, separate Core handle %s', async (separateHandle) => {
     const coreDb = createMigratedCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const turnExecutor = new RecordingTurnExecutor(coreDb, separateHandle);
     const manifest = agentManifest();
-    const workspace = store.createWorkspace('Later Foreign Workspace');
-    const thread = store.createThread(workspace.id, 'Later Foreign Thread');
+    const workspace = await store.createWorkspace('Later Foreign Workspace');
+    const thread = await store.createThread(workspace.id, 'Later Foreign Thread');
     const requestId = '00000000-0000-4000-8000-00000000f126';
     const privateText = 'FOREIGN-PRIVATE queue_later_foreign';
     const prepare = turnExecutor.prepareAgentSessionForTurn.bind(turnExecutor);
@@ -2147,7 +2159,7 @@ describe('scheduler dispatch loop', () => {
     false,
   ])('preserves an exact own commit failure after acquisition re-attribution, separate Core handle %s', async (separateHandle) => {
     const coreDb = createMigratedCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const turnExecutor = new RecordingTurnExecutor(coreDb, separateHandle);
     const manifest = agentManifest();
     const failure = new TurnStartValidationError('recovery_required', 'Own commit failed', 503);
@@ -2207,7 +2219,7 @@ describe('scheduler dispatch loop', () => {
     failureStage,
   }) => {
     const coreDb = createMigratedCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const turnExecutor = new RecordingTurnExecutor(coreDb, separateHandle);
     const manifest = agentManifest();
     const cancel = vi.spyOn(schedulerRecords, 'cancelSchedulerAdmissionEntry');
@@ -2274,7 +2286,7 @@ describe('scheduler dispatch loop', () => {
     earlierDeniedQueue,
   }) => {
     const coreDb = createMigratedCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const manifest = agentManifest();
     const requestId = earlierDeniedQueue
       ? '00000000-0000-4000-8000-00000000f112'
@@ -2373,7 +2385,7 @@ describe('scheduler dispatch loop', () => {
     false,
   ])('terminalizes its own transient preparation failure without later dispatch, separate Core handle %s', async (separateHandle) => {
     const coreDb = createMigratedCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const turnExecutor = new RecordingTurnExecutor(coreDb, separateHandle);
     const manifest = agentManifest();
     const requestId = separateHandle
@@ -2462,7 +2474,7 @@ describe('scheduler dispatch loop', () => {
     separateHandle,
   }) => {
     const coreDb = createMigratedCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const turnExecutor = new RecordingTurnExecutor(coreDb, separateHandle);
     const manifest = agentManifest();
     const prepare = turnExecutor.prepareAgentSessionForTurn.bind(turnExecutor);
@@ -2521,7 +2533,7 @@ describe('scheduler dispatch loop', () => {
 
   it('preserves its own transient failure when admission cancellation races', async () => {
     const coreDb = createMigratedCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const turnExecutor = new RecordingTurnExecutor(coreDb);
     const manifest = agentManifest();
     const failure = new Error('Own transient preparation failure');
@@ -2567,9 +2579,9 @@ describe('scheduler dispatch loop', () => {
 
   it('selects the dequeued Workspace context instead of the initiating request context', async () => {
     const coreDb = createMigratedCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
-    const queuedWorkspace = store.createWorkspace('Queued Workspace');
-    const queuedThread = store.createThread(queuedWorkspace.id, 'Queued Thread');
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const queuedWorkspace = await store.createWorkspace('Queued Workspace');
+    const queuedThread = await store.createThread(queuedWorkspace.id, 'Queued Thread');
     const turnExecutor = new RecordingTurnExecutor(coreDb);
     const queuedCommit = '0123456789abcdef0123456789abcdef01234567';
     const initiatingCommit = '89abcdef0123456789abcdef0123456789abcdef';
@@ -2694,7 +2706,7 @@ describe('scheduler dispatch loop', () => {
     'server-admin-token',
   ] as const)('denies a queued admission after its %s authority is revoked', async (authorityKind) => {
     const coreDb = createMigratedCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const turnExecutor = new RecordingTurnExecutor(coreDb);
     const timestamp = '2026-07-19T00:00:00.000Z';
     const now = Date.parse(timestamp);
@@ -2806,7 +2818,7 @@ describe('scheduler dispatch loop', () => {
     'commit',
   ] as const)('rechecks a recorded admin token after asynchronous %s before Worker launch', async (revocationStage) => {
     const coreDb = createMigratedCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const turnExecutor = new RecordingTurnExecutor(coreDb);
     const now = Date.now();
     coreDb.sqlite
@@ -2932,7 +2944,7 @@ describe('scheduler dispatch loop', () => {
     setup,
   }) => {
     const coreDb = createMigratedCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const turnExecutor = new RecordingTurnExecutor(coreDb);
     let replacementCloseEffects = 0;
     const prepareAgentSessionForTurn = turnExecutor.prepareAgentSessionForTurn.bind(turnExecutor);
@@ -2954,7 +2966,7 @@ describe('scheduler dispatch loop', () => {
     };
 
     try {
-      store.createAgentSession({
+      await store.createAgentSession({
         agentId: 'agent_codex_host',
         createdAt: '2026-07-05T00:00:00.000Z',
         id: testEntityId('as', 'as_replacement_predecessor'),
@@ -3027,7 +3039,7 @@ describe('scheduler dispatch loop', () => {
 
   it('starts one dispatched queued turn with scheduler-owned lineage', async () => {
     const coreDb = createMigratedCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const turnExecutor = new RecordingTurnExecutor(coreDb);
 
     try {
@@ -3121,9 +3133,9 @@ describe('scheduler dispatch loop', () => {
 
   it('prepares and starts a later dispatchable queued entry when the first queued Thread is busy', async () => {
     const coreDb = createMigratedCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const turnExecutor = new RecordingTurnExecutor(coreDb);
-    const laterThread = store.createThread(
+    const laterThread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Later dispatchable thread'
     );
@@ -3257,7 +3269,7 @@ describe('scheduler dispatch loop', () => {
 
   it('closes or revokes the acquired attempt when post-dispatch AgentSession commit rejects', async () => {
     const coreDb = createMigratedCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const turnExecutor = new RecordingTurnExecutor(coreDb);
     turnExecutor.commitPreparedAgentSessionForTurn = async () => {
       throw new Error('prepared AgentSession changed');
@@ -3315,7 +3327,7 @@ describe('scheduler dispatch loop', () => {
 
   it('reuses the exact compatible current AgentSession selected by the runtime seam', async () => {
     const coreDb = createMigratedCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const turnExecutor = new RecordingTurnExecutor(coreDb);
 
     try {
@@ -3361,7 +3373,7 @@ describe('scheduler dispatch loop', () => {
         workspaceCwd: null,
         workspaceRoots: [],
       });
-      store.createAgentSession({
+      await store.createAgentSession({
         agentId: 'agent_codex_host',
         createdAt: '2026-07-05T00:00:00.000Z',
         id: testEntityId('as', 'as_live_continuity'),
@@ -3413,7 +3425,7 @@ describe('scheduler dispatch loop', () => {
 
   it('reuses the current compatible AgentSession across sequential product admissions', async () => {
     const coreDb = createMigratedCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const turnExecutor = new RecordingTurnExecutor(coreDb);
     const providerRegistry = localProviderRegistry();
     const snapshot = createInMemoryRuntimeConfigSnapshot({
@@ -3547,7 +3559,7 @@ describe('scheduler dispatch loop', () => {
 
   it('records resolved setup lineage for scheduler-dispatched authored agents', async () => {
     const coreDb = createMigratedCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const turnExecutor = new RecordingTurnExecutor(coreDb);
 
     try {
@@ -3619,7 +3631,7 @@ describe('scheduler dispatch loop', () => {
 
   it('does not report backend-busy queued work after the Turn has failed', async () => {
     const coreDb = createMigratedCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const refusal = new WorkerGovernanceCapacityUnavailableError();
     /** Models the conflicting terminal publication at the executor boundary without replacing scheduler decisions. */
     class TerminalBusyExecutor extends RecordingTurnExecutor {
@@ -3629,7 +3641,7 @@ describe('scheduler dispatch loop', () => {
         _input: string,
         context?: TurnStartRuntimeContext
       ): Promise<void> {
-        terminalizeGovernedWorkerTurn({
+        await terminalizeGovernedWorkerTurn({
           store: owner,
           turnId,
           agentSessionId: null,
@@ -3698,7 +3710,7 @@ describe('scheduler dispatch loop', () => {
 
   it('closes or revokes the acquired attempt when turn startup fails', async () => {
     const coreDb = createMigratedCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const turnExecutor = new FailingTurnExecutor(coreDb);
 
     try {
@@ -3763,7 +3775,7 @@ describe('scheduler dispatch loop', () => {
 
   it('preserves the worker failure while anchored backend cleanup remains pending', async () => {
     const coreDb = createMigratedCoreDb();
-    const store = createDemoStore({ dataRoot: coreDb.dataRoot });
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const turnExecutor = new RecordingTurnExecutor(coreDb);
     turnExecutor.startTurn = async (ownerStore, turnId, _input, context) => {
       const lease = attemptRecords.recordSchedulerExecutionOperation(coreDb, {

@@ -11,7 +11,7 @@ import {
 } from '@openkit/app-api-schemas';
 import { ApiErrorSchema, workspaceIdForOwner } from '@openkit/protocol';
 import { Hono } from 'hono';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { createCoreClient } from '../../../packages/core-client/src/index.js';
 import {
@@ -43,6 +43,7 @@ import type { WorkerControlGateway } from './runtime/worker-control-gateway.js';
 import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import { createSchedulerAdmissionEntry } from './scheduler-records.js';
 import { openExistingAppDb } from './storage/app-db.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
@@ -107,7 +108,7 @@ describe('shared family contract', () => {
 
   it('keeps overlapping dynamic success statuses local to each request', async () => {
     const f = await operationFixture();
-    const turn = f.store.createTurn(
+    const turn = await f.store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Dynamic response',
@@ -117,7 +118,7 @@ describe('shared family contract', () => {
       outcome: 'answered',
       explanation: 'Done.',
       turn,
-      item: f.store.createItem({
+      item: await f.store.createItem({
         id: 'it_00000000-0000-714e-b73b-fee7fe0cf1a3',
         owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -203,7 +204,7 @@ describe('shared family contract', () => {
       observed(error);
       return c.text('Internal Server Error', 500);
     });
-    const turn = f.store.createTurn(
+    const turn = await f.store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Resolver subject',
@@ -377,7 +378,7 @@ async function operationFixture() {
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({
     coreDb,
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -419,13 +420,13 @@ async function operationProjections(f: Awaited<ReturnType<typeof operationFixtur
     baseUrl: 'http://nanocore.test',
     fetch: (input, init) => f.app.fetch(new Request(input, init)),
   });
-  const turn = f.store.createTurn(
+  const turn = await f.store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',
     'Operation invariant',
     f.command.actor
   );
-  f.store.createAgentSession({
+  await f.store.createAgentSession({
     id: 'as_00000000-0000-7dd2-9c72-030c3ef6118f',
     agentId: 'agent_codex_host',
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -435,7 +436,7 @@ async function operationProjections(f: Awaited<ReturnType<typeof operationFixtur
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   });
-  f.store.updateTurn(turn.id, {
+  await f.store.updateTurn(turn.id, {
     agentId: 'agent_codex_host',
     agentSessionId: 'as_00000000-0000-7dd2-9c72-030c3ef6118f',
   });
@@ -1059,7 +1060,7 @@ describe('operation projection cutover', () => {
   it('keeps a caller-selected Workspace distinct from context-bound identity and scoped children', async () => {
     const f = await operationFixture();
     try {
-      const other = f.store.createWorkspace('Other authorized Workspace');
+      const other = await f.store.createWorkspace('Other authorized Workspace');
       recordWorkspaceOwnerMembership({
         coreDb: f.coreDb,
         ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -1345,7 +1346,7 @@ describe('Workspace Thread Turn projection cutover', () => {
         };
         const thread = (await create('thread.create', input)) as { id: string; visibility: string };
         expect(thread.visibility).toBe('workspace');
-        const turn = f.store.createTurn(
+        const turn = await f.store.createTurn(
           'ws_00000000-0000-7000-8000-000000000001',
           thread.id,
           'journey',
@@ -1429,7 +1430,7 @@ describe('Workspace Thread Turn projection cutover', () => {
         expiresAt: '2099-01-01T00:00:00.000Z',
       });
       const projections = await publicJourneyProjections(f, issued.secret);
-      const foreign = f.store.createThread(
+      const foreign = await f.store.createThread(
         'ws_00000000-0000-7000-8000-000000000001',
         'private marker',
         undefined,
@@ -1439,7 +1440,7 @@ describe('Workspace Thread Turn projection cutover', () => {
           privateOwnerUserId: 'usr_00000000-0000-7ed5-9b62-226e0a66887f',
         }
       );
-      const turn = f.store.createTurn(
+      const turn = await f.store.createTurn(
         'ws_00000000-0000-7000-8000-000000000001',
         foreign.id,
         'protected marker',
@@ -1490,15 +1491,15 @@ describe('Workspace Thread Turn projection cutover', () => {
     const f = await operationFixture();
     try {
       const projections = await publicJourneyProjections(f);
-      const visible = f.store.createThread(
+      const visible = await f.store.createThread(
         'ws_00000000-0000-7000-8000-000000000001',
         'visible Thread'
       );
-      const other = f.store.createThread(
+      const other = await f.store.createThread(
         'ws_00000000-0000-7000-8000-000000000001',
         'other visible Thread'
       );
-      const turn = f.store.createTurn(
+      const turn = await f.store.createTurn(
         'ws_00000000-0000-7000-8000-000000000001',
         other.id,
         'wrong lineage',
@@ -1568,7 +1569,7 @@ describe('Workspace Thread Turn projection cutover', () => {
   it('admits the current administrator bearer and Web session to foreign private reads and active Workspace candidates without membership', async () => {
     const f = await operationFixture();
     try {
-      const other = f.store.createWorkspace('administrator candidate');
+      const other = await f.store.createWorkspace('administrator candidate');
       f.coreDb.sqlite
         .prepare(
           "INSERT INTO users (id, kind, display_name, email, email_verified, created_at, updated_at, last_seen_at) SELECT 'usr_00000000-0000-7ed5-9b62-226e0a66887f', kind, display_name, 'foreign@local.openkit.invalid', email_verified, created_at, updated_at, last_seen_at FROM users WHERE id = 'usr_00000000-0000-7000-8000-000000000001'"
@@ -1579,11 +1580,22 @@ describe('Workspace Thread Turn projection cutover', () => {
         ownerUserId: 'usr_00000000-0000-7ed5-9b62-226e0a66887f',
         workspaceId: other.id,
       });
-      const foreign = f.store.createThread(other.id, 'foreign private', undefined, 'conversation', {
-        visibility: 'private',
-        privateOwnerUserId: 'usr_00000000-0000-7ed5-9b62-226e0a66887f',
-      });
-      const turn = f.store.createTurn(other.id, foreign.id, 'administrator read', f.command.actor);
+      const foreign = await f.store.createThread(
+        other.id,
+        'foreign private',
+        undefined,
+        'conversation',
+        {
+          visibility: 'private',
+          privateOwnerUserId: 'usr_00000000-0000-7ed5-9b62-226e0a66887f',
+        }
+      );
+      const turn = await f.store.createTurn(
+        other.id,
+        foreign.id,
+        'administrator read',
+        f.command.actor
+      );
       const issued = createOpenKitAccessTokenRecord(f.coreDb, {
         ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         scope: 'server-admin',
@@ -1645,7 +1657,7 @@ describe('Workspace Thread Turn projection cutover', () => {
   it('deletes every replaced route and hand-written client CLI access and OpenAPI mapping', async () => {
     const f = await operationFixture();
     try {
-      const turn = f.store.createTurn(
+      const turn = await f.store.createTurn(
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001',
         'old route',
@@ -1752,11 +1764,11 @@ describe('Goal definition projections', () => {
           .filter((turn) => turn.agentId === 'goal-coordinator');
         for (const turn of previous)
           if (turn.status === 'running')
-            f.store.updateTurn(turn.id, {
+            await f.store.updateTurn(turn.id, {
               status: 'failed',
               completedAt: new Date().toISOString(),
             });
-        const turn = f.store.createTurn(
+        const turn = await f.store.createTurn(
           goal.workspaceId,
           goal.threadId,
           'Projection check',
@@ -1841,7 +1853,7 @@ describe('Goal definition projections', () => {
           intent: 'Denied',
         })
       ).rejects.toMatchObject({ code: 'workspace_access_denied' });
-      const foreign = f.store.createThread(
+      const foreign = await f.store.createThread(
         'ws_00000000-0000-7000-8000-000000000001',
         'Private',
         undefined,
@@ -1908,7 +1920,7 @@ it('discloses and grants a Coordinator proposal to the current administrator wit
       threadId: goal.threadId,
       goalId: goal.goalId,
     };
-    const turn = f.store.createTurn(
+    const turn = await f.store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       goal.threadId,
       'Coordinate',
@@ -1949,7 +1961,7 @@ it('discloses and grants a Coordinator proposal to the current administrator wit
       claim: 'unclaimed',
       disposition: null,
     });
-    const consuming = f.store.createTurn(
+    const consuming = await f.store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       goal.threadId,
       'Consume exact outcome',
@@ -1992,18 +2004,18 @@ it('discloses and grants a Coordinator proposal to the current administrator wit
 });
 
 /** Isolates generic private invocation while retaining real current admission and Turn owners. */
-function privateEngineFixture() {
+async function privateEngineFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'private-native-operation-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({
     coreDb,
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
-  const thread = store.createThread(
+  const thread = await store.createThread(
     'ws_00000000-0000-7000-8000-000000000001',
     'Private operation',
     undefined,
@@ -2013,7 +2025,7 @@ function privateEngineFixture() {
       privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     }
   );
-  const turn = store.createTurn(
+  const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     thread.id,
     'Private read',
@@ -2072,7 +2084,7 @@ function privateEngineFixture() {
 
 describe('#144 private native invocation and public exclusion', () => {
   it('executes a definition-authored private key without Skill-specific dispatch and parses its defaults', async () => {
-    const f = privateEngineFixture();
+    const f = await privateEngineFixture();
     try {
       expect(await f.invoke('probe.read', {}, f.context)).toEqual({ echo: 'default' });
       expect(f.handler).toHaveBeenCalledOnce();
@@ -2090,7 +2102,7 @@ describe('#144 private native invocation and public exclusion', () => {
     { value: 7 },
     { unexpected: true },
   ])('rejects invalid logical input %j before private handler dispatch', async (input) => {
-    const f = privateEngineFixture();
+    const f = await privateEngineFixture();
     try {
       await expect(f.invoke('probe.read', input, f.context)).rejects.toMatchObject({
         code: 'invalid_request',
@@ -2111,7 +2123,7 @@ describe('#144 private native invocation and public exclusion', () => {
     'requestId',
     'signal',
   ] as const)('rejects caller-bound %s even when equal to trusted context', async (field) => {
-    const f = privateEngineFixture();
+    const f = await privateEngineFixture();
     try {
       await expect(
         f.invoke('probe.read', { [field]: f.context[field] }, f.context)
@@ -2123,7 +2135,7 @@ describe('#144 private native invocation and public exclusion', () => {
   });
 
   it('validates logical output before returning from native invocation', async () => {
-    const f = privateEngineFixture();
+    const f = await privateEngineFixture();
     f.handler.mockResolvedValueOnce({ echo: 7 } as unknown as { echo: string });
     try {
       await expect(f.invoke('probe.read', {}, f.context)).rejects.toMatchObject({
@@ -2140,7 +2152,7 @@ describe('#144 private native invocation and public exclusion', () => {
     'before',
     'during',
   ] as const)('preserves cancellation %s the private handler and returns no late success', async (when) => {
-    const f = privateEngineFixture();
+    const f = await privateEngineFixture();
     const stopped = new Error('Fixture cancellation.');
     const entered = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
@@ -2280,4 +2292,9 @@ describe('#144 private native invocation and public exclusion', () => {
       f.coreDb.sqlite.close();
     }
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

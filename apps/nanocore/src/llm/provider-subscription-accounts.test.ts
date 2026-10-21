@@ -35,6 +35,7 @@ import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { WorkerControlGateway } from '../runtime/worker-control-gateway.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
@@ -280,7 +281,8 @@ interface ManagerLifecycleOperations {
 const fixtures = new Set<ProviderSubscriptionFixture>();
 const extraTemporaryRoots = new Set<string>();
 
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
@@ -4882,8 +4884,8 @@ async function createObservedInferenceRouteFixture(
     models: [{ id: providerModel.replace('openai-codex/', '') }],
   });
   models.setProvider({ ...faux.provider, auth: stock.auth });
-  const store = createDemoStore({ dataRoot: fixture.dataRoot });
-  const turn = store.createTurn(
+  const store = await createDemoStore({ dataRoot: fixture.dataRoot });
+  const turn = await store.createTurn(
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',
     'Inference observation regression',

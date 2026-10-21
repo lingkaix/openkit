@@ -3,9 +3,9 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as schemas from '@openkit/app-api-schemas';
-import { describe, expect, it } from 'vitest';
-
+import { afterEach, describe, expect, it } from 'vitest';
 import { FsStore } from '../lib/store.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -68,9 +68,9 @@ describe('workspace sync records', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
-  it('preserves public fixture literals through canonical records, patch Artifacts and reopened public reads', () => {
+  it('preserves public fixture literals through canonical records, patch Artifacts and reopened public reads', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-sync-public-fixture-'));
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     let db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     const fixture = workspaceSyncImportFixture();
     const literal = 'ghp_publicFixture sk-Latn hf_publicFixture okt_publicFixture';
@@ -1445,3 +1445,8 @@ function annotateDescriptiveObjects(value: unknown): unknown {
     ]);
   return value;
 }
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
+});

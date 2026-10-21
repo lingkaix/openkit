@@ -44,6 +44,7 @@ import {
 } from './runtime/worker-backend-sessions.js';
 import { createWorkerStorageBinding } from './runtime/worker-storage-bindings.js';
 import { createSchedulerAdmissionEntry } from './scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, verifyAndMigrateExistingScopedDatabases } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -77,14 +78,14 @@ const SOURCES = [
 const fixtures: Array<{ coreDb: CoreDb; dataRoot: string }> = [];
 
 /** Composes public invocation with real identity and canonical source owners. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'cleanup-operation-'));
   const coreDb = openCoreDb(dataRoot);
   fixtures.push({ coreDb, dataRoot });
   applyMigrations(coreDb);
   coreDb.sqlite.pragma('journal_mode = WAL');
   ensureLocalUser(coreDb);
-  const store = createDemoStore({ dataRoot });
+  const store = await createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({
     coreDb,
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -326,7 +327,8 @@ function bounded(value: unknown): AdministratorCleanupReadResponse {
   return response;
 }
 
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   vi.restoreAllMocks();
   syncBuiltinESMExports();
   for (const f of fixtures.splice(0)) {
@@ -337,7 +339,7 @@ afterEach(() => {
 
 describe('administrator cleanup public operation composition', () => {
   it('returns complete empty seven-source coverage through native and JSON invocation', async () => {
-    const f = fixture();
+    const f = await fixture();
     const native = bounded(await f.native());
     expect(native.items).toEqual([]);
     expect(native.sources).toEqual(
@@ -367,7 +369,7 @@ describe('administrator cleanup public operation composition', () => {
     { maxBytes: 1 },
     { now: CREATED },
   ])('refuses nonempty or nonobject input %j before source access', async (input) => {
-    const f = fixture();
+    const f = await fixture();
     const read = vi.spyOn(f.coreDb.sqlite, 'prepare');
     await expect(f.native(input)).rejects.toMatchObject({ code: 'invalid_request', status: 400 });
     expect(read).not.toHaveBeenCalled();
@@ -377,7 +379,7 @@ describe('administrator cleanup public operation composition', () => {
   });
 
   it('refuses caller-supplied authority before source access', async () => {
-    const f = fixture();
+    const f = await fixture();
     const read = vi.spyOn(f.coreDb.sqlite, 'prepare');
     await expect(
       f.native({ actor: 'usr_00000000-0000-7000-8000-000000000001' })
@@ -390,7 +392,7 @@ describe('administrator cleanup public operation composition', () => {
   });
 
   it('joins every real source, preserves waiting and unknown facts, and exposes no private payload', async () => {
-    const f = fixture();
+    const f = await fixture();
     const { execution, storage, quarantinedId } = populate(f);
     const result = bounded(await f.native());
     expect(result.items.map((item) => item.source)).toEqual(SOURCES);
@@ -445,7 +447,7 @@ describe('administrator cleanup public operation composition', () => {
     'workspace',
     'workspace-readonly',
   ] as const)('denies the %s credential despite current Workspace ownership', async (scope) => {
-    const f = fixture();
+    const f = await fixture();
     populate(f);
     const token = createOpenKitAccessTokenRecord(f.coreDb, {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -467,7 +469,7 @@ describe('administrator cleanup public operation composition', () => {
   });
 
   it('rechecks the original credential on every invocation after revocation', async () => {
-    const f = fixture();
+    const f = await fixture();
     populate(f);
     bounded(await f.native());
     revokeOpenKitAccessTokenRecord(f.coreDb, f.token.tokenId);
@@ -478,7 +480,7 @@ describe('administrator cleanup public operation composition', () => {
   });
 
   it('denies the next read after the current administrator is disabled', async () => {
-    const f = fixture();
+    const f = await fixture();
     populate(f);
     bounded(await f.native());
     f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, f.actor.userId))();
@@ -495,7 +497,7 @@ describe('administrator cleanup public operation composition', () => {
     'coordinator',
     'bootstrap',
   ] as const)('refuses %s invocation before any source access', async (kind) => {
-    const f = fixture();
+    const f = await fixture();
     const { execution } = populate(f);
     const contexts = {
       worker: {
@@ -536,7 +538,7 @@ describe('administrator cleanup public operation composition', () => {
   });
 
   it('denies publication when the administrator is revoked during a real source read', async () => {
-    const f = fixture();
+    const f = await fixture();
     populate(f);
     const prepare = f.coreDb.sqlite.prepare.bind(f.coreDb.sqlite);
     let revoked = false;
@@ -552,7 +554,7 @@ describe('administrator cleanup public operation composition', () => {
   });
 
   it('returns a safe unavailable operation error when current authority storage is lost', async () => {
-    const f = fixture();
+    const f = await fixture();
     populate(f);
     const prepare = f.coreDb.sqlite.prepare.bind(f.coreDb.sqlite);
     vi.spyOn(f.coreDb.sqlite, 'prepare').mockImplementation((sql: string) => {
@@ -571,7 +573,7 @@ describe('administrator cleanup public operation composition', () => {
   });
 
   it('propagates an unclassified administrator-admission error to the existing HTTP error handler', async () => {
-    const f = fixture();
+    const f = await fixture();
     const sentinel = new Error('unclassified-admission-canary');
     const observed = vi.fn();
     f.app.onError((error, context) => {
@@ -589,7 +591,7 @@ describe('administrator cleanup public operation composition', () => {
   });
 
   it('observes a deleting Workspace without opening its content gate or changing any source', async () => {
-    const f = fixture();
+    const f = await fixture();
     const { request } = populate(f);
     f.coreDb.sqlite.transaction(() =>
       beginWorkspaceDeletion({
@@ -628,7 +630,7 @@ describe('administrator cleanup public operation composition', () => {
     'workspace-deletion',
     'backend-session',
   ])('preserves other sources when %s becomes unavailable', async (source) => {
-    const f = fixture();
+    const f = await fixture();
     populate(f);
     if (source === 'workspace-deletion') {
       const path = join(
@@ -664,7 +666,7 @@ describe('administrator cleanup public operation composition', () => {
   });
 
   it('preserves contradictory and stale proof as unknown across the public boundary', async () => {
-    const f = fixture();
+    const f = await fixture();
     populate(f);
     f.coreDb.sqlite
       .prepare('UPDATE worker_backend_sessions SET physical_cleaned_at = ?')
@@ -689,7 +691,7 @@ describe('administrator cleanup public operation composition', () => {
   });
 
   it('applies one stable 100-item count bound across deletion and runtime sources', async () => {
-    const f = fixture();
+    const f = await fixture();
     deletion(f);
     for (let index = 0; index < 102; index++)
       attempt(f.coreDb, `attempt_${String(index).padStart(3, '0')}`);
@@ -716,7 +718,7 @@ describe('administrator cleanup public operation composition', () => {
   });
 
   it('bounds canonical deletion request reads and preserves a stable 100-item prefix', async () => {
-    const f = fixture();
+    const f = await fixture();
     const requests = Array.from(
       { length: 101 },
       (_, index) => `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`
@@ -773,7 +775,7 @@ describe('administrator cleanup public operation composition', () => {
     'missing',
     'invalid',
   ] as const)('withholds deletion identifiers when the current Workspace registry is %s', async (state) => {
-    const f = fixture();
+    const f = await fixture();
     deletion(f);
     if (state === 'missing')
       f.coreDb.sqlite
@@ -805,7 +807,7 @@ describe('administrator cleanup public operation composition', () => {
   });
 
   it('counts UTF-8 bytes on the complete seven-source response and preserves bounded native identities intact', async () => {
-    const f = fixture();
+    const f = await fixture();
     deletion(f);
     const ids = Array.from(
       { length: 96 },
@@ -836,7 +838,7 @@ describe('administrator cleanup public operation composition', () => {
   });
 
   it('retains complete native runtime items when the complete response fits its byte ceiling', async () => {
-    const f = fixture();
+    const f = await fixture();
     deletion(f);
     const ids = Array.from(
       { length: 4 },
@@ -859,7 +861,7 @@ describe('administrator cleanup public operation composition', () => {
   });
 
   it('preserves coherent current owner facts during a concurrent source transition', async () => {
-    const f = fixture();
+    const f = await fixture();
     const { execution } = populate(f);
     const concurrent = openCoreDb(f.dataRoot);
     const prepare = f.coreDb.sqlite.prepare.bind(f.coreDb.sqlite);
@@ -897,7 +899,7 @@ describe('administrator cleanup public operation composition', () => {
   });
 
   it('keeps truthful uncertainty when a canonical deletion request is replaced during its read', async () => {
-    const f = fixture();
+    const f = await fixture();
     const request = deletion(f);
     const path = join(
       f.dataRoot,
@@ -952,7 +954,7 @@ describe('administrator cleanup public operation composition', () => {
   });
 
   it('reads current deletion and runtime records after reopening Core storage', async () => {
-    const f = fixture();
+    const f = await fixture();
     const { request, execution } = populate(f);
     bounded(await f.native());
     f.coreDb.sqlite.close();
@@ -979,7 +981,7 @@ describe('administrator cleanup public operation composition', () => {
   });
 
   it('uses the same real JSON operation through generated CLI and eligible remote MCP', async () => {
-    const f = fixture();
+    const f = await fixture();
     populate(f);
     const app = createApp({
       coreDb: f.coreDb,

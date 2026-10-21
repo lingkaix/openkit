@@ -9,8 +9,9 @@ import {
   GetWorkspaceMaterialResponseSchema,
   SaveWorkspaceMaterialRevisionResponseSchema,
 } from '@openkit/app-api-schemas';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { commandInputHash } from './runtime/idempotent-command.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -37,13 +38,13 @@ describe('Workspace Material app API', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const store = createDemoStore({ dataRoot });
-    const localThread = store.createThread(
+    const store = await createDemoStore({ dataRoot });
+    const localThread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Authorized Material Thread'
     );
-    const foreignWorkspace = store.createWorkspace('Foreign Material Workspace');
-    const foreignThread = store.createThread(foreignWorkspace.id, 'Foreign Material Thread');
+    const foreignWorkspace = await store.createWorkspace('Foreign Material Workspace');
+    const foreignThread = await store.createThread(foreignWorkspace.id, 'Foreign Material Thread');
     const localDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     applyScopedMigrations(localDb);
     const localMaterial = createWorkspaceMaterial(localDb, {
@@ -214,8 +215,8 @@ describe('Workspace Material app API', () => {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const store = createDemoStore({ dataRoot });
-    const thread = store.createThread(
+    const store = await createDemoStore({ dataRoot });
+    const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Material route thread'
     );
@@ -613,13 +614,13 @@ describe('Workspace Material app API', () => {
         code: 'source_digest_mismatch',
       });
 
-      const corruptTraceTurn = store.createTurn(
+      const corruptTraceTurn = await store.createTurn(
         'ws_00000000-0000-7000-8000-000000000001',
         thread.id,
         'Create a corrupt trace candidate.',
         { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' }
       );
-      store.updateTurn(corruptTraceTurn.id, {
+      await store.updateTurn(corruptTraceTurn.id, {
         status: 'completed',
         completedAt: '2026-07-18T00:00:00.000Z',
         durationMs: 0,
@@ -682,4 +683,9 @@ describe('Workspace Material app API', () => {
       coreDb.sqlite.close();
     }
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

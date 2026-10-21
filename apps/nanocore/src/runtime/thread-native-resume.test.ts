@@ -3,8 +3,9 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { workspaceIdForOwner } from '@openkit/protocol';
-import { expect, it, vi } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -77,7 +78,7 @@ it.each([
       workspaceId: DEMO_WORKSPACE_ID,
       ownerUserId: FIXTURE_LOCAL_USER_ID,
     });
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const oldSessionId = testEntityId('as', 'resume-old-codex');
     const failedSessionId = testEntityId('as', 'resume-failed-opencode');
     const timestamp = '2026-10-17T15:00:00.000Z';
@@ -87,7 +88,12 @@ it.each([
       workSlotRef: workerStorageDefaultWorkSlotRef(DEMO_WORKSPACE_ID, DEMO_THREAD_ID),
     };
     if (oldAgentId) {
-      const oldTurn = store.createTurn(DEMO_WORKSPACE_ID, DEMO_THREAD_ID, 'Earlier work', actor);
+      const oldTurn = await store.createTurn(
+        DEMO_WORKSPACE_ID,
+        DEMO_THREAD_ID,
+        'Earlier work',
+        actor
+      );
       const workspaceDb = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
       try {
         applyScopedMigrations(workspaceDb);
@@ -102,8 +108,8 @@ it.each([
           workspaceCwd: '/workspace',
           workspaceRoots: [],
         });
-        store.updateTurn(oldTurn.id, { status: 'completed' });
-        store.createAgentSession({
+        await store.updateTurn(oldTurn.id, { status: 'completed' });
+        await store.createAgentSession({
           id: oldSessionId,
           agentId: oldAgentId,
           environmentPackageSnapshotId: environmentPackage.snapshotId,
@@ -125,7 +131,7 @@ it.each([
       }
     }
     // Use the real failure publisher for an allocated AgentSession that failed before native open.
-    store.createAgentSession({
+    await store.createAgentSession({
       id: failedSessionId,
       agentId: 'agent_opencode_server',
       workspaceId: DEMO_WORKSPACE_ID,
@@ -135,17 +141,17 @@ it.each([
       createdAt: '2026-10-17T15:01:00.000Z',
       updatedAt: '2026-10-17T15:01:00.000Z',
     });
-    const failedTurn = store.createTurn(
+    const failedTurn = await store.createTurn(
       DEMO_WORKSPACE_ID,
       DEMO_THREAD_ID,
       'Prepare OpenCode',
       actor
     );
-    store.updateTurn(failedTurn.id, {
+    await store.updateTurn(failedTurn.id, {
       agentId: 'agent_opencode_server',
       agentSessionId: failedSessionId,
     });
-    terminalizeGovernedWorkerTurn({
+    await terminalizeGovernedWorkerTurn({
       store,
       turnId: failedTurn.id,
       agentSessionId: failedSessionId,
@@ -160,8 +166,13 @@ it.each([
       nativeHandleDigest: null,
     });
 
-    const turn = store.createTurn(DEMO_WORKSPACE_ID, DEMO_THREAD_ID, 'Try OpenCode again', actor);
-    store.updateTurn(turn.id, { agentId: 'agent_opencode_server' });
+    const turn = await store.createTurn(
+      DEMO_WORKSPACE_ID,
+      DEMO_THREAD_ID,
+      'Try OpenCode again',
+      actor
+    );
+    await store.updateTurn(turn.id, { agentId: 'agent_opencode_server' });
     const agentSessionId = testEntityId('as', 'resume-next-opencode');
     const attemptId = testEntityId('attempt', 'resume-next-attempt');
     const bindingRef = `fixture-binding:${turn.id}`;
@@ -279,4 +290,9 @@ it.each([
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
   }
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });

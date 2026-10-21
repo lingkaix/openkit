@@ -27,6 +27,7 @@ import {
   reserveWorkerStorageAttachment,
   type WorkerStorageLayout,
 } from '../runtime/worker-storage-bindings.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -90,7 +91,8 @@ const ACTOR: Actor = { kind: 'local', userId: 'usr_00000000-0000-7000-8000-00000
 
 const openDbs: CoreDb[] = [];
 
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   vi.restoreAllMocks();
   for (const coreDb of openDbs.splice(0)) coreDb.sqlite.close();
 });
@@ -103,15 +105,15 @@ interface BaseFixture {
 }
 
 /** Creates Core storage plus one private administration Thread. */
-function createBaseFixture(): BaseFixture {
+async function createBaseFixture(): Promise<BaseFixture> {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-environment-activation-'));
   const coreDb = openCoreDb(dataRoot);
   openDbs.push(coreDb);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  const store = createDemoStore({ dataRoot });
-  const privateWorkspace = store.ensureQuickChatWorkspace(ACTOR.userId);
-  const administrationThread = store.createThread(
+  const store = await createDemoStore({ dataRoot });
+  const privateWorkspace = await store.ensureQuickChatWorkspace(ACTOR.userId);
+  const administrationThread = await store.createThread(
     privateWorkspace.id,
     'Administration',
     testEntityId('th', 'thread_administration'),
@@ -299,21 +301,21 @@ describe('Worker environment activation', () => {
     'before-inspection',
     'during-inspection',
   ] as const)('refuses a Thread that becomes busy %s without admitting defaults or changing configuration', async (phase) => {
-    const fixture = createBaseFixture();
+    const fixture = await createBaseFixture();
     const pair = candidatePair(fixture, [], null);
     const config = configurationService();
     let otherTurn: ReturnType<FsStore['createTurn']> | undefined;
-    const occupyThread = () => {
-      otherTurn = fixture.store.createTurn(
+    const occupyThread = async () => {
+      otherTurn = await fixture.store.createTurn(
         fixture.administrationWorkspaceId,
         fixture.administrationThreadId,
         'Other administration work',
         { kind: 'user', id: ACTOR.userId }
       );
     };
-    if (phase === 'before-inspection') occupyThread();
+    if (phase === 'before-inspection') await occupyThread();
     const inspectImage = vi.fn(async () => {
-      if (phase === 'during-inspection') occupyThread();
+      if (phase === 'during-inspection') await occupyThread();
       return {
         imageDigest: IMAGE_DIGEST,
         layout: LAYOUT,
@@ -361,7 +363,7 @@ describe('Worker environment activation', () => {
     ['mutable reference tag', DECLARATION],
     ['build declaration', BUILD_DECLARATION],
   ] as const)('pins resolved B after a %s by exact SHA CAS and replays the immutable result Artifact', async (_kind, declaration) => {
-    const fixture = createBaseFixture();
+    const fixture = await createBaseFixture();
     const pair = candidatePair(fixture, [], null, declaration);
     const request = activationRequest(pair);
     const config = configurationService();
@@ -386,7 +388,7 @@ describe('Worker environment activation', () => {
     });
 
     const first = await activation.activate({ actor: ACTOR }, request);
-    fixture.store.createTurn(
+    await fixture.store.createTurn(
       fixture.administrationWorkspaceId,
       fixture.administrationThreadId,
       'Later administration work',
@@ -417,7 +419,7 @@ describe('Worker environment activation', () => {
     'stale-defaults',
     'wrong-image',
   ] as const)('refuses %s fresh inspection before admission or configuration effects', async (variant) => {
-    const fixture = createBaseFixture();
+    const fixture = await createBaseFixture();
     const pair = candidatePair(fixture, [], null);
     const config = configurationService();
     const replaceResidentWork = vi.fn();
@@ -464,7 +466,7 @@ describe('Worker environment activation', () => {
   });
 
   it('binds explicit non-secret admission to exact image/default confirmation before inspection', async () => {
-    const fixture = createBaseFixture();
+    const fixture = await createBaseFixture();
     const pair = candidatePair(fixture, [], null);
     const request = activationRequest(pair);
     const config = configurationService();
@@ -498,7 +500,7 @@ describe('Worker environment activation', () => {
     'administrator',
     'revision',
   ] as const)('rechecks %s after fresh inspection and before admitting raw values', async (variant) => {
-    const fixture = createBaseFixture();
+    const fixture = await createBaseFixture();
     const pair = candidatePair(fixture, [], null);
     const config = configurationService();
     let revoked = false;
@@ -543,7 +545,7 @@ describe('Worker environment activation', () => {
   });
 
   it('returns null configuration after a write fails following confirmed admission', async () => {
-    const fixture = createBaseFixture();
+    const fixture = await createBaseFixture();
     const pair = candidatePair(fixture, [], null);
     const request = activationRequest(pair);
     const config = configurationService();
@@ -594,7 +596,7 @@ describe('Worker environment activation', () => {
   });
 
   it('never repeats configuration effects after a result-Artifact write failure', async () => {
-    const fixture = createBaseFixture();
+    const fixture = await createBaseFixture();
     const pair = candidatePair(fixture, [], null);
     const request = activationRequest(pair);
     const config = configurationService();
@@ -633,7 +635,7 @@ describe('Worker environment activation', () => {
     false,
     true,
   ])('rejects a stale configuration SHA before creating an activation Turn with already-pinned=%s', async (alreadyPinned) => {
-    const fixture = createBaseFixture();
+    const fixture = await createBaseFixture();
     const pair = candidatePair(fixture, [], null);
     const request = activationRequest(pair);
     const config = configurationService(alreadyPinned);
@@ -679,8 +681,8 @@ describe('Worker environment activation', () => {
     ).toEqual([]);
   });
 
-  it('derives the sole complete sharing group and denies a different responsible user', () => {
-    const fixture = createResidentFixture();
+  it('derives the sole complete sharing group and denies a different responsible user', async () => {
+    const fixture = await createResidentFixture();
     const deriveAffectedStorage = createWorkerEnvironmentAffectedStorageDeriver({
       coreDb: fixture.coreDb,
       store: fixture.store,
@@ -712,7 +714,7 @@ describe('Worker environment activation', () => {
     [true, 'applied'],
     [true, 'failed'],
   ] as const)('reports replacement uncertainty with already-pinned=%s and reload=%s', async (alreadyPinned, reloadStatus) => {
-    const resident = createResidentFixture();
+    const resident = await createResidentFixture();
     const pair = candidatePair(
       resident,
       [{ expectedRevision: resident.bindingRevision, storageRef: resident.storageRef }],
@@ -780,8 +782,8 @@ interface ResidentFixture extends BaseFixture {
 }
 
 /** Adds one attached retained association and its exact durable Sandbox sharing-group joins. */
-function createResidentFixture(): ResidentFixture {
-  const fixture = createBaseFixture();
+async function createResidentFixture(): Promise<ResidentFixture> {
+  const fixture = await createBaseFixture();
   const workspace = fixture.store.listWorkspaces().find((candidate) => candidate.kind === 'code');
   const thread = workspace ? fixture.store.listThreads(workspace.id)[0] : undefined;
   if (!workspace || !thread) throw new Error('Expected Demo Workspace fixture.');

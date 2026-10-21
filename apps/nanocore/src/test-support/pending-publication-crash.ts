@@ -26,7 +26,7 @@ const dataRoot = retainedRoot ?? mkdtempSync(join(tmpdir(), 'pending-publication
 const coreDb = openCoreDb(dataRoot);
 applyMigrations(coreDb);
 ensureLocalUser(coreDb);
-const store = retainedRoot ? new FsStore({ dataRoot }) : createDemoStore({ dataRoot });
+const store = retainedRoot ? new FsStore({ dataRoot }) : await createDemoStore({ dataRoot });
 const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 applyScopedMigrations(db);
 if (retainedRoot) {
@@ -166,7 +166,7 @@ if (retainedRoot) {
   }
   const original = store.createItem.bind(store);
   let writes = 0;
-  store.createItem = (item, ...args) => {
+  store.createItem = async (item, ...args) => {
     if (
       [0, 1].some(
         (index) => item.causationId === pendingRequestItemId(`ap_crash_${index}`, 'request')
@@ -179,7 +179,7 @@ if (retainedRoot) {
         process.exit(23);
       }
     }
-    return original(item, ...args);
+    return await original(item, ...args);
   };
   if (mode === 'delivery' && phase === 'between')
     await store.updateTurn(turn.id, { status: 'completed', completedAt: now });

@@ -6,7 +6,8 @@ import {
   GENERATIVE_UI_NATIVE_CATALOG_ID,
   GENERATIVE_UI_PROTOCOL_VERSION,
 } from '@openkit/app-api-schemas';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -51,8 +52,8 @@ describe('Generative UI App API', () => {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const store = createDemoStore({ dataRoot });
-    const turn = store.createTurn(
+    const store = await createDemoStore({ dataRoot });
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Publish a generated view',
@@ -61,7 +62,7 @@ describe('Generative UI App API', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    const sourceItem = store.createItem({
+    const sourceItem = await store.createItem({
       id: testEntityId('it', `it_${turn.id}_source`),
       owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
       threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -164,7 +165,7 @@ describe('Generative UI App API', () => {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const store = createDemoStore({ dataRoot });
+    const store = await createDemoStore({ dataRoot });
     const app = createApp({ coreDb, dataRoot, store });
 
     try {
@@ -179,4 +180,9 @@ describe('Generative UI App API', () => {
       coreDb.sqlite.close();
     }
   });
+});
+
+// Drain and stop the native fixture owner before the next test can remove or reuse its roots.
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
 });
