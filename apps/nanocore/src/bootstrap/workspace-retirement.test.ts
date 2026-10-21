@@ -45,7 +45,9 @@ const disposals: Array<() => Promise<void> | void> = [];
 afterEach(async () => {
   vi.restoreAllMocks();
   await shutdownControlStoreWorkerClient();
-  await (await import('../storage/control-store-worker-client.js')).shutdownControlStoreWorkerClient();
+  await (
+    await import('../storage/control-store-worker-client.js')
+  ).shutdownControlStoreWorkerClient();
   for (const dispose of disposals.splice(0).reverse()) await dispose();
 });
 

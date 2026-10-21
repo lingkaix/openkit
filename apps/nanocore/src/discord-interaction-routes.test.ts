@@ -60,7 +60,7 @@ describe('signed Discord HTTP entry', () => {
     const signature = headers();
     const tampered = await f.app.request('/api/channels/discord/interactions', {
       method: 'POST',
-      body: body + ' ',
+      body: `${body} `,
       headers: signature,
     });
     expect(tampered.status).toBe(401);

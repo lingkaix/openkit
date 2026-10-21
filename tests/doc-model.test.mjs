@@ -202,9 +202,7 @@ describe('documentation model validator', () => {
           writeFileSync(
             join(root, 'docs/specs/superseded/20260101-frozen_design.md'),
             '# Frozen Design\n\n' +
-              (form === 'Markdown'
-                ? 'See [later](../' + name + ').\n'
-                : 'See `docs/specs/' + name + '`.\n')
+              (form === 'Markdown' ? `See [later](../${name}).\n` : `See \`docs/specs/${name}\`.\n`)
           );
 
           assert.deepEqual(validateDocModel(root), []);
@@ -219,36 +217,33 @@ describe('documentation model validator', () => {
       { kind: 'change record', path: 'docs/changes/202601010000000001-sample_change.md' },
       { kind: 'decision record', path: 'docs/decisions/20260103-sample_decision.md' },
     ]) {
-      it(
-        'rejects the ' + source.kind + "'s " + form + ' link to a later-archived root spec',
-        () => {
-          const root = createFixture();
-          const name = '20260102-later_design.md';
-          mkdirSync(join(root, 'docs/specs/superseded'), { recursive: true });
-          writeFileSync(join(root, 'docs/specs/superseded', name), '# Later Design\n');
-          if (source.kind === 'decision record') {
-            mkdirSync(join(root, 'docs/decisions'), { recursive: true });
-            writeFileSync(
-              join(root, source.path),
-              '---\nstatus: Accepted\ndate: 2026-01-03\ndecider: Engineer\n---\n# Sample Decision\n\n' +
-                '## Decision\n\nChosen.\n\n## Reason\n\nNeeded.\n\n' +
-                '## Rejected Alternatives\n\nNone.\n\n## Revisit When\n\nNew evidence.\n\n' +
-                '## Affected Owners\n\n'
-            );
-          }
+      it(`rejects the ${source.kind}'s ${form} link to a later-archived root spec`, () => {
+        const root = createFixture();
+        const name = '20260102-later_design.md';
+        mkdirSync(join(root, 'docs/specs/superseded'), { recursive: true });
+        writeFileSync(join(root, 'docs/specs/superseded', name), '# Later Design\n');
+        if (source.kind === 'decision record') {
+          mkdirSync(join(root, 'docs/decisions'), { recursive: true });
           writeFileSync(
             join(root, source.path),
-            readFileSync(join(root, source.path), 'utf8') +
-              (form === 'Markdown'
-                ? '\nSee [later](../specs/' + name + ').\n'
-                : '\nSee `docs/specs/' + name + '`.\n')
+            '---\nstatus: Accepted\ndate: 2026-01-03\ndecider: Engineer\n---\n# Sample Decision\n\n' +
+              '## Decision\n\nChosen.\n\n## Reason\n\nNeeded.\n\n' +
+              '## Rejected Alternatives\n\nNone.\n\n## Revisit When\n\nNew evidence.\n\n' +
+              '## Affected Owners\n\n'
           );
-
-          assert.deepEqual(validateDocModel(root), [
-            source.path + ': documentation link target does not exist: `docs/specs/' + name + '`.',
-          ]);
         }
-      );
+        writeFileSync(
+          join(root, source.path),
+          readFileSync(join(root, source.path), 'utf8') +
+            (form === 'Markdown'
+              ? `\nSee [later](../specs/${name}).\n`
+              : `\nSee \`docs/specs/${name}\`.\n`)
+        );
+
+        assert.deepEqual(validateDocModel(root), [
+          `${source.path}: documentation link target does not exist: \`docs/specs/${name}\`.`,
+        ]);
+      });
     }
 
     it(
@@ -263,13 +258,11 @@ describe('documentation model validator', () => {
         writeFileSync(
           join(root, path),
           '# Frozen Design\n\n' +
-            (form === 'Markdown'
-              ? 'See [missing](../' + name + ').\n'
-              : 'See `docs/specs/' + name + '`.\n')
+            (form === 'Markdown' ? `See [missing](../${name}).\n` : `See \`docs/specs/${name}\`.\n`)
         );
 
         assert.deepEqual(validateDocModel(root), [
-          path + ': documentation link target does not exist: `docs/specs/' + name + '`.',
+          `${path}: documentation link target does not exist: \`docs/specs/${name}\`.`,
         ]);
       }
     );
@@ -591,7 +584,7 @@ describe('documentation model validator', () => {
     const accepted = 'docs/decisions/20260101-sample_decision.md';
     writeFileSync(
       join(root, accepted),
-      '---\nstatus: Accepted\ndate: "2026-01-01"\ndecider: Engineer\n---\n' + body
+      `---\nstatus: Accepted\ndate: "2026-01-01"\ndecider: Engineer\n---\n${body}`
     );
     writeDocIndex(root);
     assert.deepEqual(validateDocModel(root), []);
@@ -606,7 +599,7 @@ describe('documentation model validator', () => {
     const superseded = 'docs/decisions/20260103-superseded.md';
     writeFileSync(
       join(root, superseded),
-      '---\nstatus: Superseded\ndate: "2026-01-03"\ndecider: Engineer\n---\n' + body
+      `---\nstatus: Superseded\ndate: "2026-01-03"\ndecider: Engineer\n---\n${body}`
     );
     const linking = 'docs/decisions/20260104-linking.md';
     writeFileSync(
@@ -618,17 +611,17 @@ describe('documentation model validator', () => {
 
     const errors = validateDocModel(root);
     assert.ok(
-      errors.some((error) => error.startsWith(reordered + ':') && error.includes('in that order')),
+      errors.some((error) => error.startsWith(`${reordered}:`) && error.includes('in that order')),
       errors.join(' | ')
     );
     assert.ok(
-      errors.some((error) => error.startsWith(superseded + ':') && error.includes('superseded-by')),
+      errors.some((error) => error.startsWith(`${superseded}:`) && error.includes('superseded-by')),
       errors.join(' | ')
     );
     assert.ok(
       errors.some(
         (error) =>
-          error.startsWith(linking + ':') && error.includes('must not link to change record')
+          error.startsWith(`${linking}:`) && error.includes('must not link to change record')
       ),
       errors.join(' | ')
     );

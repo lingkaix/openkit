@@ -294,7 +294,7 @@ export function validateDocModel(repoRoot) {
  */
 function validateDecisionRecord(path, content, fields, errors) {
   if ((fields.status === 'Superseded') !== (fields['superseded-by'] !== undefined)) {
-    errors.push(path + ': only a Superseded decision record names superseded-by, and it must.');
+    errors.push(`${path}: only a Superseded decision record names superseded-by, and it must.`);
   }
 
   const headings = [...content.matchAll(/^##\s+(.+?)\s*$/gmu)].map((match) => match[1]);
