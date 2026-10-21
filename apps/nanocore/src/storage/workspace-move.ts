@@ -3,15 +3,27 @@ import { join, resolve } from 'node:path';
 import { recordWorkspaceAuditEvent } from '../audit-events.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { bindWorkspaceSqlite, type CoreDb } from './db.js';
-import { workspaceDbPath } from './fs-layout.js';
-import { stageWorkspaceBackup, WORKSPACE_BACKUP_DATABASE_FORMATS } from './workspace-backup.js';
-import { abandonCapture, completeCapture, inspectCapture } from './workspace-capture-protection.js';
+import { readDataRootLayoutMarker, workspaceDbPath } from './fs-layout.js';
+import {
+  assertWorkspaceBackupCut,
+  readWorkspaceBackupManifest,
+  stageWorkspaceBackup,
+  WORKSPACE_BACKUP_POLICY,
+} from './workspace-backup.js';
+import {
+  abandonCapture,
+  completeCapture,
+  inspectCapture,
+  protectCapture,
+} from './workspace-capture-protection.js';
 import { syncCanonicalTree } from './workspace-file-records.js';
 import {
   endRecoveryAdmission,
   openRecoveryDatabase,
+  prepareRecoveryAdmission,
   type RecoveryAdmission,
   readRecoveryAdmission,
+  recoveryReport,
   refuseRecovery,
   withRecoveryRoot,
 } from './workspace-recovery-admissions.js';
@@ -38,7 +50,9 @@ export interface WorkspaceRecoveryDependencies {
 export type WorkspaceMoveOutInput = Omit<
   Extract<WorkspaceRecoveryCliArgs, { command: 'move-out' }>,
   'command'
->;
+> & {
+  readonly expectedRelease?: import('./workspace-backup-bundle.js').WorkspaceBackupManifest['release'];
+};
 export type WorkspaceReactivateInput = Omit<
   Extract<WorkspaceRecoveryCliArgs, { command: 'reactivate' }>,
   'command'
@@ -67,7 +81,10 @@ function source(dataRoot: string, workspaceId: string) {
   };
 }
 /** Resolves only retained ownership, never a bundle-selected request. */
-function selected(core: CoreDb, input: WorkspaceRecoverySelectedInput): RecoveryAdmission {
+export function selectRecoveryAdmission(
+  core: CoreDb,
+  input: WorkspaceRecoverySelectedInput
+): RecoveryAdmission {
   const id =
     input.selection.kind === 'capture' ? input.selection.backupId : input.selection.requestId;
   const row = readRecoveryAdmission(core, id);
@@ -80,23 +97,30 @@ export async function moveOutWorkspace(
   deps: WorkspaceRecoveryDependencies = {}
 ): Promise<WorkspaceRecoveryCliReport> {
   return withRecoveryRoot(input.dataRoot, async (core) => {
-    const owned = readRecoveryAdmission(core, input.backupId);
+    let owned = readRecoveryAdmission(core, input.backupId);
+    const manifest = owned?.proof.manifest ?? readWorkspaceBackupManifest(input.bundleRoot);
     if (
-      !owned ||
-      owned.workspace_id !== input.workspaceId ||
-      owned.state === 'abandoned' ||
-      resolve(input.bundleRoot) !== owned.candidate_ref
+      (!owned && (!input.expectedRelease || existsSync(join(input.bundleRoot, 'seal.json')))) ||
+      (owned &&
+        (owned.workspace_id !== input.workspaceId ||
+          owned.state === 'abandoned' ||
+          resolve(input.bundleRoot) !== owned.candidate_ref))
     )
       refuseRecovery('recovery-required');
+    if (
+      manifest.backupId !== input.backupId ||
+      manifest.workspaceId !== input.workspaceId ||
+      manifest.sourceDeploymentId !== readDataRootLayoutMarker(input.dataRoot).deploymentId
+    )
+      refuseRecovery('request-conflict');
     const { db, row, record } = source(input.dataRoot, input.workspaceId);
-    const { manifest, capture } = owned.proof;
     let revision = row.revision;
     try {
       if (input.expectedRevision !== manifest.capturedRevision) refuseRecovery('request-conflict');
       if (
         record.movedOut &&
         (record.movedOut.backupId !== input.backupId ||
-          record.movedOut.manifestDigest !== capture.manifestDigest)
+          record.movedOut.manifestDigest !== owned?.proof.capture.manifestDigest)
       )
         refuseRecovery('recovery-required');
       if (record.movedOut && revision !== manifest.capturedRevision + 1)
@@ -106,22 +130,39 @@ export async function moveOutWorkspace(
       const temporary = mkdtempSync(join(input.dataRoot, 'server/runtime/.move-verify-'));
       try {
         const staged = await stageWorkspaceBackup({
+          ...WORKSPACE_BACKUP_POLICY,
           bundleRoot: input.bundleRoot,
           stagingParent: temporary,
-          candidateRoot: join(temporary, 'candidate'),
+          expectedRelease: input.expectedRelease ?? manifest.release,
           admission: new FileStorageAdmission(input.dataRoot, () => 1_000_000_000n),
-          expectedRelease: manifest.release,
-          supportedDatabaseFormats: WORKSPACE_BACKUP_DATABASE_FORMATS,
+          candidateRoot: join(temporary, 'candidate'),
           expectedWorkspaceId: input.workspaceId,
           expectedSourceDeploymentId: manifest.sourceDeploymentId,
           purpose: 'move',
           allowPreparedMove: true,
         });
-        if (staged.report.manifestDigest !== capture.manifestDigest)
+        if (owned && staged.report.manifestDigest !== owned.proof.capture.manifestDigest)
           refuseRecovery('request-conflict');
+        if (!owned) {
+          assertWorkspaceBackupCut(input.dataRoot, staged.candidateRoot, manifest, core);
+          protectCapture(
+            bindWorkspaceSqlite(db, input.dataRoot, input.workspaceId),
+            input.workspaceId,
+            input.backupId
+          );
+          prepareRecoveryAdmission(core, input.backupId, resolve(input.bundleRoot), {
+            input: { command: 'move-out', ...input },
+            manifest,
+            capture: staged.report,
+            result: recoveryReport('capture', 'prepared', staged.report),
+          });
+          owned = readRecoveryAdmission(core, input.backupId)!;
+        }
       } finally {
         rmSync(temporary, { recursive: true, force: true });
       }
+      if (!owned) refuseRecovery('recovery-required');
+      const capture = owned.proof.capture;
       if (!record.movedOut) {
         db.transaction(() => {
           db.prepare(
@@ -172,10 +213,7 @@ export async function moveOutWorkspace(
         completeCapture(scoped, input.workspaceId, input.backupId);
       core.sqlite
         .transaction(() => {
-          core.sqlite
-            .prepare('UPDATE workspace_recovery_admissions SET proof_json=? WHERE admission_id=?')
-            .run(JSON.stringify({ ...owned.proof, result: report }), input.backupId);
-          endRecoveryAdmission(core, input.backupId, 'finished');
+          endRecoveryAdmission(core, input.backupId, 'finished', report);
         })
         .immediate();
       return report;
@@ -226,7 +264,7 @@ export async function inspectWorkspaceRecovery(
     const id =
       input.selection.kind === 'capture' ? input.selection.backupId : input.selection.requestId;
     if (!readRecoveryAdmission(core, id)) return incompleteCapture(input, 'inspect');
-    const row = selected(core, input);
+    const row = selectRecoveryAdmission(core, input);
     let currentRevision: number | undefined;
     let disposition: WorkspaceRecoveryCliReport['disposition'] =
       row.state === 'abandoned'
@@ -260,7 +298,9 @@ export async function finishWorkspaceMove(
   input: WorkspaceRecoverySelectedInput,
   deps: WorkspaceRecoveryDependencies = {}
 ): Promise<WorkspaceRecoveryCliReport> {
-  const owned = await withRecoveryRoot(input.dataRoot, async (core) => selected(core, input));
+  const owned = await withRecoveryRoot(input.dataRoot, async (core) =>
+    selectRecoveryAdmission(core, input)
+  );
   if (owned.state === 'abandoned') refuseRecovery('recovery-required');
   const result = await moveOutWorkspace(
     {
@@ -285,6 +325,22 @@ export async function reactivateWorkspace(
     if (!owned || owned.workspace_id !== input.workspaceId) refuseRecovery('recovery-required');
     const current = source(input.dataRoot, input.workspaceId);
     try {
+      if (
+        owned.state === 'abandoned' &&
+        !current.record.movedOut &&
+        current.row.revision === owned.proof.manifest.capturedRevision + 2 &&
+        input.expectedRevision === current.row.revision - 1
+      ) {
+        const report: WorkspaceRecoveryCliReport = {
+          ...owned.proof.result,
+          command: 'reactivate',
+          disposition: 'reactivated',
+          currentRevision: current.row.revision,
+          nextAction: 'none',
+        };
+        endRecoveryAdmission(core, input.backupId, 'abandoned', report);
+        return report;
+      }
       if (current.row.revision !== input.expectedRevision) refuseRecovery('request-conflict');
       if (current.record.movedOut?.backupId !== input.backupId) refuseRecovery('recovery-required');
       core.sqlite
@@ -318,9 +374,7 @@ export async function reactivateWorkspace(
         currentRevision: current.row.revision + 1,
         nextAction: 'none',
       };
-      core.sqlite
-        .prepare('UPDATE workspace_recovery_admissions SET proof_json=? WHERE admission_id=?')
-        .run(JSON.stringify({ ...owned.proof, result: report }), input.backupId);
+      endRecoveryAdmission(core, input.backupId, 'abandoned', report);
       return report;
     } finally {
       current.db.close();
@@ -335,7 +389,7 @@ export async function abandonWorkspaceMove(
     const id =
       input.selection.kind === 'capture' ? input.selection.backupId : input.selection.requestId;
     if (!readRecoveryAdmission(core, id)) return incompleteCapture(input, 'abandon');
-    const owned = selected(core, input);
+    const owned = selectRecoveryAdmission(core, input);
     if (owned.state === 'finished') refuseRecovery('request-conflict');
     const current = source(input.dataRoot, input.workspaceId);
     try {

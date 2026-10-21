@@ -1,17 +1,16 @@
-import { lstatSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { allocateEntityId, isEntityId } from '@openkit/protocol';
 import { RELEASE_IDENTITY_PATH, readReleaseIdentity } from '../diagnostics/release-identity.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
-import { RECURRING_PORTABLE_FEATURE } from './recurring-portable-history.js';
 import type { WorkspaceBackupReport, WorkspaceBackupSource } from './workspace-backup.js';
 import {
   createWorkspaceBackup,
+  readWorkspaceBackupManifest,
   stageWorkspaceBackup,
-  WORKSPACE_BACKUP_DATABASE_FORMATS,
+  WORKSPACE_BACKUP_POLICY,
   WorkspaceRecoveryError,
 } from './workspace-backup.js';
-import { parseWorkspaceBackupManifest } from './workspace-backup-bundle.js';
 import {
   abandonWorkspaceMove,
   finishWorkspaceMove,
@@ -20,11 +19,12 @@ import {
   reactivateWorkspace,
 } from './workspace-move.js';
 import type { WorkspaceMoveMemberMapping } from './workspace-move-mapping.js';
+import { recoveryReport } from './workspace-recovery-admissions.js';
 import {
-  openRecoveryDatabase,
-  refuseRecovery,
-  withRecoveryRoot,
-} from './workspace-recovery-admissions.js';
+  abandonWorkspaceRecovery,
+  admitWorkspaceBackup,
+  finishWorkspaceRecovery,
+} from './workspace-restore.js';
 
 export { WorkspaceRecoveryError, type WorkspaceRecoveryErrorCode } from './workspace-backup.js';
 
@@ -170,6 +170,7 @@ export function parseWorkspaceRecoveryArgs(argv: readonly string[]): WorkspaceRe
     return value;
   };
   const workspace = () => entity('workspace-id', 'ws');
+  const scope = () => ({ dataRoot: text('data-root'), workspaceId: workspace() });
   const backup = () => entity('backup-id', 'wsbak');
   const request = () => {
     const value = text('request-id');
@@ -204,17 +205,15 @@ export function parseWorkspaceRecoveryArgs(argv: readonly string[]): WorkspaceRe
     case 'restore':
       return {
         command,
-        dataRoot: text('data-root'),
+        ...scope(),
         bundleRoot: text('bundle-root'),
-        workspaceId: workspace(),
         requestId: request(),
         acknowledgeLostSafety: flags.has('acknowledge-lost-safety'),
       };
     case 'move-out':
       return {
         command,
-        dataRoot: text('data-root'),
-        workspaceId: workspace(),
+        ...scope(),
         backupId: backup(),
         bundleRoot: text('bundle-root'),
         expectedRevision: revision(),
@@ -239,8 +238,7 @@ export function parseWorkspaceRecoveryArgs(argv: readonly string[]): WorkspaceRe
       if (flags.has('backup-id') === flags.has('request-id')) invalid();
       return {
         command,
-        dataRoot: text('data-root'),
-        workspaceId: workspace(),
+        ...scope(),
         selection: flags.has('backup-id')
           ? { kind: 'capture', backupId: backup() }
           : { kind: 'admission', requestId: request() },
@@ -251,8 +249,7 @@ export function parseWorkspaceRecoveryArgs(argv: readonly string[]): WorkspaceRe
         invalid();
       return {
         command,
-        dataRoot: text('data-root'),
-        workspaceId: workspace(),
+        ...scope(),
         backupId: backup(),
         expectedRevision: revision(),
         acknowledgeTargetFenced: true,
@@ -291,11 +288,12 @@ export async function runWorkspaceRecoveryCli(
 ): Promise<WorkspaceRecoveryCliReport> {
   const args = parseWorkspaceRecoveryArgs(argv);
   if (args.command !== 'capture' && args.command !== 'verify') {
-    if (args.command === 'restore' || args.command === 'move-in')
-      installedRelease(deps.releaseIdentityPath ?? RELEASE_IDENTITY_PATH);
     const result =
       args.command === 'move-out'
-        ? await moveOutWorkspace(args)
+        ? await moveOutWorkspace({
+            ...args,
+            expectedRelease: installedRelease(deps.releaseIdentityPath ?? RELEASE_IDENTITY_PATH),
+          })
         : args.command === 'reactivate'
           ? await reactivateWorkspace(args)
           : args.command === 'inspect'
@@ -304,36 +302,16 @@ export async function runWorkspaceRecoveryCli(
               ? await finishWorkspaceMove(args)
               : args.command === 'abandon' && args.selection.kind === 'capture'
                 ? await abandonWorkspaceMove(args)
-                : await withRecoveryRoot(args.dataRoot, async () => {
-                    if (args.command === 'restore') {
-                      const path = join(
-                        args.dataRoot,
-                        'workspaces',
-                        args.workspaceId,
-                        'db/workspace.sqlite'
-                      );
-                      if (lstatSync(path, { throwIfNoEntry: false })) {
-                        const db = openRecoveryDatabase(path);
-                        try {
-                          if (
-                            db
-                              .prepare(
-                                "SELECT json_extract(record_json, '$.movedOut') FROM control_workspaces WHERE id=?"
-                              )
-                              .pluck()
-                              .get(args.workspaceId)
-                          )
-                            refuseRecovery('workspace-moved-out');
-                        } finally {
-                          db.close();
-                        }
-                      }
-                    }
-                    throw new WorkspaceRecoveryError(
-                      'not-implemented',
-                      'This Workspace recovery decision is not implemented.'
-                    );
-                  });
+                : args.command === 'restore' || args.command === 'move-in'
+                  ? await admitWorkspaceBackup({
+                      ...args,
+                      expectedRelease: installedRelease(
+                        deps.releaseIdentityPath ?? RELEASE_IDENTITY_PATH
+                      ),
+                    })
+                  : args.command === 'finish'
+                    ? await finishWorkspaceRecovery(args)
+                    : await abandonWorkspaceRecovery(args);
     write(`${JSON.stringify(result)}\n`);
     return result;
   }
@@ -343,12 +321,11 @@ export async function runWorkspaceRecoveryCli(
     const parent = dirname(args.bundleRoot);
     temporary = mkdtempSync(join(parent, '.workspace-recovery-'));
     const policy = {
+      ...WORKSPACE_BACKUP_POLICY,
       bundleRoot: args.bundleRoot,
       stagingParent: temporary,
-      admission: new FileStorageAdmission(parent, () => 1_000_000_000n),
       expectedRelease,
-      supportedRequiredFeatures: [RECURRING_PORTABLE_FEATURE],
-      supportedDatabaseFormats: WORKSPACE_BACKUP_DATABASE_FORMATS,
+      admission: new FileStorageAdmission(parent, () => 1_000_000_000n),
     };
     let capture: WorkspaceBackupReport;
     let disposition: 'sealed' | 'prepared' | 'verified';
@@ -361,27 +338,7 @@ export async function runWorkspaceRecoveryCli(
       capture = result.report;
       disposition = result.disposition;
     } else {
-      // These untrusted identity selectors grant nothing. The staged verifier binds and validates them.
-      let manifest: ReturnType<typeof parseWorkspaceBackupManifest>;
-      try {
-        const metadata = join(args.bundleRoot, 'manifest.json');
-        const stat = lstatSync(metadata);
-        if (
-          realpathSync(args.bundleRoot) !== resolve(args.bundleRoot) ||
-          !stat.isFile() ||
-          stat.nlink !== 1 ||
-          stat.size > 16_777_216
-        )
-          throw new Error();
-        manifest = parseWorkspaceBackupManifest(
-          JSON.parse(readFileSync(join(args.bundleRoot, 'manifest.json'), 'utf8'))
-        );
-      } catch {
-        throw new WorkspaceRecoveryError(
-          'invalid-bundle',
-          'Workspace recovery refused: invalid-bundle.'
-        );
-      }
+      const manifest = readWorkspaceBackupManifest(args.bundleRoot);
       const result = await stageWorkspaceBackup({
         ...policy,
         candidateRoot: join(temporary, 'candidate'),
@@ -392,15 +349,7 @@ export async function runWorkspaceRecoveryCli(
       capture = result.report;
       disposition = 'verified';
     }
-    const report: WorkspaceRecoveryCliReport = {
-      command: args.command,
-      disposition,
-      workspaceId: capture.workspaceId,
-      capture,
-      droppedSourceMemberIds: [],
-      restrictedRecovery: false,
-      nextAction: disposition === 'prepared' ? 'finish' : 'none',
-    };
+    const report = recoveryReport(args.command, disposition, capture);
     write(`${JSON.stringify(report)}\n`);
     return report;
   } catch (error) {
