@@ -95,7 +95,7 @@ Goal Mode is OpenKit's default workflow setup over those mechanisms: the person 
 
 `Workflow Evidence` is the item-backed, artifact-backed, review-backed, checkpoint-backed, or external-check-backed material used to decide whether the workflow may continue or close. Audit may project or reference that evidence, but an audit row does not authorize progression, recovery, or terminalization.
 
-`Goal Mode` is the built-in workflow mode for one continuous outcome. The person keeps the intent and accepts completion. A Coordinator admits ordinary Tasks inside one approved Plan version.
+`Goal Mode` is defined in [Product Modes](#product-modes). See [Default Workflow Setup](#default-workflow-setup) for the current built-in setup.
 
 ## Boundaries And Non-Goals
 
@@ -414,7 +414,7 @@ Deliverable, task, job, and goal are product-facing terms. A Deliverable normall
 
 ## Judgement And Candidate Set
 
-Human judgement on exact outputs and candidate selection provide the foundation for improvement through ordinary work.
+Human judgement on exact outputs and candidate selection provide the v0.1.0 foundation for improvement through ordinary work.
 
 A `Judgement` records one human assessment of one exact target. It retains the authenticated actor, server-recorded time, request identity, kind, choice and optional note. The closed kinds are `accept`, `reject`, `correct`, `select` and `rate`. A judgement is immutable after acceptance. A later judgement preserves the earlier assessment rather than editing it. A judgement does not independently accept a proposal, change content or authorize an effect.
 
