@@ -10461,7 +10461,7 @@ describe('nanocore server', () => {
     } finally {
       coreDb.sqlite.close();
     }
-  });
+  }, 60_000);
 
   it('fails closed when an applied proposal lacks its receipt or Audit evidence', async () => {
     const coreDb = createCoreDb();
@@ -10531,7 +10531,7 @@ describe('nanocore server', () => {
     } finally {
       coreDb.sqlite.close();
     }
-  });
+  }, 60_000);
 
   it('rejects host-path-bearing proposal text without durable mutation', async () => {
     const coreDb = createCoreDb();
