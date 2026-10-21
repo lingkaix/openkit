@@ -1,5 +1,7 @@
 # Private Administration Entry
 
+Administration waits for the native terminal acknowledgement before it accepts Stop. Its original conversation receipt and Audit join the waiting Stop receipt and Audit in that transaction; a refusal commits neither command tuple and returns recovery_required.
+
 This directory owns the private administration conversation entry and its fixed model-visible Tool assembly. It reuses the shared Internal Agent Loop and existing Core operation owners; it does not own configuration, Worker environment, approval, authentication, or storage effects.
 
 ## Boundaries

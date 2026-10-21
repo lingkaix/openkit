@@ -328,6 +328,8 @@ export interface TerminalTurnPublication {
   readonly evidenceContent?: ControlTerminalTransition['evidenceContent'];
   /** Applicable original scope-owned receipt and Audit; User receipts stay User-owned. */
   readonly command?: ControlTerminalTransition['command'];
+  /** Original waiting internal Stop, acknowledged with the same terminal tuple or neither. */
+  readonly interruptCommand?: ControlTerminalTransition['interruptCommand'];
   /** Actual admitted execution and step identities; omission creates no execution or release. */
   readonly execution?: ControlTerminalTransition['execution'];
 }
@@ -5073,6 +5075,7 @@ export class FsStore {
         evidence: publication.evidence ?? [],
         evidenceContent: publication.evidenceContent ?? [],
         command: publication.command ?? null,
+        ...(publication.interruptCommand ? { interruptCommand: publication.interruptCommand } : {}),
         execution: publication.execution ?? null,
       });
     } else {

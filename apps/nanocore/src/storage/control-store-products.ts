@@ -1160,6 +1160,16 @@ const terminalReceiptSchema = z
   })
   .strict();
 
+const terminalCommandSchema = z
+  .object({
+    receipt: terminalReceiptSchema,
+    audit: AuditEventSchema.extend({
+      createdAt: z.string().datetime(),
+      occurredAt: z.string().datetime(),
+    }),
+  })
+  .strict();
+
 /** Complete local terminal tuple. Null execution means no native execution, not proof of release. */
 export const ControlTerminalTransitionSchema = z
   .object({
@@ -1179,16 +1189,11 @@ export const ControlTerminalTransitionSchema = z
     evidenceContent: z
       .array(ControlProductEntrySchema.shape.content)
       .max(CONTROL_PRODUCT_LIMITS.entries),
-    command: z
-      .object({
-        receipt: terminalReceiptSchema,
-        audit: AuditEventSchema.extend({
-          createdAt: z.string().datetime(),
-          occurredAt: z.string().datetime(),
-        }),
-      })
-      .strict()
-      .nullable(),
+    command: terminalCommandSchema.nullable(),
+    // Only the waiting internal Stop may converge with the original submission.
+    interruptCommand: terminalCommandSchema
+      .refine((command) => command.receipt.command === 'turn.interrupt')
+      .optional(),
     execution: z
       .object({
         executionId: z.string().min(1),
@@ -1513,10 +1518,11 @@ export async function prepareControlTerminal(
 /** Checks and retains the original receipt; an earlier admission receipt does not skip terminal publication. */
 function applyTerminalReceipt(
   db: CoreDb | WorkspaceDb,
-  input: ControlTerminalTransition
+  input: ControlTerminalTransition,
+  command = input.command
 ): CommandRequestResponse | null {
-  if (!input.command) return null;
-  const { receipt, audit } = input.command;
+  if (!command) return null;
+  const { receipt, audit } = command;
   if (!terminalOwners) throw new ControlProductPreconditionError();
   const { commandRequestKey } = terminalOwners.store;
   const {
@@ -1862,7 +1868,17 @@ export function applyControlTerminal(
         preparation.pending ?? { entries: [], dependencies: [] }
       );
   }
+  if (
+    input.interruptCommand &&
+    (!['interrupted', 'cancelled'].includes(String(turn.status)) ||
+      input.interruptCommand.receipt.scope.threadId !== turn.threadId ||
+      input.interruptCommand.receipt.scope.turnId !== turn.id ||
+      (input.command && input.command.receipt.command !== 'conversation.submit'))
+  )
+    throw new ControlProductPreconditionError();
   const response = applyTerminalReceipt(db, input);
+  // Both original receipts and Audits share the outer terminal transaction, including refusal.
+  const interruptResponse = applyTerminalReceipt(db, input, input.interruptCommand ?? null);
   const execution = applyTerminalExecution(db, input);
   const current = readProduct(db.sqlite, input.owner, 'turn', String(turn.id));
   if (!current) throw new ControlProductPreconditionError();
@@ -1872,7 +1888,7 @@ export function applyControlTerminal(
     replayed:
       previous !== undefined && !['pending', 'running'].includes(String(previous.record.status)),
     reap: reap ? { id: reap.id, sequence: reap.seq } : null,
-    response,
+    response: response ?? interruptResponse,
     execution,
   };
 }

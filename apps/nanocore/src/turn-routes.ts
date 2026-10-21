@@ -340,8 +340,24 @@ export async function interruptProductTurn(input: {
         );
       }
 
-      if (await interruptInternalChatTurn?.(store, turnId, { requestId, command })) {
-        return acceptedTurn();
+      if (interruptInternalChatTurn) {
+        try {
+          if (await interruptInternalChatTurn(store, turnId, { requestId, command })) {
+            // A terminal race must not accept a Stop that missed the native publication.
+            if (
+              store.getDataRoot() &&
+              !store.getCommandRequest('turn.interrupt', requestId, receipt.scope)
+            )
+              throw new Error('The internal terminal publication did not retain this Stop.');
+            return acceptedTurn();
+          }
+        } catch {
+          throw new TurnStartValidationError(
+            'recovery_required',
+            'The internal interruption requires inspection of its retained outcome.',
+            409
+          );
+        }
       }
 
       if (coreDb) {

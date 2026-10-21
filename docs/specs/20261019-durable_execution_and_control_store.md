@@ -178,6 +178,8 @@ W is Workspace SQL, S is server SQL; these closed transitions apply normally and
 | Cancellation / W | Commit first cause/revocation; cancel definite unstarted work, inspect possibly applied effects. | Terminal publication then fencing/release; late evidence cannot reopen work. |
 | Human wait / W | Pending Request and owner's terminal Turn outcome commit; no paused Turn or default response expiry. | Terminal publication and cleanup; decision delivery admits a later Turn under current authority and exclusion. |
 
+An internal terminal publication that settles both the original submission and a waiting Stop command commits both original command receipts and Audits with that Turn tuple on the same native writer.
+
 Failed, cancelled and interrupted Turn publication retains all applicable original RuntimeEvidence and required references; a zero record count alone does not prevent that publication when the original execution and all required observation and evidence facts agree, and unknown effects and cleanup keep their exclusion until physical release is proved.
 
 Lost replies leave intent open for bounded inspection, without dependency-driven deadline extension. Deadline, cancellation or proved Worker loss ends unproved effects `unknown`; definite non-execution permits failed/cancelled settlement.

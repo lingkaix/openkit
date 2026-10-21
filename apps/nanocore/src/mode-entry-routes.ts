@@ -3883,7 +3883,8 @@ export function createConversationService({
           proposedHandoff = fixedTools.proposedHandoff();
         } catch (error) {
           const aborted =
-            error instanceof TurnStartValidationError && error.code === 'provider_call_aborted';
+            controller.signal.aborted ||
+            (error instanceof TurnStartValidationError && error.code === 'provider_call_aborted');
           try {
             await store.completeTurn(
               turn.id,
@@ -3902,7 +3903,14 @@ export function createConversationService({
               },
               {
                 requestId: chatInput.requestId,
-                ...(aborted ? { command: terminalCommand(turn, null) } : {}),
+                ...(aborted
+                  ? {
+                      command: terminalCommand(turn, null),
+                      interruptCommand:
+                        (controller.signal.reason as TurnCommandRuntimeContext | undefined)
+                          ?.command ?? undefined,
+                    }
+                  : {}),
               }
             );
           } catch {
@@ -3913,6 +3921,12 @@ export function createConversationService({
             );
           }
           cancellationPersisted = aborted;
+          if (aborted)
+            throw new TurnStartValidationError(
+              'provider_call_aborted',
+              'Quick chat provider call was aborted.',
+              499
+            );
           throw error;
         }
         const completedAt = new Date().toISOString();
@@ -4223,22 +4237,17 @@ export function createConversationService({
       if (await interruptKnowledgeManagerTurn(store, turnId, context)) return true;
       const run = activeChatRuns.get(store)?.get(turnId);
       if (!run) return false;
-      if (context?.command) {
-        if (context.command.receipt.command !== 'turn.interrupt')
-          throw new Error('Chat interruption requires its original interrupt command.');
-        // Keep the conversation receipt with its own terminal tuple; admit Stop before contact.
-        await store.updateTurn(
-          turnId,
-          {},
-          {
-            commandAdmission: {
-              ...context.command,
-              receipt: { ...context.command.receipt, command: 'turn.interrupt' },
-            },
-          }
-        );
-      }
-      run.controller.abort();
+      if (context?.command && context.command.receipt.command !== 'turn.interrupt')
+        throw new Error('Internal interruption requires its original interrupt command.');
+      if (
+        run.controller.signal.aborted &&
+        context?.command?.receipt.key !==
+          (run.controller.signal.reason as TurnCommandRuntimeContext | undefined)?.command?.receipt
+            .key
+      )
+        throw new Error('Another interruption already owns this run.');
+      // The existing cancellation reason carries the original command to the first terminal publisher.
+      run.controller.abort(context);
       // Success requires the product owner to persist interruption, not just signal the provider.
       await run.finished;
       return true;

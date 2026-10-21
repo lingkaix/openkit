@@ -8,7 +8,7 @@ import {
   workspaceIdForOwner,
 } from '@openkit/protocol';
 import { findWorkspaceConfig, type RuntimeConfigSnapshot } from '../config/runtime-config.js';
-import type { FsStore } from '../lib/store.js';
+import type { FsStore, TerminalTurnPublication } from '../lib/store.js';
 import { resolveLogicalModel } from '../llm/logical-models.js';
 import { withTurnModelCapture } from '../llm/model-capture.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
@@ -46,22 +46,16 @@ export async function interruptKnowledgeManagerTurn(
 ): Promise<boolean> {
   const run = activeKnowledgeRuns.get(store)?.get(turnId);
   if (!run) return false;
-  if (context?.command) {
-    if (context.command.receipt.command !== 'turn.interrupt')
-      throw new Error('Internal interruption requires its original interrupt command.');
-    // Acknowledge acceptance before signaling cancellation; this proves no terminal outcome.
-    await store.updateTurn(
-      turnId,
-      {},
-      {
-        commandAdmission: {
-          ...context.command,
-          receipt: { ...context.command.receipt, command: 'turn.interrupt' },
-        },
-      }
-    );
-  }
-  run.controller.abort();
+  if (context?.command && context.command.receipt.command !== 'turn.interrupt')
+    throw new Error('Internal interruption requires its original interrupt command.');
+  if (
+    run.controller.signal.aborted &&
+    context?.command?.receipt.key !==
+      (run.controller.signal.reason as TurnCommandRuntimeContext | undefined)?.command?.receipt.key
+  )
+    throw new Error('Another interruption already owns this run.');
+  // The existing cancellation reason carries the original command to the first terminal publisher.
+  run.controller.abort(context);
   await run.finished;
   return true;
 }
@@ -117,10 +111,14 @@ async function updateRunTurn(
   store: FsStore,
   turn: Turn,
   patch: Parameters<FsStore['updateTurn']>[1],
-  items?: readonly Item[]
+  items?: readonly Item[],
+  interruptCommand?: TerminalTurnPublication['interruptCommand']
 ) {
   if (patch.status && isSealedTurnTerminal(patch.status))
-    return await store.completeTurn(turn.id, patch, items ? { items } : {});
+    return await store.completeTurn(turn.id, patch, {
+      ...(items ? { items } : {}),
+      interruptCommand,
+    });
   return turn.owner.kind === 'server'
     ? await store.updateServerTurn(turn.id, patch)
     : await store.updateTurn(turn.id, patch);
@@ -237,10 +235,11 @@ async function runBoundedKnowledgeManagerAgent(
   if (runs.has(input.turn.id)) throw new Error('Knowledge Manager Turn is already running.');
   runs.set(input.turn.id, { controller, finished });
   try {
-    return await executeKnowledgeManagerAgent(dependencies, {
-      ...input,
-      signal: AbortSignal.any([input.signal, controller.signal]),
-    });
+    return await executeKnowledgeManagerAgent(
+      dependencies,
+      { ...input, signal: AbortSignal.any([input.signal, controller.signal]) },
+      controller.signal
+    );
   } finally {
     runs.delete(input.turn.id);
     finish();
@@ -250,7 +249,8 @@ async function runBoundedKnowledgeManagerAgent(
 /** Executes within the caller's live cancellation handle, retaining the normal Turn lifecycle. */
 async function executeKnowledgeManagerAgent(
   dependencies: KnowledgeManagerAgentDependencies,
-  input: AnyKnowledgeManagerAgentRun
+  input: AnyKnowledgeManagerAgentRun,
+  interruptSignal: AbortSignal
 ): Promise<{ readonly turnId: string; readonly text: string }> {
   const { store } = dependencies;
   const turn = runTurn(store, input);
@@ -493,7 +493,13 @@ async function executeKnowledgeManagerAgent(
               'Knowledge Manager run failed. Inspect the retained Turn before a new request.',
           },
       } as const;
-      await updateRunTurn(store, turn, terminal, input.terminalItems?.(terminal));
+      await updateRunTurn(
+        store,
+        turn,
+        terminal,
+        input.terminalItems?.(terminal),
+        (interruptSignal.reason as TurnCommandRuntimeContext | undefined)?.command ?? undefined
+      );
     }
     throw timeout ? Object.assign(new Error(timeout.message), { code: timeout.code }) : error;
   }

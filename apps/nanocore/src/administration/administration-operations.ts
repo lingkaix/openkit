@@ -79,22 +79,16 @@ export async function interruptAdministrationTurn(
 ): Promise<boolean> {
   const run = activeAdministrationRuns.get(store)?.get(turnId);
   if (!run) return false;
-  if (context?.command) {
-    if (context.command.receipt.command !== 'turn.interrupt')
-      throw new Error('Internal interruption requires its original interrupt command.');
-    // Acknowledge acceptance before signaling cancellation; this proves no terminal outcome.
-    await store.updateTurn(
-      turnId,
-      {},
-      {
-        commandAdmission: {
-          ...context.command,
-          receipt: { ...context.command.receipt, command: 'turn.interrupt' },
-        },
-      }
-    );
-  }
-  run.controller.abort();
+  if (context?.command && context.command.receipt.command !== 'turn.interrupt')
+    throw new Error('Internal interruption requires its original interrupt command.');
+  if (
+    run.controller.signal.aborted &&
+    context?.command?.receipt.key !==
+      (run.controller.signal.reason as TurnCommandRuntimeContext | undefined)?.command?.receipt.key
+  )
+    throw new Error('Another interruption already owns this run.');
+  // The existing cancellation reason carries the original command to the first terminal publisher.
+  run.controller.abort(context);
   await run.finished;
   if (store.getTurnById(turnId).status !== 'interrupted')
     throw new OperationError(
@@ -339,7 +333,11 @@ export function createAdministrationOperationImplementations(input: Administrati
                 code,
                 explanation,
                 status,
-                terminalCommand('refused', null)
+                terminalCommand('refused', null),
+                status === 'interrupted'
+                  ? ((controller.signal.reason as TurnCommandRuntimeContext | undefined)?.command ??
+                      undefined)
+                  : undefined
               );
 
             // Admission, not the submitting connection, owns this run's cancellation lifetime.
@@ -705,7 +703,8 @@ async function failedAdministrationTurn(
   code: string,
   explanation: string,
   status: 'failed' | 'interrupted',
-  command: NonNullable<TerminalTurnPublication['command']>
+  command: NonNullable<TerminalTurnPublication['command']>,
+  interruptCommand?: TerminalTurnPublication['interruptCommand']
 ): Promise<AdministrationCommandResult> {
   const turn = store.getTurnById(turnId);
   const completedAt = new Date().toISOString();
@@ -733,7 +732,7 @@ async function failedAdministrationTurn(
         completedAt,
         error: { code, message: explanation },
       },
-      { items: [item], command, requestId: command.receipt.requestId }
+      { items: [item], command, interruptCommand, requestId: command.receipt.requestId }
     );
     return {
       body: administrationResponse(completedTurn, item, null, 'refused', explanation),
