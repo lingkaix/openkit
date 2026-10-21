@@ -173,8 +173,8 @@ async function fixture(scope: Scope, deadlineMs = 300_000) {
     workspaceMutationAdmission: new WorkspaceMutationAdmission(),
     openWorkspace: (id: string) => openWorkspaceDb(dataRoot, id),
     inflightCommands: new WeakMap(),
-    pin: (input: Pick<MaintenanceRun, 'turn' | 'inputs'>) => {
-      pinKnowledgeManagerExecution(
+    pin: async (input: Pick<MaintenanceRun, 'turn' | 'inputs'>) => {
+      await pinKnowledgeManagerExecution(
         {
           store,
           runtimeConfig: () => snapshot,
@@ -440,9 +440,9 @@ it.each([
   f.dependencies.runtimeConfigManager = {
     current: () => snapshot,
   } as unknown as RuntimeConfigManager;
-  f.dependencies.pin = (input) => {
+  f.dependencies.pin = async (input) => {
     if (input.turn.owner.kind === 'server') throw new Error('Expected a Workspace run.');
-    pinKnowledgeManagerExecution(roleDependencies, input);
+    await pinKnowledgeManagerExecution(roleDependencies, input);
   };
   f.dependencies.run = (input) => {
     if ('kind' in input) throw new Error('Expected a Workspace run.');
@@ -562,9 +562,9 @@ it('returns the owned timeout code in the Server maintenance summary without pub
   f.dependencies.runtimeConfigManager = {
     current: () => snapshot,
   } as unknown as RuntimeConfigManager;
-  f.dependencies.pin = (input) => {
+  f.dependencies.pin = async (input) => {
     if (input.turn.owner.kind !== 'server') throw new Error('Expected a Server run.');
-    pinKnowledgeManagerExecution(roleDependencies, input);
+    await pinKnowledgeManagerExecution(roleDependencies, input);
   };
   f.dependencies.run = (input) => {
     if (!('kind' in input)) throw new Error('Expected a Server run.');

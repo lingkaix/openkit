@@ -255,7 +255,7 @@ it('commits a completed Tool pair once and never fabricates a result for an unse
         ],
       },
     ];
-    expect(commit(messages)).toEqual([]);
+    expect(await commit(messages)).toEqual([]);
     const complete = [
       ...messages,
       {
@@ -265,8 +265,8 @@ it('commits a completed Tool pair once and never fabricates a result for an unse
         content: [{ type: 'text' as const, text: 'Exact evidence.' }],
       },
     ];
-    expect(commit(complete)).toHaveLength(1);
-    expect(commit(complete)).toHaveLength(1);
+    expect(await commit(complete)).toHaveLength(1);
+    expect(await commit(complete)).toHaveLength(1);
     expect(f.store.getTurnById(f.turn.id).items).toHaveLength(1);
   } finally {
     f.workspaceDb.sqlite.close();
