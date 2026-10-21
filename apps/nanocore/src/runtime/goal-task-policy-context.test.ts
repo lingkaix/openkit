@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { cpSync, mkdtempSync, readdirSync, renameSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { deriveEntityId, workspaceIdForOwner } from '@openkit/protocol';
+import { deriveEntityId, PROTOCOL_VERSION, workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, expect, it } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import {
   createStructuredWorkerDelegationRequest,
   type StructuredWorkerDelegationRequest,
@@ -13,8 +14,14 @@ import {
 import { FsStore } from '../lib/store.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import {
+  openCoreDb,
+  openWorkspaceDb,
+  openWorkspaceDbAtRoot,
+  type WorkspaceDb,
+} from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { loadWorkspaceFileRecords } from '../storage/workspace-file-records.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { testGoalDomainProposal } from '../test-support/goal-domain.js';
@@ -40,7 +47,136 @@ import {
   pendingRequestSystemActor,
   readPendingRequest,
 } from './pending-requests.js';
+import { recordTaskTerminalFact } from './task-terminal-fact.js';
 import { clearWorkerCheckpoint, upsertWorkerCheckpoint } from './worker-checkpoints.js';
+
+/** Rebuilds a stopped private fixture through native history admission, without claiming a live Worker outcome. */
+async function retainCompletedTaskFixture(
+  store: FsStore,
+  db: WorkspaceDb,
+  turnId: string,
+  closeSession = true
+): Promise<void> {
+  await shutdownControlStoreWorkerClient();
+  const dataRoot = store.getDataRoot()!;
+  const records = loadWorkspaceFileRecords(dataRoot).find(
+    (entry) => entry.workspace.id === db.workspaceId
+  )!;
+  const original = records.turns.find((turn) => turn.id === turnId)!;
+  const completedAt = new Date().toISOString();
+  const historical = {
+    ...original,
+    status: 'completed' as const,
+    completedAt,
+    durationMs: original.startedAt
+      ? Math.max(0, Date.parse(completedAt) - Date.parse(original.startedAt))
+      : original.durationMs,
+  };
+  // These are the existing Goal/Pending owners' exact retained dependencies, not execution proof.
+  const dependencies = [
+    'goals',
+    'goal_cards',
+    'goal_plan_versions',
+    'goal_card_tasks',
+    'task_turn_terminal_facts',
+    'pending_requests',
+    'worker_turn_checkpoints',
+    'idempotency_requests',
+    'audit_events',
+  ].map((table) => ({
+    table,
+    rows: db.sqlite.prepare(`SELECT * FROM ${table}`).all() as Record<
+      string,
+      string | number | bigint | Buffer | null
+    >[],
+  }));
+  const defaultKnowledgeBaseId = readDefaultKnowledgeBaseId({
+    dataRoot,
+    scope: { kind: 'workspace', workspaceId: db.workspaceId },
+  });
+  const workspaceRoot = join(dataRoot, 'workspaces', db.workspaceId);
+  const retainedRoot = join(dataRoot, `.fixture-history-${randomUUID()}`);
+  db.sqlite.close();
+  renameSync(workspaceRoot, retainedRoot);
+  try {
+    await store.importWorkspaceSnapshot({
+      ...records,
+      defaultKnowledgeBaseId,
+      turns: records.turns.map((turn) => (turn.id === turnId ? historical : turn)),
+      agentSessions: records.agentSessions.map((session) =>
+        closeSession && session.id === original.agentSessionId
+          ? { ...session, status: 'closed' as const, updatedAt: completedAt }
+          : session
+      ),
+      turnEvents: records.streamEvents.map(
+        ([id, events]) =>
+          [
+            id,
+            id === turnId
+              ? [
+                  ...events,
+                  {
+                    protocolVersion: PROTOCOL_VERSION,
+                    workspaceId: db.workspaceId,
+                    threadId: original.threadId,
+                    turnId,
+                    requestId: null,
+                    sequence: (events.at(-1)?.sequence ?? 0) + 1,
+                    timestamp: completedAt,
+                    event: 'turn.completed',
+                    data: { type: 'turn-completed', stopReason: 'completed', turn: historical },
+                  },
+                ]
+              : events,
+          ] as const
+      ),
+      initialNotebookFiles: Object.fromEntries(
+        records.knowledge.map((page) => [page.path, page.content])
+      ),
+      notebookInitialization: {
+        requestId: randomUUID(),
+        producer: original.triggerActor,
+        instructionReference: 'test:retained-goal-task-history',
+      },
+      stageWorkspace: (stage) => {
+        // Replace the initializer's private Notebook before copying retained read-only Git objects.
+        rmSync(join(stage.workspaceRoot, 'knowledge'), { recursive: true, force: true });
+        for (const name of readdirSync(retainedRoot))
+          if (name !== 'db')
+            cpSync(join(retainedRoot, name), join(stage.workspaceRoot, name), { recursive: true });
+      },
+      finalizeNativeWorkspace: (stage) => {
+        const target = openWorkspaceDbAtRoot({ dataRoot, ...stage });
+        try {
+          target.sqlite.transaction(() => {
+            for (const { table, rows } of dependencies) {
+              target.sqlite.prepare(`DELETE FROM ${table}`).run();
+              for (const row of rows) {
+                const columns = Object.keys(row);
+                target.sqlite
+                  .prepare(
+                    `INSERT INTO ${table} (${columns.join(',')}) VALUES (${columns.map(() => '?').join(',')})`
+                  )
+                  .run(...Object.values(row));
+              }
+            }
+            recordTaskTerminalFact(target, historical);
+          })();
+        } finally {
+          target.sqlite.close();
+        }
+      },
+    });
+  } catch (error) {
+    rmSync(workspaceRoot, { recursive: true, force: true });
+    renameSync(retainedRoot, workspaceRoot);
+    Object.assign(db, openWorkspaceDb(dataRoot, db.workspaceId));
+    throw error;
+  }
+  // Keep every existing fixture consumer on the newly admitted owning handle.
+  Object.assign(db, openWorkspaceDb(dataRoot, db.workspaceId));
+  rmSync(retainedRoot, { recursive: true, force: true });
+}
 
 const cleanups: (() => void)[] = [];
 afterEach(async () => {
@@ -383,14 +519,7 @@ async function fixture(typed = true, linked = true) {
           routesRevoked: true,
         },
       });
-      await store.updateTurn(turn.id, {
-        status: 'completed',
-        completedAt: new Date().toISOString(),
-      });
-      await store.updateAgentSession(agentSessionId, {
-        status: 'closed',
-        updatedAt: new Date().toISOString(),
-      });
+      await retainCompletedTaskFixture(store, db, turn.id);
     },
     outcome: async (pendingRequestId: string, administrator = false) => {
       const now = new Date().toISOString();
@@ -713,10 +842,7 @@ it.each([
   const f = await fixture();
   const captured = await f.capture();
   if (corruption === 'missing-close-proof') {
-    await f.store.updateTurn(f.lineage.turnId, {
-      status: 'completed',
-      completedAt: new Date().toISOString(),
-    });
+    await retainCompletedTaskFixture(f.store, f.db, f.lineage.turnId, false);
   } else await f.closeSource();
   clearWorkerCheckpoint(f.db, f.lineage.workspaceId, f.lineage.threadId, f.lineage.turnId);
   if (corruption === 'missing-attempt')
