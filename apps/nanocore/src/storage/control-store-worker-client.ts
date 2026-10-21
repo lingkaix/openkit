@@ -13,12 +13,17 @@ import type {
 } from '../knowledge/knowledge-agent-maintenance.js';
 import { NotebookError } from '../knowledge/notebook.js';
 import { OperationError } from '../operation-error.js';
+import type { ControlExecutionJournalInput } from '../runtime/execution-journal.js';
 import {
   type ControlGoalCommandInput,
   type ControlGoalCommandResult,
   GoalCommandError,
 } from '../runtime/goal-owner.js';
 import { IdempotencyKeyConflictError } from '../runtime/idempotent-command.js';
+import {
+  type ControlPendingCommandResult,
+  PendingRequestCommandError,
+} from '../runtime/pending-requests.js';
 import type {
   ProjectWorkerBackendCleanupInput,
   WorkerBackendCleanupProjectionResult,
@@ -30,6 +35,7 @@ import {
 } from '../workspace-materials.js';
 import type { ControlCheckpoint } from './control-store.js';
 import type { ControlAdmission, ControlAdmissionResult } from './control-store-admission.js';
+import type { ControlPendingTransition } from './control-store-pending.js';
 import type {
   ControlProductTransition,
   ControlTerminalResult,
@@ -232,6 +238,34 @@ class ControlStoreWorkerClient {
   ): Promise<ControlWorkObservationResult> {
     const reply = await this.request({ operation: 'observation', database, input });
     return (reply as Extract<Success, { operation: 'observation' }>).result;
+  }
+
+  /** Commits the Pending owner and its complete local publication before returning IDs. */
+  async pendingCommand(
+    database: string,
+    input: ControlPendingTransition
+  ): Promise<ControlPendingCommandResult> {
+    try {
+      const reply = await this.request({ operation: 'pending', database, input });
+      return (reply as Extract<Success, { operation: 'pending' }>).result;
+    } catch (error) {
+      if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'pending') {
+        if (error.domain.code === 'idempotency_key_conflict')
+          throw new IdempotencyKeyConflictError();
+        throw new PendingRequestCommandError(
+          error.domain.code,
+          error.domain.message,
+          error.domain.status
+        );
+      }
+      throw error;
+    }
+  }
+
+  /** Mutates the existing Workspace journal and returns only after the outer FULL commit. */
+  async journal(database: string, input: ControlExecutionJournalInput): Promise<string> {
+    const reply = await this.request({ operation: 'journal', database, input });
+    return (reply as Extract<Success, { operation: 'journal' }>).resultJson;
   }
 
   /** Executes the complete native Goal body; trusted domain refusals keep their public meaning, while SQL failures remain redacted. */

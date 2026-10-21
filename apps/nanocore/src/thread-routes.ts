@@ -99,21 +99,67 @@ export async function archiveThread(
     scope: { workspaceId: input.workspaceId, threadId: input.threadId },
     input,
     responseKind: 'thread',
-    execute: () => {
+    execute: async ({ responseKind, ...receipt }) => {
       const actorId = actor.userId;
       if (!actorId) {
         throw new Error('Thread archive requires an authenticated actor.');
       }
       if (repositoryWorkspaceDb) {
-        archiveThreadWithCloseout(
+        await archiveThreadWithCloseout(
           store,
           { openWorkspace: repositoryWorkspaceDb },
           input.workspaceId,
           input.threadId,
-          { kind: 'user', id: actorId }
+          { kind: 'user', id: actorId },
+          {
+            receipt: ControlAdmissionSchema.shape.receipt.parse({
+              ...receipt,
+              response: { kind: responseKind, id: input.threadId },
+            }),
+            audit: ControlAdmissionSchema.shape.audit.parse(
+              prepareAuditEvent({
+                workspaceId: input.workspaceId,
+                threadId: input.threadId,
+                requestId: input.requestId,
+                actor: { kind: 'user', id: actorId },
+                authentication: auditAuthenticationFromActor(actor),
+                category: 'command',
+                action: receipt.command,
+                resource: `thread:${input.threadId}`,
+                outcome: 'succeeded',
+                summary: 'Thread archived.',
+                now: new Date(receipt.createdAt),
+              })
+            ),
+          }
         );
       } else {
-        store.archiveThread(input.workspaceId, input.threadId);
+        await store.updateThread(
+          input.workspaceId,
+          input.threadId,
+          { status: 'archived' },
+          {
+            receipt: ControlAdmissionSchema.shape.receipt.parse({
+              ...receipt,
+              response: { kind: responseKind, id: input.threadId },
+            }),
+            audit: ControlAdmissionSchema.shape.audit.parse(
+              prepareAuditEvent({
+                workspaceId: input.workspaceId,
+                threadId: input.threadId,
+                requestId: input.requestId,
+                actor: { kind: 'user', id: actorId },
+                authentication: auditAuthenticationFromActor(actor),
+                category: 'command',
+                action: receipt.command,
+                resource: `thread:${input.threadId}`,
+                outcome: 'succeeded',
+                summary: 'Thread archived.',
+                now: new Date(receipt.createdAt),
+              })
+            ),
+          }
+        );
       }
       return ThreadSchema.parse(store.getThread(input.workspaceId, input.threadId));
     },

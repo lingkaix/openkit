@@ -1,3 +1,5 @@
+import {prepareControlPendingCommands} from './control-store-pending.js';
+import type {PreparedControlPendingCommand} from '../runtime/pending-requests.js';
 import { createHash } from 'node:crypto';
 import {
   closeSync,
@@ -26,6 +28,10 @@ import {
   settleExecutionJournalStep,
 } from '../runtime/execution-journal.js';
 import type { ExecutionJournalSettlement } from '../runtime/execution-step-journal.js';
+import {
+  applyControlPendingCommand,
+  ControlPendingCommandInputSchema,
+} from '../runtime/pending-requests.js';
 import { StoredRuntimeEvidenceV1Schema } from '../runtime/runtime-evidence-v1.js';
 import type { CoreDb, WorkspaceDb } from './db.js';
 import { StoredServerEventV1Schema } from './retained-server-work-v1.js';
@@ -105,6 +111,11 @@ export const ControlProductTransitionSchema = z
   .object({
     products: z.array(ControlProductMutationSchema).max(CONTROL_PRODUCT_LIMITS.entries),
     entries: z.array(ControlProductEntrySchema).max(CONTROL_PRODUCT_LIMITS.entries),
+    journalIntents: z.array(z.string().min(1)).max(CONTROL_PRODUCT_LIMITS.entries).optional(),
+    pending: z
+      .array(z.lazy(() => ControlPendingCommandInputSchema))
+      .max(CONTROL_PRODUCT_LIMITS.entries)
+      .optional(),
   })
   .strict()
   .refine((value) => value.products.length + value.entries.length > 0);
@@ -767,6 +778,10 @@ export const ControlTerminalTransitionSchema = z
     turn: ControlProductMutationSchema.extend({ kind: z.literal('turn') }),
     products: z.array(ControlProductMutationSchema).max(CONTROL_PRODUCT_LIMITS.entries),
     entries: z.array(ControlProductEntrySchema).min(1).max(CONTROL_PRODUCT_LIMITS.entries),
+    pending: z
+      .array(z.lazy(() => ControlPendingCommandInputSchema))
+      .max(CONTROL_PRODUCT_LIMITS.entries)
+      .optional(),
     reap: z.object({ reason: z.string().min(1), inferredBy: z.string().min(1) }).strict(),
     evidence: z.array(StoredRuntimeEvidenceV1Schema).max(CONTROL_PRODUCT_LIMITS.entries),
     evidenceContent: z
@@ -833,6 +848,7 @@ const terminalPreparations = new WeakMap<
     sqlite: Database.Database;
     input: ControlTerminalTransition;
     entries: PreparedControlEntry[];
+    pending:PreparedControlPendingCommand | undefined;
     dependencies: { entry: PreparedControlEntry; contentJson: string; revision: number }[];
     evidenceBundles: { id: string; rowJson: string }[];
     executionSnapshot: { rootJson: string; terminalJson: string; cleanupJson: string } | null;
@@ -1066,6 +1082,7 @@ export async function prepareControlTerminal(
     sqlite: db.sqlite,
     input: structuredClone(input),
     entries,
+    pending:db.scope==='workspace' && input.pending?.length ? prepareControlPendingCommands(db,input.pending,contentMount,input.entries,entries) : undefined,
     dependencies,
     evidenceBundles,
     executionSnapshot,
@@ -1401,6 +1418,11 @@ export function applyControlTerminal(
     turnId: String(turn.id),
     ...input.reap,
   });
+  if (input.pending?.length) {
+    if (db.scope !== 'workspace') throw new ControlProductPreconditionError();
+    for (const command of input.pending)
+      applyControlPendingCommand(db,command,preparation.pending ?? {entries:[],dependencies:[]});
+  }
   const response = applyTerminalReceipt(db, input);
   const execution = applyTerminalExecution(db, input);
   const current = readProduct(db.sqlite, input.owner, 'turn', String(turn.id));

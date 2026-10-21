@@ -153,19 +153,20 @@ export interface CapturedPendingCallExecution {
   readonly result: unknown;
 }
 
-/** Records execution admission in the existing capability and permission owners inside the claim transaction. */
+/** Records execution admission in the synchronous Main submission step after native claim acknowledgement. */
 export function admitCapturedPendingCall(
   record: PendingRequestRecord,
   workspaceDb: WorkspaceDb,
   commandRequestId: string,
-  prepared?: PreparedCapturedPendingCall
+  prepared?: PreparedCapturedPendingCall,
+  failure?: string
 ): StartedCapabilityCall {
   const source = readCapturedMediationSource(record, workspaceDb.sqlite);
   const reviewed =
     source && !prepared?.failed && workspaceDb.workspaceId === record.workspaceId
       ? readCapturedMediationAllow(record, workspaceDb.sqlite, source, prepared?.mediation)
       : null;
-  if (source && !reviewed)
+  if (source && !reviewed && !failure)
     throw new PendingRequestCommandError(
       'policy-changed',
       'Captured Policy approval is no longer current.',
@@ -216,6 +217,7 @@ export function admitCapturedPendingCall(
       threadId: record.threadId,
       turnId: record.raisingTurnId,
       packageSnapshotId: record.packageDigest,
+      ...(failure ? { upstreamContacted: false, refusalReason: failure } : {}),
       ...(reviewed ? { originEvaluationDecisionId: reviewed.decision.decisionId } : {}),
     },
     ...(reviewed ? { mediation: { ...reviewed.decision.mediation!, consumedStatements: [] } } : {}),
@@ -223,9 +225,10 @@ export function admitCapturedPendingCall(
     policyEngineVersion:
       reviewed?.decision.policyEngineVersion ?? 'nanocore-workspace-role-policy:v1',
     policySnapshotId: reviewed?.decision.policySnapshotId ?? 'policy_snapshot_runtime',
-    reasonCode: 'mcp_approval_grant_reauthorized',
-    result: 'allow',
+    reasonCode: failure ? 'mcp_approval_submission_refused' : 'mcp_approval_grant_reauthorized',
+    result: failure ? 'deny' : 'allow',
   });
+  if (failure) recordCapturedExecution(call, workspaceDb, 'failed', failure, false);
   return call;
 }
 

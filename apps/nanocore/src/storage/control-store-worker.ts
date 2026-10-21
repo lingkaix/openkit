@@ -11,6 +11,7 @@ import {
 import { applyControlMaintenanceAdmission } from '../knowledge/knowledge-agent-maintenance.js';
 import { NotebookError } from '../knowledge/notebook.js';
 import { OperationError } from '../operation-error.js';
+import { applyControlExecutionJournal } from '../runtime/execution-journal.js';
 import {
   applyControlGoalCommand,
   GoalCommandError,
@@ -18,6 +19,10 @@ import {
   prepareControlGoalCommand,
 } from '../runtime/goal-owner.js';
 import { IdempotencyKeyConflictError } from '../runtime/idempotent-command.js';
+import {
+  applyControlPendingCommand,
+  PendingRequestCommandError,
+} from '../runtime/pending-requests.js';
 import {
   ProjectWorkerBackendCleanupInputSchema,
   projectWorkerBackendCleanupInDb,
@@ -30,6 +35,8 @@ import {
 } from '../workspace-materials.js';
 import { ControlStoreBusyError, controlStoreFor } from './control-store.js';
 import { applyControlAdmission } from './control-store-admission.js';
+import { applyControlPendingTransition,prepareControlPendingCommands } from './control-store-pending.js';
+import type {PreparedControlPendingCommand} from '../runtime/pending-requests.js';
 import {
   applyControlProducts,
   applyControlTerminal,
@@ -76,6 +83,8 @@ type WriteRequest = Extract<
       | 'products'
       | 'project-cleanup'
       | 'observation'
+      | 'pending'
+      | 'journal'
       | 'goal'
       | 'maintenance'
       | 'material'
@@ -84,6 +93,7 @@ type WriteRequest = Extract<
   }
 > & {
   readonly preparedEntries?: readonly PreparedControlEntry[] | undefined;
+  readonly preparedPending?:PreparedControlPendingCommand | undefined;
   readonly preparedGoal?: PreparedControlGoalCommand | undefined;
   readonly preparedMaterial?: ControlMaterialCommandInput | undefined;
   readonly preparedReview?: PreparedControlReviewCommand | undefined;
@@ -136,6 +146,11 @@ function failure(
 /** Projects only declared owner refusals; SQLite diagnostics never enter this trusted projection. */
 function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRefusal | undefined {
   let domain: ControlWorkerDomainRefusal | undefined;
+  if (
+    operation === 'pending' &&
+    (error instanceof PendingRequestCommandError || error instanceof IdempotencyKeyConflictError)
+  )
+    return { operation, code: error.code, message: error.message, status: error.status };
   if (
     operation === 'goal' &&
     (error instanceof GoalCommandError || error instanceof IdempotencyKeyConflictError)
@@ -270,11 +285,44 @@ function flush(owner: OwnedDatabase): void {
               request.transition.products,
               request.preparedEntries ?? []
             );
+            for (const command of request.transition.pending ?? []) {
+              if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
+              applyControlPendingCommand(owner.scopeDb,command,request.preparedPending ?? {entries:[],dependencies:[]});
+            }
+            for (const inputJson of request.transition.journalIntents ?? []) {
+              if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
+              applyControlExecutionJournal(owner.scopeDb, { kind: 'intent', inputJson });
+            }
             outcome = {
               version: CONTROL_WORKER_VERSION,
               id: request.id,
               status: 'ok',
               operation: 'products',
+            };
+          } else if (request.operation === 'pending') {
+            if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
+            const result = applyControlPendingTransition(
+              owner.scopeDb,
+              request.input,
+              request.preparedPending ?? {entries:[],dependencies:[]},
+              request.preparedTerminal
+            );
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'pending',
+              result,
+            };
+          } else if (request.operation === 'journal') {
+            if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
+            const resultJson = applyControlExecutionJournal(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'journal',
+              resultJson,
             };
           } else if (request.operation === 'goal') {
             if (owner.scopeDb?.scope !== 'workspace' || !request.preparedGoal)
@@ -655,6 +703,8 @@ function receive(value: unknown): void {
       value.operation === 'products' ||
       value.operation === 'project-cleanup' ||
       value.operation === 'observation' ||
+      value.operation === 'pending' ||
+      value.operation === 'journal' ||
       value.operation === 'goal' ||
       value.operation === 'maintenance' ||
       value.operation === 'material' ||
@@ -667,6 +717,35 @@ function receive(value: unknown): void {
       ) {
         reply(failure(value.id, 'busy'));
       } else {
+        if (value.operation === 'pending' && value.input.terminal) {
+          if (owner.scopeDb?.scope !== 'workspace' || !owner.productOwner) {
+            reply(failure(value.id, 'precondition'));
+            return;
+          }
+          let preparation: Promise<void>;
+          preparation = prepareControlTerminal(
+            owner.scopeDb,
+            value.input.terminal,
+            owner.contentMount
+          )
+            .then((preparedTerminal) => {
+              if (owner.poisoned || databases.get(value.database) !== owner)
+                throw new ControlProductPreconditionError();
+              owner.pending.push({ ...value, preparedTerminal });
+              schedule(owner);
+            })
+            .catch((error) => {
+              const domain = domainRefusal('pending', error);
+              reply(
+                domain
+                  ? { ...failure(value.id, 'precondition'), domain }
+                  : failure(value.id, failureCode(error), 'not-committed')
+              );
+            })
+            .finally(() => owner.preparations.delete(preparation));
+          owner.preparations.add(preparation);
+          return;
+        }
         if (value.operation === 'terminal') {
           if (!owner.scopeDb || !owner.productOwner) {
             reply(failure(value.id, 'precondition'));
@@ -690,10 +769,17 @@ function receive(value: unknown): void {
           return;
         }
         let preparedEntries: WriteRequest['preparedEntries'];
+        let preparedPending:PreparedControlPendingCommand|undefined;
         let preparedGoal: PreparedControlGoalCommand | undefined;
         let preparedMaterial: ControlMaterialCommandInput | undefined;
         let preparedReview: PreparedControlReviewCommand | undefined;
         try {
+          if (value.operation === 'pending') {
+            if (owner.scopeDb?.scope !== 'workspace' || !owner.productOwner)
+              throw new ControlProductPreconditionError();
+            preparedPending=prepareControlPendingCommands(owner.scopeDb,[value.input.input],owner.contentMount,value.input.entries);
+            preparedEntries=preparedPending.entries;
+          }
           if (value.operation === 'material') {
             if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
             preparedMaterial = prepareControlMaterialCommand(value.input, value.content);
@@ -721,6 +807,10 @@ function receive(value: unknown): void {
               owner.contentMount,
               value.transition.entries
             );
+            if(value.operation==='products' && value.transition.pending?.length) {
+              if(owner.scopeDb?.scope!=='workspace') throw new ControlProductPreconditionError();
+              preparedPending=prepareControlPendingCommands(owner.scopeDb,value.transition.pending,owner.contentMount,value.transition.entries,preparedEntries);
+            }
           }
         } catch (error) {
           // No queue or SQL effect exists yet; only later transaction/reply failures can be unknown.
@@ -736,7 +826,7 @@ function receive(value: unknown): void {
           const { content: _content, ...framing } = value;
           owner.pending.push({ ...framing, preparedMaterial });
         } else {
-          owner.pending.push({ ...value, preparedEntries, preparedGoal, preparedReview });
+          owner.pending.push({ ...value, preparedEntries, preparedGoal, preparedReview,preparedPending });
         }
         schedule(owner);
       }

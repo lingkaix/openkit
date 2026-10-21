@@ -406,9 +406,22 @@ export async function dispatchOpenkitWorkTool(
   }
   const now = new Date().toISOString();
   const raiseInput = workRaiseInput(input.environmentPackage, parsed.data, now);
-  let raised: ReturnType<typeof raiseRecordedPendingRequest>;
+  let raised: Awaited<ReturnType<typeof raiseRecordedPendingRequest>>;
   try {
-    raised = raiseRecordedPendingRequest(input.store, input.workspaceDb.sqlite, raiseInput);
+    raised = await raiseRecordedPendingRequest(input.store, input.workspaceDb.sqlite, raiseInput, {
+      id: raiseInput.requestItemId,
+      owner: { kind: 'workspace', workspaceId: raiseInput.workspaceId },
+      threadId: raiseInput.threadId,
+      turnId: raiseInput.raisingTurnId,
+      type: 'user-input-request',
+      status: 'completed',
+      responsibleUserId,
+      userInputRequestId: raiseInput.requestId,
+      prompt: parsed.data.prompt,
+      questions: [...parsed.data.questions],
+      createdAt: now,
+      completedAt: now,
+    });
   } catch (error) {
     if (error instanceof PendingRequestCommandError) {
       throw new OperationError(error.code, error.message, error.status, { cause: error });

@@ -36,7 +36,7 @@ import {
   requireNanoHostExecutionAttempt,
 } from './nanohost-attempt-records.js';
 import { createNanoHostEffectRequest } from './nanohost-effect-identity.js';
-import { markFrozenDeliveryUnknown, readPendingRequest } from './pending-requests.js';
+import { readPendingRequest } from './pending-requests.js';
 import type { RunSchedulerRestartRecoveryInput } from './scheduler-restart-recovery.js';
 import { projectWorkerBackendCleanup } from './worker-backend-cleanup-projection.js';
 import {
@@ -853,7 +853,7 @@ async function settleTerminalFailedStart(
       !isDeepStrictEqual(turn.triggerActor, admission.triggerActor)
     )
       throw new Error('Failed-start preparation has contradictory product lineage.');
-    terminalizeGovernedWorkerTurn({
+    await terminalizeGovernedWorkerTurn({
       store,
       turnId: turn.id,
       agentSessionId: null,
@@ -1140,8 +1140,14 @@ async function settleTerminalFailedStart(
     ) {
       throw new Error('Failed-start terminal publication contradicts its decided Turn.');
     }
-    if (unknown) markFrozenDeliveryUnknown(workspace.db.sqlite, turn.id, timestamp);
-    terminalizeGovernedWorkerTurn({
+    if (unknown)
+      await store.applyPendingRequestCommand(attempt.workspaceId, {
+        action: 'delivery-unknown',
+        workspaceId: attempt.workspaceId,
+        turnId: turn.id,
+        now: timestamp,
+      });
+    await terminalizeGovernedWorkerTurn({
       store,
       turnId: turn.id,
       agentSessionId: session?.id ?? null,

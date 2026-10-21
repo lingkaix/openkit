@@ -83,7 +83,7 @@ interface StartProductTurnInput
   readonly onTurnCreated?: (
     turn: z.infer<typeof TurnSchema>,
     agentSessionId: string | null
-  ) => void;
+  ) => void | Promise<void>;
 }
 
 /**
@@ -349,8 +349,8 @@ export async function startProductTurn(input: StartProductTurnInput) {
   void completion.catch(() => undefined);
   // Let the existing observation owner install its closeout before signalling durable acceptance.
   await Promise.resolve();
-  input.onTurnCreated?.(turn, turn.agentSessionId ?? null);
-  // The command owner writes its receipt in the current microtask turn. Dispatch also checks it
+  await input.onTurnCreated?.(turn, turn.agentSessionId ?? null);
+  // The command owner completes its receipt before dispatch. Dispatch also checks it
   // durably, so a crash or partial cross-store publication cannot authorize preparation effects.
   await new Promise<void>((resolve) => setImmediate(resolve));
   void runSchedulerDispatchLoop({

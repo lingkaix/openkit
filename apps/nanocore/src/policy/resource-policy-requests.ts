@@ -26,13 +26,12 @@ import {
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import type { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import type { FsStore } from '../lib/store.js';
+import { commandInputHash } from '../runtime/idempotent-command.js';
 import {
   raiseRecordedPendingRequest,
   requireUsableRecord,
 } from '../runtime/pending-request-flow.js';
 import {
-  claimCommandIntentGrant,
-  finishPendingExecution,
   PendingRequestCommandError,
   type PendingRequestRecord,
   preflightPendingRequest,
@@ -103,12 +102,12 @@ export function isResourcePolicyRequest(record: PendingRequestRecord): boolean {
 }
 
 /** Captures caller-selected terms without resolving the requested resource or disclosing its metadata. */
-export function raiseResourcePolicyRequest(
+export async function raiseResourcePolicyRequest(
   dependencies: Pick<ResourcePolicyRequestDependencies, 'store' | 'workspaceDb'>,
   input: Omit<RaisePendingRequestInput, 'kind' | 'approval' | 'governedIntent' | 'call'>,
   change: z.input<typeof ResourcePolicyChangeSchema>,
   origin: z.input<typeof ResourcePolicyRequestOriginSchema>
-): PendingRequestRecord {
+): Promise<PendingRequestRecord> {
   const raisedInput: RaisePendingRequestInput = {
     ...input,
     kind: 'approval',
@@ -135,25 +134,11 @@ export function raiseResourcePolicyRequest(
       prior.threadId
     );
   }
-  const record = raiseRecordedPendingRequest(
+  const record = await raiseRecordedPendingRequest(
     dependencies.store,
     dependencies.workspaceDb.sqlite,
     raisedInput
   );
-  dependencies.store.createItem({
-    id: record.requestItemId,
-    owner: { kind: 'workspace', workspaceId: record.workspaceId },
-    threadId: record.threadId,
-    turnId: record.raisingTurnId,
-    type: 'approval-request',
-    approvalRequestId: record.requestId,
-    kind: 'permission',
-    status: 'completed',
-    title: record.title ?? '',
-    description: record.description ?? '',
-    createdAt: record.createdAt,
-    completedAt: record.createdAt,
-  });
   return record;
 }
 
@@ -322,7 +307,7 @@ export function checkResourcePolicyCommandIntent(
 }
 
 /** Applies one unused approved intent under distinct current confirmation through the sole CAS writer. */
-export function applyResourcePolicyRequest(
+export async function applyResourcePolicyRequest(
   dependencies: ResourcePolicyRequestDependencies,
   input: {
     readonly requestId: string;
@@ -332,7 +317,7 @@ export function applyResourcePolicyRequest(
     readonly confirmation: string;
   }
 ) {
-  const record = requireUsableRecord(
+  let record = requireUsableRecord(
     dependencies.store,
     dependencies.workspaceDb.sqlite,
     input.requestId,
@@ -390,20 +375,49 @@ export function applyResourcePolicyRequest(
   ];
   content = applyEdits(content, modify(content, ['requiredFeatures'], requiredFeatures, {}));
   WorkspaceConfigSchema.parse(parse(content));
-  if (
-    !claimCommandIntentGrant(
-      dependencies.workspaceDb.sqlite,
-      record.requestId,
-      new Date().toISOString()
-    )
-  ) {
+  const claimed = await dependencies.store.applyPendingRequestCommand(input.workspaceId, {
+    action: 'claim-command',
+    workspaceId: input.workspaceId,
+    threadId: input.threadId,
+    requestId: record.requestId,
+    expected: [{ requestId: record.requestId, sourceHash: commandInputHash(record) }],
+    now: new Date().toISOString(),
+  });
+  if (claimed.applied !== 'claimed' || !claimed.requestIds.includes(record.requestId))
     throw new PendingRequestCommandError(
       'request_not_pending',
       'This approved change is no longer unused.',
       409
     );
-  }
+  record = requireUsableRecord(
+    dependencies.store,
+    dependencies.workspaceDb.sqlite,
+    record.requestId,
+    input.workspaceId,
+    input.threadId
+  );
+  if (record.claim !== 'claimed' || record.disposition !== null)
+    throw new PendingRequestCommandError(
+      'recovery_required',
+      'The claimed Policy intent is already settled; execution will not repeat.',
+      409
+    );
+  let effectAttempted = false;
+  let result: {
+    saved: ReturnType<ResourcePolicyRequestDependencies['files']['updateFile']>;
+    reload: ReturnType<ResourcePolicyRequestDependencies['manager']['reload']>;
+  };
+
   try {
+    checkResourcePolicyCommandIntent(dependencies, record, input.actor);
+    if (!record.decidingActorContext)
+      throw new PendingRequestCommandError(
+        'workspace_access_denied',
+        'The deciding credential is no longer current.',
+        403
+      );
+    checkResourcePolicyCommandIntent(dependencies, record, record.decidingActorContext);
+    effectAttempted = true;
     const saved = dependencies.files.updateFile({
       id,
       kind: 'workspace',
@@ -411,26 +425,78 @@ export function applyResourcePolicyRequest(
       expectedRevision: change.expectedRevision,
     });
     const reload = dependencies.manager.reload({ dryRun: false, mode: 'safe' });
-    const result = { saved, reload };
-    finishPendingExecution(
-      dependencies.workspaceDb.sqlite,
-      record.requestId,
-      'approved-executed',
-      null,
-      result,
-      new Date().toISOString()
-    );
-    return result;
+    result = { saved, reload };
   } catch (error) {
-    // Configuration storage and loaded state are separate; inspect them instead of replaying an uncertain write.
-    finishPendingExecution(
+    // Saved configuration and loaded state remain separate effect domains.
+    const current = requireUsableRecord(
+      dependencies.store,
       dependencies.workspaceDb.sqlite,
       record.requestId,
-      'outcome-unknown',
-      'Inspect saved and effective Workspace configuration before retry.',
-      null,
-      new Date().toISOString()
+      input.workspaceId,
+      input.threadId
     );
+    const failed = await dependencies.store.applyPendingRequestCommand(input.workspaceId, {
+      action: 'finish',
+      workspaceId: input.workspaceId,
+      threadId: input.threadId,
+      requestId: record.requestId,
+      expected: [{ requestId: record.requestId, sourceHash: commandInputHash(current) }],
+      disposition: effectAttempted ? 'outcome-unknown' : 'execution-error',
+      reason: effectAttempted
+        ? 'Inspect saved and effective Workspace configuration before retry.'
+        : 'Current authority refused the change before effect submission.',
+      heldResult: null,
+      now: new Date().toISOString(),
+    });
+    const failedRecord = requireUsableRecord(
+      dependencies.store,
+      dependencies.workspaceDb.sqlite,
+      record.requestId,
+      input.workspaceId,
+      input.threadId
+    );
+    if (
+      failed.applied === 'lost' ||
+      !failed.requestIds.includes(record.requestId) ||
+      failedRecord.claim !== 'finished'
+    )
+      throw new PendingRequestCommandError(
+        'recovery_required',
+        'The execution disposition requires inspection.',
+        409
+      );
     throw error;
   }
+  const currentRecord = requireUsableRecord(
+    dependencies.store,
+    dependencies.workspaceDb.sqlite,
+    record.requestId,
+    input.workspaceId,
+    input.threadId
+  );
+  const settled = await dependencies.store.applyPendingRequestCommand(input.workspaceId, {
+    action: 'finish',
+    workspaceId: input.workspaceId,
+    threadId: input.threadId,
+    requestId: record.requestId,
+    expected: [{ requestId: record.requestId, sourceHash: commandInputHash(currentRecord) }],
+    disposition: 'approved-executed',
+    reason: null,
+    heldResult: z.json().parse(result),
+    now: new Date().toISOString(),
+  });
+  if (settled.applied === 'lost' || !settled.requestIds.includes(record.requestId))
+    throw new PendingRequestCommandError(
+      'recovery_required',
+      'The Policy execution disposition requires inspection.',
+      409
+    );
+  requireUsableRecord(
+    dependencies.store,
+    dependencies.workspaceDb.sqlite,
+    record.requestId,
+    input.workspaceId,
+    input.threadId
+  );
+  return result;
 }

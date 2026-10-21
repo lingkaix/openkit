@@ -239,14 +239,14 @@ export function createResourcePolicyOperationImplementations(
       },
       context: AdmittedOperationContext
     ) =>
-      withDatabase(input.workspaceId, (db) => {
+      withDatabase(input.workspaceId, async (db) => {
         if (context.kind === 'worker')
           throw new OperationError(
             'workspace_access_denied',
             'A current human administrator is required.',
             403
           );
-        const result = applyResourcePolicyRequest(
+        const result = await applyResourcePolicyRequest(
           resourcePolicyDependencies(dependencies, db, context.actor),
           {
             workspaceId: input.workspaceId,

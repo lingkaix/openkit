@@ -141,6 +141,8 @@ import {
 } from './worker-governance-backend.js';
 import {
   agentSessionCompatibilityKeyFromPackage,
+  beginWorkerTurnJournalStep,
+  endWorkerTurnJournalStep,
   WorkerGovernanceTurnExecutor,
 } from './worker-governance-turn-executor.js';
 import {
@@ -5186,7 +5188,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   }
 
   /** Queues one typed Harness operation and awaits only its exact settled result. */
-  private queueAndWaitForHarnessOperation(
+  private async queueAndWaitForHarnessOperation(
     session: NanoHostBackendTurnSession,
     operation: NanoHostHarnessOperation,
     body: Readonly<Record<string, unknown>>
@@ -5215,38 +5217,86 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       timeout: null,
     };
     session.pendingHarnessOperation = pending;
-    return this.withHarnessOperationSlot(session.harnessInstanceId, async () => {
-      try {
-        pending.sequence = queueNanoHostHarnessOperation(this.coreDb, {
-          body,
-          harnessInstanceId: session.harnessInstanceId,
+    const workspaceDb = openWorkspaceDb(
+      this.coreDb.dataRoot,
+      session.environmentPackage.scope.workspaceId
+    );
+    const store = this.sharedStore ?? new FsStore({ dataRoot: this.coreDb.dataRoot });
+    let journal: Awaited<ReturnType<typeof beginWorkerTurnJournalStep>> | undefined;
+    let observedResult = false;
+    try {
+      journal = await beginWorkerTurnJournalStep(
+        store,
+        workspaceDb,
+        session.environmentPackage.scope.turnId,
+        operation === 'session.open'
+          ? 'open-session'
+          : operation === 'session.inspect'
+            ? 'inspect-session'
+            : operation === 'turn.start'
+              ? 'deliver-start'
+              : 'cancel',
+        {
           operation,
-          timestamp: new Date().toISOString(),
-        });
-        this.armHarnessOperationTimeout(
-          pending,
-          session.harnessBindingRef,
-          () => session.pendingHarnessOperation === pending,
-          () => {
+          requestId:
+            session.environmentPackage.scope.requestId ?? session.environmentPackage.scope.turnId,
+          sequence: null,
+          bindingRef: session.harnessBindingRef,
+        },
+        requireSchedulerExecutionAttempt(this.coreDb, session.attemptId)
+      );
+      const observation = await this.withHarnessOperationSlot(
+        session.harnessInstanceId,
+        async () => {
+          try {
+            pending.sequence = queueNanoHostHarnessOperation(this.coreDb, {
+              body,
+              harnessInstanceId: session.harnessInstanceId,
+              operation,
+              timestamp: new Date().toISOString(),
+            });
+            this.armHarnessOperationTimeout(
+              pending,
+              session.harnessBindingRef,
+              () => session.pendingHarnessOperation === pending,
+              () => {
+                session.pendingHarnessOperation = null;
+              }
+            );
+          } catch (error) {
             session.pendingHarnessOperation = null;
+            throw error;
           }
-        );
-      } catch (error) {
-        session.pendingHarnessOperation = null;
-        throw error;
-      }
-      return await result.then((observation) => {
-        if (recorded)
-          acceptSchedulerExecutionObservation(this.coreDb, {
-            ...schedulerExecutionCorrelation(recorded),
-            disposition: 'accepted',
-            execution: 'pending',
-            fenceRef: null,
-            outcomeRef: null,
+          return await result.then((observation) => {
+            if (recorded)
+              acceptSchedulerExecutionObservation(this.coreDb, {
+                ...schedulerExecutionCorrelation(recorded),
+                disposition: 'accepted',
+                execution: 'pending',
+                fenceRef: null,
+                outcomeRef: null,
+              });
+            return observation;
           });
-        return observation;
-      });
-    });
+        }
+      );
+      observedResult = true;
+      await endWorkerTurnJournalStep(
+        store,
+        workspaceDb,
+        journal,
+        'completed',
+        pending.operationId ? [pending.operationId] : []
+      );
+      return observation;
+    } catch (error) {
+      if (session.pendingHarnessOperation === pending) session.pendingHarnessOperation = null;
+      if (journal && !observedResult)
+        await endWorkerTurnJournalStep(store, workspaceDb, journal, 'unknown');
+      throw error;
+    } finally {
+      workspaceDb.sqlite.close();
+    }
   }
 
   /** Starts the one non-resetting enqueue-to-result budget for a Harness command. */

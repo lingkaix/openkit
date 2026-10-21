@@ -36,6 +36,7 @@ import { OperationError } from '../operation-error.js';
 import { recordProductPermissionDecision } from '../policy/permission-decisions.js';
 import { readAuditEventRowV1 } from '../policy/retained-records-v1.js';
 import { findNamedAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
+import { commandInputHash } from '../runtime/idempotent-command.js';
 import { projectApprovalEffect } from '../runtime/pending-request-disclosure.js';
 import {
   admitIfIdle,
@@ -44,14 +45,11 @@ import {
 } from '../runtime/pending-request-flow.js';
 import {
   canonicalJsonText,
-  claimCommandIntentGrant,
-  finishPendingExecution,
   listThreadPendingRequests,
   PendingRequestCommandError,
   type PendingRequestRecord,
   preflightPendingRequest,
   readPendingRequest,
-  refuseCommandIntentGrant,
 } from '../runtime/pending-requests.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import { isCurrentServerMcpMaterial } from './server-mcp-authority.js';
@@ -724,23 +722,9 @@ export function createVaultGrantRequestImplementations(dependencies: Dependencie
             { turnId: raisingTurnId, status: 'running' }
           );
         try {
-          const record = raiseRecordedPendingRequest(store!, db.sqlite, raisedInput);
-          await store!.createItem({
-            id: requestItemId,
-            owner: { kind: 'workspace', workspaceId: input.workspaceId },
-            threadId: input.threadId,
-            turnId: raisingTurnId,
-            type: 'approval-request',
-            approvalRequestId: record.requestId,
-            kind: 'permission',
-            status: 'completed',
-            completedAt: now,
-            title: raisedInput.approval.title,
-            description: raisedInput.approval.description,
-            createdAt: now,
-          });
+          const record = await raiseRecordedPendingRequest(store!, db.sqlite, raisedInput);
           if (!worker)
-            await store!.updateTurn(raisingTurnId, { status: 'completed', completedAt: now });
+            await store!.completeTurn(raisingTurnId, { status: 'completed', completedAt: now });
           return view(
             dependencies,
             record,
@@ -749,7 +733,7 @@ export function createVaultGrantRequestImplementations(dependencies: Dependencie
         } catch (error) {
           // Preserve partial request evidence as inspect-only, while releasing the Core-local raising Turn.
           if (!worker && !isSealedTurnTerminal(store!.getTurnById(raisingTurnId).status))
-            await store!.updateTurn(raisingTurnId, {
+            await store!.completeTurn(raisingTurnId, {
               status: 'failed',
               completedAt: new Date().toISOString(),
             });
@@ -777,10 +761,10 @@ export function createVaultGrantRequestImplementations(dependencies: Dependencie
           ),
       })),
     'vault.grant-issue': (input, context) =>
-      withDatabase(input.workspaceId, (db) => {
+      withDatabase(input.workspaceId, async (db) => {
         const actor = publicOperationActor(context);
         administrator(dependencies, actor);
-        const record = requireUsableRecord(
+        let record = requireUsableRecord(
           store!,
           db.sqlite,
           input.approvalRequestId,
@@ -823,14 +807,24 @@ export function createVaultGrantRequestImplementations(dependencies: Dependencie
             );
           checkVaultGrantCommandIntent(dependencies, record, record.decidingActorContext);
         } catch (error) {
-          refuseCommandIntentGrant(
+          await store!.applyPendingRequestCommand(input.workspaceId, {
+            action: 'refuse-command',
+            workspaceId: input.workspaceId,
+            threadId: input.threadId,
+            requestId: record.requestId,
+            expected: [{ requestId: record.requestId, sourceHash: commandInputHash(record) }],
+            reason: 'Current request or deciding authority is unavailable.',
+            now: new Date().toISOString(),
+          });
+          record = requireUsableRecord(
+            store!,
             db.sqlite,
             record.requestId,
-            'Current request or deciding authority is unavailable.',
-            new Date().toISOString()
+            input.workspaceId,
+            input.threadId
           );
           const services = dependencies.pendingRequestServices;
-          admitIfIdle(
+          await admitIfIdle(
             store!,
             {
               coreDb: coreDb!,
@@ -855,17 +849,49 @@ export function createVaultGrantRequestImplementations(dependencies: Dependencie
         }
         const { terms } = IntentSchema.parse(record.governedIntent);
         const now = new Date().toISOString();
-        const claimed = claimCommandIntentGrant(db.sqlite, record.requestId, now);
-        if (!claimed)
+        const claimed = await store!.applyPendingRequestCommand(input.workspaceId, {
+          action: 'claim-command',
+          workspaceId: input.workspaceId,
+          threadId: input.threadId,
+          requestId: record.requestId,
+          expected: [{ requestId: record.requestId, sourceHash: commandInputHash(record) }],
+          now,
+        });
+        if (claimed.applied !== 'claimed' || !claimed.requestIds.includes(record.requestId))
           throw new PendingRequestCommandError(
             'vault_request_not_approved',
             'The request was already consumed or invalidated.',
+            409
+          );
+        record = requireUsableRecord(
+          store!,
+          db.sqlite,
+          record.requestId,
+          input.workspaceId,
+          input.threadId
+        );
+        if (record.claim !== 'claimed' || record.disposition !== null)
+          throw new PendingRequestCommandError(
+            'recovery_required',
+            'The claimed grant intent is already settled; execution will not repeat.',
             409
           );
         const grantId = allocateEntityId('grant');
         const policyDecisionId = allocateEntityId('pd');
         let coreAttempted = false;
         try {
+          // The claim is a reservation; current authority is decided at this synchronous effect boundary.
+          checkVaultGrantCommandIntent(dependencies, record, actor);
+          if (
+            !record.decidingActorContext ||
+            record.decidingActor?.id !== record.decidingActorContext.userId
+          )
+            throw new PendingRequestCommandError(
+              'recovery_required',
+              'The deciding credential lineage is unavailable.',
+              409
+            );
+          checkVaultGrantCommandIntent(dependencies, record, record.decidingActorContext);
           const access = authorizeWorkspace(
             coreDb!,
             record.decidingActorContext!,
@@ -932,33 +958,83 @@ export function createVaultGrantRequestImplementations(dependencies: Dependencie
               summary: 'Reviewed credential-use grant issued. Explicit binding is required.',
             });
           })();
-          const finished = finishPendingExecution(
-            db.sqlite,
-            record.requestId,
-            'approved-executed',
-            null,
-            record.delivery === 'delivered' || record.delivery === 'closed-out'
-              ? null
-              : { grantId },
-            new Date().toISOString()
-          );
-          if (!finished) throw new Error('Missing execution settlement.');
-          return view(dependencies, finished, actor);
         } catch {
-          finishPendingExecution(
+          const current = requireUsableRecord(
+            store!,
             db.sqlite,
             record.requestId,
-            coreAttempted ? 'outcome-unknown' : 'execution-error',
-            'Grant issue requires inspection. Do not retry the effect.',
-            null,
-            new Date().toISOString()
+            input.workspaceId,
+            input.threadId
           );
+          const failed = await store!.applyPendingRequestCommand(input.workspaceId, {
+            action: 'finish',
+            workspaceId: input.workspaceId,
+            threadId: input.threadId,
+            requestId: record.requestId,
+            expected: [{ requestId: record.requestId, sourceHash: commandInputHash(current) }],
+            disposition: coreAttempted ? 'outcome-unknown' : 'execution-error',
+            reason: coreAttempted
+              ? 'Grant issue requires inspection. Do not retry the effect.'
+              : 'Current authority refused the grant before effect submission.',
+            heldResult: null,
+            now: new Date().toISOString(),
+          });
+          const failedRecord = requireUsableRecord(
+            store!,
+            db.sqlite,
+            record.requestId,
+            input.workspaceId,
+            input.threadId
+          );
+          if (
+            failed.applied === 'lost' ||
+            !failed.requestIds.includes(record.requestId) ||
+            failedRecord.claim !== 'finished'
+          )
+            throw new PendingRequestCommandError(
+              'recovery_required',
+              'The execution disposition requires inspection.',
+              409
+            );
           throw new PendingRequestCommandError(
             'vault_issue_unknown',
-            'Grant issue requires inspection of the request, grant inventory and Audit.',
+            coreAttempted
+              ? 'Grant issue requires inspection of the request, grant inventory and Audit.'
+              : 'Current authority refused the grant; no grant was issued.',
             409
           );
         }
+        const current = requireUsableRecord(
+          store!,
+          db.sqlite,
+          record.requestId,
+          input.workspaceId,
+          input.threadId
+        );
+        const settled = await store!.applyPendingRequestCommand(input.workspaceId, {
+          action: 'finish',
+          workspaceId: input.workspaceId,
+          threadId: input.threadId,
+          requestId: record.requestId,
+          expected: [{ requestId: record.requestId, sourceHash: commandInputHash(current) }],
+          disposition: 'approved-executed',
+          reason: null,
+          heldResult:
+            current.delivery === 'delivered' || current.delivery === 'closed-out'
+              ? null
+              : { grantId },
+          now: new Date().toISOString(),
+        });
+        if (settled.applied === 'lost' || !settled.requestIds.includes(record.requestId))
+          throw new Error('Missing execution settlement.');
+        const finished = requireUsableRecord(
+          store!,
+          db.sqlite,
+          record.requestId,
+          input.workspaceId,
+          input.threadId
+        );
+        return view(dependencies, finished, actor);
       }),
   } satisfies Pick<
     OperationImplementations,

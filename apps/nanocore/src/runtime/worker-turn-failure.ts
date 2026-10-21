@@ -3,6 +3,7 @@ import {
   GitFailureExplanationSchema,
   isSealedTurnTerminal,
   workspaceIdForOwner,
+  writeRetainedV1,
 } from '@openkit/protocol';
 
 import {
@@ -10,6 +11,12 @@ import {
   type FsStore,
   type TerminalTurnPublication,
 } from '../lib/store.js';
+import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
+import {
+  createExecutionStepJournalReader,
+  WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION,
+} from './execution-journal.js';
+import { listWorkspaceRuntimeEvidence } from './runtime-evidence.js';
 
 /** Input for idempotently projecting one governed-worker terminal outcome. */
 export interface TerminalizeGovernedWorkerTurnInput {
@@ -181,7 +188,7 @@ export async function terminalizeGovernedWorkerTurn(
   ) {
     try {
       terminalTurn = await input.store.completeTurn(input.turnId, turnPatch, {
-        ...input.publication,
+        ...(await readTerminalPublication(input, terminalTurn)),
         requestId: input.requestId,
         stopReason: input.outcome === 'failed' ? 'error' : 'aborted',
       });
@@ -305,7 +312,7 @@ async function reconcileCompletedTurn(
           status: 'completed',
         },
         {
-          ...input.publication,
+          ...(await readTerminalPublication(input, completedTurn)),
           requestId: input.requestId,
           stopReason: 'completed',
         }
@@ -392,4 +399,68 @@ function isGovernedWorkerTerminalCode(errorCode: string): boolean {
     errorCode === 'unsupported_gateway_feature' ||
     errorCode === 'worker_human_gate_unavailable'
   );
+}
+
+/** Supplies only original journal descriptors and actual runtime evidence to native terminal publication. */
+export async function workerTurnTerminalPublication(
+  workspaceDb: WorkspaceDb,
+  turnId: string
+): Promise<TerminalTurnPublication> {
+  const roots = workspaceDb.sqlite
+    .prepare('SELECT id FROM control_executions WHERE work_id=?')
+    .all(turnId) as { id: string }[];
+  if (roots.length !== 1)
+    throw new Error('Worker terminal publication requires its original unique execution.');
+  const ref = {
+    owner: { kind: 'workspace' as const, workspaceId: workspaceDb.workspaceId },
+    executionId: roots[0]!.id,
+  };
+  const reader = createExecutionStepJournalReader(workspaceDb, ref.owner);
+  const root = await reader.readExecution(ref);
+  if (
+    root.definitionVersion !== WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION ||
+    root.workId !== turnId
+  )
+    throw new Error('Worker terminal journal definition or lineage conflicts.');
+  const obligations = workspaceDb.sqlite
+    .prepare(
+      "SELECT step_id,json_extract(control_json,'$.kind') AS kind FROM control_execution_steps WHERE execution_id=? AND json_extract(control_json,'$.kind') IN ('terminal-publication','release')"
+    )
+    .all(ref.executionId) as { step_id: string; kind: string }[];
+  const terminal = obligations.filter((step) => step.kind === 'terminal-publication');
+  const release = obligations.filter((step) => step.kind === 'release');
+  if (terminal.length !== 1 || release.length !== 1)
+    throw new Error('Worker terminal journal requires original terminal and release obligations.');
+  await reader.readInvocation({ execution: ref, stepId: terminal[0]!.step_id });
+  await reader.readInvocation({ execution: ref, stepId: release[0]!.step_id });
+  const evidence = listWorkspaceRuntimeEvidence(workspaceDb, workspaceDb.workspaceId).filter(
+    (record) => record.turnId === turnId
+  );
+  if (!evidence.length)
+    throw new Error('Worker terminal publication requires actual runtime evidence.');
+  return {
+    execution: {
+      executionId: ref.executionId,
+      terminalStepId: terminal[0]!.step_id,
+      cleanupStepId: release[0]!.step_id,
+      expectedRevision: root.revision,
+    },
+    evidence: evidence.map((record) => writeRetainedV1(record)),
+  };
+}
+
+/** Resolves native facts only when the existing terminal owner must write; no-op reads stay no-ops. */
+async function readTerminalPublication(
+  input: TerminalizeGovernedWorkerTurnInput,
+  turn: ReturnType<FsStore['getTurnById']>
+): Promise<TerminalTurnPublication | undefined> {
+  if (input.publication) return input.publication;
+  const dataRoot = input.store.getDataRoot();
+  if (!turn.agentSessionId || !dataRoot) return undefined;
+  const workspaceDb = openWorkspaceDb(dataRoot, workspaceIdForOwner(turn.owner));
+  try {
+    return await workerTurnTerminalPublication(workspaceDb, input.turnId);
+  } finally {
+    workspaceDb.sqlite.close();
+  }
 }

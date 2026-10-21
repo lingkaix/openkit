@@ -38,6 +38,9 @@ export const CONTROL_ADMISSION_COMMANDS = [
 export const CONTROL_NATIVE_RECEIPT_COMMANDS = [
   ...CONTROL_ADMISSION_COMMANDS,
   'task.start',
+  'approval.respond',
+  'user_input.answer',
+  'pending_request.withdraw',
   'artifact.submit',
   'artifact.review.select',
   'artifact.review.decide',
@@ -97,8 +100,10 @@ const ReceiptSchema = z
 export const ControlAdmissionSchema = z
   .object({
     receipt: ReceiptSchema,
-    products: z.array(ControlProductMutationSchema).min(1).max(CONTROL_PRODUCT_LIMITS.entries),
-    entries: z.array(ControlProductEntrySchema).max(CONTROL_PRODUCT_LIMITS.entries),
+    products: z.lazy(() =>
+      z.array(ControlProductMutationSchema).min(1).max(CONTROL_PRODUCT_LIMITS.entries)
+    ),
+    entries: z.lazy(() => z.array(ControlProductEntrySchema).max(CONTROL_PRODUCT_LIMITS.entries)),
     audit: AuditEventSchema.extend({
       createdAt: z.string().datetime(),
       occurredAt: z.string().datetime(),

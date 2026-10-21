@@ -1615,7 +1615,7 @@ async function callWorkerMcpTool(input: WorkerMcpToolCallInput) {
       }
       const raised =
         duplicate ??
-        raiseRecordedPendingRequest(input.input.store, input.workspaceDb.sqlite, capture);
+        await raiseRecordedPendingRequest(input.input.store, input.workspaceDb.sqlite, capture);
       if (!input.input.store.listAllItems().some((item) => item.id === raised.requestItemId))
         await input.input.store.createItem({
           id: raised.requestItemId,

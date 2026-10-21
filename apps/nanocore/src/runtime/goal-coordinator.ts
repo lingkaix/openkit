@@ -53,7 +53,6 @@ import {
   requireCoordinatorGoal,
 } from './goal-owner.js';
 import { StoredGoalV1Schema } from './goal-retained-v1.js';
-import { proveFrozenDelivery } from './pending-requests.js';
 import { recoverTaskTerminalFacts } from './task-terminal-fact.js';
 
 /** Marker admission uses only ordinary Threads and Turns; no queue, timer or run record exists. */
@@ -645,7 +644,12 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
         { store, turn, workspaceDb: db, environment: { systemPrompt, tools } },
         async (capture) => {
           // Native acceptance of exact source input proves delivery, never grant consumption.
-          proveFrozenDelivery(db.sqlite, turnId, new Date().toISOString());
+          await store.applyPendingRequestCommand(goal.workspaceId, {
+            action: 'delivery-prove',
+            workspaceId: goal.workspaceId,
+            turnId,
+            now: new Date().toISOString(),
+          });
           const provider = createInternalAgentGatewayProvider({
             capture,
             logicalModel: selection.logicalModel,

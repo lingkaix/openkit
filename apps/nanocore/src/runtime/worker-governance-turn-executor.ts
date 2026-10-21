@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type {
@@ -67,6 +67,7 @@ import {
   ALREADY_DECIDED_PUBLICATION_ADMISSION,
   ArtifactAuthorityError,
   type FsStore,
+  type TerminalTurnPublication,
 } from '../lib/store.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
 import {
@@ -121,6 +122,16 @@ import {
   requireSchedulerExecutionAttempt,
   schedulerExecutionCorrelation,
 } from './execution-attempt-records.js';
+import {
+  createExecutionStepJournalReader,
+  decodeExecutionJournalSpan,
+  WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION,
+} from './execution-journal.js';
+import type {
+  ExecutionJournalAdmission,
+  ExecutionJournalIntent,
+  ExecutionStepControl,
+} from './execution-step-journal.js';
 import { commandInputHash } from './idempotent-command.js';
 import { bindNanoHostAttemptPreparation } from './nanohost-attempt-records.js';
 import { TurnStartValidationError } from './orchestrator.js';
@@ -128,7 +139,6 @@ import {
   frozenPendingOutcomeInput,
   listThreadPendingRequests,
   pendingRequestSystemActor,
-  proveFrozenDelivery,
 } from './pending-requests.js';
 import type { PublicNetworkConfiguration } from './public-network-grants.js';
 import type {
@@ -184,7 +194,10 @@ import {
   workerStorageDefaultWorkSlotRef,
 } from './worker-storage-bindings.js';
 import { importWorkerTranscript } from './worker-transcript.js';
-import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
+import {
+  terminalizeGovernedWorkerTurn,
+  workerTurnTerminalPublication,
+} from './worker-turn-failure.js';
 import { bindWorkerCheckpointToPreparedSession } from './worker-turn-loop.js';
 import { recordFilesystemWorkspaceStagingRoot } from './workspace-filesystem-staging.js';
 import {
@@ -1881,6 +1894,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     let backendLifecycle: WorkerTurnBackendLifecycle | null = null;
     let backendCleanupRequired = false;
     let materializationPublished = false;
+    let journalAdmitted = false;
     let closeoutAt: string | null = null;
     let environmentPackage: AgentEnvironmentPackage | null = null;
     let preparedWorkerContext: PreparedWorkerTurnContext | null = null;
@@ -2250,10 +2264,26 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
               workspaceId: workspaceIdForOwner(turn.owner),
               workspaceRoots: launchContext.workspaceRoots,
             });
-        await store.updateTurn(turnId, {
-          agentProfileId: launchPackage.agent.profileId,
-          agentSessionId: agentSession.id,
-        });
+        if (!workspaceDb) throw new Error('Worker journal admission requires its Workspace owner.');
+        const journalIntents = prepareWorkerTurnJournalIntents(
+          workspaceDb,
+          launchPackage,
+          executionAttempt,
+          {
+            backendKind: launchLifecycle.identity.backendKind,
+            targetId: launchLifecycle.identity.runtimeTargetId,
+            allocationRef: executionAttempt.bindingRef,
+          }
+        );
+        await store.updateTurn(
+          turnId,
+          {
+            agentProfileId: launchPackage.agent.profileId,
+            agentSessionId: agentSession.id,
+          },
+          { journalIntents }
+        );
+        journalAdmitted = true;
         const userItem = await store.createItem({
           actor: outcomeInitiated
             ? pendingRequestSystemActor(responsibleUserIdForActor(launchContext.triggerActor))
@@ -2325,9 +2355,20 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
                 ]
               : context.workspaceRoots,
           })
-      );
+      ).catch(async (error) => {
+        if (journalAdmitted)
+          await endWorkerTurnMaterialization(store, workspaceDb!, turnId, 'unknown');
+        throw error;
+      });
       if (!materializationPublished)
         throw new Error('Backend materialization omitted its pre-effect publication boundary.');
+      await endWorkerTurnMaterialization(
+        store,
+        workspaceDb!,
+        turnId,
+        'completed',
+        materialization.sandbox ? [materialization.sandbox.name] : []
+      );
       if (materialization.retainedStorage) {
         const sourceStorage = nativeResume
           ? store.getAgentSession(nativeResume.locator).retainedStorage
@@ -2455,7 +2496,13 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         throw new Error(
           'Native submission is unresolved; inspect its original operation without replay.'
         );
-      if (workspaceDb) proveFrozenDelivery(workspaceDb.sqlite, turn.id, this.now());
+      if (workspaceDb)
+        await store.applyPendingRequestCommand(workspaceIdForOwner(turn.owner), {
+          action: 'delivery-prove',
+          workspaceId: workspaceIdForOwner(turn.owner),
+          turnId: turn.id,
+          now: this.now(),
+        });
       // Credential material is delivered once at `session.open`; a reused binding receives none.
       if (!existingAgentSession) {
         for (const receipt of credentialReceipts) {
@@ -2536,6 +2583,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       } else {
         try {
           await this.cleanupBackendLifecycle(
+            store,
             backendLifecycle,
             workspaceDb,
             environmentPackage,
@@ -2739,6 +2787,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         await terminalizeGovernedWorkerTurn(restartFailure);
         if (session.state !== 'cleaned') {
           await this.cleanupBackendLifecycle(
+            store,
             lifecycle,
             workspaceDb,
             environmentPackage,
@@ -2772,6 +2821,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           }
           try {
             await this.cleanupBackendLifecycle(
+              store,
               lifecycle,
               workspaceDb,
               environmentPackage,
@@ -2788,6 +2838,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         }
       } else if (session.state !== 'cleaned') {
         await this.cleanupBackendLifecycle(
+          store,
           lifecycle,
           workspaceDb,
           environmentPackage,
@@ -2823,7 +2874,17 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   ): Promise<void> {
     if (!this.coreDb) throw new Error('Attempt release requires Core authority.');
     let attempt = requireSchedulerExecutionAttempt(this.coreDb, attemptId);
-    if (attempt.phase === 'closed') return;
+    if (attempt.phase === 'closed') {
+      if (!attempt.fenceRef) throw new Error('Closed Worker attempt has no release fence.');
+      const workspaceDb = this.openWorkspaceDb(attempt.workspaceId);
+      if (!workspaceDb) throw new Error('Worker release journal owner is unavailable.');
+      try {
+        await endWorkerTurnJournalRelease(store, workspaceDb, attempt.turnId, attempt.fenceRef);
+      } finally {
+        workspaceDb.sqlite.close();
+      }
+      return;
+    }
     const turn = store.getTurnById(attempt.turnId);
     if (!isSealedTurnTerminal(turn.status))
       throw new Error('Attempt terminal handoff is incomplete.');
@@ -2861,6 +2922,13 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           fenceRef: result.fenceRef,
           now: this.now,
         });
+        const workspaceDb = this.openWorkspaceDb(attempt.workspaceId);
+        if (!workspaceDb) throw new Error('Worker release journal owner is unavailable.');
+        try {
+          await endWorkerTurnJournalRelease(store, workspaceDb, attempt.turnId, result.fenceRef);
+        } finally {
+          workspaceDb.sqlite.close();
+        }
         return;
       }
       if (pass !== 0 || result.state !== 'unknown') break;
@@ -2999,46 +3067,127 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     materializationRecords: readonly WorkspaceMaterializationRecord[],
     recordedAt: string
   ): Promise<void> {
-    await this.backend.collectEvidence(environmentPackage.snapshotId);
-    const transcript = await withLifecycleStageTelemetry(
-      {
-        ...environmentPackage.scope,
-        packageSnapshotId: environmentPackage.snapshotId,
-        workerKind: environmentPackage.agent.runtimeKind,
-        stage: 'collection',
-      },
-      () => this.backend.collectTranscript(environmentPackage.snapshotId, true),
-      () => (environmentPackage.control.transcript ? 'success' : 'degraded')
+    if (!workspaceDb) throw new Error('Worker collection requires its native journal owner.');
+    const collectionJournal = await beginWorkerTurnJournalStep(
+      store,
+      workspaceDb,
+      environmentPackage.scope.turnId,
+      'collect',
+      undefined,
+      backendLifecycle.session && this.coreDb
+        ? requireSchedulerExecutionAttempt(this.coreDb, backendLifecycle.session.attemptId)
+        : undefined
     );
-    const workerLineage = {
-      workspaceId: environmentPackage.scope.workspaceId,
-      threadId: environmentPackage.scope.threadId,
-      turnId: environmentPackage.scope.turnId,
-      agentSessionId: environmentPackage.scope.agentSessionId,
-      packageSnapshotId: environmentPackage.snapshotId,
-      triggerActor: environmentPackage.scope.triggerActor,
-    };
-    const releaseMutation = this.workspaceMutationAdmission?.enterLatePublisher(
-      environmentPackage.scope.workspaceId,
-      'worker-turn-closeout'
-    );
-    if (this.workspaceMutationAdmission && !releaseMutation) {
-      throw new TurnStartValidationError(
-        'workspace_access_denied',
-        'Workspace access denied.',
-        403
-      );
-    }
+    let collectionOutputRefs: readonly string[] = [];
     try {
-      if (environmentPackage.control.transcript?.runtimeProvenance) {
+      await this.backend.collectEvidence(environmentPackage.snapshotId);
+      const transcript = await withLifecycleStageTelemetry(
+        {
+          ...environmentPackage.scope,
+          packageSnapshotId: environmentPackage.snapshotId,
+          workerKind: environmentPackage.agent.runtimeKind,
+          stage: 'collection',
+        },
+        () => this.backend.collectTranscript(environmentPackage.snapshotId, true),
+        () => (environmentPackage.control.transcript ? 'success' : 'degraded')
+      );
+      const workerLineage = {
+        workspaceId: environmentPackage.scope.workspaceId,
+        threadId: environmentPackage.scope.threadId,
+        turnId: environmentPackage.scope.turnId,
+        agentSessionId: environmentPackage.scope.agentSessionId,
+        packageSnapshotId: environmentPackage.snapshotId,
+        triggerActor: environmentPackage.scope.triggerActor,
+      };
+      const releaseMutation = this.workspaceMutationAdmission?.enterLatePublisher(
+        environmentPackage.scope.workspaceId,
+        'worker-turn-closeout'
+      );
+      if (this.workspaceMutationAdmission && !releaseMutation) {
+        throw new TurnStartValidationError(
+          'workspace_access_denied',
+          'Workspace access denied.',
+          403
+        );
+      }
+      try {
+        if (environmentPackage.control.transcript?.runtimeProvenance) {
+          if (
+            this.coreDb &&
+            !currentWorkerLineageWorkspaceAuthority(
+              this.coreDb,
+              workerLineage,
+              'artifact.write',
+              true
+            )
+          ) {
+            throw new TurnStartValidationError(
+              'workspace_access_denied',
+              'Workspace access denied.',
+              403
+            );
+          }
+          if (!workspaceDb) {
+            throw new Error('Runtime provenance collection requires durable workspace storage.');
+          }
+          const collection = transcript.runtimeProvenance;
+          const provenance = await this.runtimeProvenanceImporter({
+            backend: {
+              kind: backendCapabilities.kind,
+              placement: 'local',
+              version: backendCapabilities.version ?? null,
+            },
+            capture: {
+              nativeOriginIndexPath: collection?.nativeOriginIndexPath ?? null,
+              rawStreamPaths: collection?.rawStreamPaths ?? {},
+              streamManifestPath: collection?.manifestPath ?? null,
+            },
+            collectedAt: this.now(),
+            environmentPackage,
+            workspaceDb,
+            workspaceRoot: join(workspaceDb.dataRoot, 'workspaces', workspaceDb.workspaceId),
+          });
+          if (!provenance.complete) {
+            throw new Error('Required worker runtime provenance verification failed.');
+          }
+        }
+        const acceptedLiveEvents = this.coreDb
+          ? listWorkerControlAcceptedEvents(this.coreDb, {
+              agentSessionId: environmentPackage.scope.agentSessionId,
+              packageSnapshotId: environmentPackage.snapshotId,
+              requestId: environmentPackage.scope.requestId,
+              threadId: environmentPackage.scope.threadId,
+              turnId: environmentPackage.scope.turnId,
+              workspaceId: environmentPackage.scope.workspaceId,
+            })
+          : [];
+        const workspaceChanges = await withLifecycleStageTelemetry(
+          {
+            ...environmentPackage.scope,
+            packageSnapshotId: environmentPackage.snapshotId,
+            workerKind: environmentPackage.agent.runtimeKind,
+            stage: 'collection',
+          },
+          () => this.backend.collectWorkspaceChanges(environmentPackage.snapshotId, true)
+        );
+        const publishesWorkspaceContent = Boolean(transcript.itemsJsonl?.trim());
+        const publishesArtifacts = Boolean(workspaceChanges.length);
         if (
           this.coreDb &&
-          !currentWorkerLineageWorkspaceAuthority(
-            this.coreDb,
-            workerLineage,
-            'artifact.write',
-            true
-          )
+          ((publishesWorkspaceContent &&
+            !currentWorkerLineageWorkspaceAuthority(
+              this.coreDb,
+              workerLineage,
+              'workspace.write',
+              true
+            )) ||
+            (publishesArtifacts &&
+              !currentWorkerLineageWorkspaceAuthority(
+                this.coreDb,
+                workerLineage,
+                'artifact.write',
+                true
+              )))
         ) {
           throw new TurnStartValidationError(
             'workspace_access_denied',
@@ -3046,117 +3195,63 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             403
           );
         }
-        if (!workspaceDb) {
-          throw new Error('Runtime provenance collection requires durable workspace storage.');
-        }
-        const collection = transcript.runtimeProvenance;
-        const provenance = await this.runtimeProvenanceImporter({
-          backend: {
-            kind: backendCapabilities.kind,
-            placement: 'local',
-            version: backendCapabilities.version ?? null,
-          },
-          capture: {
-            nativeOriginIndexPath: collection?.nativeOriginIndexPath ?? null,
-            rawStreamPaths: collection?.rawStreamPaths ?? {},
-            streamManifestPath: collection?.manifestPath ?? null,
-          },
-          collectedAt: this.now(),
-          environmentPackage,
-          workspaceDb,
-          workspaceRoot: join(workspaceDb.dataRoot, 'workspaces', workspaceDb.workspaceId),
+        const importResult = await importWorkerTranscript(store, environmentPackage, transcript, {
+          acceptedLiveEvents,
+          recordedAt,
         });
-        if (!provenance.complete) {
-          throw new Error('Required worker runtime provenance verification failed.');
+        if (
+          importResult.rejectedEventSequences.length > 0 ||
+          importResult.diagnostics.some((diagnostic) => diagnostic.path.startsWith('$.events'))
+        ) {
+          // Diagnostics supply owned codes only; parser messages and transcript payloads stay private.
+          const codes = [
+            ...new Set(
+              importResult.diagnostics
+                .filter((diagnostic) => diagnostic.path.startsWith('$.events'))
+                .map((diagnostic) => diagnostic.code)
+            ),
+          ].slice(0, 8);
+          const sequences = [...new Set(importResult.rejectedEventSequences)].sort(
+            (left, right) => left - right
+          );
+          const omitted =
+            sequences.length > 32 ? `; omittedSequences=${sequences.length - 32}` : '';
+          const message = `Worker transcript event reconciliation failed. diagnosticCodes=${codes.join(',')}; rejectedEventSequences=${JSON.stringify(sequences.slice(0, 32))}${omitted}`;
+          console.error(message);
+          throw new Error(message);
         }
-      }
-      const acceptedLiveEvents = this.coreDb
-        ? listWorkerControlAcceptedEvents(this.coreDb, {
-            agentSessionId: environmentPackage.scope.agentSessionId,
-            packageSnapshotId: environmentPackage.snapshotId,
-            requestId: environmentPackage.scope.requestId,
-            threadId: environmentPackage.scope.threadId,
-            turnId: environmentPackage.scope.turnId,
-            workspaceId: environmentPackage.scope.workspaceId,
-          })
-        : [];
-      const workspaceChanges = await withLifecycleStageTelemetry(
-        {
-          ...environmentPackage.scope,
-          packageSnapshotId: environmentPackage.snapshotId,
-          workerKind: environmentPackage.agent.runtimeKind,
-          stage: 'collection',
-        },
-        () => this.backend.collectWorkspaceChanges(environmentPackage.snapshotId, true)
-      );
-      const publishesWorkspaceContent = Boolean(transcript.itemsJsonl?.trim());
-      const publishesArtifacts = Boolean(workspaceChanges.length);
-      if (
-        this.coreDb &&
-        ((publishesWorkspaceContent &&
-          !currentWorkerLineageWorkspaceAuthority(
-            this.coreDb,
-            workerLineage,
-            'workspace.write',
-            true
-          )) ||
-          (publishesArtifacts &&
-            !currentWorkerLineageWorkspaceAuthority(
-              this.coreDb,
-              workerLineage,
-              'artifact.write',
-              true
-            )))
-      ) {
-        throw new TurnStartValidationError(
-          'workspace_access_denied',
-          'Workspace access denied.',
-          403
+        await this.createWorkspaceChangeArtifacts(
+          store,
+          environmentPackage,
+          workspaceChanges,
+          workspaceDb,
+          inputSnapshots,
+          materializationRecords,
+          recordedAt
         );
-      }
-      const importResult = await importWorkerTranscript(store, environmentPackage, transcript, {
-        acceptedLiveEvents,
-        recordedAt,
-      });
-      if (
-        importResult.rejectedEventSequences.length > 0 ||
-        importResult.diagnostics.some((diagnostic) => diagnostic.path.startsWith('$.events'))
-      ) {
-        // Diagnostics supply owned codes only; parser messages and transcript payloads stay private.
-        const codes = [
-          ...new Set(
-            importResult.diagnostics
-              .filter((diagnostic) => diagnostic.path.startsWith('$.events'))
-              .map((diagnostic) => diagnostic.code)
-          ),
-        ].slice(0, 8);
-        const sequences = [...new Set(importResult.rejectedEventSequences)].sort(
-          (left, right) => left - right
+        await this.cleanupBackendLifecycle(
+          store,
+          backendLifecycle,
+          workspaceDb,
+          environmentPackage,
+          backendCapabilities
         );
-        const omitted = sequences.length > 32 ? `; omittedSequences=${sequences.length - 32}` : '';
-        const message = `Worker transcript event reconciliation failed. diagnosticCodes=${codes.join(',')}; rejectedEventSequences=${JSON.stringify(sequences.slice(0, 32))}${omitted}`;
-        console.error(message);
-        throw new Error(message);
+        await this.emitImportedRecords(store, environmentPackage, requestId, importResult);
+        collectionOutputRefs = [...importResult.itemIds, ...importResult.artifactIds];
+      } finally {
+        releaseMutation?.();
       }
-      await this.createWorkspaceChangeArtifacts(
-        store,
-        environmentPackage,
-        workspaceChanges,
-        workspaceDb,
-        inputSnapshots,
-        materializationRecords,
-        recordedAt
-      );
-      await this.cleanupBackendLifecycle(
-        backendLifecycle,
-        workspaceDb,
-        environmentPackage,
-        backendCapabilities
-      );
-      await this.emitImportedRecords(store, environmentPackage, requestId, importResult);
-    } finally {
-      releaseMutation?.();
+    } catch (error) {
+      await endWorkerTurnJournalStep(store, workspaceDb, collectionJournal, 'unknown');
+      throw error;
     }
+    await endWorkerTurnJournalStep(
+      store,
+      workspaceDb,
+      collectionJournal,
+      'completed',
+      collectionOutputRefs
+    );
   }
 
   /** Stages release and successor captures through the same durable review and Artifact owner as Turn end. */
@@ -3273,6 +3368,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
    * @throws Error when physical cleanup, lifecycle transition, or workspace projection fails.
    */
   private async cleanupBackendLifecycle(
+    store: FsStore,
     lifecycle: WorkerTurnBackendLifecycle,
     workspaceDb: WorkspaceDb | null,
     environmentPackage: AgentEnvironmentPackage,
@@ -3300,6 +3396,13 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         }
       }
 
+      if (!workspaceDb) throw new Error('Worker cleanup requires its native journal owner.');
+      const cleanupJournal = await beginWorkerTurnJournalStep(
+        store,
+        workspaceDb,
+        environmentPackage.scope.turnId,
+        'inspect-cleanup'
+      );
       try {
         await withLifecycleStageTelemetry(
           {
@@ -3325,8 +3428,12 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             toState: 'cleanup-failed',
           });
         }
+        await endWorkerTurnJournalStep(store, workspaceDb, cleanupJournal, 'unknown');
         throw error;
       }
+      await endWorkerTurnJournalStep(store, workspaceDb, cleanupJournal, 'completed', [
+        lifecycle.identity.backendSessionId,
+      ]);
 
       lifecycle.physicalCleanedAt = this.now();
       if (lifecycle.session?.state === 'cleanup-pending') {
@@ -3960,7 +4067,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         error: null,
         status: 'completed',
       },
-      { requestId, stopReason }
+      { ...(await this.readTerminalPublication(store, turnScope.id)), requestId, stopReason }
     );
     const turnCompletedEvent = await store.persistTurnEvent(
       turnScope.id,
@@ -3977,6 +4084,22 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     // Completion and cleanup preparation finish before the synchronous notification tail.
     store.emitTurnEvent(turnScope.id, agentSessionUpdatedEvent);
     store.emitTurnEvent(turnScope.id, turnCompletedEvent);
+  }
+
+  /** Reads the original native terminal descriptors without creating missing execution history. */
+  private async readTerminalPublication(
+    store: FsStore,
+    turnId: string
+  ): Promise<TerminalTurnPublication> {
+    if (!this.coreDb) throw new Error('Worker terminal journal requires Core lineage.');
+    const turn = store.getTurnById(turnId);
+    const workspaceDb = this.openWorkspaceDb(workspaceIdForOwner(turn.owner));
+    if (!workspaceDb) throw new Error('Worker terminal journal owner is unavailable.');
+    try {
+      return await workerTurnTerminalPublication(workspaceDb, turnId);
+    } finally {
+      workspaceDb.sqlite.close();
+    }
   }
 
   /**
@@ -4020,6 +4143,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     await terminalizeGovernedWorkerTurn({
       agentSessionId,
       agentSessionRetained,
+      ...(store.getTurnById(turnScope.id).agentSessionId
+        ? { publication: await this.readTerminalPublication(store, turnScope.id) }
+        : {}),
       completedAt: this.now(),
       errorCode: cancellationWon
         ? 'worker_governance_turn_cancelled'
@@ -4202,5 +4328,302 @@ export function workerStorageWorkSlotRef(
     threadId,
     responsibleUserId,
     ...(choice.reuseWorkSlotRef ? { reuseWorkSlotRef: choice.reuseWorkSlotRef } : {}),
+  });
+}
+
+/** Creates only actual pre-effect obligations; the first Turn binding commits these intents atomically. */
+export function prepareWorkerTurnJournalIntents(
+  workspaceDb: WorkspaceDb,
+  environmentPackage: AgentEnvironmentPackage,
+  attempt: ReturnType<typeof requireSchedulerExecutionAttempt>,
+  target: ExecutionStepControl['target']
+): ExecutionJournalIntent[] {
+  const turnId = environmentPackage.scope.turnId;
+  if (
+    attempt.turnId !== turnId ||
+    attempt.workspaceId !== workspaceDb.workspaceId ||
+    attempt.agentSessionId !== environmentPackage.scope.agentSessionId ||
+    !attempt.bindingRef ||
+    attempt.phase !== 'open' ||
+    workspaceDb.sqlite.prepare('SELECT 1 FROM control_executions WHERE work_id=?').get(turnId)
+  )
+    throw new Error('Worker journal requires its original unexecuted admission.');
+  const startTimeUnixNano = BigInt(Date.now()) * 1_000_000n;
+  const span: ExecutionJournalAdmission['span'] = {
+    traceId: randomBytes(16).toString('hex'),
+    spanId: randomBytes(8).toString('hex'),
+    flags: 0,
+    name: 'worker.turn',
+    kind: 'INTERNAL',
+    startTimeUnixNano,
+    endTimeUnixNano: null,
+    status: { code: 'UNSET' },
+    attributes: [],
+    droppedAttributesCount: 0,
+    events: [],
+    droppedEventsCount: 0,
+    links: [],
+    droppedLinksCount: 0,
+    instrumentationScope: {
+      name: 'openkit.nanocore.runtime',
+      attributes: [],
+      droppedAttributesCount: 0,
+    },
+    resource: { attributes: [], droppedAttributesCount: 0 },
+  };
+  const admission: ExecutionJournalAdmission = {
+    ref: {
+      owner: { kind: 'workspace', workspaceId: workspaceDb.workspaceId },
+      executionId: randomUUID(),
+    },
+    definitionVersion: WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION,
+    workId: turnId,
+    fingerprint: commandInputHash({
+      turnId,
+      attemptId: attempt.attemptId,
+      bindingRef: attempt.bindingRef,
+      packageSnapshotId: environmentPackage.snapshotId,
+    }),
+    exclusionRefs: [attempt.attemptId, attempt.bindingRef],
+    span,
+  };
+  const control: ExecutionStepControl = {
+    definitionVersion: admission.definitionVersion,
+    kind: 'materialize',
+    target,
+    workId: turnId,
+    operationId: attempt.operationId,
+    attemptId: attempt.attemptId,
+    invocationId: randomUUID(),
+    actor: environmentPackage.scope.triggerActor,
+    inputRefs: [turnId, environmentPackage.snapshotId],
+    outputRefs: [],
+    fingerprint: admission.fingerprint,
+    // A Policy snapshot is not a PermissionDecision identity.
+    permittingDecisionRef: null,
+    authorityRefs: [turnId, environmentPackage.scope.agentSessionId, attempt.attemptId],
+    retryDeclarationRef: null,
+    retryPermitted: false,
+    deadlineUnixNano:
+      attempt.deadline === null ? null : BigInt(Date.parse(attempt.deadline)) * 1_000_000n,
+    physicalFenceRefs: [],
+  };
+  return (['materialize', 'terminal-publication', 'release'] as const).map((kind) => ({
+    execution: admission,
+    stepId: randomUUID(),
+    parentStepId: null,
+    control: {
+      ...control,
+      kind,
+      invocationId: randomUUID(),
+      target: kind === 'terminal-publication' ? null : control.target,
+    },
+    parent: null,
+    carriage: {
+      operation: `worker.${kind}`,
+      requestId: environmentPackage.scope.requestId ?? turnId,
+      sequence: null,
+      bindingRef: attempt.bindingRef,
+    },
+    inspectedStep: null,
+    span: {
+      ...span,
+      spanId: randomBytes(8).toString('hex'),
+      parentSpanId: span.spanId,
+      name: `worker.${kind}`,
+    },
+  }));
+}
+
+/** Reads original descriptors through their owning journal; this read grants no effect or new allowance. */
+async function readWorkerTurnJournal(workspaceDb: WorkspaceDb, turnId: string) {
+  const rows = workspaceDb.sqlite
+    .prepare('SELECT id FROM control_executions WHERE work_id=?')
+    .all(turnId) as { id: string }[];
+  if (rows.length !== 1) throw new Error('Worker Turn requires exactly one admitted execution.');
+  const ref = {
+    owner: { kind: 'workspace' as const, workspaceId: workspaceDb.workspaceId },
+    executionId: rows[0]!.id,
+  };
+  const reader = createExecutionStepJournalReader(workspaceDb, ref.owner);
+  const root = await reader.readExecution(ref);
+  if (
+    root.definitionVersion !== WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION ||
+    root.workId !== turnId
+  )
+    throw new Error('Worker Turn journal definition or owner conflicts.');
+  return { root, reader };
+}
+
+/** Retrieves one original planned obligation; absent or duplicate rows require recovery. */
+async function readWorkerTurnJournalObligation(
+  workspaceDb: WorkspaceDb,
+  turnId: string,
+  kind: 'materialize' | 'terminal-publication' | 'release'
+) {
+  const journal = await readWorkerTurnJournal(workspaceDb, turnId);
+  const rows = workspaceDb.sqlite
+    .prepare(
+      "SELECT step_id,span_json FROM control_execution_steps WHERE execution_id=? AND json_extract(control_json,'$.kind')=?"
+    )
+    .all(journal.root.ref.executionId, kind) as { step_id: string; span_json: string }[];
+  if (rows.length !== 1) throw new Error('Worker journal requires its original unique obligation.');
+  const invocation = await journal.reader.readInvocation({
+    execution: journal.root.ref,
+    stepId: rows[0]!.step_id,
+  });
+  return {
+    ...journal,
+    invocation,
+    span: decodeExecutionJournalSpan(JSON.parse(rows[0]!.span_json)),
+  };
+}
+
+/** Admits one real runtime invocation before its effect, retaining the original root and authority. */
+export async function beginWorkerTurnJournalStep(
+  store: FsStore,
+  workspaceDb: WorkspaceDb,
+  turnId: string,
+  kind:
+    | 'open-session'
+    | 'inspect-session'
+    | 'deliver-start'
+    | 'collect'
+    | 'cancel'
+    | 'inspect-cleanup',
+  carriage?: ExecutionJournalIntent['carriage'],
+  correlation?: { operationId: string | null; deadline: string | null }
+): Promise<ExecutionJournalIntent> {
+  const original = await readWorkerTurnJournalObligation(workspaceDb, turnId, 'materialize');
+  const { root, invocation } = original;
+  if (root.phase === 'closed') throw new Error('Worker journal execution is already closed.');
+  const span = {
+    ...original.span,
+    spanId: randomBytes(8).toString('hex'),
+    startTimeUnixNano: BigInt(Date.now()) * 1_000_000n,
+    endTimeUnixNano: null,
+    name: `worker.${kind}`,
+    status: { code: 'UNSET' as const },
+    events: [],
+  };
+  const intent: ExecutionJournalIntent = {
+    execution: {
+      ref: root.ref,
+      definitionVersion: root.definitionVersion,
+      workId: root.workId,
+      fingerprint: root.fingerprint,
+      exclusionRefs: root.exclusionRefs,
+      span: { ...root.span, endTimeUnixNano: null },
+    },
+    stepId: randomUUID(),
+    parentStepId: null,
+    control: {
+      ...invocation.control,
+      kind,
+      invocationId: randomUUID(),
+      outputRefs: [],
+      ...(correlation
+        ? {
+            operationId: correlation.operationId,
+            deadlineUnixNano:
+              correlation.deadline === null
+                ? null
+                : BigInt(Date.parse(correlation.deadline)) * 1_000_000n,
+          }
+        : {}),
+    },
+    parent: null,
+    carriage: carriage ?? { ...invocation.carriage, operation: `worker.${kind}` },
+    inspectedStep: null,
+    span,
+  };
+  await store.writeWorkspaceExecutionJournalIntent(workspaceDb.workspaceId, intent);
+  return intent;
+}
+
+/** Settles only the observed invocation; unknown outcomes preserve the original exclusion. */
+export async function endWorkerTurnJournalStep(
+  store: FsStore,
+  workspaceDb: WorkspaceDb,
+  intent: ExecutionJournalIntent,
+  state: 'completed' | 'failed' | 'unknown' | 'cancelled',
+  outputRefs: readonly string[] = []
+): Promise<void> {
+  const { root } = await readWorkerTurnJournal(workspaceDb, intent.execution.workId);
+  await store.settleWorkspaceExecutionJournalStep(workspaceDb.workspaceId, {
+    ref: { execution: root.ref, stepId: intent.stepId },
+    expectedExecutionRevision: root.revision,
+    state,
+    outputRefs,
+    span: {
+      ...intent.span,
+      endTimeUnixNano: BigInt(Date.now()) * 1_000_000n,
+      status: { code: state === 'completed' ? 'OK' : 'ERROR' },
+    },
+    nextPhase: root.phase,
+    terminalCause: root.terminalCause,
+    exclusionRefs: root.exclusionRefs,
+  });
+}
+
+/** Ends actual materialization only after its owner acknowledged the real result. */
+export async function endWorkerTurnMaterialization(
+  store: FsStore,
+  workspaceDb: WorkspaceDb,
+  turnId: string,
+  state: 'completed' | 'unknown',
+  outputRefs: readonly string[] = []
+): Promise<void> {
+  const original = await readWorkerTurnJournalObligation(workspaceDb, turnId, 'materialize');
+  if (original.invocation.state !== 'intent')
+    throw new Error('Worker materialization obligation is already ended.');
+  await store.settleWorkspaceExecutionJournalStep(workspaceDb.workspaceId, {
+    ref: original.invocation.ref,
+    expectedExecutionRevision: original.root.revision,
+    state,
+    outputRefs,
+    span: {
+      ...original.span,
+      endTimeUnixNano: BigInt(Date.now()) * 1_000_000n,
+      status: { code: state === 'completed' ? 'OK' : 'ERROR' },
+    },
+    nextPhase: original.root.phase,
+    terminalCause: original.root.terminalCause,
+    exclusionRefs: original.root.exclusionRefs,
+  });
+}
+
+/** Records actual release proof; prior unknown effects keep their exclusion and cannot close the root. */
+export async function endWorkerTurnJournalRelease(
+  store: FsStore,
+  workspaceDb: WorkspaceDb,
+  turnId: string,
+  fenceRef: string
+): Promise<void> {
+  const release = await readWorkerTurnJournalObligation(workspaceDb, turnId, 'release');
+  if (release.invocation.state === 'completed') {
+    if (!isDeepStrictEqual(release.invocation.control.outputRefs, [fenceRef]))
+      throw new Error('Worker release fence conflicts with its retained result.');
+    return;
+  }
+  if (release.invocation.state !== 'intent')
+    throw new Error('Worker release obligation conflicts with its result.');
+  const ended = await release.reader.readEndedSteps(release.root.ref);
+  const canClose =
+    !ended.some((step) => step.state === 'unknown') &&
+    release.root.openSteps.every((step) => step.stepId === release.invocation.ref.stepId);
+  await store.settleWorkspaceExecutionJournalStep(workspaceDb.workspaceId, {
+    ref: release.invocation.ref,
+    expectedExecutionRevision: release.root.revision,
+    state: 'completed',
+    outputRefs: [fenceRef],
+    span: {
+      ...release.span,
+      endTimeUnixNano: BigInt(Date.now()) * 1_000_000n,
+      status: { code: 'OK' },
+    },
+    nextPhase: canClose ? 'closed' : 'closing',
+    terminalCause: release.root.terminalCause,
+    exclusionRefs: canClose ? [] : release.root.exclusionRefs,
   });
 }

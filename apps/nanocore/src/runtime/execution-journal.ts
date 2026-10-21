@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
+import { isMainThread } from 'node:worker_threads';
 import { ActorRefSchema, type WorkOwner, WorkOwnerSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
@@ -241,7 +242,7 @@ const stepRowSchema = z.object({
 });
 
 /** Serializes exact typed values; only typed doubles use JSON's special-value spellings. */
-function encode(value: unknown): string {
+export function encodeExecutionJournalValue(value: unknown): string {
   return JSON.stringify(value, (_key, item: unknown) => {
     if (typeof item === 'bigint') return item.toString();
     if (
@@ -258,6 +259,128 @@ function encode(value: unknown): string {
     }
     return item;
   });
+}
+
+/** Decodes the retained original span with the journal's exact typed-value rules. */
+export function decodeExecutionJournalSpan(value: unknown): ExecutionJournalSpan {
+  return spanSchema.parse(value);
+}
+
+/** Closed native transport for the existing journal owner; decimal JSON preserves exact typed integers. */
+export const ControlExecutionJournalInputSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('intent'), inputJson: z.string().min(1) }).strict(),
+  z.object({ kind: z.literal('settle'), inputJson: z.string().min(1) }).strict(),
+]);
+/** One existing journal mutation, never a SQL or callback transport. */
+export type ControlExecutionJournalInput = z.infer<typeof ControlExecutionJournalInputSchema>;
+
+/** Parses lossless intent framing before the existing synchronous owner validates the transition. */
+export function decodeExecutionJournalIntent(inputJson: string): ExecutionJournalIntent {
+  return z
+    .object({
+      execution: z
+        .object({
+          ref: refSchema,
+          definitionVersion: definition,
+          workId: text,
+          fingerprint: text,
+          exclusionRefs: z.array(text),
+          span: spanSchema.refine((value) => value.endTimeUnixNano === null),
+        })
+        .strict(),
+      stepId: text,
+      parentStepId: text.nullable(),
+      control: controlSchema,
+      parent: invocationSchema.shape.parent,
+      carriage: invocationSchema.shape.carriage,
+      inspectedStep: stepRefSchema.nullable(),
+      span: spanSchema.refine((value) => value.endTimeUnixNano === null),
+    })
+    .strict()
+    .parse(JSON.parse(inputJson)) as ExecutionJournalIntent;
+}
+
+/** Parses lossless conditional settlement framing without changing its original comparison fields. */
+export function decodeExecutionJournalSettlement(inputJson: string): ExecutionJournalSettlement {
+  return z
+    .object({
+      ref: stepRefSchema,
+      expectedExecutionRevision: count.min(1),
+      state: state.exclude(['intent']),
+      outputRefs: z.array(text),
+      span: spanSchema.refine((value) => value.endTimeUnixNano !== null),
+      nextPhase: phase,
+      terminalCause: text.nullable(),
+      exclusionRefs: z.array(text),
+    })
+    .strict()
+    .parse(JSON.parse(inputJson)) as ExecutionJournalSettlement;
+}
+
+/** Decodes the actual native invocation, including its worker-owned remaining-time calculation. */
+export function decodeExecutionJournalInvocation(value: string): ExecutionInvocation {
+  return z
+    .object({
+      ref: stepRefSchema,
+      state,
+      control: controlSchema,
+      ...invocationSchema.shape,
+      remainingMs: z.number().nonnegative().finite(),
+    })
+    .strict()
+    .parse(JSON.parse(value));
+}
+
+/** Decodes an ended native step without coercing an open intent into completion. */
+export function decodeEndedExecutionStep(value: string): EndedExecutionStep {
+  return z
+    .object({
+      ref: stepRefSchema,
+      state: state.exclude(['intent']),
+      control: controlSchema,
+      rootSpanId: spanId,
+      span: spanSchema.refine((item) => item.endTimeUnixNano !== null),
+    })
+    .strict()
+    .parse(JSON.parse(value)) as EndedExecutionStep;
+}
+
+/** Applies one existing Workspace journal mutation on the admitted writer, with exact Turn lineage. */
+export function applyControlExecutionJournal(
+  db: WorkspaceDb,
+  value: ControlExecutionJournalInput
+): string {
+  if (isMainThread || !db.sqlite.inTransaction)
+    throw new Error('Workspace execution mutations require the native writer transaction.');
+  const command = ControlExecutionJournalInputSchema.parse(value);
+  const input =
+    command.kind === 'intent'
+      ? decodeExecutionJournalIntent(command.inputJson)
+      : decodeExecutionJournalSettlement(command.inputJson);
+  const ref = 'execution' in input ? input.execution.ref : input.ref.execution;
+  const workId = 'execution' in input ? input.execution.workId : readRoot(db, ref).workId;
+  if (ref.owner.kind !== 'workspace' || ref.owner.workspaceId !== db.workspaceId)
+    throw new Error('Workspace execution owner conflicts.');
+  const turn = db.sqlite.prepare('SELECT record_json FROM control_turns WHERE id=?').get(workId) as
+    | { record_json: string }
+    | undefined;
+  if (!turn) throw new Error('Workspace execution requires its admitted Turn.');
+  const record = JSON.parse(turn.record_json) as {
+    owner?: WorkOwner;
+    agentSessionId?: string | null;
+  };
+  if (!isDeepStrictEqual(record.owner, ref.owner) || !record.agentSessionId)
+    throw new Error('Workspace execution requires its actual Worker binding.');
+  const roots = db.sqlite
+    .prepare('SELECT id FROM control_executions WHERE work_id=?')
+    .all(workId) as { id: string }[];
+  if (roots.some((root) => root.id !== ref.executionId))
+    throw new Error('Workspace execution root conflicts.');
+  return encodeExecutionJournalValue(
+    command.kind === 'intent'
+      ? writeExecutionJournalIntent(db, input as ExecutionJournalIntent)
+      : settleExecutionJournalStep(db, input as ExecutionJournalSettlement)
+  );
 }
 
 /** Parses known fields while refusing unknown core versions, tags and malformed required content. */
@@ -366,7 +489,7 @@ function invocationView(
   ref: ExecutionStepRef,
   ancestors = new Set<string>()
 ): ExecutionInvocation {
-  const identity = encode(ref);
+  const identity = encodeExecutionJournalValue(ref);
   if (ancestors.has(identity)) throw new Error('Execution parent lineage contains a cycle.');
   ancestors.add(identity);
   const stored = storedStep(db, ref);
@@ -531,12 +654,12 @@ export function writeExecutionJournalIntent(
       )
       .run(
         admission.ref.executionId,
-        encode(ownerSchema.parse(admission.ref.owner)),
+        encodeExecutionJournalValue(ownerSchema.parse(admission.ref.owner)),
         admission.workId,
         admission.definitionVersion,
         admission.fingerprint,
-        encode(z.array(text).parse(admission.exclusionRefs)),
-        encode(rootSpan)
+        encodeExecutionJournalValue(z.array(text).parse(admission.exclusionRefs)),
+        encodeExecutionJournalValue(rootSpan)
       );
   }
   const root = readRoot(db, admission.ref);
@@ -608,9 +731,9 @@ export function writeExecutionJournalIntent(
       count.min(1).parse(ordinal.ordinal),
       input.parentStepId,
       control.invocationId,
-      encode(control),
-      encode(invocation),
-      encode(span),
+      encodeExecutionJournalValue(control),
+      encodeExecutionJournalValue(invocation),
+      encodeExecutionJournalValue(span),
       input.inspectedStep?.execution.executionId ?? null,
       input.inspectedStep?.stepId ?? null
     );
@@ -680,15 +803,18 @@ export function settleExecutionJournalStep(
     throw new Error('Execution cannot close with unresolved work.');
   // Preserve additive retained fields on the only permitted control update.
   const control = { ...JSON.parse(stored.row.control_json), outputRefs };
-  const persistedSpan = { ...JSON.parse(stored.row.span_json), ...JSON.parse(encode(input.span)) };
+  const persistedSpan = {
+    ...JSON.parse(stored.row.span_json),
+    ...JSON.parse(encodeExecutionJournalValue(input.span)),
+  };
   const changed = db.sqlite
     .prepare(
       "UPDATE control_execution_steps SET state = ?, control_json = ?, span_json = ? WHERE execution_id = ? AND step_id = ? AND state = 'intent'"
     )
     .run(
       outcome,
-      encode(control),
-      encode(persistedSpan),
+      encodeExecutionJournalValue(control),
+      encodeExecutionJournalValue(persistedSpan),
       input.ref.execution.executionId,
       input.ref.stepId
     );
@@ -711,8 +837,8 @@ export function settleExecutionJournalStep(
     .run(
       input.nextPhase,
       input.terminalCause,
-      encode(exclusionRefs),
-      encode(rootSpan),
+      encodeExecutionJournalValue(exclusionRefs),
+      encodeExecutionJournalValue(rootSpan),
       input.ref.execution.executionId,
       input.expectedExecutionRevision
     );

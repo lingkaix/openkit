@@ -19,22 +19,19 @@ import {
   openAssistantTimeline,
 } from '../internal-agents/assistant-timeline.js';
 import type { FsStore } from '../lib/store.js';
+import { commandInputHash } from '../runtime/idempotent-command.js';
 import {
   admitIfIdle,
   raiseRecordedPendingRequest,
   requireUsableRecord,
 } from '../runtime/pending-request-flow.js';
 import {
-  claimCommandIntentGrant,
-  finishPendingExecution,
   listThreadPendingRequests,
   PENDING_REQUEST_BOUND,
   PendingRequestCommandError,
   type PendingRequestRecord,
   pendingRequestItemId,
-  proveFrozenDelivery,
   readPendingRequest,
-  refuseCommandIntentGrant,
 } from '../runtime/pending-requests.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { userDbPath } from '../storage/fs-layout.js';
@@ -373,12 +370,19 @@ export async function prepareMemoryForgetCommand(
       turnId: turn.id,
     });
     const at = new Date().toISOString();
-    await writer.store.updateTurn(turn.id, { status: 'completed', completedAt: at });
-    proveFrozenDelivery(writer.workspaceDb.sqlite, turn.id, at);
+    await writer.store.completeTurn(
+      turn.id,
+      { status: 'completed', completedAt: at },
+      {
+        pending: [
+          { action: 'delivery-prove', workspaceId: input.workspaceId, turnId: turn.id, now: at },
+        ],
+      }
+    );
     return result;
   } catch (error) {
     if (!isSealedTurnTerminal(writer.store.getTurnById(turn.id).status))
-      await writer.store.updateTurn(turn.id, {
+      await writer.store.completeTurn(turn.id, {
         status: 'failed',
         completedAt: new Date().toISOString(),
         error: {
@@ -439,7 +443,7 @@ export async function prepareMemoryForget(
   const title = 'Forget personal Memory';
   const description =
     'Inspect the exact page and retention disclosure. Forgetting blocks reuse and retains Git history and independent evidence and backups.';
-  const record = raiseRecordedPendingRequest(writer.store, writer.workspaceDb.sqlite, {
+  const record = await raiseRecordedPendingRequest(writer.store, writer.workspaceDb.sqlite, {
     requestId: input.requestId,
     workspaceId: input.workspaceId,
     threadId: input.threadId,
@@ -451,20 +455,6 @@ export async function prepareMemoryForget(
     governedIntent: intent,
     approval: { kind: 'destructive-action', title, description },
     now,
-  });
-  await writer.store.createItem({
-    id: record.requestItemId,
-    owner: { kind: 'workspace', workspaceId: record.workspaceId },
-    threadId: record.threadId,
-    turnId: record.raisingTurnId,
-    type: 'approval-request',
-    approvalRequestId: record.requestId,
-    kind: 'destructive-action',
-    status: 'completed',
-    title,
-    description,
-    createdAt: now,
-    completedAt: now,
   });
   return prepared(record, intent);
 }
@@ -526,7 +516,7 @@ export async function applyMemoryForget(
   input: ApplyMemoryForgetInput
 ): Promise<Publication> {
   admitWriter(writer, input);
-  const record = requireUsableRecord(
+  let record = requireUsableRecord(
     writer.store,
     writer.workspaceDb.sqlite,
     input.pendingRequestId,
@@ -608,13 +598,23 @@ export async function applyMemoryForget(
       writer.store
     );
   } catch (error) {
-    refuseCommandIntentGrant(
+    await writer.store.applyPendingRequestCommand(input.workspaceId, {
+      action: 'refuse-command',
+      workspaceId: input.workspaceId,
+      threadId: input.threadId,
+      requestId: record.requestId,
+      expected: [{ requestId: record.requestId, sourceHash: commandInputHash(record) }],
+      reason: 'Current authority or exact Memory target changed.',
+      now: new Date().toISOString(),
+    });
+    record = requireUsableRecord(
+      writer.store,
       writer.workspaceDb.sqlite,
       record.requestId,
-      'Current authority or exact Memory target changed.',
-      new Date().toISOString()
+      input.workspaceId,
+      input.threadId
     );
-    admitIfIdle(
+    await admitIfIdle(
       writer.store,
       {
         coreDb: writer.coreDb,
@@ -627,39 +627,110 @@ export async function applyMemoryForget(
       throw error;
     refuse('grant_conflict', 'Current authority or the exact Memory target changed.');
   }
-  if (
-    !claimCommandIntentGrant(writer.workspaceDb.sqlite, record.requestId, new Date().toISOString())
-  )
+  const claimed = await writer.store.applyPendingRequestCommand(input.workspaceId, {
+    action: 'claim-command',
+    workspaceId: input.workspaceId,
+    threadId: input.threadId,
+    requestId: record.requestId,
+    expected: [{ requestId: record.requestId, sourceHash: commandInputHash(record) }],
+    now: new Date().toISOString(),
+  });
+  if (claimed.applied !== 'claimed' || !claimed.requestIds.includes(record.requestId))
     refuse('grant_conflict', 'The Memory confirmation was already consumed or invalidated.');
+  record = requireUsableRecord(
+    writer.store,
+    writer.workspaceDb.sqlite,
+    record.requestId,
+    input.workspaceId,
+    input.threadId
+  );
+  if (record.claim !== 'claimed' || record.disposition !== null)
+    refuse(
+      'recovery_required',
+      'The claimed Memory intent is already settled; execution will not repeat.'
+    );
+  let effectAttempted = false;
+  let result: Publication;
+
   try {
+    // Suppression is the first effect; recheck both current actors after the native claim ACK.
+    admitWriter(writer, input);
+    checkProtectedPage(writer, intent.pageId);
+    checkTarget(writer.coreDb, writer.actor!, record);
+    if (
+      !record.decidingActorContext ||
+      record.decidingActor?.kind !== 'user' ||
+      record.decidingActor.id !== record.decidingActorContext.userId
+    )
+      refuse('grant_conflict', 'The actual deciding authority is unavailable.');
+    checkMemoryForgetIntent(
+      writer.workspaceDb.sqlite,
+      record,
+      record.decidingActorContext,
+      writer.coreDb,
+      writer.store
+    );
+    effectAttempted = true;
     recordMemorySuppression(writer, {
       requestId: intent.requestId,
       pageId: intent.pageId,
       notebookRevision: intent.notebookRevision,
       digest: intent.digest,
     });
-    const result = publicationResult(await publish(), intent);
-    finishPendingExecution(
-      writer.workspaceDb.sqlite,
-      record.requestId,
-      'approved-executed',
-      null,
-      result,
-      new Date().toISOString()
-    );
-    return result;
+    result = publicationResult(await publish(), intent);
   } catch (error) {
     const known =
-      error instanceof NotebookError &&
-      ['conflict', 'invalid_request', 'review_required'].includes(error.code);
-    finishPendingExecution(
+      !effectAttempted ||
+      (error instanceof NotebookError &&
+        ['conflict', 'invalid_request', 'review_required'].includes(error.code));
+    const current = requireUsableRecord(
+      writer.store,
       writer.workspaceDb.sqlite,
       record.requestId,
-      known ? 'execution-error' : 'outcome-unknown',
-      'Memory is unavailable; inspect the retained publication outcome before a new request.',
-      null,
-      new Date().toISOString()
+      input.workspaceId,
+      input.threadId
     );
+    const failed = await writer.store.applyPendingRequestCommand(input.workspaceId, {
+      action: 'finish',
+      workspaceId: input.workspaceId,
+      threadId: input.threadId,
+      requestId: record.requestId,
+      expected: [{ requestId: record.requestId, sourceHash: commandInputHash(current) }],
+      disposition: known ? 'execution-error' : 'outcome-unknown',
+      reason: effectAttempted
+        ? 'Memory is unavailable; inspect the retained publication outcome before a new request.'
+        : 'Current authority or the exact Memory target changed; no Memory effect was submitted.',
+      heldResult: null,
+      now: new Date().toISOString(),
+    });
+    const failedRecord = requireUsableRecord(
+      writer.store,
+      writer.workspaceDb.sqlite,
+      record.requestId,
+      input.workspaceId,
+      input.threadId
+    );
+    if (
+      failed.applied === 'lost' ||
+      !failed.requestIds.includes(record.requestId) ||
+      failedRecord.claim !== 'finished'
+    )
+      throw new PendingRequestCommandError(
+        'recovery_required',
+        'The execution disposition requires inspection.',
+        409
+      );
+    if (
+      !effectAttempted &&
+      error instanceof PendingRequestCommandError &&
+      error.code === 'review_required'
+    )
+      throw error;
+    if (!effectAttempted)
+      refuse(
+        'grant_conflict',
+        'Current authority or the exact Memory target changed; no Memory effect was submitted.'
+      );
     refuse(
       known ? 'memory_forget_failed' : 'recovery_required',
       known
@@ -667,4 +738,32 @@ export async function applyMemoryForget(
         : 'Memory forget outcome is unknown. Inspect retained suppression and publication evidence; execution will not repeat.'
     );
   }
+  const current = requireUsableRecord(
+    writer.store,
+    writer.workspaceDb.sqlite,
+    record.requestId,
+    input.workspaceId,
+    input.threadId
+  );
+  const settled = await writer.store.applyPendingRequestCommand(input.workspaceId, {
+    action: 'finish',
+    workspaceId: input.workspaceId,
+    threadId: input.threadId,
+    requestId: record.requestId,
+    expected: [{ requestId: record.requestId, sourceHash: commandInputHash(current) }],
+    disposition: 'approved-executed',
+    reason: null,
+    heldResult: z.json().parse(result),
+    now: new Date().toISOString(),
+  });
+  if (settled.applied === 'lost' || !settled.requestIds.includes(record.requestId))
+    refuse('recovery_required', 'The Memory execution disposition requires inspection.');
+  requireUsableRecord(
+    writer.store,
+    writer.workspaceDb.sqlite,
+    record.requestId,
+    input.workspaceId,
+    input.threadId
+  );
+  return result;
 }

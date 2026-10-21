@@ -459,7 +459,7 @@ const bootResult = await runBootPhases({
             openBootVerifiedWorkspaceDb(dataRoot, workspaceId),
         };
         installPendingRequestAdmission(recoveryStore, pendingWorkspace);
-        recoverPendingRequestsAtBoot(recoveryStore, pendingWorkspace);
+        await recoverPendingRequestsAtBoot(recoveryStore, pendingWorkspace);
         runRecoveryMaintenance = {
           scheduler: () => runSchedulerRecoveryMaintenance(recoveryCoreDb, recoveryInput),
           native: () => runNanoHostAttemptRecoveryMaintenance(recoveryCoreDb, recoveryInput),

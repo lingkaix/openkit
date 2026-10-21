@@ -93,8 +93,23 @@ import {
 import { readSourcePointers } from '../knowledge/source-pointers.js';
 import { OperationError } from '../operation-error.js';
 import { EMPTY_POLICY_DOCUMENT } from '../policy/statements.js';
+import {
+  decodeEndedExecutionStep,
+  decodeExecutionJournalInvocation,
+  encodeExecutionJournalValue,
+} from '../runtime/execution-journal.js';
+import type {
+  EndedExecutionStep,
+  ExecutionInvocation,
+  ExecutionJournalIntent,
+  ExecutionJournalSettlement,
+} from '../runtime/execution-step-journal.js';
 import { ensureTurnFeedback } from '../runtime/feedback.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
+import type {
+  ControlPendingCommandInput,
+  ControlPendingCommandResult,
+} from '../runtime/pending-requests.js';
 import { loadApprovalProjections } from '../runtime/pending-requests.js';
 import type { RuntimeAgent } from '../runtime/types.js';
 import type { AppDb } from '../storage/app-db.js';
@@ -121,6 +136,7 @@ import {
   recordCommandRequestRecordInDb,
 } from '../storage/command-request-records.js';
 import type { ControlAdmission } from '../storage/control-store-admission.js';
+import type { ControlPendingTransition } from '../storage/control-store-pending.js';
 import {
   type ControlProductEntry,
   type ControlProductMutation,
@@ -288,6 +304,8 @@ export interface TerminalTurnPublication {
   readonly items?: readonly Item[];
   /** Existing ordered terminal projections committed before the final completion envelope. */
   readonly precedingEvents?: readonly TurnEventInput[];
+  /** Existing Pending associations settled with this exact terminal publication. */
+  readonly pending?: readonly ControlPendingCommandInput[];
   /** Original invocation correlation; omission preserves the existing null projection. */
   readonly requestId?: string | null;
   /** Observed stop cause, checked against the terminal status by the native owner. */
@@ -743,11 +761,20 @@ export interface ArtifactSubmissionPublication {
 /** Hooks invoked when a Turn is admitted or first becomes terminal. */
 export interface TurnAdmissionHooks {
   /** Freezes matching ready outcomes into the admitted Turn. */
-  onAdmitted?: (turn: Turn) => void;
+  onAdmitted?: (turn: Turn) => void | Promise<void>;
+  /** Prepares immutable outcome projections; the native owner freezes them with admission. */
+  prepareAdmission?: (
+    turn: Turn,
+    executor?: 'worker' | 'assistant' | 'coordinator' | 'person'
+  ) =>
+    | { items: readonly Item[]; pending: readonly ControlPendingCommandInput[] }
+    | Promise<{ items: readonly Item[]; pending: readonly ControlPendingCommandInput[] }>;
+  /** Supplies owned terminal association changes to the same native terminal tuple. */
+  prepareTerminal?: (turn: Turn) => readonly ControlPendingCommandInput[];
   /** Commits the minimal Task result before canonical file publication. */
   onTerminalFact?: (turn: Turn) => void;
   /** Admits the next outcome Turn after a terminal barrier. */
-  onTerminal?: (turn: Turn) => void;
+  onTerminal?: (turn: Turn) => void | Promise<void>;
 }
 
 /** Completes an already-decided publication against a sealed-terminal Turn. */
@@ -2510,6 +2537,8 @@ export class FsStore {
   }
 
   private refreshWorkspaceCounts(workspaceId: string): void {
+    // Native reads join current counts directly; rebuilding the unused fixture cache repeats file I/O.
+    if (this.dataRoot) return;
     const workspace = this.getWorkspace(workspaceId);
     const resources = this.getWorkspaceResources(workspaceId);
     this.workspaces.set(workspaceId, {
@@ -2903,7 +2932,9 @@ export class FsStore {
         counts: {
           threadCount: listNativeProducts(scope, 'thread').length,
           artifactCount: [...this.artifacts.values()].filter(
-            (artifact) => artifact.workspaceId === workspaceId
+            (artifact) =>
+              artifact.workspaceId === workspaceId &&
+              !this.pendingArtifactSubmissions.has(artifact.id)
           ).length,
           knowledgeEntryCount: readWorkspaceKnowledgePages(this.workspaceRootPath(workspaceId))
             .length,
@@ -3238,7 +3269,9 @@ export class FsStore {
     scope: NativeProductScope,
     products: ControlProductMutation[],
     entries: ControlProductEntry[] = [],
-    admission?: Pick<ControlAdmission, 'receipt' | 'audit'>
+    admission?: Pick<ControlAdmission, 'receipt' | 'audit'>,
+    journalIntents?: readonly ExecutionJournalIntent[],
+    pending?: readonly ControlPendingCommandInput[]
   ): Promise<string | undefined> {
     await ensureCanonicalDirectoryAsync(scope.contentMount.root);
     const client = getControlStoreWorkerClient();
@@ -3254,8 +3287,274 @@ export class FsStore {
     });
     if (admission)
       return (await client.transition(database, { ...admission, products, entries })).response.id;
-    await client.products(database, { products, entries });
+    await client.products(database, {
+      products,
+      entries,
+      ...(pending?.length ? { pending: [...pending] } : {}),
+      ...(journalIntents?.length
+        ? { journalIntents: journalIntents.map(encodeExecutionJournalValue) }
+        : {}),
+    });
     return undefined;
+  }
+
+  /** Synchronizes exact Item bytes for a complete native Pending tuple, without publishing them. */
+  private async preparePendingItems(
+    scope: NativeProductScope,
+    items: readonly Item[]
+  ): Promise<ControlProductEntry[]> {
+    const counts = new Map<string, number>();
+    const entries: ControlProductEntry[] = [];
+    for (const value of items) {
+      const item = ItemSchema.parse(value);
+      if (!isDeepStrictEqual(item.owner, scope.owner))
+        throw new Error('Pending Item owner conflicts.');
+      const existing = readNativeProductEntries(scope, item.turnId, 'item');
+      const previous = existing.filter((row) => row.id === item.id).at(-1);
+      if (previous) {
+        const stored = readNativeTurnHistory(scope, item.turnId)?.turn.items.find(
+          (candidate) => candidate.id === item.id
+        );
+        if (!stored || !alreadyDecidedPublicationBytesEqual(stored, item))
+          throw terminalTurnPublicationConflict(item.turnId);
+        continue;
+      }
+      const offset = counts.get(item.turnId) ?? 0;
+      entries.push({
+        kind: 'item',
+        turnId: item.turnId,
+        sequence: existing.length + offset + 1,
+        expectedRevision: 0,
+        content: await publishImmutableProductJson(
+          scope.contentMount,
+          scope.owner,
+          join(dirname(dirname(scope.path)), 'runtime', 'staging'),
+          writeRetainedV1(item)
+        ),
+      });
+      counts.set(item.turnId, offset + 1);
+    }
+    return entries;
+  }
+
+  /** Executes one closed Pending transition with its complete prepared Item and original receipt tuple. */
+  public async applyPendingRequestCommand(
+    workspaceId: string,
+    input: ControlPendingCommandInput,
+    publication: { items?: readonly Item[]; receipt?: ControlPendingTransition['receipt'] } = {}
+  ): Promise<ControlPendingCommandResult> {
+    const scope = this.nativeScope({ kind: 'workspace', workspaceId });
+    const entries = await this.preparePendingItems(scope, publication.items ?? []);
+    const client = getControlStoreWorkerClient();
+    const database = `workspace:${scope.path}`;
+    await client.open({
+      database,
+      path: scope.path,
+      dataRoot: this.dataRoot!,
+      create: false,
+      initialize: 'workspace',
+      productOwner: scope.owner,
+      contentMount: scope.contentMount,
+    });
+    return client.pendingCommand(database, {
+      input,
+      products: [],
+      entries,
+      receipt: publication.receipt ?? null,
+    });
+  }
+
+  /** Prepares the existing Thread archive mutation and receipt for its Pending closeout tuple. */
+  public preparePendingArchiveAdmission(
+    workspaceId: string,
+    threadId: string,
+    admission: Pick<ControlAdmission, 'receipt' | 'audit'>
+  ): ControlAdmission {
+    const scope = this.nativeScope({ kind: 'workspace', workspaceId });
+    const current = readNativeProduct(scope, 'thread', threadId);
+    if (!current) throw new StoreRecordNotFoundError(`Thread not found: ${threadId}`);
+    return {
+      ...admission,
+      products: [
+        {
+          kind: 'thread',
+          expectedRevision: current.revision,
+          record: writeRetainedV1({ ...current.record, status: 'archived', updatedAt: now() }),
+        },
+      ],
+      entries: [],
+    };
+  }
+
+  /** Publishes an actual Core-local Pending Turn, its row associations, Items and terminal event in one native tuple. */
+  public async publishPendingRequestServiceTurn(
+    workspaceId: string,
+    threadId: string,
+    input: {
+      turnId: string;
+      summary: string;
+      actor: ActorRef;
+      now: string;
+      items: readonly Item[];
+      pending: readonly ControlPendingCommandInput[];
+      admission?: ControlAdmission;
+      archive?: boolean;
+    }
+  ): Promise<Turn> {
+    const scope = this.nativeScope({ kind: 'workspace', workspaceId });
+    const existing = readNativeTurnHistory(scope, input.turnId);
+    const turn = TurnSchema.parse({
+      ...(existing?.turn ?? {
+        id: input.turnId,
+        owner: scope.owner,
+        threadId,
+        triggerActor: input.actor,
+        configVersion: null,
+        error: null,
+        startedAt: input.now,
+        agentId: null,
+        agentSessionId: null,
+        triggerSource: { kind: 'system-input', summary: input.summary },
+      }),
+      status: 'completed',
+      completedAt: existing?.turn.completedAt ?? input.now,
+      durationMs: existing?.turn.durationMs ?? 0,
+      items: [
+        ...new Map(
+          [...(existing?.turn.items ?? []), ...input.items].map((item) => [item.id, item])
+        ).values(),
+      ],
+    });
+    if (turn.agentId || turn.agentSessionId || turn.threadId !== threadId)
+      throw new Error('Pending service publication requires its original Core-local Turn.');
+    const entries = await this.preparePendingItems(scope, input.items);
+    const priorEvent = existing
+      ? this.getTurnEventsForExport(turn.id).find((event) => event.data.type === 'turn-completed')
+      : undefined;
+    const event =
+      priorEvent ??
+      SseEventEnvelopeSchema.parse({
+        protocolVersion: PROTOCOL_VERSION,
+        workspaceId,
+        threadId,
+        turnId: turn.id,
+        requestId: null,
+        timestamp: turn.completedAt,
+        sequence: 1,
+        event: 'turn.completed',
+        data: { type: 'turn-completed', stopReason: 'completed', turn },
+      });
+    entries.push({
+      kind: 'event',
+      turnId: turn.id,
+      sequence: event.sequence,
+      expectedRevision: 0,
+      content: await publishImmutableProductJson(
+        scope.contentMount,
+        scope.owner,
+        join(dirname(dirname(scope.path)), 'runtime', 'staging'),
+        writeRetainedV1(event)
+      ),
+    });
+    const [command] = input.pending;
+    if (!command)
+      throw new Error('Pending service publication requires its original deciding transition.');
+    const client = getControlStoreWorkerClient();
+    const database = `workspace:${scope.path}`;
+    await client.open({
+      database,
+      path: scope.path,
+      dataRoot: this.dataRoot!,
+      create: false,
+      initialize: 'workspace',
+      productOwner: scope.owner,
+      contentMount: scope.contentMount,
+    });
+    await client.pendingCommand(database, {
+      input: command,
+      products: [],
+      entries: [],
+      receipt: null,
+      ...(input.admission ? { admission: input.admission } : {}),
+      terminal: {
+        owner: scope.owner,
+        turn: {
+          kind: 'turn',
+          expectedRevision: existing?.revision ?? 0,
+          record: writeRetainedV1({
+            ...turn,
+            items: [],
+            captureCoverage: this.liveCaptureCoverage,
+          }),
+        },
+        products:
+          input.archive && !input.admission
+            ? [
+                {
+                  kind: 'thread',
+                  expectedRevision: readNativeProduct(scope, 'thread', threadId)!.revision,
+                  record: writeRetainedV1({
+                    ...readNativeProduct(scope, 'thread', threadId)!.record,
+                    status: 'archived',
+                    updatedAt: input.now,
+                  }),
+                },
+              ]
+            : [],
+        entries,
+        pending: [...input.pending],
+        reap: { reason: 'completed', inferredBy: 'pending-request-publication' },
+        evidence: [],
+        evidenceContent: [],
+        command: null,
+        execution: null,
+      },
+    });
+    return this.getTurnById(turn.id);
+  }
+
+  /** Commits one existing Workspace execution intent before its actual effect. */
+  public async writeWorkspaceExecutionJournalIntent(
+    workspaceId: string,
+    input: ExecutionJournalIntent
+  ): Promise<ExecutionInvocation> {
+    const result = await this.writeWorkspaceExecutionJournal(workspaceId, {
+      kind: 'intent',
+      inputJson: encodeExecutionJournalValue(input),
+    });
+    return decodeExecutionJournalInvocation(result);
+  }
+
+  /** Settles the original Workspace step from observed facts; this does not itself prove physical release. */
+  public async settleWorkspaceExecutionJournalStep(
+    workspaceId: string,
+    input: ExecutionJournalSettlement
+  ): Promise<EndedExecutionStep> {
+    const result = await this.writeWorkspaceExecutionJournal(workspaceId, {
+      kind: 'settle',
+      inputJson: encodeExecutionJournalValue(input),
+    });
+    return decodeEndedExecutionStep(result);
+  }
+
+  /** Uses the admitted native scope and the existing closed journal body, without a Main writer. */
+  private async writeWorkspaceExecutionJournal(
+    workspaceId: string,
+    input: import('../runtime/execution-journal.js').ControlExecutionJournalInput
+  ): Promise<string> {
+    const scope = this.nativeScope({ kind: 'workspace', workspaceId });
+    const client = getControlStoreWorkerClient();
+    const database = `workspace:${scope.path}`;
+    await client.open({
+      database,
+      path: scope.path,
+      dataRoot: this.dataRoot!,
+      create: false,
+      initialize: 'workspace',
+      productOwner: scope.owner,
+      contentMount: scope.contentMount,
+    });
+    return client.journal(database, input);
   }
 
   /** Discovers opaque identities from native indexed selectors, not cached bodies or a new registry. */
@@ -3985,29 +4284,42 @@ export class FsStore {
           publishTurnFileInputs(this.workspaceRootPath(workspaceId), turn, options.filePayloadPaths)
         );
       }
-      await this.writeNativeProducts(scope, [
-        {
-          kind: 'thread',
-          expectedRevision: previousThread.revision,
-          record: writeRetainedV1({
-            ...previousThread.record,
-            preview: input,
-            updatedAt: timestamp,
-          }),
-        },
-        {
-          kind: 'turn',
-          expectedRevision: 0,
-          record: writeRetainedV1({
-            ...turn,
-            items: [],
-            captureCoverage: options.captureCoverage ?? this.liveCaptureCoverage,
-          }),
-        },
-      ]);
+      const pendingAdmission = await this.turnAdmissionHooks?.prepareAdmission?.(
+        turn,
+        options.executorKind
+      );
+      const pendingEntries = await this.preparePendingItems(scope, pendingAdmission?.items ?? []);
+      await this.writeNativeProducts(
+        scope,
+        [
+          {
+            kind: 'thread',
+            expectedRevision: previousThread.revision,
+            record: writeRetainedV1({
+              ...previousThread.record,
+              preview: input,
+              updatedAt: timestamp,
+            }),
+          },
+          {
+            kind: 'turn',
+            expectedRevision: 0,
+            record: writeRetainedV1({
+              ...turn,
+              items: [],
+              captureCoverage: options.captureCoverage ?? this.liveCaptureCoverage,
+            }),
+          },
+        ],
+        pendingEntries,
+        undefined,
+        undefined,
+        pendingAdmission?.pending
+      );
       if (options.executorKind) this.turnExecutors.set(turn.id, options.executorKind);
       this.turnStream(turn.id);
-      this.turnAdmissionHooks?.onAdmitted?.(this.getTurn(workspaceId, threadId, turn.id));
+      if (!this.turnAdmissionHooks?.prepareAdmission)
+        await this.turnAdmissionHooks?.onAdmitted?.(this.getTurn(workspaceId, threadId, turn.id));
       return this.getTurn(workspaceId, threadId, turn.id);
     }
     this.turns.set(turn.id, turn);
@@ -4024,7 +4336,7 @@ export class FsStore {
       timers: new Set(),
     });
     this.turnCaptureCoverage.set(turn.id, options.captureCoverage ?? this.liveCaptureCoverage);
-    this.turnAdmissionHooks?.onAdmitted?.(turn);
+    await this.turnAdmissionHooks?.onAdmitted?.(turn);
     return this.getTurnById(turn.id);
   }
 
@@ -4167,7 +4479,9 @@ export class FsStore {
         | 'internalExecution'
       >
     >,
-    admission?: TerminalTurnWriteAdmission
+    admission?: (TerminalTurnWriteAdmission | { category?: never }) & {
+      journalIntents?: readonly ExecutionJournalIntent[];
+    }
   ): Promise<Turn> {
     this.assertTurnPublicationAcknowledged(turnId);
     const lineage = this.dataRoot ? this.getTurnLineage(turnId) : null;
@@ -4234,13 +4548,19 @@ export class FsStore {
       const previous = { revision: native!.revision, record: native!.metadata };
       // The worker owns terminal admission. Until its structured terminal API is delivered,
       // products rejects terminal candidates; no Main Task hook or split terminal write runs.
-      await this.writeNativeProducts(scope, [
-        {
-          kind: 'turn',
-          expectedRevision: previous.revision,
-          record: writeRetainedV1({ ...previous.record, ...updated, items: [] }),
-        },
-      ]);
+      await this.writeNativeProducts(
+        scope,
+        [
+          {
+            kind: 'turn',
+            expectedRevision: previous.revision,
+            record: writeRetainedV1({ ...previous.record, ...updated, items: [] }),
+          },
+        ],
+        [],
+        undefined,
+        admission?.journalIntents
+      );
       return this.getTurnById(turnId);
     }
     if (!isSealedTurnTerminal(turn.status) && isSealedTurnTerminal(updated.status))
@@ -4446,6 +4766,13 @@ export class FsStore {
         },
         products: [],
         entries,
+        pending:
+          owner.kind === 'workspace'
+            ? [
+                ...(publication.pending ?? []),
+                ...(this.turnAdmissionHooks?.prepareTerminal?.(turn) ?? []),
+              ]
+            : [],
         reap: { reason: turn.status, inferredBy: 'native-terminal-publication' },
         evidence: publication.evidence ?? [],
         evidenceContent: publication.evidenceContent ?? [],
@@ -4470,6 +4797,14 @@ export class FsStore {
     }
     for (const terminalEvent of [...precedingEvents, event])
       this.acknowledgedTurnEvents.set(terminalEvent, structuredClone(terminalEvent));
+    if (scope && owner.kind === 'workspace' && !prior && this.terminalHookDepth < 8) {
+      this.terminalHookDepth++;
+      try {
+        await this.turnAdmissionHooks?.onTerminal?.(this.getTurnById(turnId));
+      } finally {
+        this.terminalHookDepth--;
+      }
+    }
     return owner.kind === 'server' ? this.getServerTurnById(turnId) : this.getTurnById(turnId);
   }
 

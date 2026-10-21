@@ -18,6 +18,7 @@ import {
   canonicalIdentifierName,
   deriveEntityId,
   type Item,
+  ItemSchema,
   isCheckpointCollectableTurnStatus,
   type RetrievalTraceReference,
   responsibleUserIdForActor,
@@ -2079,7 +2080,7 @@ async function publishAssistantHandoffConfirmation(
       isSecret: false,
     },
   ];
-  const item = await store.createItem({
+  const item = ItemSchema.parse({
     id: pendingRequestItemId(requestId, 'request'),
     owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
     threadId: turn.threadId,
@@ -2099,20 +2100,25 @@ async function publishAssistantHandoffConfirmation(
   });
   const db = repositoryWorkspaceDb(workspaceIdForOwner(turn.owner));
   try {
-    raiseRecordedPendingRequest(store, db.sqlite, {
-      requestId,
-      workspaceId: workspaceIdForOwner(turn.owner),
-      threadId: turn.threadId,
-      raisingTurnId: turn.id,
-      requestItemId: item.id,
-      kind: 'user-input',
-      requesterKind: 'assistant',
-      responsibleUserId: actorId,
-      questions,
-      assistantHandoff: handoff,
-      questionDigest: commandInputHash({ questions, handoff }),
-      now: at,
-    });
+    await raiseRecordedPendingRequest(
+      store,
+      db.sqlite,
+      {
+        requestId,
+        workspaceId: workspaceIdForOwner(turn.owner),
+        threadId: turn.threadId,
+        raisingTurnId: turn.id,
+        requestItemId: item.id,
+        kind: 'user-input',
+        requesterKind: 'assistant',
+        responsibleUserId: actorId,
+        questions,
+        assistantHandoff: handoff,
+        questionDigest: commandInputHash({ questions, handoff }),
+        now: at,
+      },
+      item
+    );
   } finally {
     db.sqlite.close();
   }
@@ -4151,7 +4157,12 @@ export function createConversationService({
           );
         // The frozen association and admitted Assistant Turn are the durable input owner.
         // Acceptance precedes model contact and does not fabricate a conversation command.
-        proveFrozenDelivery(workspaceDb.sqlite, turn.id, new Date().toISOString());
+        await store.applyPendingRequestCommand(workspaceIdForOwner(turn.owner), {
+          action: 'delivery-prove',
+          workspaceId: workspaceIdForOwner(turn.owner),
+          turnId: turn.id,
+          now: new Date().toISOString(),
+        });
       } finally {
         workspaceDb.sqlite.close();
       }
