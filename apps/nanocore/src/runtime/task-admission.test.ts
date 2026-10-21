@@ -28,6 +28,7 @@ import {
   createSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import {
@@ -72,7 +73,7 @@ it.each([
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot: root });
-  const ws = store.createWorkspace('Task citations');
+  const ws = await store.createWorkspace('Task citations');
   recordWorkspaceOwnerMembership({
     coreDb,
     workspaceId: ws.id,
@@ -151,7 +152,7 @@ it.each([
         coreDb,
         fileAdmission: new FileStorageAdmission(root, () => 1_000_000_000n),
       });
-      let result: ReturnType<FsStore['createTurn']> | undefined;
+      let result: Awaited<ReturnType<FsStore['createTurn']>> | undefined;
       // The interrupted variant models an admitted product interruption with no collected AEP;
       // its checkpoint must remain inspectable. Successful closeout uses the complete real simulator.
       if (outcome === 'interrupted')
@@ -188,7 +189,7 @@ it.each([
             })
           );
           context!.onSubmissionSettled?.();
-          store.createAgentSession({
+          await store.createAgentSession({
             id: context!.agentSessionId!,
             agentId: manifest.id,
             workspaceId: ws.id,
@@ -198,7 +199,7 @@ it.each([
             createdAt: at,
             updatedAt: at,
           });
-          store.createItem({
+          await store.createItem({
             id: testEntityId('it', `it_user_${turnId}`),
             owner: { kind: 'workspace', workspaceId: ws.id },
             threadId: input.threadId,
@@ -210,7 +211,7 @@ it.each([
             createdAt: at,
             completedAt: at,
           });
-          result = store.updateTurn(turnId, {
+          result = await store.updateTurn(turnId, {
             agentSessionId: context!.agentSessionId!,
           });
           await turnExecutor.interruptTurn(store, turnId, { requestId: input.requestId });
@@ -238,6 +239,7 @@ it.each([
           });
         };
       const ended = await startProductTurn({
+        ...(input.commandReceipt ? { commandReceipt: input.commandReceipt } : {}),
         coreDb,
         store,
         triggerActor: input.triggerActor,
@@ -301,7 +303,7 @@ it.each([
       services
     );
     const card = cards.cards[0]!;
-    const coordinator = store.createTurn(
+    const coordinator = await store.createTurn(
       ws.id,
       goal.threadId,
       'Coordinate',
@@ -577,11 +579,15 @@ it.each([
       turnId: admittedTurn.id,
       admittedAt: admittedTurn.startedAt,
     });
-    store.createTurn(ws.id, admittedTurn.threadId, 'Follow up', { kind: 'user', id: actor.userId });
+    await store.createTurn(ws.id, admittedTurn.threadId, 'Follow up', {
+      kind: 'user',
+      id: actor.userId,
+    });
     expect(readGoalView(store, db, goal.goalId).tasks[0]!.admittedAt).toBe(admittedTurn.startedAt);
     expect(linked.goal!.disposition).toBeNull();
   } finally {
     authorization.mockRestore();
+    await shutdownControlStoreWorkerClient();
     db.sqlite.close();
     coreDb.sqlite.close();
   }

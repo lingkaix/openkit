@@ -1,9 +1,10 @@
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
 import { readWorkObservationBody } from '../evidence-bundles.js';
 import { FsStore } from '../lib/store.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { readWorkObservations } from '../storage/work-observations.js';
@@ -18,19 +19,19 @@ it.each([
   try {
     applyMigrations(coreDb);
     const store = new FsStore({ dataRoot });
-    const thread = store.createServerThread('Maintenance');
-    const turn = store.createServerTurn(
+    const thread = await store.createServerThread('Maintenance');
+    const turn = await store.createServerTurn(
       thread.id,
       'Maintain Server Knowledge',
       { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
       null,
       { captureCoverage: { scope: 'server', value } }
     );
-    const path = join(dataRoot, 'server', 'threads', thread.id, 'turns', turn.id, 'turn.json');
-    writeFileSync(
-      path,
-      JSON.stringify({ ...JSON.parse(readFileSync(path, 'utf8')), annotation: 'retained' })
-    );
+    coreDb.sqlite
+      .prepare(
+        "UPDATE control_turns SET record_json=json_set(record_json, '$.annotation', 'retained') WHERE id=?"
+      )
+      .run(turn.id);
     let called = false;
     await withTurnModelCapture(
       {
@@ -54,13 +55,13 @@ it.each([
           [],
           'provider_test'
         );
-        capture.request({
+        await capture.request({
           model: 'maintenance',
           instructions: 'Maintain shared Server Knowledge.',
           input: 'Review current pages.',
         });
-        capture.event({ type: 'text_delta', delta: 'Maintenance complete.' });
-        capture.event({ type: 'done' });
+        await capture.event({ type: 'text_delta', delta: 'Maintenance complete.' });
+        await capture.event({ type: 'done' });
       }
     );
     expect(called).toBe(true);
@@ -90,7 +91,15 @@ it.each([
       ).not.toBeNull();
     }
     expect(readdirSync(join(dataRoot, 'workspaces'))).toEqual([]);
-    expect(JSON.parse(readFileSync(path, 'utf8')).annotation).toBe('retained');
+    expect(
+      JSON.parse(
+        (
+          coreDb.sqlite
+            .prepare('SELECT record_json FROM control_turns WHERE id=?')
+            .get(turn.id) as { record_json: string }
+        ).record_json
+      ).annotation
+    ).toBe('retained');
     expect(JSON.stringify(rows)).not.toContain('workspaceId');
     coreDb.sqlite.close();
     coreDb = openCoreDb(dataRoot);
@@ -115,6 +124,7 @@ it.each([
       ).toBeNull();
     }
   } finally {
+    await shutdownControlStoreWorkerClient();
     if (coreDb.sqlite.open) coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
   }

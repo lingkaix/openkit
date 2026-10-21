@@ -191,16 +191,17 @@ class RecordingTurnExecutor implements TurnExecutor {
     turnId: string,
     context: TurnStartRuntimeContext
   ): Promise<void> {
-    const turn = await store.updateTurn(turnId, {
-      completedAt: new Date().toISOString(),
-      status: 'completed',
-    });
+    const turn = await store.completeTurn(
+      turnId,
+      { completedAt: new Date().toISOString(), status: 'completed' },
+      { requestId: context.requestId }
+    );
     markSchedulerExecutionAttemptClosing(this.coreDb!, {
       attemptId: context.attemptId!,
       cause: 'turn-completed',
       outcomeRef: `turn:${turnId}:completed`,
     });
-    store.emitTurnEvent(
+    const completedEvent = await store.persistTurnEvent(
       turnId,
       {
         event: 'turn.completed',
@@ -212,6 +213,7 @@ class RecordingTurnExecutor implements TurnExecutor {
       },
       ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
+    store.emitTurnEvent(turnId, completedEvent);
   }
 
   /** Releases only this modeled executor's complete barriers; it owns no Native output or physical resident. */
@@ -1619,6 +1621,7 @@ describe('Core Turn durable admission response', () => {
       await pending.catch(() => undefined);
       if (executor.startCalls) await executor.finished.promise;
       await setImmediate();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
@@ -1712,6 +1715,7 @@ describe('Core Turn receipt recovery boundary', () => {
         );
       }
       await setImmediate();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }
@@ -1774,6 +1778,7 @@ describe('Core Turn fast terminal admission', () => {
       await pending.catch(() => undefined);
       await executor.finished.promise;
       await setImmediate();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
       rmSync(dataRoot, { recursive: true, force: true });
     }

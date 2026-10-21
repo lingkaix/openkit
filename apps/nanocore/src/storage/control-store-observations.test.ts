@@ -1,12 +1,15 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { ControlProductOwner } from './control-store-products.js';
-import { getControlStoreWorkerClient } from './control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
 import {
@@ -25,12 +28,13 @@ import {
 const timestamp = '2026-10-20T00:00:00.000Z';
 const roots: string[] = [];
 const handles: Database.Database[] = [];
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const sqlite of handles.splice(0)) sqlite.close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-/** Uses actual scoped journals. Only allocated Workspace0013 is applied directly pending its real0012 predecessor. */
+/** Uses the complete actual scoped journal, including the observation migration. */
 function fixture(kind: 'server' | 'workspace' = 'server') {
   const root = mkdtempSync(join(tmpdir(), 'native-observations-'));
   roots.push(root);
@@ -40,15 +44,7 @@ function fixture(kind: 'server' | 'workspace' = 'server') {
   const sqlite = db.sqlite;
   handles.push(sqlite);
   if (db.scope === 'core') applyMigrations(db);
-  else {
-    applyScopedMigrations(db);
-    sqlite.exec(
-      readFileSync(
-        new URL('../../drizzle/workspace/0013_work_observations.sql', import.meta.url),
-        'utf8'
-      )
-    );
-  }
+  else applyScopedMigrations(db);
   sqlite.pragma('synchronous = FULL');
   const threadId = allocateEntityId('th');
   const turnId = allocateEntityId('tu');

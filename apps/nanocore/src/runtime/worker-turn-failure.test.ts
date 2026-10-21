@@ -1,10 +1,18 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ProductTurnSchema, SseEventEnvelopeSchema, workspaceIdForOwner } from '@openkit/protocol';
+import {
+  ProductTurnSchema,
+  SseEventEnvelopeSchema,
+  workspaceIdForOwner,
+  writeRetainedV1,
+} from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { openWorkspaceDb } from '../storage/db.js';
+import { publishImmutableProductJson } from '../storage/immutable-content.js';
+import { nativeProductScope } from '../storage/workspace-file-records.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
 
@@ -33,6 +41,78 @@ async function createFixture() {
     workspaceId: workspaceIdForOwner(turn.owner),
   });
   return { dataRoot, store, turn };
+}
+
+/** Seeds an actual partial retained row before the native host resumes; no production write path is used. */
+async function seedHistoricalTurn(
+  store: FsStore,
+  turnId: string,
+  patch: Parameters<FsStore['updateTurn']>[1]
+) {
+  const turn = store.getTurnById(turnId);
+  await shutdownControlStoreWorkerClient();
+  const db = openWorkspaceDb(store.getDataRoot()!, workspaceIdForOwner(turn.owner));
+  try {
+    const row = db.sqlite
+      .prepare('SELECT record_json FROM control_turns WHERE id=?')
+      .get(turnId) as { record_json: string };
+    db.sqlite
+      .prepare('UPDATE control_turns SET status=?, record_json=?, revision=revision+1 WHERE id=?')
+      .run(
+        patch.status ?? turn.status,
+        JSON.stringify({ ...JSON.parse(row.record_json), ...patch }),
+        turnId
+      );
+  } finally {
+    db.sqlite.close();
+  }
+}
+
+/** Publishes the exact historical immutable event to stopped native history, including partial old terminal states. */
+async function seedHistoricalEvent(
+  store: FsStore,
+  turnId: string,
+  draft: Parameters<FsStore['persistTurnEvent']>[1]
+) {
+  const turn = store.getTurnById(turnId);
+  await shutdownControlStoreWorkerClient();
+  const scope = nativeProductScope(store.getDataRoot()!, turn.owner);
+  const db = openWorkspaceDb(store.getDataRoot()!, workspaceIdForOwner(turn.owner));
+  try {
+    const sequence =
+      (
+        db.sqlite
+          .prepare(
+            "SELECT max(sequence) AS n FROM control_product_entries WHERE kind='event' AND turn_id=?"
+          )
+          .get(turnId) as { n: number | null }
+      ).n ?? 0;
+    const event = SseEventEnvelopeSchema.parse({
+      protocolVersion: '0.6.0',
+      timestamp: '2026-07-15T00:00:30.000Z',
+      ...draft,
+      sequence: sequence + 1,
+    });
+    const content = await publishImmutableProductJson(
+      scope.contentMount,
+      scope.owner,
+      join(store.getDataRoot()!, 'fixture-staging'),
+      writeRetainedV1(event)
+    );
+    db.sqlite
+      .prepare(
+        "INSERT INTO control_product_entries (kind,turn_id,sequence,id,revision,schema_version,content_json,identity_json) VALUES ('event',?,?,?,1,1,?,?)"
+      )
+      .run(
+        turnId,
+        event.sequence,
+        `${turnId}:${event.sequence}`,
+        JSON.stringify(content),
+        JSON.stringify({ threadId: turn.threadId, turnId })
+      );
+  } finally {
+    db.sqlite.close();
+  }
 }
 
 /** Runs the shared governed-worker failure projection. */
@@ -224,7 +304,7 @@ describe('governed worker turn failure projection', () => {
       error: null,
       status: 'completed' as const,
     };
-    store.emitTurnEvent(turn.id, {
+    await seedHistoricalEvent(store, turn.id, {
       data: { stopReason: 'completed', turn: completed, type: 'turn-completed' },
       event: 'turn.completed',
       requestId: null,
@@ -295,7 +375,7 @@ describe('governed worker turn failure projection', () => {
       status: 'idle',
       updatedAt: '2026-07-15T00:00:30.000Z',
     });
-    store.emitTurnEvent(completed.id, {
+    await seedHistoricalEvent(store, completed.id, {
       data: { stopReason: 'completed', turn: completed, type: 'turn-completed' },
       event: 'turn.completed',
       requestId: null,
@@ -384,7 +464,7 @@ describe('governed worker turn failure projection', () => {
         ? { code: 'original_product_failure', message: 'Preserve the original failure.' }
         : null;
 
-    await store.updateTurn('tu_00000000-0000-7cfa-813c-d5549b2b9ef9', {
+    await seedHistoricalTurn(store, 'tu_00000000-0000-7cfa-813c-d5549b2b9ef9', {
       completedAt: '2026-07-15T00:00:30.000Z',
       error: originalError,
       status,
@@ -465,14 +545,12 @@ describe('governed worker turn failure projection', () => {
           : 'Worker execution stopped during NanoCore restart recovery.',
     };
     const completedAt = '2026-07-15T00:00:45.000Z';
-    const emitTurnEvent = store.emitTurnEvent.bind(store);
     const terminalEventWrite = vi
-      .spyOn(store, 'emitTurnEvent')
-      .mockImplementation((turnId, event) => {
-        if (event.event === 'turn.completed') {
-          throw new Error('terminal event store unavailable');
-        }
-        return emitTurnEvent(turnId, event);
+      .spyOn(store, 'completeTurn')
+      .mockImplementation(async (turnId, patch) => {
+        // The fixture models a retained pre-transfer partial decision, before the native atomic terminal owner existed.
+        await seedHistoricalTurn(store, turnId, patch);
+        throw new Error('terminal event store unavailable');
       });
 
     await expect(
