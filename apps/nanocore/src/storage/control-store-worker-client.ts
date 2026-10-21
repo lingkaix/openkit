@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -76,6 +77,15 @@ export class ControlStoreWorkerError extends Error {
   }
 }
 
+/** Definite refusal of new work by this host lifetime; no command was admitted. */
+export class ControlStoreWorkerShutdownError extends ControlStoreWorkerError {
+  /** Keeps shutdown distinct from a failed transport with unknown accepted outcomes. */
+  constructor() {
+    super('unavailable', 'not-committed');
+    this.name = 'ControlStoreWorkerShutdownError';
+  }
+}
+
 type Success = Extract<ControlWorkerReply, { status: 'ok' }>;
 type OpenCommand = Extract<ControlWorkerCommand, { operation: 'open' }>;
 
@@ -113,7 +123,9 @@ export async function shutdownControlStoreWorkerClient(): Promise<void> {
 
 /** Owns the worker lifetime, finite pre-post admission and asynchronous acknowledgements. */
 class ControlStoreWorkerClient {
-  private readonly worker: Worker;
+  private worker: Worker | undefined;
+  private readonly operations = new Set<Promise<unknown>>();
+  private readonly operationContext = new AsyncLocalStorage<{ active: boolean }>();
   private readonly pending = new Map<number, Pending>();
   private readonly outstanding = new Map<string, number>();
   private readonly openings = new Map<
@@ -129,8 +141,9 @@ class ControlStoreWorkerClient {
   private backupPaused = false;
   private backupDrain: (() => void) | undefined;
 
-  /** Starts the real compiled entry, the invocation-compiled test entry, or the source loader in development. */
-  constructor() {
+  /** Starts the native host on first command; retaining a shutdown owner alone needs no thread. */
+  private startWorker(): Worker {
+    if (this.worker) return this.worker;
     if (import.meta.url.endsWith('.ts') && process.env.VITEST === 'true') {
       // Vitest global setup compiles this same entry once in its owned private directory; missing setup fails closed.
       this.worker = new Worker(
@@ -159,11 +172,33 @@ class ControlStoreWorkerClient {
       this.materialBytes = 0;
     });
     this.worker.unref();
+    return this.worker;
   }
 
   /** True only after explicit shutdown has terminated the owned worker. */
   get isClosed(): boolean {
     return this.closed;
+  }
+
+  /** Retains an accepted producer, including asynchronous preparation, until its own closeout settles. */
+  async runOperation<T>(operation: () => Promise<T>): Promise<T> {
+    this.assertAccepting();
+    const context = { active: true };
+    const promise = this.operationContext.run(context, async () => operation());
+    this.operations.add(promise);
+    try {
+      return await promise;
+    } finally {
+      context.active = false;
+      this.operations.delete(promise);
+    }
+  }
+
+  /** Only still-active accepted producers may continue submitting work during shutdown drain. */
+  private assertAccepting(): void {
+    if (this.closed || (this.stopping && !this.operationContext.getStore()?.active))
+      throw new ControlStoreWorkerShutdownError();
+    if (this.failed) throw new ControlStoreWorkerError('unavailable', 'not-committed');
   }
 
   /**
@@ -175,8 +210,7 @@ class ControlStoreWorkerClient {
    * @returns After connection policy and requested initialization have completed in the worker.
    */
   async open(command: Omit<OpenCommand, 'operation'>): Promise<void> {
-    if (this.failed || this.stopping || this.closed)
-      throw new ControlStoreWorkerError('unavailable', 'not-committed');
+    this.assertAccepting();
     if (
       !isControlWorkerRequest({
         ...command,
@@ -404,8 +438,7 @@ class ControlStoreWorkerClient {
    * @returns An idempotent release for this one backup hold.
    */
   async pauseForDataRootBackup(): Promise<() => void> {
-    if (this.failed || this.stopping || this.closed)
-      throw new ControlStoreWorkerError('unavailable', 'not-committed');
+    this.assertAccepting();
     if (this.backupPaused) throw new ControlStoreWorkerError('busy', 'not-committed');
     this.backupPaused = true;
     const resume = () => {
@@ -418,9 +451,11 @@ class ControlStoreWorkerClient {
       this.backupDrain = resolve;
       this.completeBackupDrain();
     });
-    if (this.failed || this.stopping || this.closed) {
+    try {
+      this.assertAccepting();
+    } catch (error) {
       resume();
-      throw new ControlStoreWorkerError('unavailable', 'not-committed');
+      throw error;
     }
     let released = false;
     return () => {
@@ -442,9 +477,20 @@ class ControlStoreWorkerClient {
     this.stopping = true;
     this.shutdownPromise = (async () => {
       try {
-        if (!this.failed) await this.request({ operation: 'shutdown' });
+        const failures: unknown[] = [];
+        while (this.operations.size) {
+          const outcomes = await Promise.allSettled(this.operations);
+          for (const outcome of outcomes)
+            if (outcome.status === 'rejected') failures.push(outcome.reason);
+        }
+        if (!this.failed && this.worker) await this.request({ operation: 'shutdown' });
+        if (failures.length)
+          throw new AggregateError(
+            failures,
+            'Accepted control-store operations failed during shutdown.'
+          );
       } finally {
-        await this.worker.terminate();
+        await this.worker?.terminate();
         this.materialBytes = 0;
         this.fail();
         this.closed = true;
@@ -458,8 +504,12 @@ class ControlStoreWorkerClient {
     command: ControlWorkerCommand,
     materialParts?: readonly string[]
   ): Promise<Success> {
-    if (this.failed || this.closed || (this.stopping && command.operation !== 'shutdown')) {
-      return Promise.reject(new ControlStoreWorkerError('unavailable', 'not-committed'));
+    if (command.operation !== 'shutdown') {
+      try {
+        this.assertAccepting();
+      } catch (error) {
+        return Promise.reject(error);
+      }
     }
     const database = 'database' in command ? command.database : undefined;
     if (
@@ -519,6 +569,13 @@ class ControlStoreWorkerClient {
         return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));
       }
     }
+    let worker: Worker;
+    try {
+      worker = this.startWorker();
+    } catch {
+      this.fail();
+      return Promise.reject(new ControlStoreWorkerError('unavailable', 'not-committed'));
+    }
     const id = this.nextId++;
     return new Promise<Success>((resolve, reject) => {
       this.materialBytes += materialBytes;
@@ -533,7 +590,7 @@ class ControlStoreWorkerClient {
       this.pending.set(id, entry);
       if (database !== undefined)
         this.outstanding.set(database, (this.outstanding.get(database) ?? 0) + 1);
-      this.worker.ref();
+      worker.ref();
       if (!this.backupPaused) this.post(id, entry);
     });
   }
@@ -545,7 +602,7 @@ class ControlStoreWorkerClient {
       const request = entry.request;
       const transferList =
         request.operation === 'material' && request.content !== undefined ? [request.content] : [];
-      this.worker.postMessage(request, transferList);
+      this.worker!.postMessage(request, transferList);
     } catch {
       // Structured cloning fails before a message is enqueued; nothing was submitted.
       this.complete(id, undefined, new ControlStoreWorkerError('invalid-request', 'not-committed'));
@@ -579,7 +636,7 @@ class ControlStoreWorkerClient {
     }
     if (error !== undefined) entry.reject(error);
     else if (reply !== undefined) entry.resolve(reply);
-    if (this.pending.size === 0) this.worker.unref();
+    if (this.pending.size === 0) this.worker?.unref();
     this.completeBackupDrain();
   }
 
@@ -624,6 +681,6 @@ class ControlStoreWorkerClient {
       );
     }
     // A failed channel must not retain a writable connection or continue queued work.
-    void this.worker.terminate();
+    void this.worker?.terminate();
   }
 }

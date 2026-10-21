@@ -107,6 +107,7 @@ import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import { terminalizeGovernedWorkerTurn } from './runtime/worker-turn-failure.js';
 import { requireSchedulerExecutionAttemptAdmissionContext } from './scheduler-records.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import {
   type CoreDb,
   isFreshCoreInitializationScope,
@@ -828,7 +829,11 @@ function shutdown(signal: NodeJS.Signals): void {
     'scheduler.attempt-maintenance.stop',
   ];
   closeWithDeadline({
-    close: closeNanoCoreListeners,
+    close: (onClosed) => {
+      void shutdownControlStoreWorkerClient()
+        .catch((error) => console.error('Control-store shutdown failed.', error))
+        .then(() => closeNanoCoreListeners(onClosed));
+    },
     deadlineMs: SHUTDOWN_DEADLINE_MS,
     onClosed: () => finishShutdown(signal, [...stepsCompleted, 'http-server.close'], false, 0),
     onDeadline: () => finishShutdown(signal, [...stepsCompleted, 'shutdown.deadline'], true, 1),
