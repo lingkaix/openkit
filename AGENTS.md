@@ -80,7 +80,7 @@ Apply these twelve principles as judgments, not as a mandatory workflow:
 - [DOC-002] Non-trivial design decisions require a specification; implementation choices that do not change an accepted contract do not. Material execution uses `docs/change-execution.md`; a change record preserves intent and evidence but never supplies design authority.
 - [DOC-017] Every material concept's owning Core or specification set MUST preserve five decision classes: exact definition and exclusions; unique durable authority and projection boundary; creation, update, termination, retry, and recovery lifecycle; conflict, missing, stale, restart, and dependency-failure semantics; and externally observable acceptance predicates. A class that does not apply MUST be stated explicitly.
 - [DOC-015] Compression, relocation, or reconciliation must not remove a criterion that could change implementation, tests, failure, recovery, ownership, or responsibility.
-- [SCOPE-001] `docs/core/foundation.md` owns proportionality and fallback doctrine. Strict Safety Kernel concerns remain strict regardless of ordinary proportionality.
+- [SCOPE-001] `docs/core/doctrine.md` owns proportionality and fallback doctrine. Strict Safety Kernel concerns remain strict regardless of ordinary proportionality.
 - [SCOPE-007] Core storage and an external Agent Runtime are separate effect domains. Do not invent cross-domain atomicity or automatic repair where an explicit unknown result, inspection, or new-request retry is truthful.
 - [SCOPE-013] A durable record, lifecycle, state machine, runner, harness, or cross-module owner needs a demonstrated current need not served by an existing owner.
 
