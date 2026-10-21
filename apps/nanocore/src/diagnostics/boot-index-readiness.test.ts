@@ -14,6 +14,7 @@ import {
 import { describe, expect, it, vi } from 'vitest';
 import { type BootPhase, runBootPhases } from '../bootstrap/phases.js';
 import { restoreWorkspaceRetirementAdmission } from '../bootstrap/readiness.js';
+import { restoreWorkspaceRecoveryAdmission } from '../bootstrap/workspace-recovery.js';
 import { createApp } from '../test-support/app.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
@@ -51,6 +52,7 @@ function entrypointMigrationPhase(rebuild: () => unknown[]): BootPhase {
     'openCoreDbWithIntegrityCheck',
     'applyMigrations',
     'restoreWorkspaceRetirementAdmission',
+    'restoreWorkspaceRecoveryAdmission',
     'workspaceMutationAdmission',
     'recoverRunningCapabilityCalls',
     'verifyAndMigrateExistingScopedDatabases',
@@ -65,10 +67,16 @@ function entrypointMigrationPhase(rebuild: () => unknown[]): BootPhase {
     'refuseScope',
     `let coreDb; let sharedStore; const dataRoot = '/fixture'; const dataRootLock = {}; const freshCoreInitialization = false;\n${javascript}\nreturn phase;`
   )(
-    // Keep real retirement restoration and its gate; neither registry query has rows.
-    vi.fn(() => ({ sqlite: { prepare: vi.fn(() => ({ all: vi.fn(() => []) })) } })),
+    // Keep both real admission owners; the Core fixture has no registered Workspaces or decisions.
+    vi.fn(() => ({
+      dataRoot: '/fixture',
+      sqlite: {
+        prepare: vi.fn(() => ({ all: vi.fn(() => []), pluck: vi.fn().mockReturnThis() })),
+      },
+    })),
     vi.fn(),
     restoreWorkspaceRetirementAdmission,
+    restoreWorkspaceRecoveryAdmission,
     new WorkspaceMutationAdmission(),
     vi.fn(),
     vi.fn((_dataRoot: string, validateFileAuthority?: () => void) => validateFileAuthority?.()),

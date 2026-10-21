@@ -2,7 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: mechanism
-updated: 2026-10-19
+updated: 2026-10-21
 ---
 # Workspace Backup, Export, Import, And Data-Root Migration
 Workspace export format: V3
@@ -12,6 +12,12 @@ Workspace export format: V3
 Workspace export serves external analysis, evaluation, audit, and other external use. Lossless re-import into OpenKit is not its acceptance requirement. Existing analytical import behavior and regression obligations remain; they do not define operational recovery.
 
 Before `v0.1.0`, each Workspace MUST support local hot backup, verified same-deployment restore, and an operator-driven offline move. [The operational decision](../decisions/20261019-workspace_backup_restore_move.md) activates the previously deferred detailed design. Copy/remint, remote synchronization, optional native-volume continuity, and whole-server hot-backup changes remain deferred. Backup And Restore and Workspace Move below own these operations.
+
+For v0.1.0, per-Workspace backup, same-deployment restore and identity-preserving MOVE are offline operator commands that run while NanoCore and every writer of the affected roots are stopped and the exclusive data-root lock is held; hot capture, live admission, GC and execution fences and online operator surfaces are deferred until after v0.1.0. Bundle format, quiescent consistency, complete content closure, safety and retention checks, identity preservation, explicit owner and member mapping, target binding restrictions, holds, and crash-restart refusal of partial authority at the next boot remain required. Pending Requests and unfinished executions travel only as inert history with truthful interrupted or unknown disposition.
+
+Cold capture also accepts a verified data-root backup directory from `backup.create` as a strictly read-only source while the live server keeps running. It takes no kernel data-root lock on that parent: it verifies the parent before reading, checks copied bytes against the parent manifest digests, and re-verifies the parent inventory digest after copying; any difference refuses with `parent-backup-invalid`. Target restore and the MOVE source seal remain offline.
+
+One Core recovery-admission family, `workspace_recovery_admissions`, retains restore and MOVE ownership, decisions and results for crash restart and next-boot refusal of partial authority.
 
 The predecessor Goal tables and the two Goal steering tables leave both the portable inventory and the excluded inventory with the one-way Goal removal. The current records of [Goal](20261002-goal.md), its cards, its immutable Plan versions with their bytes and digests, its Goal Task links and the Task terminal facts that wake it are portable work data ([decision](../decisions/20261003-current_goal_records_are_portable.md)); import restores no approval authority, and a Goal Task link or Task terminal fact whose Task is missing from the archive stays unresolved evidence, not dangling required lineage. S3-compatible storage, cloud drives, and Litestream remain later options, not selected backends. Local Workspace recovery now has the snapshot and restore contract below. See [the engineer's decision](../decisions/20260928-goal_freeze_and_export_backup_boundary.md). The export-versus-backup separation in that decision stays.
 
