@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -14,6 +15,7 @@ import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
 } from '../config/runtime-config.js';
+import type { AgentToolResult } from '../internal-agents/internal-agent-loop.js';
 import {
   type KnowledgeManagerAgentRun,
   pinKnowledgeManagerExecution,
@@ -534,11 +536,25 @@ async function captureRelatedSource(f: Awaited<ReturnType<typeof fixture>>): Pro
   return captured.body.source.id;
 }
 
+/** Includes unreachable candidates so a refused edit cannot hide a prepared commit. */
+function notebookCommitInventory(repositoryPath: string): string {
+  return execFileSync(
+    'git',
+    ['--git-dir', repositoryPath, 'cat-file', '--batch-all-objects', '--batch-check'],
+    { encoding: 'utf8' }
+  )
+    .split('\n')
+    .filter((line) => line.split(' ')[1] === 'commit')
+    .sort()
+    .join('\n');
+}
+
 /** Runs the actual editor and native publisher with a deterministic, transport-free model driver. */
 async function runMaintenance(
   f: Awaited<ReturnType<typeof fixture>>,
   mode: string,
-  relatedSourceId?: string
+  relatedSourceId?: string,
+  protectedField?: 'source_refs' | 'created_at'
 ) {
   const requiresReview = mode.startsWith('required Review');
   const linkedSource = mode.endsWith('with linked Source');
@@ -636,6 +652,9 @@ async function runMaintenance(
   let reviewToolExposed = false;
   let forgedReviewRefused = false;
   let modelInput = '';
+  let sourceRefusal:
+    | { tool: AgentToolResult; commits: string; revision: string; proposalCount: number }
+    | undefined;
   const run = async (input: KnowledgeManagerAgentRun) => {
     runs += 1;
     reviewToolExposed = input.tools.some((tool) => tool.name === 'knowledge.proposal.decide');
@@ -688,6 +707,37 @@ async function runMaintenance(
         () => true
       );
     } else {
+      if (protectedField) {
+        const invalid = updateOkfFrontmatter({
+          path: f.sourcePath,
+          content: f.pointer,
+          updates: {
+            [protectedField]:
+              protectedField === 'source_refs'
+                ? [`source:${f.source.id}@${f.source.contentDigest}`]
+                : '2026-10-18T00:00:00.000Z',
+          },
+        });
+        await execute('knowledge.notebook-workspace.update', {
+          script: `cat > /notebook/${f.path} <<'SOURCE'\n${invalid}SOURCE\n`,
+        });
+        const tool = await input.tools
+          .find((tool) => tool.name === 'knowledge.notebook.update')!
+          .execute(
+            { summary: 'Submit the selected Source edit.' },
+            { callId: randomUUID(), toolOccurrence: 1, signal: input.signal }
+          );
+        sourceRefusal = {
+          tool,
+          commits: notebookCommitInventory(f.repositoryPath),
+          revision: f.notebook.publishedRevision(),
+          proposalCount: f.store.listKnowledgeProposals(f.workspace.id).length,
+        };
+        // Recover in the same admitted editor from the original captured frontmatter.
+        await execute('knowledge.notebook-workspace.update', {
+          script: `cat > /notebook/${f.path} <<'SOURCE'\n${f.pointer}SOURCE\n`,
+        });
+      }
       const inspected = await execute('knowledge.notebook-workspace.update', {
         script: `cat /notebook/${f.path}`,
       });
@@ -768,8 +818,49 @@ async function runMaintenance(
     modelInput,
     summaryBody,
     requiresReview,
+    sourceRefusal,
   };
 }
+
+it.each([
+  'source_refs',
+  'created_at',
+] as const)('reports protected SourceSummary %s edits with a repair instruction before candidate creation', async (field) => {
+  const f = await fixture();
+  const commits = notebookCommitInventory(f.repositoryPath);
+  const observed = await runMaintenance(f, 'required Review', undefined, field);
+  expect(observed.sourceRefusal).toBeDefined();
+  const refusal = observed.sourceRefusal!;
+  expect(refusal.tool.isError).toBe(true);
+  const feedback = refusal.tool.content
+    .flatMap((part) => (part.type === 'text' ? [part.text] : []))
+    .join('');
+  expect(refusal.commits).toBe(commits);
+  expect(refusal.revision).toBe(f.baseRevision);
+  expect(refusal.proposalCount).toBe(0);
+  for (const privateText of [f.dataRoot, f.source.contentDigest, f.original, 'NotebookError:'])
+    expect(feedback).not.toContain(privateText);
+  expect(JSON.parse(feedback)).toEqual({
+    code: 'invalid_request',
+    diagnostics: ['notebook.invalid_source_edit'],
+    message:
+      'Selected SourceSummary edits may change title, description, tags and summary text. Restore other frontmatter from the admitted summary, including source_refs and created_at; put citations on synthesized Pages. Resubmit with knowledge.notebook.update, then call knowledge.result after a successful submission.',
+  });
+  expect(observed.result.outcome).toBe('review-required');
+  const proposal = f.store.listKnowledgeProposals(f.workspace.id)[0]!;
+  const candidate = f.notebook.readSourcePointers(proposal.candidateRevision)[f.source.id]!;
+  expect(parseSourcePointer(f.owner, f.source.id, candidate).fields).toEqual(f.parsed.fields);
+  expect(candidate).toBe(
+    updateOkfFrontmatter({
+      path: f.sourcePath,
+      content: f.corrected,
+      updates: { review_state: 'delegated' },
+    })
+  );
+  expect(f.notebook.publishedRevision()).toBe(f.baseRevision);
+  expect(f.notebook.readSourcePointers(f.baseRevision)[f.source.id]).toBe(f.pointer);
+  expect(readFileSync(f.rawPath)).toEqual(Buffer.from(f.original));
+}, 120_000);
 
 /** Keeps the original publication, disclosure, cold-load and exact Review oracles. */
 async function assertMaintenance(
