@@ -216,15 +216,15 @@ describe('post-terminal write admission', () => {
     await expect(
       store.createItem(statusItem(turn, 'it_00000000-0000-73ad-8da6-f6643485b939', 'Another item'))
     ).rejects.toThrow(`Turn ${turn.id} is terminal and does not admit this write.`);
-    expect(() =>
-      store.emitTurnEvent(turn.id, {
+    await expect(
+      store.persistTurnEvent(turn.id, {
         data: { type: 'error', code: 'plain', message: 'plain' },
         event: 'error',
         threadId: turn.threadId,
         turnId: turn.id,
         workspaceId: workspaceIdForOwner(turn.owner),
       })
-    ).toThrow(`Turn ${turn.id} is terminal and does not admit this write.`);
+    ).rejects.toThrow(`Turn ${turn.id} is terminal and does not admit this write.`);
     await expect(store.updateItem(created.id, { title: 'Changed' })).rejects.toThrow(
       `Turn ${turn.id} is terminal and does not admit this write.`
     );
@@ -364,9 +364,10 @@ describe('post-terminal write admission', () => {
       workspaceDb.sqlite.close();
     }
 
+    await shutdownControlStoreWorkerClient();
     verifyAndMigrateExistingScopedDatabases(dataRoot);
-    expect(reconcileWorkerMcpItems(dataRoot, store)).toBe(1);
-    expect(reconcileWorkerMcpItems(dataRoot, store)).toBe(0);
+    expect(await reconcileWorkerMcpItems(dataRoot, store)).toBe(1);
+    expect(await reconcileWorkerMcpItems(dataRoot, store)).toBe(0);
     expect(store.listAllItems()).toContainEqual(
       expect.objectContaining({
         id: 'it_00000000-0000-7716-8602-110ce91c304f',
@@ -422,8 +423,9 @@ describe('post-terminal write admission', () => {
       },
       ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
+    await shutdownControlStoreWorkerClient();
     verifyAndMigrateExistingScopedDatabases(conflictRoot);
-    expect(() => reconcileWorkerMcpItems(conflictRoot, conflictStore)).toThrow(
+    await expect(reconcileWorkerMcpItems(conflictRoot, conflictStore)).rejects.toThrow(
       /conflicts with the already-decided record|MCP boot backfill conflicts/
     );
   });
@@ -459,7 +461,7 @@ describe('post-terminal write admission', () => {
     );
 
     const completed = store.getTurnById(turn.id);
-    store.emitTurnEvent(
+    const published = await store.persistTurnEvent(
       turn.id,
       {
         data: { type: 'turn-completed', stopReason: 'completed', turn: completed },
@@ -470,10 +472,14 @@ describe('post-terminal write admission', () => {
         workspaceId: workspaceIdForOwner(turn.owner),
       },
       ALREADY_DECIDED_PUBLICATION_ADMISSION
+    );
+    store.emitTurnEvent(turn.id, published);
+    expect(() => store.emitTurnEvent(turn.id, { ...published })).toThrow(
+      'Turn notification requires its exact acknowledged native event.'
     );
     const events = store.getTurnEvents(turn.id).filter((event) => event.event === 'turn.completed');
     expect(events).toHaveLength(1);
-    const replayed = store.emitTurnEvent(
+    const replayed = await store.persistTurnEvent(
       turn.id,
       {
         data: { type: 'turn-completed', stopReason: 'completed', turn: completed },
@@ -485,9 +491,10 @@ describe('post-terminal write admission', () => {
       },
       ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
+    store.emitTurnEvent(turn.id, replayed);
     expect(replayed.sequence).toBe(events[0]?.sequence);
-    expect(() =>
-      store.emitTurnEvent(
+    await expect(
+      store.persistTurnEvent(
         turn.id,
         {
           data: { type: 'turn-completed', stopReason: 'aborted', turn: completed },
@@ -499,7 +506,7 @@ describe('post-terminal write admission', () => {
         },
         ALREADY_DECIDED_PUBLICATION_ADMISSION
       )
-    ).toThrow(
+    ).rejects.toThrow(
       `Turn ${turn.id} is terminal and the publication conflicts with the already-decided record.`
     );
   });
@@ -603,24 +610,25 @@ describe('post-terminal write admission', () => {
     const store = await createDemoStore();
     const turn = await seedTurn(store);
     const cancelled = await store.updateTurn(turn.id, { status: 'cancelled' });
-    const admitted = store.emitTurnEvent(turn.id, {
+    const admitted = await store.persistTurnEvent(turn.id, {
       data: { type: 'turn-updated', turn: cancelled },
       event: 'turn.updated',
       threadId: turn.threadId,
       turnId: turn.id,
       workspaceId: workspaceIdForOwner(turn.owner),
     });
+    store.emitTurnEvent(turn.id, admitted);
     expect(admitted.event).toBe('turn.updated');
     expect(admitted.data).toEqual({ type: 'turn-updated', turn: cancelled });
-    expect(() =>
-      store.emitTurnEvent(turn.id, {
+    await expect(
+      store.persistTurnEvent(turn.id, {
         data: { type: 'turn-updated', turn: { ...cancelled, status: 'completed' } },
         event: 'turn.updated',
         threadId: turn.threadId,
         turnId: turn.id,
         workspaceId: workspaceIdForOwner(turn.owner),
       })
-    ).toThrow(
+    ).rejects.toThrow(
       `Turn ${turn.id} is terminal and the publication conflicts with the already-decided record.`
     );
   });
@@ -630,8 +638,8 @@ describe('post-terminal write admission', () => {
     const turn = await seedTurn(store);
     const cancelled = await store.updateTurn(turn.id, { status: 'cancelled' });
 
-    expect(() =>
-      store.emitTurnEvent(turn.id, {
+    await expect(
+      store.persistTurnEvent(turn.id, {
         data: {
           type: 'error',
           code: 'injected',
@@ -643,7 +651,7 @@ describe('post-terminal write admission', () => {
         turnId: turn.id,
         workspaceId: workspaceIdForOwner(turn.owner),
       })
-    ).toThrow(`Turn ${turn.id} is terminal and does not admit this write.`);
+    ).rejects.toThrow(`Turn ${turn.id} is terminal and does not admit this write.`);
   });
 
   it('rejects MCP boot when createdAt disagrees with the reconstructed publication', async () => {
@@ -652,8 +660,9 @@ describe('post-terminal write admission', () => {
       createdAt: '1999-01-01T00:00:00.000Z',
       itemId: 'it_00000000-0000-748c-8305-6a5f709ad4dc',
     });
+    await shutdownControlStoreWorkerClient();
     verifyAndMigrateExistingScopedDatabases(dataRoot);
-    expect(() => reconcileWorkerMcpItems(dataRoot, store)).toThrow(
+    await expect(reconcileWorkerMcpItems(dataRoot, store)).rejects.toThrow(
       /MCP boot backfill conflicts with already-decided Item: it_00000000-0000-748c-8305-6a5f709ad4dc/
     );
   });
@@ -666,8 +675,9 @@ describe('post-terminal write admission', () => {
       parentItemId: 'it_00000000-0000-7cf3-9109-8d6d8c869be2',
       scopeItemId: 'it_00000000-0000-7d4f-8cf2-74191ea3ce50',
     });
+    await shutdownControlStoreWorkerClient();
     verifyAndMigrateExistingScopedDatabases(dataRoot);
-    expect(() => reconcileWorkerMcpItems(dataRoot, store)).toThrow(
+    await expect(reconcileWorkerMcpItems(dataRoot, store)).rejects.toThrow(
       /MCP boot backfill conflicts with already-decided Item: it_00000000-0000-769e-be1f-7403aafc125a/
     );
   });
@@ -680,8 +690,9 @@ describe('post-terminal write admission', () => {
       scopeItemId: 'it_00000000-0000-7d4f-8cf2-74191ea3ce50',
       skipExistingItem: true,
     });
+    await shutdownControlStoreWorkerClient();
     verifyAndMigrateExistingScopedDatabases(dataRoot);
-    expect(reconcileWorkerMcpItems(dataRoot, store)).toBe(1);
+    expect(await reconcileWorkerMcpItems(dataRoot, store)).toBe(1);
     expect(
       store.listAllItems().find((item) => item.id === 'it_00000000-0000-771b-ae29-9f651adf70c6')
     ).toMatchObject({
@@ -699,8 +710,9 @@ describe('post-terminal write admission', () => {
       skipExistingItem: true,
       skipSnapshot: true,
     });
+    await shutdownControlStoreWorkerClient();
     verifyAndMigrateExistingScopedDatabases(missing.dataRoot);
-    expect(reconcileWorkerMcpItems(missing.dataRoot, missing.store)).toBe(0);
+    expect(await reconcileWorkerMcpItems(missing.dataRoot, missing.store)).toBe(0);
     expect(
       missing.store
         .listAllItems()
@@ -714,8 +726,9 @@ describe('post-terminal write admission', () => {
       parentItemId: 'it_00000000-0000-7cf3-9109-8d6d8c869be2',
       skipSnapshot: true,
     });
+    await shutdownControlStoreWorkerClient();
     verifyAndMigrateExistingScopedDatabases(present.dataRoot);
-    expect(reconcileWorkerMcpItems(present.dataRoot, present.store)).toBe(0);
+    expect(await reconcileWorkerMcpItems(present.dataRoot, present.store)).toBe(0);
   });
 
   it('rejects a stored Item with no parent against a snapshot-decided parent', async () => {
@@ -727,8 +740,9 @@ describe('post-terminal write admission', () => {
       itemId: 'it_00000000-0000-78cf-ac54-13510d8883d9',
       scopeItemId: 'it_00000000-0000-7d4f-8cf2-74191ea3ce50',
     });
+    await shutdownControlStoreWorkerClient();
     verifyAndMigrateExistingScopedDatabases(dataRoot);
-    expect(() => reconcileWorkerMcpItems(dataRoot, store)).toThrow(
+    await expect(reconcileWorkerMcpItems(dataRoot, store)).rejects.toThrow(
       /MCP boot backfill conflicts with already-decided Item: it_00000000-0000-78cf-ac54-13510d8883d9/
     );
   });
@@ -741,8 +755,9 @@ describe('post-terminal write admission', () => {
       nullSnapshotLineage: true,
       skipExistingItem: true,
     });
+    await shutdownControlStoreWorkerClient();
     verifyAndMigrateExistingScopedDatabases(dataRoot);
-    expect(reconcileWorkerMcpItems(dataRoot, store)).toBe(1);
+    expect(await reconcileWorkerMcpItems(dataRoot, store)).toBe(1);
     const filled = store
       .listAllItems()
       .find((item) => item.id === 'it_00000000-0000-7e65-81be-6ad9d7083cfc');
@@ -762,8 +777,9 @@ describe('post-terminal write admission', () => {
       itemId: 'it_00000000-0000-7ab4-86dd-d5511a0d438e',
       skipExistingItem: true,
     });
+    await shutdownControlStoreWorkerClient();
     verifyAndMigrateExistingScopedDatabases(dataRoot);
-    expect(reconcileWorkerMcpItems(dataRoot, store)).toBe(0);
+    expect(await reconcileWorkerMcpItems(dataRoot, store)).toBe(0);
     expect(
       store.listAllItems().find((item) => item.id === 'it_00000000-0000-7ab4-86dd-d5511a0d438e')
     ).toBe(undefined);

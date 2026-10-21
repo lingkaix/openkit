@@ -2,7 +2,10 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { recordTestAgentEnvironmentPackage } from '../test-support/agent-environment.js';
@@ -10,7 +13,10 @@ import {
   listWorkspaceRuntimeEvidence,
   recordWorkerBackendTeardownEvidence,
 } from './runtime-evidence.js';
-import { projectWorkerBackendCleanup } from './worker-backend-cleanup-projection.js';
+import {
+  projectWorkerBackendCleanup,
+  projectWorkerBackendCleanupInDb,
+} from './worker-backend-cleanup-projection.js';
 import {
   buildWorkspaceInputSnapshots,
   buildWorkspaceMaterializationRecords,
@@ -65,6 +71,23 @@ function createFixture(options: { omitBackendStatus?: boolean } = {}) {
     })
   );
   return { environmentPackage, workspaceDb };
+}
+
+/** Keeps private refusal reasons at their SQL owner and verifies native rollback separately. */
+async function expectCleanupRefusal(
+  workspaceDb: ReturnType<typeof openWorkspaceDb>,
+  input: Parameters<typeof projectWorkerBackendCleanup>[1],
+  message: string | RegExp
+): Promise<void> {
+  // A direct transaction is an excluded stopped phase, never a competing live writer.
+  await shutdownControlStoreWorkerClient();
+  expect(() =>
+    workspaceDb.sqlite.transaction(() => projectWorkerBackendCleanupInDb(workspaceDb, input))()
+  ).toThrow(message);
+  await expect(projectWorkerBackendCleanup(workspaceDb, input)).rejects.toMatchObject({
+    code: 'sql-failed',
+    commit: 'not-committed',
+  });
 }
 
 /** Returns the canonical successful cleanup projection input. */
@@ -219,6 +242,7 @@ describe('worker backend cleanup projection', () => {
       try {
         await client.shutdown();
       } finally {
+        await shutdownControlStoreWorkerClient();
         workspaceDb.sqlite.close();
         rmSync(workspaceDb.dataRoot, { recursive: true, force: true });
       }
@@ -257,6 +281,7 @@ describe('worker backend cleanup projection', () => {
       try {
         await client.shutdown();
       } finally {
+        await shutdownControlStoreWorkerClient();
         workspaceDb.sqlite.close();
         rmSync(workspaceDb.dataRoot, { recursive: true, force: true });
       }
@@ -291,6 +316,7 @@ describe('worker backend cleanup projection', () => {
       try {
         await client.shutdown();
       } finally {
+        await shutdownControlStoreWorkerClient();
         workspaceDb.sqlite.close();
         rmSync(workspaceDb.dataRoot, { recursive: true, force: true });
       }
@@ -299,7 +325,7 @@ describe('worker backend cleanup projection', () => {
   it.each([
     'pending',
     'complete',
-  ] as const)('replays exact no-materialization proof with a %s handoff', (workspaceHandoffState) => {
+  ] as const)('replays exact no-materialization proof with a %s handoff', async (workspaceHandoffState) => {
     const { environmentPackage, workspaceDb } = createFixture();
     try {
       workspaceDb.sqlite.prepare('DELETE FROM backend_workspace_handles').run();
@@ -309,7 +335,7 @@ describe('worker backend cleanup projection', () => {
         workspaceHandoffState,
         materializationNotPublished: true,
       };
-      expect(projectWorkerBackendCleanup(workspaceDb, input)).toMatchObject({
+      expect(await projectWorkerBackendCleanup(workspaceDb, input)).toMatchObject({
         handles: [],
         workspaceHandoffComplete: true,
       });
@@ -317,7 +343,7 @@ describe('worker backend cleanup projection', () => {
         workspaceDb,
         'ws_00000000-0000-7000-8000-000000000001'
       );
-      expect(projectWorkerBackendCleanup(workspaceDb, input)).toMatchObject({
+      expect(await projectWorkerBackendCleanup(workspaceDb, input)).toMatchObject({
         handles: [],
         workspaceHandoffComplete: true,
       });
@@ -328,6 +354,7 @@ describe('worker backend cleanup projection', () => {
         listWorkspaceMaterializationRecords(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
       ).toEqual([]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
@@ -335,30 +362,33 @@ describe('worker backend cleanup projection', () => {
   it.each([
     'pending',
     'complete',
-  ] as const)('rejects partial rows despite no-materialization proof with a %s handoff', (workspaceHandoffState) => {
+  ] as const)('rejects partial rows despite no-materialization proof with a %s handoff', async (workspaceHandoffState) => {
     const { environmentPackage, workspaceDb } = createFixture();
     try {
       expect(
         workspaceDb.sqlite.prepare('DELETE FROM backend_workspace_handles').run().changes
       ).toBe(1);
-      expect(() =>
-        projectWorkerBackendCleanup(workspaceDb, {
+      await expectCleanupRefusal(
+        workspaceDb,
+        {
           ...cleanupInput(environmentPackage),
           workspaceHandoffState,
           materializationNotPublished: true,
-        })
-      ).toThrow('handoff is incomplete');
+        },
+        'handoff is incomplete'
+      );
       expect(
         listWorkspaceRuntimeEvidence(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001').filter(
           (record) => record.phase === 'teardown'
         )
       ).toEqual([]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
 
-  it('accepts a complete Workspace handoff whose accepted materialization omitted optional backendStatus', () => {
+  it('accepts a complete Workspace handoff whose accepted materialization omitted optional backendStatus', async () => {
     const { environmentPackage, workspaceDb } = createFixture({ omitBackendStatus: true });
     const sandboxOnlyReadiness = [
       { kind: 'sandbox.created', ref: 'openkit-as_cleanup_projection' },
@@ -370,7 +400,7 @@ describe('worker backend cleanup projection', () => {
       ).toEqual([expect.objectContaining({ readinessEvidence: sandboxOnlyReadiness })]);
 
       expect(
-        projectWorkerBackendCleanup(workspaceDb, cleanupInput(environmentPackage))
+        await projectWorkerBackendCleanup(workspaceDb, cleanupInput(environmentPackage))
       ).toMatchObject({
         evidence: { outcome: 'succeeded', phase: 'teardown' },
         handles: [
@@ -390,11 +420,12 @@ describe('worker backend cleanup projection', () => {
         )
       ).toHaveLength(1);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
 
-  it('projects successful physical cleanup over a retained transport status', () => {
+  it('projects successful physical cleanup over a retained transport status', async () => {
     const { environmentPackage, workspaceDb } = createFixture();
 
     try {
@@ -415,7 +446,7 @@ describe('worker backend cleanup projection', () => {
       ]);
 
       expect(
-        projectWorkerBackendCleanup(workspaceDb, cleanupInput(environmentPackage))
+        await projectWorkerBackendCleanup(workspaceDb, cleanupInput(environmentPackage))
       ).toMatchObject({
         evidence: { outcome: 'succeeded', phase: 'teardown' },
         handles: [
@@ -431,11 +462,12 @@ describe('worker backend cleanup projection', () => {
         )
       ).toHaveLength(1);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
 
-  it('rolls back handle updates when teardown evidence conflicts, then retries atomically', () => {
+  it('rolls back handle updates when teardown evidence conflicts, then retries atomically', async () => {
     const { environmentPackage, workspaceDb } = createFixture();
 
     try {
@@ -444,22 +476,25 @@ describe('worker backend cleanup projection', () => {
         completedAt: '2026-07-15T00:00:30.000Z',
       });
 
-      expect(() =>
-        projectWorkerBackendCleanup(workspaceDb, cleanupInput(environmentPackage))
-      ).toThrow(/runtime evidence replay conflict/i);
+      await expectCleanupRefusal(
+        workspaceDb,
+        cleanupInput(environmentPackage),
+        /runtime evidence replay conflict/i
+      );
       expect(
         listBackendWorkspaceHandles(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001')
       ).toEqual([expect.objectContaining({ cleanupStatus: 'pending' })]);
 
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.prepare('DELETE FROM runtime_evidence').run();
       expect(
-        projectWorkerBackendCleanup(workspaceDb, cleanupInput(environmentPackage))
+        await projectWorkerBackendCleanup(workspaceDb, cleanupInput(environmentPackage))
       ).toMatchObject({
         evidence: { outcome: 'succeeded', phase: 'teardown' },
         handles: [expect.objectContaining({ cleanupStatus: 'cleaned' })],
       });
       expect(
-        projectWorkerBackendCleanup(workspaceDb, cleanupInput(environmentPackage))
+        await projectWorkerBackendCleanup(workspaceDb, cleanupInput(environmentPackage))
       ).toMatchObject({
         evidence: { outcome: 'succeeded', phase: 'teardown' },
         handles: [expect.objectContaining({ cleanupStatus: 'cleaned' })],
@@ -473,11 +508,12 @@ describe('worker backend cleanup projection', () => {
         )
       ).toHaveLength(1);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
 
-  it('projects evidence without handles only while the durable handoff is pending', () => {
+  it('projects evidence without handles only while the durable handoff is pending', async () => {
     const { environmentPackage, workspaceDb } = createFixture();
 
     try {
@@ -485,59 +521,66 @@ describe('worker backend cleanup projection', () => {
       workspaceDb.sqlite.prepare('DELETE FROM workspace_materialization_records').run();
 
       expect(
-        projectWorkerBackendCleanup(workspaceDb, {
+        await projectWorkerBackendCleanup(workspaceDb, {
           ...cleanupInput(environmentPackage),
           workspaceHandoffState: 'pending',
         })
       ).toMatchObject({ handles: [], workspaceHandoffComplete: false });
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
 
-  it('rejects a missing handoff after Core marked it complete', () => {
+  it('rejects a missing handoff after Core marked it complete', async () => {
     const { environmentPackage, workspaceDb } = createFixture();
 
     try {
       workspaceDb.sqlite.prepare('DELETE FROM backend_workspace_handles').run();
       workspaceDb.sqlite.prepare('DELETE FROM workspace_materialization_records').run();
 
-      expect(() =>
-        projectWorkerBackendCleanup(workspaceDb, cleanupInput(environmentPackage))
-      ).toThrow('handoff is incomplete');
+      await expectCleanupRefusal(
+        workspaceDb,
+        cleanupInput(environmentPackage),
+        'handoff is incomplete'
+      );
       expect(
         listWorkspaceRuntimeEvidence(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001').filter(
           (evidence) => evidence.phase === 'teardown'
         )
       ).toEqual([]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
 
-  it('rejects and rolls back a pending partial handoff', () => {
+  it('rejects and rolls back a pending partial handoff', async () => {
     const { environmentPackage, workspaceDb } = createFixture();
 
     try {
       workspaceDb.sqlite.prepare('DELETE FROM backend_workspace_handles').run();
 
-      expect(() =>
-        projectWorkerBackendCleanup(workspaceDb, {
+      await expectCleanupRefusal(
+        workspaceDb,
+        {
           ...cleanupInput(environmentPackage),
           workspaceHandoffState: 'pending',
-        })
-      ).toThrow('handoff is incomplete');
+        },
+        'handoff is incomplete'
+      );
       expect(
         listWorkspaceRuntimeEvidence(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001').filter(
           (evidence) => evidence.phase === 'teardown'
         )
       ).toEqual([]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
 
-  it('rejects a tampered physical worker-session join inside the projection transaction', () => {
+  it('rejects a tampered physical worker-session join inside the projection transaction', async () => {
     const { environmentPackage, workspaceDb } = createFixture();
 
     try {
@@ -555,33 +598,39 @@ describe('worker backend cleanup projection', () => {
           row.backend_workspace_handle_id
         );
 
-      expect(() =>
-        projectWorkerBackendCleanup(workspaceDb, cleanupInput(environmentPackage))
-      ).toThrow('handoff is incomplete');
+      await expectCleanupRefusal(
+        workspaceDb,
+        cleanupInput(environmentPackage),
+        'handoff is incomplete'
+      );
       expect(
         listWorkspaceRuntimeEvidence(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001').filter(
           (evidence) => evidence.phase === 'teardown'
         )
       ).toEqual([]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
 
-  it.each(exactHandoffTamperCases)('rejects tampered %s', (_description, tamper) => {
+  it.each(exactHandoffTamperCases)('rejects tampered %s', async (_description, tamper) => {
     const { environmentPackage, workspaceDb } = createFixture();
 
     try {
       tamper(workspaceDb);
-      expect(() =>
-        projectWorkerBackendCleanup(workspaceDb, cleanupInput(environmentPackage))
-      ).toThrow('handoff is incomplete');
+      await expectCleanupRefusal(
+        workspaceDb,
+        cleanupInput(environmentPackage),
+        'handoff is incomplete'
+      );
       expect(
         listWorkspaceRuntimeEvidence(workspaceDb, 'ws_00000000-0000-7000-8000-000000000001').filter(
           (evidence) => evidence.phase === 'teardown'
         )
       ).toEqual([]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
   });
