@@ -7,6 +7,7 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
@@ -65,6 +66,7 @@ import {
 } from '../auth/access-token-store.js';
 import * as operationAuthorizer from '../auth/operation-authorizer.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
+import { scopeAdmissionFailures } from '../bootstrap/readiness.js';
 import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-ledger.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { loadRuntimeConfig } from '../config/runtime-config.js';
@@ -88,7 +90,13 @@ import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
-import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
+import {
+  type CoreDb,
+  openCoreDb,
+  openWorkspaceDb,
+  verifyAndMigrateExistingScopedDatabases,
+  type WorkspaceDb,
+} from '../storage/db.js';
 import { workspaceDbPath } from '../storage/fs-layout.js';
 import { retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
 import {
@@ -1678,8 +1686,16 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const backend = new FakeWorkerGovernanceBackend();
     const continuity = vi.fn(async (input: { readonly reuseAllowed: boolean }) => {
       if (input.reuseAllowed) return 'replacement-required' as const;
-      if (proof === 'assigned-missing')
-        await store.updateTurn(turn.id, { agentSessionId: plannedId });
+      if (proof === 'assigned-missing') {
+        await expect(
+          store.updateTurn(turn.id, { agentSessionId: plannedId })
+        ).rejects.toMatchObject({
+          code: 'constraint',
+          commit: 'not-committed',
+        });
+        expect(store.getTurnById(turn.id).agentSessionId).toBe(turn.agentSessionId);
+        expect(() => store.getAgentSession(plannedId)).toThrow();
+      }
       throw new Error('/private/planned-successor-canary native-secret-canary');
     });
     Object.assign(backend, { prepareAgentSessionContinuity: continuity });
@@ -1733,7 +1749,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         status: 'failed',
         error: { code: 'worker_preparation_failed' },
       });
-      expect(original.agentSessionId).toBe(proof === 'assigned-missing' ? plannedId : undefined);
+      expect(original.agentSessionId).toBe(undefined);
       expect(originalEvents.filter((event) => event.event === 'turn.completed')).toHaveLength(1);
       expect(() => store.getAgentSession(plannedId)).toThrow();
       const attempt = attempts.requireSchedulerExecutionAttempt(coreDb, attemptId);
@@ -1852,7 +1868,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       const publish = vi.spyOn(store, 'emitTurnEvent');
       const createSession = vi.spyOn(store, 'createAgentSession');
       for (let pass = 0; pass < 2; pass += 1) {
-        if (proof === 'proved') {
+        if (proof === 'proved' || proof === 'assigned-missing') {
           await expect(
             runNanoHostAttemptRecoveryMaintenance(coreDb, recovery)
           ).resolves.toBeUndefined();
@@ -1882,7 +1898,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
       expect(recovery.restoreBackendSession).not.toHaveBeenCalled();
       expect(recovery.reconcileAcceptedFinalStatus).not.toHaveBeenCalled();
       expect(recovery.projectRecoveredTurn).not.toHaveBeenCalled();
-      expect(log.mock.calls).toHaveLength(proof === 'proved' ? 0 : 2);
+      expect(log.mock.calls).toHaveLength(
+        proof === 'proved' || proof === 'assigned-missing' ? 0 : 2
+      );
       for (const [line] of log.mock.calls)
         expect(JSON.parse(line)).toEqual({
           severityText: 'WARN',
@@ -2683,7 +2701,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
   it.each([
     {
       name: 'active Turn',
-      expected: 'The current AgentSession still owns an active Turn.',
+      expected: 'constraint',
       setup: 'active' as const,
     },
     {
@@ -2725,6 +2743,33 @@ describe('WorkerGovernanceTurnExecutor', () => {
         status: 'completed',
         completedAt: '2026-08-21T00:00:00.000Z',
       });
+    if (setup === 'active') {
+      const refusedTurnId = testEntityId('tu', 'tu_active_barrier_refused');
+      try {
+        await expect(
+          createAssignedTurn(
+            store,
+            workspaceIdForOwner(predecessorTurn.owner),
+            predecessorTurn.threadId,
+            'Keep predecessor barrier',
+            refusedTurnId
+          )
+        ).rejects.toMatchObject({
+          code: expected,
+          commit: 'not-committed',
+        });
+        expect(() => store.getTurnById(refusedTurnId)).toThrow();
+        expect(
+          store.listThreadTurns(
+            workspaceIdForOwner(predecessorTurn.owner),
+            predecessorTurn.threadId
+          )
+        ).toEqual([predecessorTurn]);
+      } finally {
+        coreDb.sqlite.close();
+      }
+      return;
+    }
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -2761,12 +2806,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
       updatedAt: '2026-08-21T00:00:00.000Z',
       workspaceId: workspaceIdForOwner(turn.owner),
     });
-    if (setup === 'active') {
-      await store.updateTurn(predecessorTurn.id, {
-        agentSessionId: 'as_00000000-0000-7c02-b5f7-4874fb86e258',
-        status: 'running',
-      });
-    }
     const inspected = new Set<string>();
     const continuity = vi.fn(
       async (input: { readonly agentSessionId: string; readonly reuseAllowed: boolean }) => {
@@ -7680,11 +7719,15 @@ describe('WorkerGovernanceTurnExecutor', () => {
       threadId: turn.threadId,
       turnId: turn.id,
     });
+    const healthy = await store.createWorkspace('Healthy quarantine control');
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: LOCAL_USER_ID, workspaceId: healthy.id });
     await shutdownControlStoreWorkerClient();
     rmSync(workspaceDbPath(dataRoot, 'ws_00000000-0000-7000-8000-000000000001'), { force: true });
     mkdirSync(workspaceDbPath(dataRoot, 'ws_00000000-0000-7000-8000-000000000001'), {
       recursive: true,
     });
+    verifyAndMigrateExistingScopedDatabases(dataRoot);
+    const reopenedStore = new FsStore({ dataRoot });
     const executor = new WorkerGovernanceTurnExecutor({
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       backend: new FakeWorkerGovernanceBackend(),
@@ -7708,14 +7751,47 @@ describe('WorkerGovernanceTurnExecutor', () => {
         })
       ).rejects.toThrow();
 
-      expect(store.getTurnById(turn.id)).toMatchObject({ status: 'failed' });
+      expect(scopeAdmissionFailures(dataRoot)).toContainEqual({
+        scope: 'workspace',
+        id: workspaceIdForOwner(turn.owner),
+        check: 'database',
+      });
+      const app = createAppWithWorkspaceAuthority({
+        coreDb,
+        dataRoot,
+        store: reopenedStore,
+        turnExecutor: executor,
+      });
+      const refused = await app.request(
+        ...operationRequest('workspace.read', {
+          workspaceId: workspaceIdForOwner(turn.owner),
+        })
+      );
+      expect(refused.status).toBe(409);
+      expect(await refused.json()).toMatchObject({
+        code: 'recovery_required',
+        message: expect.stringContaining('quarantined'),
+      });
+      const available = await app.request(
+        ...operationRequest('workspace.read', { workspaceId: healthy.id })
+      );
+      expect(available.status).toBe(200);
+      expect(await available.json()).toMatchObject({ id: healthy.id });
       expect(
-        store.getTurnEvents(turn.id).filter((event) => event.event === 'turn.completed')
-      ).toEqual([
-        expect.objectContaining({
-          data: expect.objectContaining({ stopReason: 'error' }),
-        }),
-      ]);
+        lstatSync(workspaceDbPath(dataRoot, workspaceIdForOwner(turn.owner))).isDirectory()
+      ).toBe(true);
+      expect(readdirSync(workspaceDbPath(dataRoot, workspaceIdForOwner(turn.owner)))).toEqual([]);
+      // Quarantine must also permit new work in an independently healthy Workspace.
+      const progress = await app.request(
+        ...operationRequest(
+          'thread.create',
+          { workspaceId: healthy.id },
+          {
+            body: JSON.stringify({ name: 'Healthy progress', requestId: randomUUID() }),
+          }
+        )
+      );
+      expect(progress.status).toBe(200);
     } finally {
       coreDb.sqlite.close();
     }
