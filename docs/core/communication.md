@@ -374,7 +374,7 @@ Detailed gateway semantics belong to `docs/core/mediation.md`.
 
 ## Capability Mediation Boundary
 
-[Mediation](mediation.md#capability-mediation-boundary) owns the Capability Mediation Boundary, its responsibilities, its non-responsibilities, and its shared-carriage authority boundary. Communication owns only the transport projection that exposes local capability endpoints, establishes or accepts the deployment-selected connection, and carries capability frames separately from the authenticated worker-control plane.
+[Mediation](mediation.md#capability-mediation-boundary) owns the Capability Mediation Boundary, its responsibilities, its non-responsibilities, and its shared-carriage authority boundary. Communication carries its transport projection.
 
 ## Deployment Projections
 
@@ -444,7 +444,7 @@ Audit is a cross-cutting communication requirement, not a separate transport.
 - Workers MUST NOT communicate with each other directly; a control edge between workers exists only as a parent-child edge through Core.
 - A worker's upward access to Core operations and NanoCore-managed integrated external systems MUST use NanoCore-served MCP through the gateway, and its visible tool surface MUST change only at a Turn boundary. Inference and worker-control traffic keep their own interfaces and owners.
 - Workspace bytes and artifact bytes SHOULD NOT travel through the control stream except for intentionally small inline previews.
-- Capability mediation transport carriage MUST preserve the [Mediation](mediation.md#capability-mediation-boundary) boundary and MUST NOT merge capability mediation with worker-control authority.
+- [Mediation](mediation.md#invariants) owns the capability mediation responsibility invariant; Communication carries its transport projection.
 - Transport and deployment-mode choices MUST preserve the deployment-semantic invariant owned by `docs/core/architecture.md`.
 - Control, workspace, artifact, and capability planes MUST remain distinct in every deployment shape, including shapes where they share physical network infrastructure.
 - Sharing one connection, process, or transport session MUST NOT merge plane tokens, permission scopes, payload limits, ordering, retry rules, failure semantics, or protocol ownership.
