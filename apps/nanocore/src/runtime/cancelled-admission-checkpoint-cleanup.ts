@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { readRetainedV1 } from '@openkit/protocol';
 import { acquireDataRootLock, type DataRootLock, DataRootLockError } from '../bootstrap/lock.js';
@@ -8,16 +8,27 @@ import {
   readDurableCommandRequestRecords,
 } from '../storage/command-request-records.js';
 import {
+  type ControlProductOwner,
+  openControlStoreProductReadHandle,
+} from '../storage/control-store-products.js';
+import {
   type CoreDb,
   openBootVerifiedWorkspaceDb,
   openExistingCoreDbWithIntegrityCheck,
   type WorkspaceDb,
 } from '../storage/db.js';
-import { StoredThreadSnapshotV1Schema } from '../storage/retained-work-events-v1.js';
+import { loadServerThreadRecords } from '../storage/server-thread-records.js';
 import {
-  type PublishedTurnIdentity,
+  assertCanonicalDirectory,
+  assertCanonicalRegularFile,
+  assertSafeWorkspacePathSegment,
+  listDirectoryNames,
+  listNativeProducts,
+  nativeProductScope,
+  readNativeProduct,
+  readNativeTurnEvents,
   readPublishedAgentSessionIds,
-  readPublishedTurnIdentities,
+  readPublishedTurnFileRecords,
 } from '../storage/workspace-file-records.js';
 import { listExportableAgentEnvironmentPackageSnapshots } from './aep-snapshot-ledger.js';
 import {
@@ -133,7 +144,7 @@ export async function cleanCancelledAdmissionTaskCheckpoints(
     if (!openedCoreDb) {
       return blocked(input.checkpoints, 'unreadable-history');
     }
-    const history = readPublishedTurnIdentities(dataRoot);
+    const history = readCleanupHistory(dataRoot, openedCoreDb);
     const receipts = readDurableCommandRequestRecords(dataRoot);
     if (history.status === 'unreadable' || receipts.status === 'unreadable') {
       return blocked(input.checkpoints, 'unreadable-history');
@@ -205,7 +216,7 @@ export async function cleanCancelledAdmissionTaskCheckpoints(
         rows.push({ ...row, decision: 'refused', reason: 'changed-before-delete' });
         continue;
       }
-      const againHistory = readPublishedTurnIdentities(dataRoot);
+      const againHistory = readCleanupHistory(dataRoot, openedCoreDb);
       const againReceipts = readDurableCommandRequestRecords(dataRoot);
       if (againHistory.status === 'unreadable' || againReceipts.status === 'unreadable') {
         rows.push({ ...row, decision: 'refused', reason: 'changed-before-delete' });
@@ -349,6 +360,66 @@ function blocked(
   };
 }
 
+/** Owner-qualified selectors retain Server identity in the stopped deletion proof. */
+interface CleanupTurnIdentity {
+  readonly owner: ControlProductOwner;
+  readonly threadId: string;
+  readonly turnId: string;
+}
+
+type CleanupHistoryRead =
+  | { readonly status: 'readable'; readonly turns: readonly CleanupTurnIdentity[] }
+  | { readonly status: 'unreadable' };
+
+/** Validates complete native work history before absence can authorize checkpoint deletion. */
+function readCleanupHistory(dataRoot: string, coreDb: CoreDb): CleanupHistoryRead {
+  try {
+    if (coreDb.sqlite.prepare('PRAGMA foreign_key_check(control_product_entries)').get())
+      return { status: 'unreadable' };
+    const turns: CleanupTurnIdentity[] = loadServerThreadRecords(dataRoot).turns.map((turn) => ({
+      owner: turn.owner,
+      threadId: turn.threadId,
+      turnId: turn.id,
+    }));
+    const workspaceIds = listDirectoryNames(join(dataRoot, 'workspaces')).filter(
+      (id) => id !== '.staging'
+    );
+    const retained = coreDb.sqlite
+      .prepare("SELECT workspace_id FROM workspace_registry WHERE status <> 'deleted'")
+      .all() as { workspace_id: string }[];
+    if (retained.some((row) => !workspaceIds.includes(row.workspace_id)))
+      return { status: 'unreadable' };
+    for (const workspaceId of workspaceIds) {
+      assertSafeWorkspacePathSegment(workspaceId, 'Workspace id');
+      const scope = nativeProductScope(dataRoot, { kind: 'workspace', workspaceId });
+      assertCanonicalDirectory(dirname(dirname(scope.path)));
+      assertCanonicalDirectory(dirname(scope.path));
+      assertCanonicalRegularFile(scope.path);
+      if (!readNativeProduct(scope, 'workspace', workspaceId)) return { status: 'unreadable' };
+      const reader = openControlStoreProductReadHandle(scope.path, scope.owner);
+      try {
+        if (reader.sqlite.prepare('PRAGMA foreign_key_check(control_product_entries)').get())
+          return { status: 'unreadable' };
+      } finally {
+        reader.close();
+      }
+      const threads = new Set(listNativeProducts(scope, 'thread').map((row) => row.record.id));
+      for (const row of listNativeProducts(scope, 'turn')) {
+        const turnId = row.record.id as string;
+        const threadId = row.record.threadId as string;
+        if (!threads.has(threadId)) return { status: 'unreadable' };
+        const history = readPublishedTurnFileRecords(dataRoot, workspaceId, threadId, turnId);
+        if (!history) return { status: 'unreadable' };
+        readNativeTurnEvents(scope, history.turn);
+        turns.push({ owner: scope.owner, threadId, turnId });
+      }
+    }
+    return { status: 'readable', turns };
+  } catch {
+    return { status: 'unreadable' };
+  }
+}
+
 function openSelectedWorkspace(
   workspaceDbs: Map<string, WorkspaceDb>,
   dataRoot: string,
@@ -356,7 +427,15 @@ function openSelectedWorkspace(
 ): WorkspaceDb | null {
   const existing = workspaceDbs.get(workspaceId);
   if (existing) return existing;
-  if (!existsSync(join(dataRoot, 'workspaces', workspaceId, 'workspace-record.json'))) {
+  try {
+    assertSafeWorkspacePathSegment(workspaceId, 'Workspace id');
+    const root = join(dataRoot, 'workspaces', workspaceId);
+    assertCanonicalDirectory(root);
+    assertCanonicalDirectory(join(root, 'db'));
+    assertCanonicalRegularFile(join(root, 'db', 'workspace.sqlite'));
+    const scope = nativeProductScope(dataRoot, { kind: 'workspace', workspaceId });
+    if (!readNativeProduct(scope, 'workspace', workspaceId)) return null;
+  } catch {
     return null;
   }
   const workspaceDb = openBootVerifiedWorkspaceDb(dataRoot, workspaceId);
@@ -368,7 +447,7 @@ function classifyCheckpoint(input: {
   readonly checkpoint: CancelledAdmissionCheckpointIdentity;
   readonly coreDb: CoreDb;
   readonly dataRoot: string;
-  readonly history: ReturnType<typeof readPublishedTurnIdentities>;
+  readonly history: CleanupHistoryRead;
   readonly receipts: ReadableReceipts;
   readonly workspaceDb: WorkspaceDb | null;
 }): Classification {
@@ -447,7 +526,7 @@ function classifyShape(checkpoint: WorkerCheckpointRecord): Classification | nul
 }
 
 function classifyTurnAbsence(
-  turns: readonly PublishedTurnIdentity[],
+  turns: readonly CleanupTurnIdentity[],
   identity: CancelledAdmissionCheckpointIdentity
 ): Classification | null {
   const verdict = turnFileVerdict(
@@ -467,13 +546,15 @@ function classifyTurnAbsence(
 }
 
 function turnFileVerdict(
-  matches: readonly PublishedTurnIdentity[],
+  matches: readonly CleanupTurnIdentity[],
   identity: CancelledAdmissionCheckpointIdentity
 ): 'absent' | 'present' | 'mismatched' | 'unreadable' {
   if (matches.length === 0) return 'absent';
   if (matches.length !== 1) return 'unreadable';
   const hit = matches[0]!;
-  return hit.workspaceId === identity.workspaceId && hit.threadId === identity.threadId
+  return hit.owner.kind === 'workspace' &&
+    hit.owner.workspaceId === identity.workspaceId &&
+    hit.threadId === identity.threadId
     ? 'present'
     : 'mismatched';
 }
@@ -659,37 +740,23 @@ function listAdmissions(
   }
 }
 
+/** Resolves exact selected ownership through the existing read-only native metadata owner. */
 function readWorkspaceThreadOwner(
   dataRoot: string,
   identity: CancelledAdmissionCheckpointIdentity
 ): 'ok' | 'invalid-ownership' | 'unreadable-history' {
-  const workspacePath = join(dataRoot, 'workspaces', identity.workspaceId, 'workspace-record.json');
-  const threadPath = join(
-    dataRoot,
-    'workspaces',
-    identity.workspaceId,
-    'threads',
-    identity.threadId,
-    'thread.json'
-  );
-  if (!existsSync(workspacePath) || !existsSync(threadPath)) {
-    return 'invalid-ownership';
-  }
   try {
-    const workspace = JSON.parse(readFileSync(workspacePath, 'utf8')) as { readonly id?: unknown };
-    const thread = StoredThreadSnapshotV1Schema.safeParse(
-      JSON.parse(readFileSync(threadPath, 'utf8'))
-    );
-    if (
-      workspace.id !== identity.workspaceId ||
-      !thread.success ||
-      thread.data.id !== identity.threadId ||
-      thread.data.owner.kind !== 'workspace' ||
-      thread.data.owner.workspaceId !== identity.workspaceId
-    ) {
-      return 'invalid-ownership';
-    }
-    return 'ok';
+    assertSafeWorkspacePathSegment(identity.workspaceId, 'Workspace id');
+    assertSafeWorkspacePathSegment(identity.threadId, 'Thread id');
+    const scope = nativeProductScope(dataRoot, {
+      kind: 'workspace',
+      workspaceId: identity.workspaceId,
+    });
+    if (!existsSync(scope.path)) return 'invalid-ownership';
+    return readNativeProduct(scope, 'workspace', identity.workspaceId) &&
+      readNativeProduct(scope, 'thread', identity.threadId)
+      ? 'ok'
+      : 'invalid-ownership';
   } catch {
     return 'unreadable-history';
   }
