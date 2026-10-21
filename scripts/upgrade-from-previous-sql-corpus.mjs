@@ -766,25 +766,7 @@ export async function seedSqlCorpus({ appRoot, dataRoot, retainedRoot, userId, s
       status: 'succeeded',
       now: new Date(NOW),
     });
-    sql.receiptKeys = {};
-    for (const [scopeName, handle, scope] of [
-      ['core', core, { coreId: 'server' }],
-      ['user', user, { userId }],
-      ['workspace', workspace, { workspaceId }],
-    ]) {
-      const record = {
-        key: `task.start|upgrade-corpus-${scopeName}|${scopeName}`,
-        command: 'task.start',
-        requestId: `upgrade-corpus-${scopeName}`,
-        scope,
-        inputHash: 'sha256:synthetic-corpus',
-        response: { kind: 'turn', id: turnId },
-        createdAt: NOW,
-        expiresAt: EXPIRES,
-      };
-      o.commands.recordCommandRequestRecordInDb(handle, record);
-      sql.receiptKeys[scopeName] = record.key;
-    }
+    await seedTaskReceipts(o, core, user, workspace, store, sql);
     sql.readItemId = store
       .listThreadItems(workspaceId, threadId)
       .find((item) => item.type === 'user-message')?.id;
@@ -938,6 +920,119 @@ export async function seedSqlCorpus({ appRoot, dataRoot, retainedRoot, userId, s
     user.sqlite.close();
     core.sqlite.close();
   }
+}
+
+/** Admits fresh, unexecuted Task Turns and their original receipts in the selected native writer. */
+async function seedTaskReceipts(o, core, user, workspace, store, sql) {
+  const records = await o.load('storage/workspace-file-records');
+  const { getControlStoreWorkerClient } = await o.load('storage/control-store-worker-client');
+  const protocol = await o.loadPackage('@openkit/protocol');
+  const { commandInputHash } = await o.load('runtime/idempotent-command');
+  sql.receiptKeys = {};
+  sql.receipts = {};
+  for (const [scopeName, handle, owner] of [
+    ['core', core, { kind: 'server' }],
+    ['workspace', workspace, { kind: 'workspace', workspaceId: workspace.workspaceId }],
+  ]) {
+    const thread =
+      owner.kind === 'server'
+        ? await store.createServerThread('Synthetic retained Task admission')
+        : await store.createThread(owner.workspaceId, 'Synthetic retained Task admission');
+    const scope =
+      owner.kind === 'server' ? { coreId: 'server' } : { workspaceId: owner.workspaceId };
+    const requestId = randomUUID();
+    const prompt = 'Retain this Task admission without executing it.';
+    const turn = protocol.TurnSchema.parse({
+      id: protocol.allocateEntityId('tu'),
+      owner,
+      threadId: thread.id,
+      triggerActor: { kind: 'user', id: sql.userId },
+      items: [],
+      status: 'pending',
+      error: null,
+      configVersion: null,
+      startedAt: NOW,
+      completedAt: null,
+      durationMs: null,
+    });
+    const receipt = {
+      key: o.store.commandRequestKey('task.start', requestId, scope),
+      command: 'task.start',
+      requestId,
+      scope,
+      inputHash: commandInputHash({ input: prompt }),
+      response: { kind: 'turn', id: turn.id },
+      createdAt: NOW,
+      expiresAt: EXPIRES,
+    };
+    const native = records.nativeProductScope(core.dataRoot, owner);
+    const previous = records.readNativeProduct(native, 'thread', thread.id);
+    const client = getControlStoreWorkerClient();
+    const database = `${scopeName}:${native.path}`;
+    await client.open({
+      database,
+      path: native.path,
+      dataRoot: core.dataRoot,
+      create: false,
+      initialize: owner.kind === 'server' ? 'core' : 'workspace',
+      productOwner: owner,
+      contentMount: native.contentMount,
+    });
+    const admitted = await client.transition(database, {
+      receipt,
+      products: [
+        {
+          kind: 'thread',
+          expectedRevision: previous.revision,
+          record: protocol.writeRetainedV1({ ...previous.record, preview: prompt, updatedAt: NOW }),
+        },
+        { kind: 'turn', expectedRevision: 0, record: protocol.writeRetainedV1(turn) },
+      ],
+      entries: [],
+      audit: o.audit.prepareAuditEvent({
+        workspaceId: owner.kind === 'workspace' ? owner.workspaceId : null,
+        threadId: thread.id,
+        turnId: turn.id,
+        requestId,
+        actor: turn.triggerActor,
+        category: 'command',
+        action: 'task.start',
+        resource: `turn:${turn.id}`,
+        outcome: 'succeeded',
+        summary: 'Synthetic Task admitted without execution.',
+        now: new Date(NOW),
+      }),
+    });
+    assert.deepEqual(admitted.response, receipt.response);
+    const retained = required(
+      o.commands.getCommandRequestRecordFromDb(handle, receipt.key, NOW),
+      `${scopeName} Task admission receipt`
+    );
+    assert.deepEqual(retained, receipt);
+    assert.deepEqual(
+      records.readNativeProduct(native, 'turn', admitted.response.id).record,
+      protocol.writeRetainedV1(turn)
+    );
+    sql.receiptKeys[scopeName] = retained.key;
+    sql.receipts[scopeName] = retained;
+  }
+  // User receipts keep their existing Main owner; the Task pointer comes from native admission.
+  const receipt = {
+    key: 'task.start|upgrade-corpus-user|user',
+    command: 'task.start',
+    requestId: 'upgrade-corpus-user',
+    scope: { userId: sql.userId },
+    inputHash: 'sha256:synthetic-corpus',
+    response: sql.receipts.workspace.response,
+    createdAt: NOW,
+    expiresAt: EXPIRES,
+  };
+  o.commands.recordCommandRequestRecordInDb(user, receipt);
+  sql.receiptKeys.user = receipt.key;
+  sql.receipts.user = required(
+    o.commands.getCommandRequestRecordFromDb(user, receipt.key, NOW),
+    'User command receipt'
+  );
 }
 
 /** Seeds deployment-local channel history through native owners, using only in-memory synthetic signing material. */
@@ -1166,17 +1261,45 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot) 
     actor: { kind: 'session', userId: sql.userId },
     inflightCommands: new WeakMap(),
   };
-  workspace.sqlite.transaction(() =>
-    judgements.appendArtifactJudgement(access, {
-      requestId: 'upgrade-corpus-artifact-judgement',
-      artifactId: artifact.id,
-      artifactVersion: artifact.version,
-      contentDigest: artifact.contentDigest,
-      kind: 'accept',
-      choice: null,
-      note: 'Synthetic retained human assessment.',
-    })
-  )();
+  const judgementInput = {
+    requestId: 'upgrade-corpus-artifact-judgement',
+    artifactId: artifact.id,
+    artifactVersion: artifact.version,
+    contentDigest: artifact.contentDigest,
+    kind: 'accept',
+    choice: null,
+    note: 'Synthetic retained human assessment.',
+  };
+  await hashing.runIdempotentCommand({
+    store,
+    workspaceDb: workspace,
+    inflightCommands: access.inflightCommands,
+    command: 'evaluation.judgement-add',
+    requestId: judgementInput.requestId,
+    scope: { workspaceId },
+    input: {
+      actor,
+      judgement: {
+        target: {
+          kind: 'artifact-version',
+          artifactId: artifact.id,
+          artifactVersion: artifact.version,
+          contentDigest: artifact.contentDigest,
+        },
+        kind: judgementInput.kind,
+        choice: judgementInput.choice,
+        note: judgementInput.note,
+      },
+    },
+    responseKind: 'evaluation_judgement',
+    responseId: () => judgementInput.requestId,
+    execute: (receipt) => judgements.appendArtifactJudgement(access, judgementInput, receipt),
+    replay: () =>
+      required(
+        judgements.readArtifactJudgement(access, judgementInput),
+        'Retained Artifact judgement'
+      ),
+  });
   const secondBody = `${content}Second synthetic candidate.\n`;
   const secondDigest = `sha256:${digest(secondBody)}`;
   const second = await store.createArtifact({
@@ -1290,7 +1413,6 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot) 
     }
   );
   sql.presentationId = presentation.id;
-  await store.updateTurn(turn.id, { agentSessionId: sql.contextAgentSessionId });
   const setup = syntheticAgentSetup();
   const image = imagePreparation.materializeRuntimeImage(setup.manifest.runtime.image);
   const inputDigest = hashing.commandInputHash(image);
@@ -1366,6 +1488,8 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot) 
     environmentPackageSnapshotId: sql.aepSnapshotId,
     stale: true,
   });
+  // Native Turn assignment requires its acknowledged AgentSession; immutable AEP bytes precede the reference.
+  await store.updateTurn(turn.id, { agentSessionId: sql.contextAgentSessionId });
   const entry = o.scheduler.createSchedulerAdmissionEntry(core, {
     backendId: 'nanohost',
     queueEntryId: 'upgrade-corpus-context-queue',
@@ -1858,8 +1982,16 @@ export async function readSqlCorpus({ appRoot, dataRoot, selectors }) {
           'Light App command receipt'
         )
       );
-    const receipt = (handle, key) =>
-      o.commands.readCommandRequestRecordsFromSqlite(handle.sqlite).find((row) => row.key === key);
+    const receipt = (handle, key) => {
+      const retained = o.commands
+        .readCommandRequestRecordsFromSqlite(handle.sqlite)
+        .find((row) => row.key === key);
+      assert.deepEqual(
+        retained,
+        Object.values(sql.receipts).find((row) => row.key === key)
+      );
+      return retained;
+    };
     const linked = await readLinkedEvidence(o, core, workspace, store, sql);
     const evaluation = await o.load('evaluation-candidates');
     const candidateSet = evaluation.readCandidateSet(
