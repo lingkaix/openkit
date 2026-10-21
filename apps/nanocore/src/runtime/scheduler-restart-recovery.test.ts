@@ -163,17 +163,18 @@ afterEach(async () => {
   }
 });
 
-/** Creates an isolated migrated Core database for restart recovery tests. */
-function createMigratedCoreDb() {
+/** Keeps SQL-only membership setup while native Demo fixtures defer it until publication. */
+function createMigratedCoreDb(registerDemoMembership = true) {
   const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-scheduler-restart-')));
   fixtureDatabases.push(coreDb);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  recordWorkspaceOwnerMembership({
-    coreDb,
-    ownerUserId: LOCAL_USER_ID,
-    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-  });
+  if (registerDemoMembership)
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
   return coreDb;
 }
 
@@ -210,7 +211,7 @@ async function createFailedStartFixture(
   finalized = true,
   workspaceInputIds: readonly string[] = []
 ) {
-  const coreDb = createMigratedCoreDb();
+  const coreDb = createMigratedCoreDb(false);
   const dataRoot = coreDb.dataRoot;
   ensureLocalUser(coreDb);
   const store = await createDemoStore({ dataRoot });
@@ -5440,9 +5441,14 @@ describe('minimal scheduler reconnect contract', () => {
   });
 
   it('hydrates one same-Epoch survivor while readiness is absent and rejects a different Epoch', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = createMigratedCoreDb(false);
     const suffix = 'graceful_same_epoch_reconnect';
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Same-Epoch restart fixture',
@@ -6331,8 +6337,13 @@ async function createFinalReviewRecoveryFixture(
   suffix: string,
   boundary: 'running' | 'completed' | 'failed-start' | 'failed-preparation'
 ) {
-  const coreDb = createMigratedCoreDb();
+  const coreDb = createMigratedCoreDb(false);
   const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: LOCAL_USER_ID,
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+  });
   const threadId = testEntityId('th', `th_${suffix}`);
   const turnId = testEntityId('tu', `turn_${suffix}`);
   const agentSessionId = testEntityId('as', `as_${suffix}`);

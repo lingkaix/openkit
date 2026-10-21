@@ -151,14 +151,19 @@ async function importedStore(
  * Grants the local test actor access to the demo Workspace.
  *
  * @param coreDb Migrated Core database used by one route fixture.
+ * @param registerDemoMembership False to admit the User before native publication and defer membership.
  */
-function authorizeDemoWorkspace(coreDb: ReturnType<typeof openCoreDb>): void {
+function authorizeDemoWorkspace(
+  coreDb: ReturnType<typeof openCoreDb>,
+  registerDemoMembership = true
+): void {
   ensureLocalUser(coreDb);
-  recordWorkspaceOwnerMembership({
-    coreDb,
-    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-  });
+  if (registerDemoMembership)
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
 }
 
 /**
@@ -221,8 +226,13 @@ describe('Knowledge proposal decision lineage', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-proposal-lineage-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    authorizeDemoWorkspace(coreDb);
+    authorizeDemoWorkspace(coreDb, false);
     const store = await createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const foreignWorkspace = await store.createWorkspace('Foreign Knowledge Workspace');
     recordWorkspaceOwnerMembership({
       coreDb,
@@ -360,8 +370,13 @@ describe('Knowledge Store save-time validation', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-create-validation-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    authorizeDemoWorkspace(coreDb);
+    authorizeDemoWorkspace(coreDb, false);
     const store = await createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const app = createApp({ coreDb, dataRoot, store });
 
     try {
@@ -405,8 +420,13 @@ describe('Knowledge Store save-time validation', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-update-validation-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    authorizeDemoWorkspace(coreDb);
+    authorizeDemoWorkspace(coreDb, false);
     const store = await createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const app = createApp({ coreDb, dataRoot, store });
 
     try {
@@ -481,8 +501,13 @@ describe('Knowledge Manager answer operation', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-source-route-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    authorizeDemoWorkspace(coreDb);
+    authorizeDemoWorkspace(coreDb, false);
     const store = await createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const app = createApp({ coreDb, dataRoot, store });
     const sourceContent = 'Release cadence is weekly.';
     const registerRes = await app.request(
@@ -956,8 +981,13 @@ describe('Knowledge Manager answer operation', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-answer-usage-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    authorizeDemoWorkspace(coreDb);
+    authorizeDemoWorkspace(coreDb, false);
     const store = await createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const { app, createResponses } = createKnowledgeAnswerApp({ coreDb, dataRoot, store }, [
       {
         query: 'release cadence',
@@ -1296,8 +1326,14 @@ describe('Knowledge Manager answer operation', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-context-retrieval-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    authorizeDemoWorkspace(coreDb);
-    const app = createApp({ coreDb, dataRoot, store: await createDemoStore({ dataRoot }) });
+    authorizeDemoWorkspace(coreDb, false);
+    const demoStore = await createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
+    const app = createApp({ coreDb, dataRoot, store: demoStore });
 
     const sourceRes = await app.request(
       ...knowledgeOperationRequest(
@@ -1470,8 +1506,13 @@ describe('Knowledge Manager answer operation', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-proposal-usage-'));
     let coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    authorizeDemoWorkspace(coreDb);
+    authorizeDemoWorkspace(coreDb, false);
     let store = await createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     let app = createApp({ coreDb, dataRoot, store });
     const sourceRes = await app.request(
       ...knowledgeOperationRequest(
@@ -1631,8 +1672,13 @@ describe('Knowledge Manager answer operation', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-repair-usage-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    authorizeDemoWorkspace(coreDb);
+    authorizeDemoWorkspace(coreDb, false);
     const store = await createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const app = createApp({ coreDb, dataRoot, store });
     const first = await app.request(
       ...knowledgeOperationRequest(
@@ -1752,8 +1798,13 @@ describe('Knowledge Manager answer operation', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-health-usage-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    authorizeDemoWorkspace(coreDb);
+    authorizeDemoWorkspace(coreDb, false);
     const store = await createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const app = createApp({ coreDb, dataRoot, store });
     const first = await app.request(
       ...knowledgeOperationRequest(
@@ -1942,10 +1993,16 @@ describe('Knowledge Manager answer operation', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-provider-failure-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
-    authorizeDemoWorkspace(coreDb);
+    authorizeDemoWorkspace(coreDb, false);
+    const demoStore = await createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     try {
       const { app, createResponses } = createKnowledgeAnswerApp(
-        { coreDb, dataRoot, store: await createDemoStore({ dataRoot }) },
+        { coreDb, dataRoot, store: demoStore },
         [],
         'ENOENT /Users/private/openkit-data/knowledge/pages/secret.md token=private-secret'
       );

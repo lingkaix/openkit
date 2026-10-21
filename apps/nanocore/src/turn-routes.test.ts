@@ -398,6 +398,7 @@ async function createSharedSchedulerFixture(executor: RecordingTurnExecutor, slu
       ) VALUES ('usr_00000000-0000-73d4-904a-d4c4b905df7c', 'Other User', 'other@example.com', false, ?, ?, 'human')`
     )
     .run(now, now);
+  const store = await createDemoStore({ dataRoot, coreDb });
   recordWorkspaceOwnerMembership({
     coreDb,
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -412,7 +413,6 @@ async function createSharedSchedulerFixture(executor: RecordingTurnExecutor, slu
     )
     .run(timestamp, timestamp, timestamp);
 
-  const store = await createDemoStore({ dataRoot, coreDb });
   executor.coreDb = coreDb;
   executor.executionBackend = new SimulatedTurnExecutor({ coreDb });
   const app = createApp({
@@ -641,6 +641,7 @@ describe('generic turn routes', () => {
 
   it('returns typed unsupported without mutating when the executor cannot interrupt', async () => {
     const executor = new RecordingTurnExecutor({ interrupts: false, completeStarts: false });
+    const started = vi.spyOn(executor, 'startTurn');
     const { app, store, coreDb } = await createSchedulerFixture(executor, 'unsupported-interrupt');
     try {
       const start = await app.request(
@@ -661,6 +662,8 @@ describe('generic turn routes', () => {
       expect(start.status).toBe(202);
       const turn = TurnSchema.parse(await start.json());
       await vi.waitFor(() => expect(executor.startCalls).toBe(1));
+      // The call counter precedes the original native submission acknowledgement.
+      await started.mock.results[0]!.value;
       await setImmediate();
       const before = store.listCommandRequests();
 

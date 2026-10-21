@@ -71,18 +71,20 @@ interface MaterialProposalPublisher {
 /**
  * Opens a migrated Core database for simulator route tests.
  *
+ * @param registerDemoMembership False when native Demo publication must precede membership.
  * @returns Migrated Core database handles.
  */
-function createCoreDb(): CoreDb {
+function createCoreDb(registerDemoMembership = true): CoreDb {
   const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-simulator-route-')));
 
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  recordWorkspaceOwnerMembership({
-    coreDb,
-    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-  });
+  if (registerDemoMembership)
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
   configureNativeRuntimeTarget(coreDb);
   return coreDb;
 }
@@ -153,8 +155,13 @@ async function createRemoteGitProductFixture(
   vaultGrantRef?: string,
   configuredCanary = false
 ) {
-  const coreDb = createCoreDb();
+  const coreDb = createCoreDb(false);
   const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+  });
   const executor = new SimulatedTurnExecutor({ coreDb });
   const providerRegistry = new ProviderRegistry([
     {
@@ -263,8 +270,13 @@ describe('SimulatedTurnExecutor', () => {
   });
 
   it('records simulator input and completes the bounded Turn', async () => {
-    const coreDb = createCoreDb();
+    const coreDb = createCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const executor = new SimulatedTurnExecutor({ coreDb });
     const closeouts = vi.spyOn(productTurnStart, 'observeTurnAdmission');
     const app = createApp({
@@ -367,8 +379,13 @@ describe('SimulatedTurnExecutor', () => {
   });
 
   it('rejects a mismatched scheduler lease key before any simulator backend effect', async () => {
-    const coreDb = createCoreDb();
+    const coreDb = createCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const executor = new SimulatedTurnExecutor({ coreDb });
     const agentSetup = createTestAgentSetup();
     const turn = await store.createTurn(
@@ -415,8 +432,13 @@ describe('SimulatedTurnExecutor', () => {
 
   // Two real S39 publication and native execution lifecycles use this local runner budget; product deadlines stay unchanged.
   it('reuses one compatible current AgentSession across sequential simulator Turns', async () => {
-    const coreDb = createCoreDb();
+    const coreDb = createCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const fileAdmission = new FileStorageAdmission(coreDb.dataRoot, () => 1_000_000n);
     const executor = new SimulatedTurnExecutor({ coreDb, fileAdmission });
     // HTTP202 admits the Turn; await the actual execution before inspecting terminal state.
@@ -552,8 +574,13 @@ describe('SimulatedTurnExecutor', () => {
   it('terminalizes an incompatible idle predecessor before a later Turn starts', async () => {
     const imageRefA = 'openkit/worker-codex:image-a';
     const imageRefB = 'openkit/worker-codex:image-b';
-    const coreDb = createCoreDb();
+    const coreDb = createCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const fileAdmission = new FileStorageAdmission(coreDb.dataRoot, () => 1_000_000n);
     const executor = new SimulatedTurnExecutor({ coreDb, fileAdmission });
     // HTTP202 admits the Turn; await the actual execution before inspecting terminal state.
@@ -781,8 +808,13 @@ describe('SimulatedTurnExecutor', () => {
 
   it('strictly projects and consumes bound Material with shared file admission', async () => {
     process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR = '1';
-    const coreDb = createCoreDb();
+    const coreDb = createCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const capacity = 16_000_000n;
     let configuredReserve = 2_000_000n;
     const admission = new FileStorageAdmission(
@@ -1675,8 +1707,13 @@ describe('SimulatedTurnExecutor', () => {
   });
 
   it('emits command output delta before the command item completes', async () => {
-    const coreDb = createCoreDb();
+    const coreDb = createCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const executor = new SimulatedTurnExecutor({ coreDb });
     const closeouts = vi.spyOn(productTurnStart, 'observeTurnAdmission');
     const app = createApp({

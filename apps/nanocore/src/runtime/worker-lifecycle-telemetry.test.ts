@@ -59,11 +59,6 @@ beforeEach(async () => {
   coreDb = openCoreDb(join(root, 'data'));
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  recordWorkspaceOwnerMembership({
-    coreDb,
-    ownerUserId: FIXTURE_LOCAL_USER_ID,
-    workspaceId: DEMO_WORKSPACE_ID,
-  });
   recordTestNativeRuntimeTarget(coreDb);
   vi.spyOn(console, 'info').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -249,6 +244,11 @@ describe('current Worker lifecycle telemetry', () => {
 /** Keeps the real validator and executor; controls capability discovery and the next no-effect boundary. */
 async function createFixture() {
   const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+  recordWorkspaceOwnerMembership({
+    coreDb,
+    ownerUserId: FIXTURE_LOCAL_USER_ID,
+    workspaceId: DEMO_WORKSPACE_ID,
+  });
   const agentSetup = createTestAgentSetup({ requiredCapabilities: ['worker-control'] });
   admitTestNativeEnvironment(coreDb, agentSetup.manifest);
   const runtime = createConfiguredWorkerLifecycleRuntime({ coreDb, store, env: {} });
