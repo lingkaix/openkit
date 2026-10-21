@@ -34,17 +34,12 @@ import {
   validateLiveProductTurnAdmission,
 } from './runtime/product-turn-start.js';
 import type { TurnExecutor } from './runtime/types.js';
-import {
-  terminalizeGovernedWorkerTurn,
-  workerTurnTerminalPublication,
-} from './runtime/worker-turn-failure.js';
+import { terminalizeGovernedWorkerTurn } from './runtime/worker-turn-failure.js';
 import {
   cancelSchedulerAdmissionEntry,
   listSchedulerAdmissionEntriesForWorkspace,
 } from './scheduler-records.js';
-import { openControlStoreProductReadHandle } from './storage/control-store-products.js';
-import { bindWorkspaceSqlite, type CoreDb, type WorkspaceDb } from './storage/db.js';
-import { workspaceDbPath } from './storage/fs-layout.js';
+import type { CoreDb, WorkspaceDb } from './storage/db.js';
 
 /** Parsed turn read model shape used by route-level guards. */
 type TurnReadModel = z.infer<typeof TurnSchema>;
@@ -300,87 +295,34 @@ export async function interruptProductTurn(input: {
     },
     responseKind: 'turn',
     execute: async (commandReceipt) => {
-      /** Validates the accepted result before evidence; evidence failure leaves reached effects intact. */
-      const acceptedTurn = async () => {
-        let result = TurnSchema.parse(store.getTurn(workspaceId, threadId, turnId));
-        if (store.getDataRoot()) {
-          const { responseKind, ...receipt } = commandReceipt;
-          const command = {
-            receipt: {
-              ...receipt,
-              command: 'turn.interrupt' as const,
-              response: { kind: responseKind, id: turnId },
-            },
-            audit: {
-              ...prepareAuditEvent({
-                workspaceId,
-                threadId,
-                turnId,
-                requestId,
-                actor: input.actor ?? result.triggerActor,
-                category: 'command',
-                action: 'turn.interrupt',
-                resource: `turn:${turnId}`,
-                outcome: 'succeeded',
-                summary: 'Stop request accepted.',
-                now: new Date(receipt.createdAt),
-              }),
-              createdAt: receipt.createdAt,
-              occurredAt: receipt.createdAt,
-            },
-          };
-          if (
-            result.status === 'completed' ||
-            result.status === 'failed' ||
-            result.status === 'cancelled' ||
-            result.status === 'interrupted'
-          ) {
-            const reader = openControlStoreProductReadHandle(
-              workspaceDbPath(store.getDataRoot()!, workspaceId),
-              result.owner
-            );
-            try {
-              const publication = result.agentSessionId
-                ? await workerTurnTerminalPublication(
-                    bindWorkspaceSqlite(reader.sqlite, store.getDataRoot()!, workspaceId),
-                    turnId,
-                    result.status
-                  )
-                : {};
-              // Reconcile the exact decided tuple through its native receipt owner, never Main.
-              const retainedEvents = store.getTurnEvents(turnId);
-              const terminalEvent = retainedEvents.find(
-                (event) => event.data.type === 'turn-completed'
-              );
-              const precedingEvents = terminalEvent
-                ? retainedEvents.filter(
-                    (event) =>
-                      event.sequence === terminalEvent.sequence - 1 &&
-                      event.data.type === 'agent-session-updated' &&
-                      event.data.agentSession.id === result.agentSessionId &&
-                      event.data.agentSession.updatedAt === result.completedAt
-                  )
-                : [];
-              result = await store.completeTurn(
-                turnId,
-                {},
-                {
-                  ...publication,
-                  command,
-                  precedingEvents,
-                  ...(terminalEvent?.data.type === 'turn-completed'
-                    ? { stopReason: terminalEvent.data.stopReason }
-                    : {}),
-                }
-              );
-            } finally {
-              reader.close();
-            }
-          } else {
-            // Cancellation acceptance can precede terminal evidence; retain only the live snapshot.
-            result = await store.updateTurn(turnId, {}, { commandAdmission: command });
-          }
-        }
+      const { responseKind, ...receipt } = commandReceipt;
+      const command = {
+        receipt: {
+          ...receipt,
+          command: 'turn.interrupt' as const,
+          response: { kind: responseKind, id: turnId },
+        },
+        audit: {
+          ...prepareAuditEvent({
+            workspaceId,
+            threadId,
+            turnId,
+            requestId,
+            actor: input.actor ?? store.getTurn(workspaceId, threadId, turnId).triggerActor,
+            category: 'command',
+            action: 'turn.interrupt',
+            resource: `turn:${turnId}`,
+            outcome: 'succeeded',
+            summary: 'Stop request accepted.',
+            now: new Date(receipt.createdAt),
+          }),
+          createdAt: receipt.createdAt,
+          occurredAt: receipt.createdAt,
+        },
+      };
+      /** Accepts only after the execution owner has acknowledged its original command tuple. */
+      const acceptedTurn = () => {
+        const result = TurnSchema.parse(store.getTurn(workspaceId, threadId, turnId));
         input.onInterruptAccepted?.();
         return result;
       };
@@ -427,6 +369,7 @@ export async function interruptProductTurn(input: {
             requestId: admission.requestId,
             completedAt: new Date().toISOString(),
             outcome: 'cancelled',
+            command,
             errorCode: 'turn_cancelled',
             message: 'Queued Turn was cancelled before preparation.',
           });
@@ -449,6 +392,7 @@ export async function interruptProductTurn(input: {
             requestId: admission.requestId,
             completedAt: new Date().toISOString(),
             outcome: 'cancelled',
+            command,
             errorCode: 'turn_cancelled',
             message: 'Turn was cancelled before any backend effect.',
           });
@@ -472,6 +416,7 @@ export async function interruptProductTurn(input: {
 
       await turnExecutor.interruptTurn(store, turnId, {
         requestId: requestId,
+        command,
       });
       return acceptedTurn();
     },

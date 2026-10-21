@@ -69,6 +69,6 @@ Turn admission carries the original turn.start, task.start or selected Worker co
 
 Workspace counts are an enumerable derived projection evaluated only when accessed or serialized. Metadata-only reads do not load unrelated Notebook bodies. Each count access reads actual committed products and retains the existing exact Knowledge body, digest and OKF checks; no count or authority cache is added.
 
-Turn interruption retains its original receipt and authenticated command Audit through the native Turn owner. A terminal result reconciles the exact decided terminal tuple and its preceding Session event; cancellation accepted before terminal evidence commits only the current live Turn snapshot with its receipt. Main does not backfill either receipt or Audit, and cancellation acceptance does not prove physical release.
+Turn interruption carries its original receipt and authenticated command Audit explicitly to the execution owner. Simulator and queued cancellation publish them in their first native terminal tuple. A live Worker accepts the current Turn snapshot and command before external cancellation contact; acceptance does not prove physical stop or release. Main never backfills the receipt or Audit.
 
 Native identity discovery scans only admitted scopes, as startup readers do. A quarantined Workspace cannot block reads or writes in a healthy sibling, and it never supplies fallback authority. Explicit access to the refused Workspace still follows the existing recovery diagnostic.

@@ -3026,6 +3026,21 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             : 'turn-cancelled',
       now: this.now,
     });
+    if (context.command) {
+      if (context.command.receipt.command !== 'turn.interrupt')
+        throw new Error('Worker interruption requires its original interrupt command.');
+      // Accept the exact cancellation tuple before external contact; acceptance proves no stop.
+      await store.updateTurn(
+        turnId,
+        {},
+        {
+          commandAdmission: {
+            ...context.command,
+            receipt: { ...context.command.receipt, command: 'turn.interrupt' },
+          },
+        }
+      );
+    }
     acceptSchedulerExecutionObservation(
       this.coreDb!,
       await this.executionBackend.cancel(schedulerExecutionCorrelation(closing))

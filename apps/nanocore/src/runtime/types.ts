@@ -15,7 +15,7 @@ import type {
 } from '@openkit/protocol';
 import type { z } from 'zod';
 import type { ResolvedAgentSetup } from '../agents/setup-resolver.js';
-import type { FsStore } from '../lib/store.js';
+import type { FsStore, TerminalTurnPublication } from '../lib/store.js';
 import type { SchedulerWorkerStorageChoice } from '../scheduler-records.js';
 
 type Agent = z.infer<typeof AgentSchema>;
@@ -352,6 +352,8 @@ export interface TurnStartRuntimeContext {
  * Runtime context captured for one turn-scoped command.
  */
 export interface TurnCommandRuntimeContext {
+  /** Original client command receipt and local Audit for the first native publication. */
+  command?: TerminalTurnPublication['command'];
   /** Request id for the client command that caused the emitted events. */
   requestId: string | null;
   /** Private Core stop cause; public interruption commands cannot set this field. */
