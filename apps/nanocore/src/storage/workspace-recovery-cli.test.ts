@@ -17,8 +17,16 @@ import {
   parseWorkspaceRecoveryArgs,
   runWorkspaceRecoveryCli,
   type WorkspaceRecoveryCliArgs,
+  type WorkspaceRecoveryCliReport,
   WorkspaceRecoveryError,
 } from './workspace-recovery-cli.js';
+
+// D0 release-policy ruling (12:23Z): the installed parser reads only this case's private identity.
+const runCli: (
+  argv: readonly string[],
+  write?: (line: string) => void,
+  deps?: { releaseIdentityPath?: string }
+) => Promise<WorkspaceRecoveryCliReport> = runWorkspaceRecoveryCli;
 
 // WM Operator Contract and the D0 callable grammar, including the H1 parent-lock ruling.
 const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
@@ -83,6 +91,16 @@ function root(): string {
   const value = mkdtempSync(join(tmpdir(), 'd0-cli-'));
   roots.push(value);
   return value;
+}
+
+/** Supplies the installed identity without reading or writing the machine-wide release file. */
+function installedRelease(parent: string): { releaseIdentityPath: string } {
+  const releaseIdentityPath = join(parent, 'release-identity.json');
+  writeFileSync(
+    releaseIdentityPath,
+    JSON.stringify({ releaseTag: 'v0.1.0-rc.11', sourceCommit: '1'.repeat(40) })
+  );
+  return { releaseIdentityPath };
 }
 
 afterEach(async () => {
@@ -394,7 +412,12 @@ describe('D0-4: real offline capture and verification', () => {
       db.sqlite.close();
     }
     await shutdownControlStoreWorkerClient();
-    return { parent, dataRoot, deploymentId: readDataRootLayoutMarker(dataRoot).deploymentId };
+    return {
+      parent,
+      dataRoot,
+      deploymentId: readDataRootLayoutMarker(dataRoot).deploymentId,
+      ...installedRelease(parent),
+    };
   }
 
   it.each([
@@ -404,7 +427,7 @@ describe('D0-4: real offline capture and verification', () => {
     const f = await stoppedRoot();
     const bundleRoot = join(f.parent, 'bundle');
     const lines: string[] = [];
-    const report = await runWorkspaceRecoveryCli(
+    const report = await runCli(
       [
         'capture',
         '--source-data-root',
@@ -418,7 +441,8 @@ describe('D0-4: real offline capture and verification', () => {
         '--purpose',
         purpose,
       ],
-      (line) => lines.push(line)
+      (line) => lines.push(line),
+      { releaseIdentityPath: f.releaseIdentityPath }
     );
     expect(report).toMatchObject({
       command: 'capture',
@@ -452,9 +476,10 @@ describe('D0-4: real offline capture and verification', () => {
       );
       expect(seal.manifestDigest).toBe(report.capture!.manifestDigest);
       const verifyLines: string[] = [];
-      const verification = await runWorkspaceRecoveryCli(
+      const verification = await runCli(
         ['verify', '--bundle-root', bundleRoot],
-        (line) => verifyLines.push(line)
+        (line) => verifyLines.push(line),
+        { releaseIdentityPath: f.releaseIdentityPath }
       );
       expect(verification).toMatchObject({
         command: 'verify',
@@ -477,7 +502,7 @@ describe('D0-4: real offline capture and verification', () => {
     const lines: string[] = [];
     try {
       await expect(
-        runWorkspaceRecoveryCli(
+        runCli(
           [
             'capture',
             '--source-data-root',
@@ -491,7 +516,8 @@ describe('D0-4: real offline capture and verification', () => {
             '--purpose',
             'backup',
           ],
-          (line) => lines.push(line)
+          (line) => lines.push(line),
+          { releaseIdentityPath: f.releaseIdentityPath }
         )
       ).rejects.toMatchObject({ code: 'root-locked' });
       expect(lines).toEqual([]);
@@ -502,13 +528,15 @@ describe('D0-4: real offline capture and verification', () => {
   }, 120_000);
 
   it('WM seal admission: verify refuses an incomplete bundle with invalid-bundle and no disclosure', async () => {
-    const bundleRoot = join(root(), 'bundle');
+    const parent = root();
+    const bundleRoot = join(parent, 'bundle');
     mkdirSync(bundleRoot);
     writeFileSync(join(bundleRoot, 'manifest.json'), '{"private":"UNTRUSTED-CONTENT"}');
     const lines: string[] = [];
-    const error: unknown = await runWorkspaceRecoveryCli(
+    const error: unknown = await runCli(
       ['verify', '--bundle-root', bundleRoot],
-      (line) => lines.push(line)
+      (line) => lines.push(line),
+      installedRelease(parent)
     ).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(WorkspaceRecoveryError);
     expect(error).toMatchObject({ code: 'invalid-bundle' });
@@ -516,4 +544,33 @@ describe('D0-4: real offline capture and verification', () => {
     expect(String(error)).not.toContain('UNTRUSTED-CONTENT');
     expect(lines).toEqual([]);
   });
+
+  it('D0 release ruling: capture with a missing installed identity refuses release-mismatch and writes nothing', async () => {
+    const f = await stoppedRoot();
+    const bundleRoot = join(f.parent, 'bundle');
+    const releaseIdentityPath = join(f.parent, 'missing-identity.json');
+    const lines: string[] = [];
+    await expect(
+      runCli(
+        [
+          'capture',
+          '--source-data-root',
+          f.dataRoot,
+          '--workspace-id',
+          workspaceId,
+          '--expected-source-deployment-id',
+          f.deploymentId,
+          '--bundle-root',
+          bundleRoot,
+          '--purpose',
+          'backup',
+        ],
+        (line) => lines.push(line),
+        { releaseIdentityPath }
+      )
+    ).rejects.toMatchObject({ code: 'release-mismatch' });
+    expect(lines).toEqual([]);
+    expect(existsSync(bundleRoot)).toBe(false);
+    expect(existsSync(releaseIdentityPath)).toBe(false);
+  }, 120_000);
 });
