@@ -12,6 +12,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { scopeAdmissionFailures } from '../bootstrap/readiness.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
@@ -23,7 +24,7 @@ import { createTestStore } from '../test-support/store.js';
 import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
-import { openCoreDb } from './db.js';
+import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations } from './migrate.js';
 
 const TIMESTAMP = '2026-07-12T00:00:00.000Z';
@@ -34,7 +35,7 @@ const VERIFIED_EXTERNAL_REFERENCE = `turn:${testEntityId('tu', 'canonical-record
 /**
  * Creates one strict immutable Proposal for canonical corruption tests.
  *
- * @param store File-backed authority under test.
+ * @param store Scoped retained authority under test.
  * @param workspaceId Workspace that owns the Proposal.
  * @returns Persisted Proposal record.
  */
@@ -85,7 +86,7 @@ function createStrictKnowledgeProposal(store: FsStore, workspaceId: string) {
 }
 
 /**
- * Creates one file-backed workspace lineage for canonical record validation tests.
+ * Creates one native Workspace lineage for canonical record validation tests.
  *
  * @returns Store, data root, workspace, thread, turn, and workspace root.
  */
@@ -134,9 +135,11 @@ async function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string
   const sibling = await seed.createWorkspace('Healthy refusal control');
   const siblingThread = await seed.createThread(sibling.id, 'Retained sibling thread');
   const siblingBefore = seed.getWorkspace(sibling.id);
+  // Exclude the live native writer before copying its SQLite authority.
+  await shutdownControlStoreWorkerClient();
   cpSync(dataRoot, restartRoot, { recursive: true, verbatimSymlinks: true });
 
-  /** Records every directory, link target and file byte, including the absence of deleted entries. */
+  /** Preserves raw native SQL schema/values and exact other bytes; WAL/SHM are bookkeeping. */
   function snapshot(root: string): Record<string, Buffer | string> {
     const entries: Record<string, Buffer | string> = {};
     const visit = (directory: string, prefix = '') => {
@@ -146,8 +149,42 @@ async function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string
         if (entry.isDirectory()) {
           entries[key] = 'directory';
           visit(path, key);
-        } else {
-          entries[key] = entry.isSymbolicLink() ? `link:${readlinkSync(path)}` : readFileSync(path);
+        } else if (entry.isSymbolicLink()) {
+          entries[key] = `link:${readlinkSync(path)}`;
+        } else if (key === join('db', 'workspace.sqlite')) {
+          const sqlite = new Database(path, { readonly: true, fileMustExist: true });
+          try {
+            entries[key] = sqlite.transaction(() => {
+              const schema = sqlite
+                .prepare('SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY type,name')
+                .all();
+              const tables = sqlite
+                .prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name")
+                .all() as { name: string }[];
+              const rows = tables.map(({ name }) => [
+                name,
+                sqlite
+                  .prepare(`SELECT * FROM "${name.replaceAll('"', '""')}"`)
+                  .raw(true)
+                  .safeIntegers(true)
+                  .all()
+                  .map((row) =>
+                    JSON.stringify(row, (_key, value) =>
+                      typeof value === 'bigint' ? { integer: value.toString() } : value
+                    )
+                  )
+                  .sort(),
+              ]);
+              return Buffer.from(JSON.stringify({ schema, rows }));
+            })();
+          } finally {
+            sqlite.close();
+          }
+        } else if (
+          key !== join('db', 'workspace.sqlite-wal') &&
+          key !== join('db', 'workspace.sqlite-shm')
+        ) {
+          entries[key] = readFileSync(path);
         }
       }
     };
@@ -164,7 +201,7 @@ async function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string
   expect(() => reopened.getWorkspace(workspaceId)).toThrow(
     expect.objectContaining({ code: 'recovery_required' })
   );
-  expect(() => reopened.createThread(workspaceId, 'Must remain refused')).toThrow(
+  await expect(reopened.createThread(workspaceId, 'Must remain refused')).rejects.toThrow(
     expect.objectContaining({ code: 'recovery_required' })
   );
   expect(reopened.getWorkspace(sibling.id)).toEqual(siblingBefore);
@@ -339,8 +376,7 @@ describe('workspace canonical record schemas', () => {
     'sessionCompatibilityKey',
     'policySnapshotId',
   ])('rejects an AgentSession missing required %s', async (field) => {
-    const { dataRoot, store, workspace, thread, workspaceRoot } =
-      await createCanonicalRecordFixture();
+    const { dataRoot, store, workspace, thread } = await createCanonicalRecordFixture();
     const session = await store.createAgentSession({
       id: 'as_00000000-0000-78b0-aef0-27ad15cf38f1',
       agentId: 'agent_codex_host',
@@ -351,17 +387,26 @@ describe('workspace canonical record schemas', () => {
       createdAt: TIMESTAMP,
       updatedAt: TIMESTAMP,
     });
-    const path = join(workspaceRoot, 'runtime', 'agent-sessions', session.id, 'session.json');
-    const record = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
-
-    delete record[field];
-    writeFileSync(path, `${JSON.stringify(record)}\n`);
+    await shutdownControlStoreWorkerClient();
+    const db = openWorkspaceDb(dataRoot, workspace.id);
+    try {
+      const row = db.sqlite
+        .prepare('SELECT record_json FROM control_agent_sessions WHERE id=?')
+        .get(session.id) as { record_json: string };
+      const record = JSON.parse(row.record_json) as Record<string, unknown>;
+      delete record[field];
+      db.sqlite
+        .prepare('UPDATE control_agent_sessions SET record_json=? WHERE id=?')
+        .run(JSON.stringify(record), session.id);
+    } finally {
+      db.sqlite.close();
+    }
 
     await expectLocalWorkspaceRefusal(dataRoot, workspace.id);
   });
 
   it('stores only a scalar environment package snapshot reference in an AgentSession', async () => {
-    const { store, workspace, thread, workspaceRoot } = await createCanonicalRecordFixture();
+    const { dataRoot, store, workspace, thread } = await createCanonicalRecordFixture();
     const session = await store.createAgentSession({
       id: 'as_00000000-0000-7262-a704-19543c73f9a3',
       agentId: 'agent_codex_host',
@@ -372,12 +417,16 @@ describe('workspace canonical record schemas', () => {
       createdAt: TIMESTAMP,
       updatedAt: TIMESTAMP,
     });
-    const record = JSON.parse(
-      readFileSync(
-        join(workspaceRoot, 'runtime', 'agent-sessions', session.id, 'session.json'),
-        'utf8'
-      )
-    ) as Record<string, unknown>;
+    const db = openWorkspaceDb(dataRoot, workspace.id);
+    let record: Record<string, unknown>;
+    try {
+      const row = db.sqlite
+        .prepare('SELECT record_json FROM control_agent_sessions WHERE id=?')
+        .get(session.id) as { record_json: string };
+      record = JSON.parse(row.record_json);
+    } finally {
+      db.sqlite.close();
+    }
 
     expect(record).toMatchObject({
       environmentPackageSnapshotId: null,

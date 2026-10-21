@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { writeRetainedV1 } from '@openkit/protocol';
@@ -6,7 +6,14 @@ import { describe, expect, it, vi } from 'vitest';
 import { createTestStore } from '../test-support/store.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 
-const partialWriteState = vi.hoisted(() => ({ calls: 0, failSync: false, fullReads: 0 }));
+const partialWriteState = vi.hoisted(() => ({
+  calls: 0,
+  failSync: false,
+  fullReads: 0,
+  nativeRoot: '',
+  nativeCalls: 0,
+  failNativeWrite: false,
+}));
 
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
@@ -40,10 +47,45 @@ vi.mock('node:fs', async (importOriginal) => {
   };
 });
 
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    open: async (...args: Parameters<typeof actual.open>) => {
+      const file = await actual.open(...args);
+      if (
+        partialWriteState.nativeRoot &&
+        typeof args[0] === 'string' &&
+        args[0].startsWith(partialWriteState.nativeRoot) &&
+        args[0].endsWith('.tmp')
+      ) {
+        const write = file.write.bind(file);
+        // Fault the immutable publisher's actual FileHandle, never its SQL owner or result.
+        file.write = (async (
+          buffer: Uint8Array,
+          offset: number,
+          length: number,
+          position: number
+        ) => {
+          partialWriteState.nativeCalls++;
+          if (partialWriteState.failNativeWrite && partialWriteState.nativeCalls === 2)
+            throw new Error('injected immutable write failure');
+          return write(buffer, offset, Math.max(1, Math.ceil(length / 2)), position);
+        }) as typeof file.write;
+      }
+      return file;
+    },
+  };
+});
+
 import { openWorkspaceDb } from './db.js';
 import { applyScopedMigrations } from './migrate.js';
 import { appendWorkObservation, readWorkObservations } from './work-observations.js';
-import { appendCanonicalTextFile, appendWorkspaceItemRevision } from './workspace-file-records.js';
+import {
+  appendCanonicalTextFile,
+  nativeProductScope,
+  readNativeProductEntries,
+} from './workspace-file-records.js';
 
 describe('canonical append writes', () => {
   it('does not acknowledge a failed observation commit through cached state or replay', async () => {
@@ -82,10 +124,16 @@ describe('canonical append writes', () => {
     try {
       await appendWorkObservation(db, input);
       input.observation.id = 'next';
-      partialWriteState.failSync = true;
-      expect(() => appendWorkObservation(db, input)).toThrow('injected durability failure');
-      expect(() => appendWorkObservation(db, input)).toThrow('injected durability failure');
-      partialWriteState.failSync = false;
+      // The observation owner is native SQL; a Main fsync mock cannot fault its commit.
+      db.sqlite.exec(
+        `CREATE TRIGGER refuse_next_observation BEFORE INSERT ON control_work_observations
+         WHEN NEW.id = 'next' BEGIN SELECT RAISE(ABORT, 'injected observation commit failure'); END`
+      );
+      await expect(appendWorkObservation(db, input)).rejects.toThrow();
+      await expect(appendWorkObservation(db, input)).rejects.toThrow();
+      expect(readWorkObservations(db, input).map((row) => row.id)).toEqual(['warm']);
+      db.sqlite.exec('DROP TRIGGER refuse_next_observation');
+      expect((await appendWorkObservation(db, input)).disposition).toBe('committed');
       expect((await appendWorkObservation(db, input)).disposition).toBe('duplicate');
       expect(readWorkObservations(db, input).map((row) => row.id)).toEqual(['warm', 'next']);
     } finally {
@@ -136,15 +184,21 @@ describe('canonical append writes', () => {
       partialWriteState.failSync = false;
     }
   });
-  it('finishes one JSONL row when the filesystem reports partial writes', () => {
-    const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-partial-append-'));
+  it('finishes one immutable Item body when the filesystem reports partial writes', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-partial-append-'));
+    const store = createTestStore({ dataRoot });
+    const workspace = await store.createWorkspace('Partial immutable write');
     const threadId = 'th_00000000-0000-7855-a199-a72329fa45c0';
-    const turnId = 'tu_00000000-0000-7726-a488-91b3274371a4';
+    const thread = await store.createThread(workspace.id, 'Partial immutable write', threadId);
+    const turn = await store.createTurn(workspace.id, thread.id, 'Partial immutable write', {
+      kind: 'user',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
+    });
     const item = {
       id: 'it_00000000-0000-7399-9fe3-0b3d37002502',
-      owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-739a-9803-af1c03be9d3f' },
+      owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId,
-      turnId,
+      turnId: turn.id,
       type: 'assistant-message',
       status: 'completed',
       text: 'The complete row must reach the append log.',
@@ -152,14 +206,31 @@ describe('canonical append writes', () => {
       completedAt: '2026-07-07T00:00:00.000Z',
     } as const;
 
-    mkdirSync(join(workspaceRoot, 'threads', threadId, 'turns', turnId), { recursive: true });
-    appendWorkspaceItemRevision(workspaceRoot, item);
-
-    const content = readFileSync(
-      join(workspaceRoot, 'threads', threadId, 'turns', turnId, 'items.jsonl'),
-      'utf8'
-    );
-    expect(JSON.parse(content)).toEqual(writeRetainedV1(item));
-    expect(partialWriteState.calls).toBeGreaterThan(1);
+    const scope = nativeProductScope(dataRoot, item.owner);
+    const before = store.getTurnById(turn.id);
+    const entriesBefore = readNativeProductEntries(scope, turn.id, 'item');
+    partialWriteState.nativeRoot = `${join(scope.contentMount.root, 'sha256')}/`;
+    partialWriteState.nativeCalls = 0;
+    partialWriteState.failNativeWrite = true;
+    try {
+      await expect(store.createItem(item)).rejects.toThrow('injected immutable write failure');
+      expect(partialWriteState.nativeCalls).toBe(2);
+      expect(store.getTurnById(turn.id)).toEqual(before);
+      expect(readNativeProductEntries(scope, turn.id, 'item')).toEqual(entriesBefore);
+      partialWriteState.failNativeWrite = false;
+      partialWriteState.nativeCalls = 0;
+      await store.createItem(item);
+      expect(readNativeProductEntries(scope, turn.id, 'item').map((row) => row.value)).toEqual([
+        writeRetainedV1(item),
+      ]);
+      expect(partialWriteState.nativeCalls).toBeGreaterThan(1);
+      await shutdownControlStoreWorkerClient();
+      expect(createTestStore({ dataRoot }).getTurnById(turn.id).items).toEqual([item]);
+    } finally {
+      partialWriteState.nativeRoot = '';
+      partialWriteState.failNativeWrite = false;
+      await shutdownControlStoreWorkerClient();
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
   });
 });

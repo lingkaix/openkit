@@ -208,7 +208,7 @@ User-authored note.
     const source = new FsStore();
     const workspace = await source.createWorkspace('Unattributed import');
     const target = createTestStore({ dataRoot });
-    expect(() =>
+    await expect(
       target.importWorkspaceSnapshot({
         workspace,
         threads: [],
@@ -222,7 +222,7 @@ User-authored note.
           'index.md': '---\nokf_version: "0.2"\n---\n# Authored imported index\n',
         },
       })
-    ).toThrow('Fresh Workspace publication requires native notebook attribution.');
+    ).rejects.toThrow('Fresh Workspace publication requires native notebook attribution.');
     expect(existsSync(join(dataRoot, 'workspaces', workspace.id))).toBe(false);
     expect(target.listWorkspaces()).toEqual([]);
   });

@@ -13,8 +13,10 @@ import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { readRetrievalTrace } from '../storage/retrieval-traces.js';
+import { createApp } from '../test-support/app.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { operationRequest } from '../test-support/operation-request.js';
 import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
@@ -327,8 +329,6 @@ it('retains selector mismatch separately from an actual Source audience denial w
       }),
     },
   ]);
-  // Narrow after publication so the query proves current audience admission, not setup refusal.
-  Object.assign(sourceThread, { visibility: 'private', privateOwnerUserId: f.access.actor.id });
   const thread = await f.store.createThread(
     f.workspace.id,
     'Shared selector query',
@@ -336,6 +336,67 @@ it('retains selector mismatch separately from an actual Source audience denial w
     'conversation',
     { visibility: 'workspace' }
   );
+  // Publish valid shared evidence first, then revoke only its exact Source Thread audience.
+  const app = createApp({ coreDb: f.coreDb, dataRoot: f.dataRoot, store: f.store });
+  const owner = { kind: 'workspace' as const, workspaceId: f.workspace.id };
+  const requested = await app.request(
+    ...operationRequest(
+      'workspace.resource-access-request',
+      {
+        workspaceId: f.workspace.id,
+        threadId: thread.id,
+        change: {
+          resource: { family: 'thread', id: sourceThread.id },
+          replacement: {
+            schemaVersion: 1,
+            statements: [
+              {
+                id: 'source-audience-revoked',
+                kind: 'managed-boundary',
+                author: { kind: 'human', id: f.access.actor.id },
+                authority: { kind: 'human', userId: f.access.actor.id },
+                authoredAt: NOW,
+                state: 'active',
+                scope: {
+                  subjects: [],
+                  actions: [],
+                  resources: [
+                    {
+                      kind: 'container',
+                      container: { owner, kind: 'thread', id: sourceThread.id },
+                    },
+                  ],
+                },
+                lifetime: { anchor: { owner, kind: 'workspace', id: f.workspace.id } },
+              },
+            ],
+          },
+        },
+      },
+      { body: JSON.stringify({ requestId: randomUUID() }) }
+    )
+  );
+  expect(requested.status, await requested.clone().text()).toBe(200);
+  const request = (await requested.json()) as { id: string };
+  await f.store.applyPendingRequestCommand(f.workspace.id, {
+    action: 'grant-command',
+    workspaceId: f.workspace.id,
+    threadId: thread.id,
+    requestId: request.id,
+    actor: f.access.actor,
+    now: new Date().toISOString(),
+    decisionContext: f.access.requestActor,
+  });
+  const applied = await app.request(
+    ...operationRequest('workspace.resource-access-apply', {
+      workspaceId: f.workspace.id,
+      threadId: thread.id,
+      approvalRequestId: request.id,
+      confirmation: 'APPLY WORKSPACE RESOURCE POLICY',
+    })
+  );
+  expect(applied.status, await applied.clone().text()).toBe(200);
+  expect(await applied.json()).toMatchObject({ reloadStatus: 'applied' });
   Object.assign(f.access, { outputThreadId: thread.id });
   const corrected = await f.retrieve();
   expect(corrected.selected.map((entry) => entry.reference.objectId)).toEqual(['invoice-rule']);

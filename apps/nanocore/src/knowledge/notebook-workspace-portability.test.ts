@@ -385,7 +385,7 @@ describe('canonical Notebook Workspace portability', () => {
     const sourceWorkspace = structuredClone(f.store.getWorkspace(f.workspace.id));
 
     // A current-tree archive cannot reconstruct the old subject bytes retained only in source Git.
-    expect(() =>
+    await expect(
       importVerifiedWorkspace({
         authorityUserId: LOCAL_USER_ID,
         coreDb: target.coreDb,
@@ -394,7 +394,7 @@ describe('canonical Notebook Workspace portability', () => {
         store: target.store,
         verified: exported.verified,
       })
-    ).toThrow('Portable Knowledge Page requires unavailable pinned source bytes.');
+    ).rejects.toThrow('Portable Knowledge Page requires unavailable pinned source bytes.');
     expect(target.store.listWorkspaces()).toEqual(beforeWorkspaces);
     expect(targetFiles()).toEqual(beforeFiles);
     expect(existsSync(join(targetRoot, f.workspace.id, 'knowledge', 'notebook.git'))).toBe(false);
