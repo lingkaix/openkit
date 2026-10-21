@@ -258,7 +258,7 @@ A `pending` request is blocking when its raising Turn is terminal and no later T
 ### Conflict, Missing, Stale, Restart, And Dependency Failure
 
 - **Stale facts.** Re-evaluation at execution time is the only defense against stale facts; staleness is shown to the approver, never enforced by a clock.
-- **Dependency failure.** A dependency failure during re-evaluation records `denied-not-executed`; a failure after contact records `execution-error` or `outcome-unknown`. Neither is retried.
+- **Dependency failure.** A dependency refusal before claim records `denied-not-executed`. A failed Main submission check after claim records `execution-error` without contact or usage. A failure after contact records `execution-error` or `outcome-unknown`. None is retried.
 - **Restart.** Restart reads every state from this record, validated as below. It never denies, ends, or re-pauses a request because its raising Turn ended, never reopens a terminal Turn, never re-executes a claimed call, completes an incomplete publication only on its named publication or invalidation Turn, and admits a waiting command-intent-grant invalidation publication, regardless of requester, on a Core-local Turn once no non-terminal Turn remains.
 - **Partial writes.** A partial write that leaves a request Item without a record, or a record without its Item, is `recovery_required` and inspect-only; no action is offered and nothing is synthesized.
 - **Cross-domain truth.** Core storage and the upstream system are separate effect domains. No cross-domain atomicity is claimed, and an unknown effect stays unknown.
@@ -362,11 +362,11 @@ L3 NanoCore black-box checks through the App API and the Gateway with a stub MCP
 - An approval-required call makes no upstream contact, returns `isError: true` with the pending fields, and leaves the Turn `running`; the worker continues and the Turn completes.
 - A grant after the raising Turn completed executes the captured call exactly once, records `approved-executed`, and admits one delivering Turn with trigger `approval-resolution` carrying the decision, the disposition, and the result.
 - A second identical call while pending returns the same request; changed arguments raise a new one.
-- Grant after the tool left the supply, or after a policy or credential change, records `denied-not-executed` with no contact.
+- A grant whose Main submission check refuses because the tool left the supply or Policy or credentials changed records a failed execution call with `execution-error`, `upstreamContacted=false` and no usage; refusal before claim records `denied-not-executed` without contact.
 - A crash between claim and finish yields `outcome-unknown` after restart and no second execution.
 - Deny, withdraw, and Thread archive each end or resolve without execution, and the Approval status is `denied`, `withdrawn`, or `expired`; a denial and a withdrawal reach the agent, and an archive closes out without delivering.
 - A membership or Agent authority revocation before the Main submission check produces a failed execution call, no contact, no usage and native `execution-error`. A revocation after the Goal post does not revoke the admitted claim-and-effect transaction. Archive and withdrawal that win before the native claim prevent the effect; neither order executes an ended request or ends a claimed one.
-- A grant that re-evaluation refuses, because the tool left the supply, delivers the decision `granted` together with a `status` Item and structured input stating `denied-not-executed` and why.
+- A grant whose Main submission re-evaluation refuses because the tool left the supply keeps the decision `granted` and delivers the claimed call as a `tool-call` Item and structured input with `execution-error` and reason `tool-left-supply`, with no contact and no usage.
 - A claim left unfinished by a crash delivers `outcome-unknown` in both the Item and the structured input.
 - An answer while another Turn is running is recorded at once and delivered by the next Turn; two non-terminal Turns never exist.
 - A grant whose execution is still running when another Turn on the Thread terminates is not frozen into the next Turn; the response command admits the delivering Turn after the disposition is recorded.
