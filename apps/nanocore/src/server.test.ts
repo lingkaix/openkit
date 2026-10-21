@@ -103,14 +103,17 @@ import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from './mode-entry
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import { recordProductPermissionDecision } from './policy/permission-decisions.js';
 import { ProviderRegistry } from './providers/registry.js';
-import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
-import { resolveAgentSessionCompatibilityKey } from './runtime/agent-environment.js';
+import {
+  recordAgentEnvironmentPackageSnapshot,
+  requireAgentEnvironmentPackageSnapshot,
+} from './runtime/aep-snapshot-ledger.js';
 import {
   acceptSchedulerExecutionObservation,
   bindSchedulerExecutionAttemptSession,
   closeSchedulerExecutionAttemptWithFence,
   closeSchedulerExecutionAttemptWithoutEffects,
   createSchedulerExecutionAttempt,
+  finalizeSchedulerExecutionAttemptInput,
   markSchedulerExecutionAttemptClosing,
   recordSchedulerExecutionOperation,
   requireSchedulerExecutionAttempt,
@@ -126,6 +129,7 @@ import { commandInputHash } from './runtime/idempotent-command.js';
 import { mcpToolSchemaContentDigest } from './runtime/mcp-tool-schema-snapshots.js';
 import { getNanoHostRuntimeTarget } from './runtime/nanohost-runtime-target.js';
 import { createNanoHostSessionDispatch } from './runtime/nanohost-session-dispatch.js';
+import * as productTurnStart from './runtime/product-turn-start.js';
 import { runSchedulerDispatchLoop } from './runtime/scheduler-dispatch-loop.js';
 import type {
   CommitPreparedAgentSessionForTurnInput,
@@ -135,10 +139,13 @@ import type {
   TurnExecutor,
   TurnStartRuntimeContext,
 } from './runtime/types.js';
+import { projectWorkerBackendCleanup } from './runtime/worker-backend-cleanup-projection.js';
 import {
+  getWorkerBackendSession,
   markWorkerBackendWorkspaceHandoffComplete,
   recordWorkerBackendSessionMaterializing,
   transitionWorkerBackendSessionState,
+  workerBackendImageIdentity,
 } from './runtime/worker-backend-sessions.js';
 import {
   getWorkerCheckpoint,
@@ -148,7 +155,16 @@ import {
   upsertWorkerCheckpoint,
 } from './runtime/worker-checkpoints.js';
 import { WorkerControlGateway } from './runtime/worker-control-gateway.js';
+import {
+  beginWorkerTurnJournalStep,
+  endWorkerTurnJournalRelease,
+  endWorkerTurnJournalStep,
+  endWorkerTurnMaterialization,
+  prepareWorkerTurnJournalIntents,
+} from './runtime/worker-governance-turn-executor.js';
 import * as recoveryOwners from './runtime/worker-recovery.js';
+import { workerTurnTerminalPublication } from './runtime/worker-turn-failure.js';
+import * as workerTurnLoop from './runtime/worker-turn-loop.js';
 import { bindWorkerCheckpointToPreparedSession } from './runtime/worker-turn-loop.js';
 import { listWorkspaceApplyPlans } from './runtime/workspace-apply-plans.js';
 import {
@@ -156,6 +172,10 @@ import {
   recordWorkspaceApplyResult,
 } from './runtime/workspace-apply-results.js';
 import { recordFilesystemWorkspaceStagingRoot } from './runtime/workspace-filesystem-staging.js';
+import {
+  buildWorkspaceInputSnapshots,
+  buildWorkspaceMaterializationRecords,
+} from './runtime/workspace-materializer.js';
 import { recordWorkspaceQuarantineRecord } from './runtime/workspace-quarantine-records.js';
 import {
   listWorkspaceReconciliationRecords,
@@ -168,6 +188,7 @@ import {
   listWorkspaceInputSnapshots,
   listWorkspaceMaterializationRecords,
   listWorkspaceSyncReviews,
+  recordWorkspaceBackendHandoff,
   recordWorkspaceSyncReview,
   updateWorkspaceSyncReviewDecision,
 } from './runtime/workspace-sync-records.js';
@@ -179,7 +200,13 @@ import {
 } from './scheduler-records.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
-import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
+import {
+  type CoreDb,
+  openCoreDb,
+  openWorkspaceDb,
+  openWorkspaceDbAtRoot,
+  type WorkspaceDb,
+} from './storage/db.js';
 import {
   coreDbPath,
   readDataRootLayoutMarker,
@@ -242,6 +269,10 @@ function artifactDigest(content: string): string {
 
 const fixtureDatabases: ReturnType<typeof openCoreDb>[] = [];
 afterEach(async () => {
+  if (vi.isMockFunction(productTurnStart.observeTurnAdmission))
+    vi.mocked(productTurnStart.observeTurnAdmission).mockRestore();
+  if (vi.isMockFunction(workerTurnLoop.runWorkerTurnLoop))
+    vi.mocked(workerTurnLoop.runWorkerTurnLoop).mockRestore();
   await shutdownControlStoreWorkerClient();
   for (const coreDb of fixtureDatabases.splice(0)) {
     if (coreDb.sqlite.open) coreDb.sqlite.close();
@@ -1008,6 +1039,8 @@ class FakeTurnExecutor implements TurnExecutor {
   /** Uses the app's exact authority; this model creates no physical worker. */
   private runtimeSnapshot?: ReturnType<typeof createInMemoryRuntimeConfigSnapshot>;
   private completedExecutions = 0;
+  private readonly closeouts = vi.spyOn(productTurnStart, 'observeTurnAdmission');
+  private readonly workerLoops = vi.spyOn(workerTurnLoop, 'runWorkerTurnLoop');
   public configureCore(coreDb: CoreDb, options: CreateAppOptions): void {
     this.runtimeSnapshot =
       options.runtimeConfigManager?.current() ??
@@ -1028,17 +1061,38 @@ class FakeTurnExecutor implements TurnExecutor {
   public async waitForFinished(store: FsStore, count = 1): Promise<void> {
     const coreDb = this.fixtureOptions.coreDb!;
     const config = this.runtimeSnapshot!;
-    await runSchedulerDispatchLoop({
-      coreDb,
-      store,
-      turnExecutor: this,
-      executionBackend: this.executionBackend,
-      agentManifests: config.agentManifests,
-      providerRegistry: config.providerRegistry,
-      gatewayConfig: config.gatewayConfig,
-      workspaceDataSourceCatalogs: config.workspaceDataSourceCatalogs,
-      workspaceMcpServerCatalogs: config.workspaceMcpServerCatalogs,
-    });
+    // Forward both real mode owners and the native display write; a missing result still fails the original assertions.
+    const itemWrites = vi.spyOn(store, 'updateItem');
+    try {
+      await runSchedulerDispatchLoop({
+        coreDb,
+        store,
+        turnExecutor: this,
+        executionBackend: this.executionBackend,
+        agentManifests: config.agentManifests,
+        providerRegistry: config.providerRegistry,
+        gatewayConfig: config.gatewayConfig,
+        workspaceDataSourceCatalogs: config.workspaceDataSourceCatalogs,
+        workspaceMcpServerCatalogs: config.workspaceMcpServerCatalogs,
+      });
+      await Promise.all(
+        this.closeouts.mock.results
+          .filter((result) => result.type === 'return')
+          .map((result) => result.value.closeout)
+      );
+      await Promise.all(
+        this.workerLoops.mock.results
+          .filter((result) => result.type === 'return')
+          .map((result) => result.value)
+      );
+      await Promise.all(
+        itemWrites.mock.results
+          .filter((result) => result.type === 'return')
+          .map((result) => result.value)
+      );
+    } finally {
+      itemWrites.mockRestore();
+    }
     await vi.waitFor(() => expect(this.completedExecutions).toBe(count), { timeout: 1_000 });
     await setImmediate();
   }
@@ -1092,23 +1146,6 @@ class FakeTurnExecutor implements TurnExecutor {
         createdAt: new Date().toISOString(),
       });
       const target = recordTestNativeRuntimeTarget(coreDb);
-      const backendSession = recordWorkerBackendSessionMaterializing(coreDb, {
-        backendLineage: { imageRef: environmentPackage.runtime.image.ref, kind: 'reference' },
-        backendVersion: null,
-        identity: {
-          agentSessionId: context.agentSessionId,
-          backendKind: 'openshell',
-          backendSessionId: `modeled_${environmentPackage.snapshotId}`,
-          deploymentId: target.deploymentId,
-          packageSnapshotId: environmentPackage.snapshotId,
-          runtimeTargetId: target.targetId,
-          stagingDirectoryRef: `server/runtime/worker-backend-sessions/${environmentPackage.snapshotId}`,
-          transientProviderInstanceId: null,
-        },
-        lineage: { workspaceId: workspaceIdForOwner(turn.owner), threadId: turn.threadId, turnId },
-        sandboxBindingRef: requireSchedulerExecutionAttempt(coreDb, context.attemptId).bindingRef!,
-      });
-      markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId: backendSession.attemptId });
       const at = turn.startedAt!;
       const sessionInput = {
         id: context.agentSessionId,
@@ -1137,6 +1174,61 @@ class FakeTurnExecutor implements TurnExecutor {
           environmentPackageSnapshotId: sessionInput.environmentPackageSnapshotId,
         });
       else await store.createAgentSession(sessionInput);
+      const attempt = requireSchedulerExecutionAttempt(coreDb, context.attemptId);
+      const journalIntents = prepareWorkerTurnJournalIntents(db, environmentPackage, attempt, {
+        backendKind: 'openshell',
+        targetId: target.targetId,
+        allocationRef: attempt.bindingRef,
+      });
+      await store.updateTurn(turnId, { agentSessionId: sessionInput.id }, { journalIntents });
+      const backendSession = recordWorkerBackendSessionMaterializing(coreDb, {
+        backendLineage: { imageRef: environmentPackage.runtime.image.ref, kind: 'reference' },
+        backendVersion: null,
+        identity: {
+          agentSessionId: context.agentSessionId,
+          backendKind: 'openshell',
+          backendSessionId: `modeled_${environmentPackage.snapshotId}`,
+          deploymentId: target.deploymentId,
+          packageSnapshotId: environmentPackage.snapshotId,
+          runtimeTargetId: target.targetId,
+          stagingDirectoryRef: `server/runtime/worker-backend-sessions/${environmentPackage.snapshotId}`,
+          transientProviderInstanceId: null,
+        },
+        lineage: { workspaceId: workspaceIdForOwner(turn.owner), threadId: turn.threadId, turnId },
+        sandboxBindingRef: requireSchedulerExecutionAttempt(coreDb, context.attemptId).bindingRef!,
+      });
+      // The external model has no process; its admitted input and acknowledged handoff use the Simulator's real owners.
+      const inputSnapshots = buildWorkspaceInputSnapshots({
+        backendCapabilities: [],
+        backendKind: 'openshell',
+        createdAt: at,
+        environmentPackage,
+      });
+      const materializationRecords = buildWorkspaceMaterializationRecords({
+        createdAt: at,
+        inputSnapshots,
+        materialization: {
+          backendKind: 'openshell',
+          backendStatus: { health: 'ready', version: null },
+          sandbox: { name: backendSession.backendSessionId, state: 'created' },
+          packageSnapshotId: environmentPackage.snapshotId,
+          requiredCapabilities: environmentPackage.backend.requiredCapabilities,
+          workspaceInputs: environmentPackage.workspace.inputs.map(({ id, target }) => ({
+            id,
+            target,
+          })),
+        },
+      });
+      recordWorkspaceBackendHandoff(db, inputSnapshots, materializationRecords);
+      markWorkerBackendWorkspaceHandoffComplete(coreDb, { attemptId: backendSession.attemptId });
+      await endWorkerTurnMaterialization(store, db, turnId, 'completed', [
+        backendSession.backendSessionId,
+      ]);
+      finalizeSchedulerExecutionAttemptInput(coreDb, {
+        attemptId: context.attemptId,
+        inputRef: environmentPackage.snapshotId,
+        bindingRef: attempt.bindingRef!,
+      });
     } finally {
       db.sqlite.close();
     }
@@ -1145,38 +1237,122 @@ class FakeTurnExecutor implements TurnExecutor {
       operationId: `modeled:${turnId}`,
       submission: true,
     });
-    acceptSchedulerExecutionObservation(
-      coreDb,
-      await this.continuity.submit({
-        ...schedulerExecutionCorrelation(attempt),
-        deadline: attempt.deadline!,
-      })
-    );
+    const submissionDb = openWorkspaceDb(coreDb.dataRoot, workspaceIdForOwner(turn.owner));
+    try {
+      const delivery = await beginWorkerTurnJournalStep(
+        store,
+        submissionDb,
+        turnId,
+        'deliver-start',
+        {
+          operation: 'submit',
+          requestId: attempt.operationId!,
+          sequence: null,
+          bindingRef: attempt.bindingRef,
+        },
+        attempt
+      );
+      acceptSchedulerExecutionObservation(
+        coreDb,
+        await this.continuity.submit({
+          ...schedulerExecutionCorrelation(attempt),
+          deadline: attempt.deadline!,
+        })
+      );
+      await endWorkerTurnJournalStep(store, submissionDb, delivery, 'completed', [
+        attempt.operationId!,
+      ]);
+    } finally {
+      submissionDb.sqlite.close();
+    }
     context.onSubmissionSettled?.();
   }
 
-  /** Settles this explicit model's six barriers after its held product/closeout work; it owns no physical resident. */
+  /** Publishes the modeled result through the same journal, cleanup and terminal owners as the Simulator. */
+  public async completeTurn(
+    store: FsStore,
+    turnId: string,
+    context: TurnStartRuntimeContext,
+    patch: Parameters<FsStore['completeTurn']>[1] & {
+      status: 'completed' | 'failed' | 'interrupted';
+    },
+    stopReason: 'completed' | 'error' | 'aborted'
+  ): Promise<ReturnType<FsStore['getTurnById']>> {
+    const coreDb = this.fixtureOptions.coreDb!;
+    const turn = store.getTurnById(turnId);
+    const db = openWorkspaceDb(coreDb.dataRoot, workspaceIdForOwner(turn.owner));
+    try {
+      const session = getWorkerBackendSession(coreDb, context.attemptId!)!;
+      const environmentPackage = requireAgentEnvironmentPackageSnapshot(
+        db,
+        db.workspaceId,
+        session.packageSnapshotId
+      ).snapshot;
+      const cleanup = await beginWorkerTurnJournalStep(store, db, turnId, 'inspect-cleanup');
+      transitionWorkerBackendSessionState(coreDb, {
+        attemptId: context.attemptId!,
+        fromState: 'materializing',
+        toState: 'cleanup-pending',
+      });
+      transitionWorkerBackendSessionState(coreDb, {
+        attemptId: context.attemptId!,
+        fromState: 'cleanup-pending',
+        toState: 'physical-cleaned',
+      });
+      transitionWorkerBackendSessionState(coreDb, {
+        attemptId: context.attemptId!,
+        fromState: 'physical-cleaned',
+        toState: 'cleaned',
+      });
+      await projectWorkerBackendCleanup(db, {
+        agentSessionId: context.agentSessionId!,
+        backendSessionId: session.backendSessionId,
+        backendType: 'openshell',
+        backendVersion: null,
+        completedAt: new Date().toISOString(),
+        environmentPackage,
+        outcome: 'succeeded',
+        packageSnapshotId: environmentPackage.snapshotId,
+        placement: 'local',
+        threadId: turn.threadId,
+        turnId,
+        workerImage: workerBackendImageIdentity(session.backendLineage),
+        workspaceHandoffState: 'complete',
+        workspaceId: workspaceIdForOwner(turn.owner),
+      });
+      await endWorkerTurnJournalStep(store, db, cleanup, 'completed', [session.backendSessionId]);
+      // The terminal timestamp follows acknowledged output and cleanup, not the earlier Item timestamp.
+      const completedAt = new Date().toISOString();
+      return await store.completeTurn(
+        turnId,
+        { ...patch, completedAt },
+        {
+          agentSession: {
+            id: context.agentSessionId!,
+            status: patch.status === 'completed' ? 'idle' : 'failed',
+            message:
+              patch.status === 'completed'
+                ? null
+                : (patch.error?.message ?? 'The selected Worker was interrupted.'),
+            updatedAt: completedAt,
+          },
+          ...(await workerTurnTerminalPublication(db, turnId, patch.status)),
+          requestId: context.requestId ?? null,
+          stopReason,
+        }
+      );
+    } finally {
+      db.sqlite.close();
+    }
+  }
+
+  /** Records only the fence returned by the actual simulated release owner after terminal acknowledgement. */
   public async releaseTurn(
+    store: FsStore,
     context: TurnStartRuntimeContext,
     cause = 'turn-completed'
   ): Promise<void> {
     const coreDb = this.fixtureOptions.coreDb!;
-    // This test double creates no native process; its exact private cleanup projection settles alongside its owned modeled barriers.
-    transitionWorkerBackendSessionState(coreDb, {
-      attemptId: context.attemptId!,
-      fromState: 'materializing',
-      toState: 'cleanup-pending',
-    });
-    transitionWorkerBackendSessionState(coreDb, {
-      attemptId: context.attemptId!,
-      fromState: 'cleanup-pending',
-      toState: 'physical-cleaned',
-    });
-    transitionWorkerBackendSessionState(coreDb, {
-      attemptId: context.attemptId!,
-      fromState: 'physical-cleaned',
-      toState: 'cleaned',
-    });
     const closing = markSchedulerExecutionAttemptClosing(coreDb, {
       attemptId: context.attemptId!,
       cause,
@@ -1196,6 +1372,13 @@ class FakeTurnExecutor implements TurnExecutor {
       proof,
       fenceRef: result.fenceRef!,
     });
+    const attempt = requireSchedulerExecutionAttempt(coreDb, context.attemptId!);
+    const db = openWorkspaceDb(coreDb.dataRoot, attempt.workspaceId);
+    try {
+      await endWorkerTurnJournalRelease(store, db, attempt.turnId, result.fenceRef!);
+    } finally {
+      db.sqlite.close();
+    }
     this.completedExecutions += 1;
   }
 
@@ -1242,53 +1425,9 @@ class FakeTurnExecutor implements TurnExecutor {
     if (!turn.agentId) {
       throw new Error('Fake worker turn requires a selected agent id.');
     }
-    const timestamp = turn.startedAt ?? new Date().toISOString();
     const requestId = context.requestId ?? null;
-    const agentSessionId = context.agentSessionId ?? `session_${turn.threadId}`;
-    let existingAgentSession: ReturnType<FsStore['getAgentSession']> | undefined;
-    try {
-      existingAgentSession = store.getAgentSession(agentSessionId);
-    } catch {
-      existingAgentSession = undefined;
-    }
-    const sessionCompatibilityKey =
-      context.sessionCompatibilityKey ??
-      (context.agentSetup
-        ? resolveAgentSessionCompatibilityKey({
-            agentSessionId,
-            agentSetup: context.agentSetup,
-            backend: { kind: 'openshell' },
-            requestId,
-            turn,
-            turnInput: input,
-            triggerActor: context.triggerActor ?? turn.triggerActor,
-            workspaceCwd: context.workspaceCwd,
-            workspaceRoots: context.workspaceRoots,
-            ...(context.workspaceDataSourceCatalog
-              ? { workspaceDataSourceCatalog: context.workspaceDataSourceCatalog }
-              : {}),
-            ...(context.workspaceSourceRefs
-              ? { workspaceSourceRefs: context.workspaceSourceRefs }
-              : {}),
-          })
-        : undefined);
-    const agentSession = existingAgentSession
-      ? await store.updateAgentSession(existingAgentSession.id, {
-          status: 'busy',
-          updatedAt: timestamp,
-        })
-      : await store.createAgentSession({
-          id: agentSessionId,
-          agentId: turn.agentId,
-          workspaceId: workspaceIdForOwner(turn.owner),
-          threadId: turn.threadId,
-          status: 'busy',
-          message: null,
-          ...(sessionCompatibilityKey ? { sessionCompatibilityKey } : {}),
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        });
-    await store.updateTurn(turnId, { agentSessionId: agentSession.id });
+    // beginTurn already acknowledged this exact Session and Turn binding through the native owner.
+    const agentSession = store.getAgentSession(context.agentSessionId!);
     const userItem = await store.createItem({
       id: deriveEntityId('it', ['task-user', turnId]),
       owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
@@ -1313,75 +1452,98 @@ class FakeTurnExecutor implements TurnExecutor {
       createdAt: turn.startedAt ?? new Date().toISOString(),
       completedAt: new Date().toISOString(),
     });
-    await store.emitTurnEvent(turnId, {
-      event: 'turn.started',
-      requestId,
-      workspaceId: workspaceIdForOwner(turn.owner),
-      threadId: turn.threadId,
+    store.emitTurnEvent(
       turnId,
-      data: { type: 'turn-started', turnId, status: 'running' },
-    });
-    await store.emitTurnEvent(turnId, {
-      event: 'item.created',
-      requestId,
-      workspaceId: workspaceIdForOwner(turn.owner),
-      threadId: turn.threadId,
-      turnId,
-      data: { type: 'item-created', item: userItem },
-    });
-    await store.emitTurnEvent(turnId, {
-      event: 'item.completed',
-      requestId,
-      workspaceId: workspaceIdForOwner(turn.owner),
-      threadId: turn.threadId,
-      turnId,
-      data: { type: 'item-completed', itemId: userItem.id, item: userItem },
-    });
-    await store.emitTurnEvent(turnId, {
-      event: 'agent.session.updated',
-      requestId,
-      workspaceId: workspaceIdForOwner(turn.owner),
-      threadId: turn.threadId,
-      turnId,
-      data: { type: 'agent-session-updated', agentSession },
-    });
-    await store.emitTurnEvent(turnId, {
-      event: 'item.created',
-      requestId,
-      workspaceId: workspaceIdForOwner(turn.owner),
-      threadId: turn.threadId,
-      turnId,
-      data: { type: 'item-created', item: assistantItem },
-    });
-    await store.emitTurnEvent(turnId, {
-      event: 'item.completed',
-      requestId,
-      workspaceId: workspaceIdForOwner(turn.owner),
-      threadId: turn.threadId,
-      turnId,
-      data: { type: 'item-completed', itemId: assistantItem.id, item: assistantItem },
-    });
-    const completedTurn = await store.updateTurn(turnId, {
-      status: 'completed',
-      completedAt: assistantItem.completedAt,
-    });
-    await store.updateAgentSession(agentSession.id, {
-      status: 'idle',
-      updatedAt: assistantItem.completedAt ?? timestamp,
-    });
-    await store.emitTurnEvent(
-      turnId,
-      {
-        event: 'turn.completed',
+      await store.persistTurnEvent(turnId, {
+        event: 'turn.started',
         requestId,
         workspaceId: workspaceIdForOwner(turn.owner),
         threadId: turn.threadId,
         turnId,
-        data: { type: 'turn-completed', stopReason: 'completed', turn: completedTurn },
-      },
-      ALREADY_DECIDED_PUBLICATION_ADMISSION
+        data: { type: 'turn-started', turnId, status: 'running' },
+      })
     );
-    await this.releaseTurn(context);
+    store.emitTurnEvent(
+      turnId,
+      await store.persistTurnEvent(turnId, {
+        event: 'item.created',
+        requestId,
+        workspaceId: workspaceIdForOwner(turn.owner),
+        threadId: turn.threadId,
+        turnId,
+        data: { type: 'item-created', item: userItem },
+      })
+    );
+    store.emitTurnEvent(
+      turnId,
+      await store.persistTurnEvent(turnId, {
+        event: 'item.completed',
+        requestId,
+        workspaceId: workspaceIdForOwner(turn.owner),
+        threadId: turn.threadId,
+        turnId,
+        data: { type: 'item-completed', itemId: userItem.id, item: userItem },
+      })
+    );
+    store.emitTurnEvent(
+      turnId,
+      await store.persistTurnEvent(turnId, {
+        event: 'agent.session.updated',
+        requestId,
+        workspaceId: workspaceIdForOwner(turn.owner),
+        threadId: turn.threadId,
+        turnId,
+        data: { type: 'agent-session-updated', agentSession },
+      })
+    );
+    store.emitTurnEvent(
+      turnId,
+      await store.persistTurnEvent(turnId, {
+        event: 'item.created',
+        requestId,
+        workspaceId: workspaceIdForOwner(turn.owner),
+        threadId: turn.threadId,
+        turnId,
+        data: { type: 'item-created', item: assistantItem },
+      })
+    );
+    store.emitTurnEvent(
+      turnId,
+      await store.persistTurnEvent(turnId, {
+        event: 'item.completed',
+        requestId,
+        workspaceId: workspaceIdForOwner(turn.owner),
+        threadId: turn.threadId,
+        turnId,
+        data: { type: 'item-completed', itemId: assistantItem.id, item: assistantItem },
+      })
+    );
+    const completedTurn = await this.completeTurn(
+      store,
+      turnId,
+      context,
+      {
+        status: 'completed',
+        completedAt: assistantItem.completedAt,
+      },
+      'completed'
+    );
+    store.emitTurnEvent(
+      turnId,
+      await store.persistTurnEvent(
+        turnId,
+        {
+          event: 'turn.completed',
+          requestId,
+          workspaceId: workspaceIdForOwner(turn.owner),
+          threadId: turn.threadId,
+          turnId,
+          data: { type: 'turn-completed', stopReason: 'completed', turn: completedTurn },
+        },
+        ALREADY_DECIDED_PUBLICATION_ADMISSION
+      )
+    );
+    await this.releaseTurn(store, context);
   }
 
   /**
@@ -1396,14 +1558,17 @@ class FakeTurnExecutor implements TurnExecutor {
       status: 'interrupted',
       completedAt: new Date().toISOString(),
     });
-    await store.emitTurnEvent(turnId, {
-      event: 'turn.completed',
-      requestId: context.requestId,
-      workspaceId: workspaceIdForOwner(turn.owner),
-      threadId: turn.threadId,
+    store.emitTurnEvent(
       turnId,
-      data: { type: 'turn-completed', stopReason: 'aborted', turn },
-    });
+      await store.persistTurnEvent(turnId, {
+        event: 'turn.completed',
+        requestId: context.requestId,
+        workspaceId: workspaceIdForOwner(turn.owner),
+        threadId: turn.threadId,
+        turnId,
+        data: { type: 'turn-completed', stopReason: 'aborted', turn },
+      })
+    );
   }
 }
 
@@ -5475,6 +5640,7 @@ describe('nanocore server', () => {
 
   it('starts scheduled turns without resolving Gateway credentials in Agent composition', async () => {
     const coreDb = createCoreDb();
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new FakeTurnExecutor();
     createVaultReference(coreDb, {
       referenceId: 'vault_00000000-0000-773b-907f-1cbec0ca03c0',
@@ -5487,6 +5653,7 @@ describe('nanocore server', () => {
       secretRef === 'vault://vault_00000000-0000-773b-907f-1cbec0ca03c0' ? 'test-key' : null
     );
     const app = await createApp({
+      store,
       agentManifests: [createTestAgentSetup().manifest],
       coreDb,
       providerCredentialResolver,
@@ -5536,6 +5703,7 @@ describe('nanocore server', () => {
       expect(providerCredentialResolver).not.toHaveBeenCalled();
       expect(listVaultUseRecords(coreDb)).toEqual([]);
       expect(turn.id).toMatch(entityIdPattern('tu'));
+      await executor.waitForFinished(store);
     } finally {
       coreDb.sqlite.close();
     }
@@ -6071,6 +6239,7 @@ describe('nanocore server', () => {
     const executor = new FakeTurnExecutor();
     vi.spyOn(executor, 'startTurn').mockImplementation(
       async (runtimeStore, turnId, input, context) => {
+        if (!context) throw new Error('Worker fixture requires its admitted runtime context.');
         await executor.beginTurn(runtimeStore, turnId, context, input);
         executor.startContexts.push(context);
         const turn = runtimeStore.getTurnById(turnId);
@@ -6092,30 +6261,34 @@ describe('nanocore server', () => {
           createdAt: turn.startedAt ?? completedAt,
           completedAt,
         });
-        const failedTurn = await runtimeStore.updateTurn(turnId, {
-          agentSessionId: agentSession.id,
-          completedAt,
-          error: { code: 'worker_failed', message: 'Worker process exited with code 1.' },
-          status: 'failed',
-        });
-        await runtimeStore.updateAgentSession(agentSession.id, {
-          message: 'Worker process exited with code 1.',
-          status: 'failed',
-          updatedAt: completedAt,
-        });
-        await runtimeStore.emitTurnEvent(
+        const failedTurn = await executor.completeTurn(
+          runtimeStore,
           turnId,
+          context,
           {
-            event: 'turn.completed',
-            requestId: context.requestId ?? null,
-            workspaceId: workspaceIdForOwner(turn.owner),
-            threadId: turn.threadId,
-            turnId,
-            data: { type: 'turn-completed', stopReason: 'error', turn: failedTurn },
+            agentSessionId: agentSession.id,
+            completedAt,
+            error: { code: 'worker_failed', message: 'Worker process exited with code 1.' },
+            status: 'failed',
           },
-          ALREADY_DECIDED_PUBLICATION_ADMISSION
+          'error'
         );
-        await executor.releaseTurn(context, 'turn-failed');
+        runtimeStore.emitTurnEvent(
+          turnId,
+          await runtimeStore.persistTurnEvent(
+            turnId,
+            {
+              event: 'turn.completed',
+              requestId: context.requestId ?? null,
+              workspaceId: workspaceIdForOwner(turn.owner),
+              threadId: turn.threadId,
+              turnId,
+              data: { type: 'turn-completed', stopReason: 'error', turn: failedTurn },
+            },
+            ALREADY_DECIDED_PUBLICATION_ADMISSION
+          )
+        );
+        await executor.releaseTurn(runtimeStore, context, 'turn-failed');
       }
     );
     const app = await createApp({ coreDb, store, turnExecutor: executor });
@@ -6177,7 +6350,9 @@ describe('nanocore server', () => {
       expect(evidenceResponse.status, await evidenceResponse.clone().text()).toBe(200);
       const evidence = ListWorkspaceRuntimeEvidenceResponseSchema.parse(
         await evidenceResponse.json()
-      ).runtimeEvidence.find((record) => record.turnId === failedTurn?.id);
+      ).runtimeEvidence.find(
+        (record) => record.turnId === failedTurn?.id && record.phase === 'checkpoint'
+      );
       expect(evidence).toMatchObject({
         outcome: 'failed',
         phase: 'checkpoint',
@@ -6277,6 +6452,7 @@ describe('nanocore server', () => {
     const executor = new FakeTurnExecutor();
     vi.spyOn(executor, 'startTurn').mockImplementation(
       async (runtimeStore, turnId, input, context) => {
+        if (!context) throw new Error('Worker fixture requires its admitted runtime context.');
         await executor.beginTurn(runtimeStore, turnId, context, input);
         executor.startContexts.push(context);
         const turn = runtimeStore.getTurnById(turnId);
@@ -6298,30 +6474,38 @@ describe('nanocore server', () => {
           createdAt: turn.startedAt ?? completedAt,
           completedAt,
         });
-        const terminalTurn = await runtimeStore.updateTurn(turnId, {
-          agentSessionId: agentSession.id,
-          completedAt,
-          error,
-          status,
-        });
-        await runtimeStore.updateAgentSession(agentSession.id, {
-          message: error?.message ?? 'The selected Worker was interrupted.',
-          status: 'failed',
-          updatedAt: completedAt,
-        });
-        await runtimeStore.emitTurnEvent(
+        const terminalTurn = await executor.completeTurn(
+          runtimeStore,
           turnId,
+          context,
           {
-            event: 'turn.completed',
-            requestId: context.requestId ?? null,
-            workspaceId: workspaceIdForOwner(turn.owner),
-            threadId: turn.threadId,
-            turnId,
-            data: { type: 'turn-completed', stopReason, turn: terminalTurn },
+            agentSessionId: agentSession.id,
+            completedAt,
+            error,
+            status,
           },
-          ALREADY_DECIDED_PUBLICATION_ADMISSION
+          stopReason
         );
-        await executor.releaseTurn(context, status === 'failed' ? 'turn-failed' : 'turn-cancelled');
+        runtimeStore.emitTurnEvent(
+          turnId,
+          await runtimeStore.persistTurnEvent(
+            turnId,
+            {
+              event: 'turn.completed',
+              requestId: context.requestId ?? null,
+              workspaceId: workspaceIdForOwner(turn.owner),
+              threadId: turn.threadId,
+              turnId,
+              data: { type: 'turn-completed', stopReason, turn: terminalTurn },
+            },
+            ALREADY_DECIDED_PUBLICATION_ADMISSION
+          )
+        );
+        await executor.releaseTurn(
+          runtimeStore,
+          context,
+          status === 'failed' ? 'turn-failed' : 'turn-cancelled'
+        );
       }
     );
     const app = await createApp({ coreDb, store, turnExecutor: executor });
@@ -6616,7 +6800,8 @@ describe('nanocore server', () => {
     stopReason,
   }) => {
     const coreDb = createCoreDb();
-    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const retained = new FsStore();
+    await seedDemoWorkspace(retained);
     const chatThreadId = 'th_00000000-0000-7000-8000-000000000001';
     const taskThreadId = 'th_00000000-0000-7347-94e1-85120ad74455';
     const turnId = 'tu_00000000-0000-79f9-80b1-8d99a98b413d';
@@ -6625,12 +6810,12 @@ describe('nanocore server', () => {
     const agentSessionId = 'as_00000000-0000-7dd5-985e-c3d36d7f78a9';
     const failed = stopReason === 'error';
     const completedAt = '2026-09-10T09:11:15.000Z';
-    await store.createThread(
+    await retained.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Conversation worker Task thread',
       taskThreadId
     );
-    const turn = await store.createTurn(
+    const turn = await retained.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       taskThreadId,
       'Conversation-owned worker Turn',
@@ -6638,7 +6823,7 @@ describe('nanocore server', () => {
       null,
       { turnId }
     );
-    await store.createAgentSession({
+    await retained.createAgentSession({
       agentId: 'agent_codex_host',
       createdAt: turn.startedAt ?? completedAt,
       id: agentSessionId,
@@ -6648,19 +6833,92 @@ describe('nanocore server', () => {
       updatedAt: completedAt,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const closedTurn = await store.updateTurn(turn.id, {
+    const closedTurn = await retained.updateTurn(turn.id, {
       agentId: 'agent_codex_host',
       agentSessionId,
       completedAt,
       status: failed ? 'failed' : 'completed',
     });
-    await store.emitTurnEvent(turn.id, {
-      data: { stopReason, turn: closedTurn, type: 'turn-completed' },
-      event: 'turn.completed',
-      requestId,
-      threadId: taskThreadId,
-      turnId: turn.id,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    retained.emitTurnEvent(
+      turn.id,
+      await retained.persistTurnEvent(turn.id, {
+        data: { stopReason, turn: closedTurn, type: 'turn-completed' },
+        event: 'turn.completed',
+        requestId,
+        threadId: taskThreadId,
+        turnId: turn.id,
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      })
+    );
+    if (receipt !== 'missing') {
+      retained.recordCommandRequest({
+        command: 'conversation.submit',
+        requestId,
+        scope: {
+          actorId: LOCAL_USER_ID,
+          threadId: chatThreadId,
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        },
+        inputHash: requestInputHash,
+        response: {
+          kind: 'turn',
+          id: turn.id,
+          conversationMetadata: {
+            downstream: { kind: 'task', turnId: turn.id },
+            targetRef: 'internal-role:assistant',
+            logicalModelId: 'orcarouter',
+            receivingWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+            receivingThreadId: receipt === 'exact' ? taskThreadId : chatThreadId,
+            resultKind: 'worker-turn',
+            status: 202,
+          },
+        },
+      });
+    }
+    const demo = createDemoWorkspaceForUser(LOCAL_USER_ID);
+    const store = new FsStore({ dataRoot: coreDb.dataRoot });
+    // Boot recovery consumes a stopped retained snapshot, never an unjournaled live Worker closure.
+    await store.importWorkspaceSnapshot({
+      ...notebookImportFixture({ workspaceId: demo.workspace.id, knowledge: demo.knowledge }),
+      workspace: demo.workspace,
+      threads: retained.listThreads(demo.workspace.id),
+      turns: [retained.getTurnById(turn.id)],
+      knowledge: demo.knowledge,
+      itemRevisions: [],
+      artifacts: [],
+      agentSessions: [retained.getAgentSession(agentSessionId)],
+      turnEvents: [[turn.id, retained.getTurnEvents(turn.id)]],
+      finalizeNativeWorkspace: ({ workspaceId, workspaceRoot }) => {
+        const staged = openWorkspaceDbAtRoot({
+          dataRoot: coreDb.dataRoot,
+          workspaceId,
+          workspaceRoot,
+        });
+        try {
+          // Source-local boot receipts belong to this stopped private snapshot, before its root is published.
+          for (const record of retained.listCommandRequests()) {
+            staged.sqlite
+              .prepare(`INSERT INTO idempotency_requests
+              (schema_version, request_key, command_name, request_id, scope_json, input_hash,
+               response_kind, response_id, response_json, created_at, expires_at)
+              VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+              .run(
+                record.key,
+                record.command,
+                record.requestId,
+                JSON.stringify(record.scope),
+                record.inputHash,
+                record.response.kind,
+                record.response.id,
+                JSON.stringify(record.response.conversationMetadata),
+                record.createdAt,
+                record.expiresAt
+              );
+          }
+        } finally {
+          staged.sqlite.close();
+        }
+      },
     });
     const entry = createSchedulerAdmissionEntry(coreDb, {
       backendId: 'nanohost',
@@ -6689,31 +6947,6 @@ describe('nanocore server', () => {
       cause: failed ? 'turn-failed' : 'turn-completed',
       noOutstandingEffects: true,
     });
-    if (receipt !== 'missing') {
-      store.recordCommandRequest({
-        command: 'conversation.submit',
-        requestId,
-        scope: {
-          actorId: LOCAL_USER_ID,
-          threadId: chatThreadId,
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        },
-        inputHash: requestInputHash,
-        response: {
-          kind: 'turn',
-          id: turn.id,
-          conversationMetadata: {
-            downstream: { kind: 'task', turnId: turn.id },
-            targetRef: 'internal-role:assistant',
-            logicalModelId: 'orcarouter',
-            receivingWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-            receivingThreadId: receipt === 'exact' ? taskThreadId : chatThreadId,
-            resultKind: 'worker-turn',
-            status: 202,
-          },
-        },
-      });
-    }
     const workspaceDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
     try {
       const checkpoint = upsertWorkerCheckpoint(workspaceDb, {
@@ -7353,6 +7586,7 @@ describe('nanocore server', () => {
 
   it('projects Task Mode review evidence when worker output stages workspace changes', async () => {
     const coreDb = createCoreDb();
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const executor = new (class extends FakeTurnExecutor {
       public override async startTurn(
         store: FsStore,
@@ -7445,7 +7679,7 @@ describe('nanocore server', () => {
         }
       }
     })();
-    const app = await createApp({ coreDb, turnExecutor: executor });
+    const app = await createApp({ coreDb, store, turnExecutor: executor });
     const repositoryPath = mkdtempSync(join(tmpdir(), 'openkit-task-mode-review-repository-'));
 
     seedWritableGitRepository(repositoryPath);
@@ -7471,6 +7705,7 @@ describe('nanocore server', () => {
 
       expect(res.status, await res.clone().text()).toBe(202);
       const accepted = StartTaskModeResponseSchema.parse(await res.json());
+      await executor.waitForFinished(store);
       await vi.waitFor(() => expect(executor.startContexts).toHaveLength(1));
       await vi.waitFor(() =>
         expect(

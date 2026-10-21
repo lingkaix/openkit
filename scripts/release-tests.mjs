@@ -306,6 +306,10 @@ export function prepareCoverage(owners, { root = process.cwd() } = {}) {
       'run',
       'build',
       ...owners.map((o) => `--filter=${o.name}${o.name === '@openkit/nanocore' ? '...' : '^...'}`),
+      // Worker transport tests import real NanoCore helpers whose native closure uses Policy.
+      ...(owners.some((o) => o.name === '@openkit/worker-shim')
+        ? ['--filter=@openkit/policy-kernel']
+        : []),
     ]);
 }
 /** Derive every root and recursive script Node test owner from files and the existing full host lane. */

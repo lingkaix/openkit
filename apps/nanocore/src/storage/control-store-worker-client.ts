@@ -1,4 +1,6 @@
 import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { isMainThread, Worker } from 'node:worker_threads';
@@ -127,14 +129,22 @@ class ControlStoreWorkerClient {
   private backupPaused = false;
   private backupDrain: (() => void) | undefined;
 
-  /** Starts the real compiled entry, or the existing TypeScript loader in development. */
+  /** Starts the real compiled entry, the invocation-compiled test entry, or the source loader in development. */
   constructor() {
-    if (import.meta.url.endsWith('.ts')) {
+    if (import.meta.url.endsWith('.ts') && process.env.VITEST === 'true') {
+      // Vitest global setup compiles this same entry once in its owned private directory; missing setup fails closed.
+      this.worker = new Worker(
+        pathToFileURL(
+          join(tmpdir(), 'nanocore-worker', 'dist', 'storage', 'control-store-worker.mjs')
+        )
+      );
+    } else if (import.meta.url.endsWith('.ts')) {
       const require = createRequire(import.meta.url);
       const loader = pathToFileURL(require.resolve('tsx/esm/api')).href;
       const entry = new URL('./control-store-worker.ts', import.meta.url).href;
       this.worker = new Worker(
-        `import(${JSON.stringify(loader)}).then(({tsImport}) => tsImport(${JSON.stringify(entry)}, ${JSON.stringify(import.meta.url)}));`,
+        // This thread is already isolated. A second tsImport namespace adds synchronous CommonJS loader round trips for the complete owner graph.
+        `import(${JSON.stringify(loader)}).then(({register}) => { register(); return import(${JSON.stringify(entry)}); });`,
         { eval: true }
       );
     } else {

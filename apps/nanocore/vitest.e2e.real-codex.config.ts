@@ -13,6 +13,7 @@ export default defineConfig({
   test: {
     globalSetup: [
       fileURLToPath(new URL('../../tests/support/vitest-global-setup.mjs', import.meta.url)),
+      fileURLToPath(new URL('./vitest-worker-setup.mjs', import.meta.url)),
     ],
     include: ['e2e/codex-smoke.spec.ts'],
     pool: 'forks',

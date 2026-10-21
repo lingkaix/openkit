@@ -246,3 +246,9 @@ Post-terminal Item and event completion uses `prepareControlPublication` and `ap
 Native observation import verifies the exact evidence owner for both restricted raw originals and originals under legal hold. A hold changes retention, grants no access, and survives the same staged import and cold reopen checks.
 
 Main writable Core, User and Workspace connections use the accepted 5 ms SQLite busy timeout. This bounds lock waiting only; COMMIT and file synchronization have separate latency. The native worker keeps its own connection policy. Neither owner retries a refused transaction.
+
+Task receipt recovery replays the complete native terminal owner with its original execution obligations and actual runtime evidence; it never inserts a detached receipt through Main.
+
+The source Worker bootstrap registers its ESM TypeScript loader once inside the already isolated native thread. It imports the same native entry without an additional `tsImport` namespace and CommonJS hook; compiled entry selection and all native admission, transaction and acknowledgement predicates are unchanged.
+
+Under Vitest, source clients load the same native Worker from the invocation-private compiled entry produced by NanoCore global setup. The existing Vitest marker selects only this source entry; no native owner, flag, protocol or durability predicate changes. Missing test setup fails closed, and the shared temporary-directory owner removes the build after worker teardown.

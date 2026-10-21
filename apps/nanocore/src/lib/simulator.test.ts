@@ -41,7 +41,10 @@ import type { WorkspaceDb } from '../storage/db.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
 import { applyMigrations } from '../storage/migrate.js';
-import { isCurrentAgentSessionStatus } from '../storage/workspace-file-records.js';
+import {
+  isCurrentAgentSessionStatus,
+  nativeProductScope,
+} from '../storage/workspace-file-records.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -773,7 +776,8 @@ describe('SimulatedTurnExecutor', () => {
       executions.mockRestore();
       coreDb.sqlite.close();
     }
-  });
+    // F-PRED-LAT: restore 30 s after the owned predecessor latency follow-up proves margin.
+  }, 60_000);
 
   it('strictly projects and consumes bound Material with shared file admission', async () => {
     process.env.OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR = '1';
@@ -1256,17 +1260,35 @@ describe('SimulatedTurnExecutor', () => {
         const retained = proposals.filter((artifact) =>
           artifact.origin.requestId?.startsWith('simulator-material-')
         );
-        const historyPath = join(
-          coreDb.dataRoot,
-          'workspaces',
-          'ws_00000000-0000-7000-8000-000000000001',
-          'threads',
-          'th_00000000-0000-7000-8000-000000000001',
-          'turns',
-          workerTurn.id,
-          'items.jsonl'
-        );
-        const history = readFileSync(historyPath);
+        const historyScope = nativeProductScope(coreDb.dataRoot, {
+          kind: 'workspace',
+          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+        });
+        // Snapshot the complete ordered native history and its exact immutable bytes.
+        const readHistory = () => {
+          const rows = replayDb.sqlite
+            .prepare(
+              `SELECT sequence, id, revision, content_json FROM control_product_entries
+               WHERE kind = 'item' AND turn_id = ? ORDER BY sequence`
+            )
+            .all(workerTurn.id) as Array<{
+            sequence: number;
+            id: string;
+            revision: number;
+            content_json: string;
+          }>;
+          return rows.map((row) => ({
+            ...row,
+            bytes: readFileSync(
+              join(
+                historyScope.contentMount.root,
+                JSON.parse(row.content_json).reference.locator.path
+              )
+            ),
+          }));
+        };
+        const history = readHistory();
+        expect(history.length).toBeGreaterThan(0);
         const references = store.listThreadItems(
           'ws_00000000-0000-7000-8000-000000000001',
           'th_00000000-0000-7000-8000-000000000001'
@@ -1304,7 +1326,7 @@ describe('SimulatedTurnExecutor', () => {
             'th_00000000-0000-7000-8000-000000000001'
           )
         ).toEqual(references);
-        expect(readFileSync(historyPath)).toEqual(history);
+        expect(readHistory()).toEqual(history);
         expect(
           retained.map((artifact) => getArtifactReview(replayDb, artifact.id, artifact.version))
         ).toEqual(reviews);

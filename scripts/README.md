@@ -2,6 +2,8 @@
 
 Root `package.json` owns the command surface and `docs/toolchain.md` owns setup and execution placement. These scripts implement those commands; they do not supply design authority.
 
+`release-tests.mjs` builds `@openkit/policy-kernel` before Worker Shim coverage collection. The transport tests use real NanoCore Gateway helpers; their retained-file and native command dependencies reach the Policy owner. This adds the required built package to the existing preparation step without building NanoCore or changing test selection.
+
 `validate-test-governance.mjs --run -- <command>` retains command failures and rejects undeclared TAP skips. It also rejects positive unnamed skipped counts from Vitest and Node's default and spec reporters because those summaries cannot prove file-bound skip authorization. It removes ANSI decoration for skip parsing and retains the original output for display.
 
 ## Release Inputs And Verification
