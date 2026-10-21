@@ -34,6 +34,7 @@ export const CONTROL_ADMISSION_COMMANDS = [
   'task.start',
   'turn.input.submit',
   'conversation.submit',
+  'turn.interrupt',
 ] as const;
 
 /** Activated native command partitions share the original receipt owner, not a second ledger or Main backfill. */
@@ -45,7 +46,6 @@ export const CONTROL_NATIVE_RECEIPT_COMMANDS = [
   'artifact.submit',
   'artifact.review.select',
   'artifact.review.decide',
-  'turn.interrupt',
   'goal.create',
   'goal.intent.revise',
   'goal.card.create',

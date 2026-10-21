@@ -4730,6 +4730,8 @@ export class FsStore {
     >,
     admission?: (TerminalTurnWriteAdmission | { category?: never }) & {
       journalIntents?: readonly ExecutionJournalIntent[];
+      /** Original command receipt and local Audit acknowledged with this live Turn snapshot. */
+      commandAdmission?: Pick<ControlAdmission, 'receipt' | 'audit'>;
     }
   ): Promise<Turn> {
     this.assertTurnPublicationAcknowledged(turnId);
@@ -4811,7 +4813,7 @@ export class FsStore {
           },
         ],
         [],
-        undefined,
+        admission?.commandAdmission,
         admission?.journalIntents
       );
       return this.getTurnById(turnId);

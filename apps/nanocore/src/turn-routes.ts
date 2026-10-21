@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import {
+  type ActorRef,
   isSealedTurnTerminal,
   ProductTurnSchema,
   type SubmitTurnInputRequestSchema,
@@ -8,6 +9,7 @@ import {
 } from '@openkit/protocol';
 import type { z } from 'zod';
 import type { AgentSetupResolverDependencies } from './agents/setup-resolver.js';
+import { prepareAuditEvent } from './audit-events.js';
 import type { Actor } from './auth/identity.js';
 import type { RuntimeConfigSnapshot } from './config/runtime-config.js';
 import { readStrictWorkerContextPackageDigest } from './context/worker-context-projection.js';
@@ -32,12 +34,17 @@ import {
   validateLiveProductTurnAdmission,
 } from './runtime/product-turn-start.js';
 import type { TurnExecutor } from './runtime/types.js';
-import { terminalizeGovernedWorkerTurn } from './runtime/worker-turn-failure.js';
+import {
+  terminalizeGovernedWorkerTurn,
+  workerTurnTerminalPublication,
+} from './runtime/worker-turn-failure.js';
 import {
   cancelSchedulerAdmissionEntry,
   listSchedulerAdmissionEntriesForWorkspace,
 } from './scheduler-records.js';
-import type { CoreDb, WorkspaceDb } from './storage/db.js';
+import { openControlStoreProductReadHandle } from './storage/control-store-products.js';
+import { bindWorkspaceSqlite, type CoreDb, type WorkspaceDb } from './storage/db.js';
+import { workspaceDbPath } from './storage/fs-layout.js';
 
 /** Parsed turn read model shape used by route-level guards. */
 type TurnReadModel = z.infer<typeof TurnSchema>;
@@ -255,6 +262,8 @@ export async function interruptProductTurn(input: {
   readonly interruptInternalChatTurn?: (store: FsStore, turnId: string) => Promise<boolean>;
   /** Records fresh command acceptance without claiming terminal cleanup; replay omits it. */
   readonly onInterruptAccepted?: () => void;
+  /** Authenticated command actor; direct runtime callers retain their admitted Turn actor. */
+  readonly actor?: ActorRef;
   readonly coreDb: CoreDb | undefined;
   readonly turnExecutor: TurnExecutor;
   readonly workspaceId: string;
@@ -290,10 +299,88 @@ export async function interruptProductTurn(input: {
       turnId,
     },
     responseKind: 'turn',
-    execute: async () => {
+    execute: async (commandReceipt) => {
       /** Validates the accepted result before evidence; evidence failure leaves reached effects intact. */
-      const acceptedTurn = () => {
-        const result = TurnSchema.parse(store.getTurn(workspaceId, threadId, turnId));
+      const acceptedTurn = async () => {
+        let result = TurnSchema.parse(store.getTurn(workspaceId, threadId, turnId));
+        if (store.getDataRoot()) {
+          const { responseKind, ...receipt } = commandReceipt;
+          const command = {
+            receipt: {
+              ...receipt,
+              command: 'turn.interrupt' as const,
+              response: { kind: responseKind, id: turnId },
+            },
+            audit: {
+              ...prepareAuditEvent({
+                workspaceId,
+                threadId,
+                turnId,
+                requestId,
+                actor: input.actor ?? result.triggerActor,
+                category: 'command',
+                action: 'turn.interrupt',
+                resource: `turn:${turnId}`,
+                outcome: 'succeeded',
+                summary: 'Stop request accepted.',
+                now: new Date(receipt.createdAt),
+              }),
+              createdAt: receipt.createdAt,
+              occurredAt: receipt.createdAt,
+            },
+          };
+          if (
+            result.status === 'completed' ||
+            result.status === 'failed' ||
+            result.status === 'cancelled' ||
+            result.status === 'interrupted'
+          ) {
+            const reader = openControlStoreProductReadHandle(
+              workspaceDbPath(store.getDataRoot()!, workspaceId),
+              result.owner
+            );
+            try {
+              const publication = result.agentSessionId
+                ? await workerTurnTerminalPublication(
+                    bindWorkspaceSqlite(reader.sqlite, store.getDataRoot()!, workspaceId),
+                    turnId,
+                    result.status
+                  )
+                : {};
+              // Reconcile the exact decided tuple through its native receipt owner, never Main.
+              const retainedEvents = store.getTurnEvents(turnId);
+              const terminalEvent = retainedEvents.find(
+                (event) => event.data.type === 'turn-completed'
+              );
+              const precedingEvents = terminalEvent
+                ? retainedEvents.filter(
+                    (event) =>
+                      event.sequence === terminalEvent.sequence - 1 &&
+                      event.data.type === 'agent-session-updated' &&
+                      event.data.agentSession.id === result.agentSessionId &&
+                      event.data.agentSession.updatedAt === result.completedAt
+                  )
+                : [];
+              result = await store.completeTurn(
+                turnId,
+                {},
+                {
+                  ...publication,
+                  command,
+                  precedingEvents,
+                  ...(terminalEvent?.data.type === 'turn-completed'
+                    ? { stopReason: terminalEvent.data.stopReason }
+                    : {}),
+                }
+              );
+            } finally {
+              reader.close();
+            }
+          } else {
+            // Cancellation acceptance can precede terminal evidence; retain only the live snapshot.
+            result = await store.updateTurn(turnId, {}, { commandAdmission: command });
+          }
+        }
         input.onInterruptAccepted?.();
         return result;
       };
