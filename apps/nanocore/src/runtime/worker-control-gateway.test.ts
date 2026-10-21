@@ -38,6 +38,7 @@ import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import {
   hashWorkerRouteToken,
   WorkerControlGateway,
@@ -53,12 +54,14 @@ import { createWorkerControlSequenceRecorder } from './worker-control-sequences.
  * @param suffix Stable suffix used to create a distinct complete lineage.
  * @param dataRoot Optional canonical storage root.
  * @param captureValue Capture policy bound when the fixture Turn is admitted.
+ * @param adapter Actual adapter whose native evidence the fixture publishes.
  * @returns Package fixture and lineage expected by the control gateway.
  */
 function createWorkerControlFixture(
   suffix = '1',
   dataRoot?: string,
-  captureValue: 'off' | 'on' = 'on'
+  captureValue: 'off' | 'on' = 'on',
+  adapter: 'codex' | 'deepseek' | 'opencode' | 'pi' = 'codex'
 ): {
   environmentPackage: AgentEnvironmentPackage;
   lineage: WorkerControlLineage;
@@ -76,9 +79,17 @@ function createWorkerControlFixture(
     null,
     { turnId: testEntityId('tu', `tu_control_${suffix}`) }
   );
+  const agentSetup = createTestAgentSetup({ adapter });
+  // Codex uses the retained 0.153.4 rollout fixture; the other fixtures use their current pinned formats.
+  agentSetup.manifest.runtime.version = {
+    codex: '0.153.4',
+    deepseek: '0.2.0-rc.2',
+    opencode: '2.0.22',
+    pi: '1.0.2',
+  }[adapter];
   const environmentPackage = resolveAgentEnvironmentPackage({
     captureCoverage: store.getTurnCaptureCoverage(turn.id)!,
-    agentSetup: createTestAgentSetup(),
+    agentSetup,
     agentSessionId: testEntityId('as', `as_control_${suffix}`),
     triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
     backend: {
@@ -103,6 +114,16 @@ function createWorkerControlFixture(
       updatedAt: turn.startedAt!,
     });
     store.updateTurn(turn.id, { agentSessionId: testEntityId('as', `as_control_${suffix}`) });
+    const workspaceDb = openWorkspaceDb(dataRoot, workspaceIdForOwner(turn.owner));
+    try {
+      // Production retains this exact launch package before any native observation is admitted.
+      recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+        createdAt: turn.startedAt!,
+        environmentPackage,
+      });
+    } finally {
+      workspaceDb.sqlite.close();
+    }
   }
   return {
     environmentPackage: AgentEnvironmentPackageSchema.parse(environmentPackage),
@@ -288,7 +309,12 @@ describe('WorkerControlGateway', () => {
     value,
   }) => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-adapter-retention-'));
-    const fixture = createWorkerControlFixture(`retention-${adapter}-${value}`, root, value);
+    const fixture = createWorkerControlFixture(
+      `retention-${adapter}-${value}`,
+      root,
+      value,
+      adapter
+    );
     let coreDb = openCoreDb(root);
     applyMigrations(coreDb);
     let workspaceDb = openWorkspaceDb(root, fixture.lineage.workspaceId);
@@ -316,6 +342,8 @@ describe('WorkerControlGateway', () => {
     const runtimeCapture = {
       packageSnapshotId: fixture.lineage.packageSnapshotId,
       captureCoverage: fixture.environmentPackage.observability.captureCoverage,
+      nativeLogMaxBytes: fixture.environmentPackage.observability.evidence.nativeLogMaxBytes,
+      authoredVersion: fixture.environmentPackage.agent.runtimeVersion,
       credentialValues: [],
       emit: (record: Parameters<typeof writer.writeObservation>[0], body?: Uint8Array) =>
         writer.writeObservation(record, body),
@@ -658,7 +686,17 @@ describe('WorkerControlGateway', () => {
             })?.toString('utf8'),
           };
         });
-        expect(retained.map((body) => body.text).join('')).not.toContain('private reasoning');
+        // Native evidence is verbatim; the exclusion applies only to the outward projection.
+        expect(
+          retained
+            .filter((body) =>
+              ['runtime.assistant.text', 'runtime.tool.arguments', 'runtime.tool.result'].includes(
+                body.boundary ?? ''
+              )
+            )
+            .map((body) => body.text)
+            .join('')
+        ).not.toContain('private reasoning');
         expect(retained).toEqual(
           expect.arrayContaining([
             { boundary: 'runtime.assistant.text', text },
@@ -874,6 +912,8 @@ describe('WorkerControlGateway', () => {
       {
         packageSnapshotId: fixture.lineage.packageSnapshotId,
         captureCoverage: { scope: 'server', value: 'on' },
+        nativeLogMaxBytes: fixture.environmentPackage.observability.evidence.nativeLogMaxBytes,
+        authoredVersion: fixture.environmentPackage.agent.runtimeVersion,
         credentialValues: [],
         emit: (record, body) => writer.writeObservation(record, body),
       },
@@ -940,7 +980,8 @@ describe('WorkerControlGateway', () => {
         ]);
       }
     } finally {
-      await capture.invalidate();
+      // Finalization above has drained or reported failure; cleanup must not publish after terminal sealing.
+      capture.abandon();
       if (gapRejected) await writer.writeTerminalOutcome({ status: 'failed', stopReason: 'error' });
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
@@ -1016,6 +1057,8 @@ describe('WorkerControlGateway', () => {
       {
         packageSnapshotId: fixture.lineage.packageSnapshotId,
         captureCoverage: { scope: 'server', value: 'on' },
+        nativeLogMaxBytes: fixture.environmentPackage.observability.evidence.nativeLogMaxBytes,
+        authoredVersion: fixture.environmentPackage.agent.runtimeVersion,
         credentialValues: [],
         emit: (record, body) =>
           writer.writeObservation(record, body).catch((error: unknown) => {
