@@ -245,7 +245,7 @@ Use-time filtering, normalization and dataset conversion read currently authoriz
 
 ### Capture Safety And Restricted Access
 
-Never capture credentials or secret material OpenKit holds or injects: Gateway authentication headers, provider keys, Vault values, bootstrap/runtime credentials, and their resolved secret carriers. Exclude transport authentication before body capture. Check known secret values across a semantic unit and chunk boundaries so splitting a value cannot bypass exclusion. This is a bounded secret boundary, not a general anonymization or content-classification engine.
+Never capture credentials or secret material OpenKit holds or injects: Gateway authentication headers, provider keys, Vault values, bootstrap/runtime credentials, and their resolved secret carriers. Exclude transport authentication before body capture. Check known secret values across a semantic unit and chunk boundaries so splitting a value cannot bypass exclusion. Decoded semantic checks apply within the 16 MiB semantic parser ceiling; above it, the raw and escaped forms are checked across chunk boundaries and the structural-extraction limit is recorded. This is a bounded secret boundary, not a general anonymization or content-classification engine.
 
 If a unit cannot be retained without known secret material, refuse that unit and commit an anchored safety/unavailability fact. Keep other admitted units and explicit prefix/range coverage. Do not silently mask a body and advertise it as lossless. The existing bounded staging/semantic limits apply; overflow, interruption, or collector crash declares an incomplete/unpublished gap, never complete collection.
 

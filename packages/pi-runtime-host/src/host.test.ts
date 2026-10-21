@@ -3116,3 +3116,40 @@ it(
   },
   TIMEOUT
 );
+
+// RET Native Transcripts And Runtime Logs: observed streaming events survive the existing private channel.
+it(
+  'RET E9 forwards native streaming bytes in order without another prompt or result change',
+  async () => {
+    const f = await fixture(() => ({ text: ' E9 α native stream ' }));
+    const host = f.start();
+    expect((await f.open(host)).ok).toBe(true);
+    f.capability.bound = true;
+    const settled = await turn(host, 'e9-turn', 'one prompt');
+    expect(settled.outcome).toEqual({ assistantText: 'E9 α native stream', status: 'completed' });
+    expect(f.inference.requests).toHaveLength(1);
+    const raw = host.lines.filter((line) => line.includes('"type":"message_update"'));
+    expect(raw.length).toBeGreaterThan(0);
+    expect(
+      Buffer.from(raw.join('\n')).includes(Buffer.from('"delta":" E9 α native stream "'))
+    ).toBe(true);
+    const updates = raw.map((line) => JSON.parse(line));
+    expect(updates.every((frame) => frame.event === 'native' && frame.turnId === 'e9-turn')).toBe(
+      true
+    );
+    expect(
+      updates.flatMap((frame) =>
+        frame.data.assistantMessageEvent.type === 'text_delta'
+          ? [frame.data.assistantMessageEvent.delta]
+          : []
+      )
+    ).toEqual([' E9 α native stream ']);
+    const deltaPosition = host.lines.indexOf(
+      raw.find((line) => line.includes('"type":"text_delta"'))!
+    );
+    const settledPosition = host.lines.findIndex((line) => line.includes('"event":"turn_settled"'));
+    expect(deltaPosition).toBeLessThan(settledPosition);
+    expect((await host.request({ op: 'close' })).ok).toBe(true);
+  },
+  TIMEOUT
+);

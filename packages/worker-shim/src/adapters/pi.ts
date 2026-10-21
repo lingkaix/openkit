@@ -19,6 +19,7 @@ import type {
 import { LIFECYCLE_DEFAULTS, LifecycleDeadline } from '../lifecycle-deadline.js';
 import { nativeStartupAdmission } from '../native-startup.js';
 import { validateTurnReasoningEffort } from '../reasoning-effort.js';
+import { nativeJsonMember } from '../runtime-capture.js';
 import { containTurnLifecycleRecorder } from '../turn-timeline.js';
 import {
   createPiLineReader,
@@ -650,7 +651,17 @@ export class PiResidentBinding implements WorkerResidentSession {
       await this.#ensureOpen(prepared, deadline);
       this.#routes ??= prepared.routes;
       await this.#ensureModel(prepared.model, deadline);
-      capture = new PiRuntimeCapture(input.runtimeCapture, prepared.turnId);
+      capture = new PiRuntimeCapture(
+        {
+          ...input.runtimeCapture,
+          credentialValues: [...input.runtimeCapture.credentialValues, ...this.#secrets],
+        },
+        prepared.turnId
+      );
+      if (this.#cachedHandle) {
+        const source = await proveResumeReference(Buffer.from(this.#cachedHandle), this.#stateRoot);
+        await capture.bindFile(source.path);
+      }
       await piDeadline(
         capture.start(),
         deadline.workRemainingMs(),
@@ -701,7 +712,7 @@ export class PiResidentBinding implements WorkerResidentSession {
 
   #attach(): void {
     const reader = createPiLineReader(
-      (line) => this.#onFrame(parsePiHostFrame(line)),
+      (line) => this.#onLine(line),
       () => {
         this.#closeEvidenceLost = true;
         this.#markLost();
@@ -720,13 +731,20 @@ export class PiResidentBinding implements WorkerResidentSession {
       this.#onChannelEnd();
     });
     this.#channel.on('close', () => this.#onChannelEnd());
-    this.#child.stdout?.on('data', (chunk: Buffer) => this.#keepPrefix('stdout', chunk));
-    this.#child.stderr?.on('data', (chunk: Buffer) => this.#keepPrefix('stderr', chunk));
+    this.#child.stdout?.on('data', (chunk: Buffer) => {
+      this.#turn?.capture.log('stdout-log', chunk);
+      this.#keepPrefix('stdout', chunk);
+    });
+    this.#child.stderr?.on('data', (chunk: Buffer) => {
+      this.#turn?.capture.log('stderr', chunk);
+      this.#keepPrefix('stderr', chunk);
+    });
     for (const [name, pipe] of [
       ['stdout', this.#child.stdout],
       ['stderr', this.#child.stderr],
     ] as const) {
       pipe?.on('end', () => {
+        this.#turn?.capture.logEnded(name === 'stdout' ? 'stdout-log' : 'stderr');
         if (name === 'stdout') this.#stdoutEnded = true;
         else this.#stderrEnded = true;
         this.#noteDrain();
@@ -1143,7 +1161,31 @@ export class PiResidentBinding implements WorkerResidentSession {
     this.#markLost();
   }
 
-  #onFrame(frame: PiParsedFrame): void {
+  /** Route only envelope scalars before copying an associated native payload. */
+  #onLine(line: string): void {
+    let nativeCollection: Promise<void> | undefined;
+    try {
+      const event = nativeJsonMember(line, ['event']);
+      const turnId = nativeJsonMember(line, ['turnId']);
+      const active = this.#turn;
+      if (
+        active &&
+        event &&
+        turnId &&
+        JSON.parse(event) === 'native' &&
+        JSON.parse(turnId) === active.turnId
+      ) {
+        const original = nativeJsonMember(line, ['data']);
+        if (original !== undefined)
+          nativeCollection = active.capture.collectNative(Buffer.from(original));
+      }
+    } catch {
+      // The existing private-channel parser owns malformed envelope failure.
+    }
+    this.#onFrame(parsePiHostFrame(line), nativeCollection);
+  }
+
+  #onFrame(frame: PiParsedFrame, nativeCollection?: Promise<void>): void {
     if (frame.kind === 'invalid') {
       this.#closeEvidenceLost = true;
       void this.#stopActive('pi-output-malformed');
@@ -1181,7 +1223,7 @@ export class PiResidentBinding implements WorkerResidentSession {
             );
           }
         }
-        active.capture.observe(frame.data);
+        active.capture.observe(frame.data, nativeCollection);
         this.#nativeEventCount += 1;
         this.#recordLifecycleFact?.({ label: 'native_event' });
       }
@@ -1270,8 +1312,15 @@ export class PiResidentBinding implements WorkerResidentSession {
       typeof settled.outcome.assistantText === 'string'
         ? settled.outcome.assistantText
         : null;
+    const finishCapture = async () => {
+      if (readyText && this.#cachedHandle === null) {
+        const source = await proveResumeReference(Buffer.from(readyText), this.#stateRoot);
+        await active.capture.bindFile(source.path, 0);
+      }
+      await active.capture.finalize(projected.status, originalAssistantText);
+    };
     await Promise.race([
-      active.capture.finalize(projected.status, originalAssistantText).catch(() => {
+      finishCapture().catch(() => {
         active.collectionIncomplete = true;
         active.capture.abandon();
       }),

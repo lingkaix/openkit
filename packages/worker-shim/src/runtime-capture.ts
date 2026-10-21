@@ -17,6 +17,10 @@ export interface RuntimeCaptureInput {
   readonly captureCoverage: CaptureCoverageBinding;
   /** Execution namespace used by the existing opaque runtime-origin algorithm. */
   readonly packageSnapshotId: string;
+  /** Selected immutable AEP authority; absence never supplies a native collection default. */
+  readonly nativeLogMaxBytes?: number | undefined;
+  /** Authored runtime label, never a measurement of the executing binary. */
+  readonly authoredVersion?: string | undefined;
   /** Known injected secret values, used only for rejection before transmission. */
   readonly credentialValues: readonly string[];
   /** Resolves after Core accepts metadata and each restricted chunk, not after local buffering. */
@@ -56,23 +60,45 @@ export function runtimeToolName(value: unknown): string | undefined {
     : undefined;
 }
 /** Decodes JSON string values for admission only; retained source bytes are never transformed. */
-function decodedContentStrings(text: string, inspect?: (value: string) => void): string[] {
-  const pending: unknown[] = [text];
+function decodedContentStrings(
+  text: string,
+  inspect?: (value: string) => void,
+  logical?: (path: string, value: string) => void
+): string[] {
+  const pending: Array<{ value: unknown; path: string }> = [{ value: text, path: '' }];
   const strings: string[] = [];
   while (pending.length) {
-    const value = pending.pop();
+    const { value, path } = pending.pop()!;
     if (typeof value === 'string') {
       inspect?.(value);
       try {
         const parsed: unknown = JSON.parse(value);
         if (typeof parsed === 'string' || (parsed !== null && typeof parsed === 'object'))
-          pending.push(parsed);
-        else strings.push(value);
+          pending.push({ value: parsed, path });
+        else {
+          strings.push(value);
+          logical?.(path, value);
+        }
       } catch {
         strings.push(value);
+        logical?.(path, value);
+        // File buffers can contain adjacent JSONL units rather than one JSON document.
+        // Inspect complete values for safety only; the original file bytes remain unchanged.
+        if (value.includes('\n')) {
+          for (const line of value.split('\n').reverse()) {
+            try {
+              const parsed: unknown = JSON.parse(line);
+              if (typeof parsed === 'string' || (parsed !== null && typeof parsed === 'object'))
+                pending.push({ value: parsed, path });
+            } catch {
+              // Torn or non-JSON lines still participate in the literal byte check above.
+            }
+          }
+        }
       }
     } else if (Array.isArray(value)) {
-      for (let index = value.length - 1; index >= 0; index -= 1) pending.push(value[index]);
+      for (let index = value.length - 1; index >= 0; index -= 1)
+        pending.push({ value: value[index], path: `${path}[]` });
     } else if (value && typeof value === 'object') {
       for (const [key, child] of Object.entries(value).reverse()) {
         inspect?.(key);
@@ -81,37 +107,139 @@ function decodedContentStrings(text: string, inspect?: (value: string) => void):
           /^(?:api_key|apiKey|access_token|refresh_token|password|authorization|cookie)$/i.test(key)
         )
           strings.push(`"${key}":`);
-        pending.push(child);
+        pending.push({ value: child, path: `${path}/${JSON.stringify(key)}` });
       }
     }
   }
   return strings;
 }
-/** Rejects known credentials in decoded values and their logical concatenation, not arbitrary encodings. */
-function containsCredential(text: string, values: readonly string[]): boolean {
-  const hasCredential = (value: string) =>
-    values.some((secret) => secret.length > 0 && value.includes(secret)) ||
-    /(?:authorization["']?\s*[:=]\s*["']?\s*(?:bearer|basic)\s+|["'](?:api_key|apiKey|access_token|refresh_token|password|authorization|cookie)["']\s*:)/i.test(
-      value
-    );
-  let detected = false;
-  const strings = decodedContentStrings(text, (value) => {
-    detected ||= hasCredential(value);
-  });
-  return detected || strings.some(hasCredential) || hasCredential(strings.join(''));
+/** Decodes only valid JSON escapes for admission; malformed backslashes stay literal. */
+function decodeJsonEscapes(value: string): string {
+  return value.replace(
+    /\\u([0-9a-fA-F]{4})|\\(["\\/bfnrt])/g,
+    (_match, unicode: string | undefined, escaped: string) =>
+      unicode
+        ? String.fromCharCode(Number.parseInt(unicode, 16))
+        : (JSON.parse(`"\\${escaped}"`) as string)
+  );
 }
+/** Checks raw and JSON-escaped carriers without parsing an oversized native unit. */
+function containsRawCredential(value: string, values: readonly string[]): boolean {
+  // Admission may decode JSON escapes even for a torn native frame; retained bytes stay exact.
+  const decoded = decodeJsonEscapes(value);
+  return (
+    values.some(
+      (secret) => secret.length > 0 && (value.includes(secret) || decoded.includes(secret))
+    ) ||
+    /(?:authorization["']?\s*[:=]\s*["']?\s*(?:bearer|basic)\s+|["'](?:api_key|apiKey|access_token|refresh_token|password|authorization|cookie)["']\s*:)/i.test(
+      decoded
+    )
+  );
+}
+/** Rejects known credentials in decoded values and their logical concatenation, not arbitrary encodings. */
+function containsCredential(
+  text: string | readonly string[],
+  values: readonly string[],
+  holdFrom?: (unit: number) => void
+): boolean {
+  const decode = decodeJsonEscapes;
+  const hasCredential = (value: string) => containsRawCredential(value, values);
+  let detected = false;
+  const units = typeof text === 'string' ? [text] : text;
+  type Part = { text: string; unit: number };
+  const logical = new Map<string, Part[]>();
+  const flat: Part[] = [];
+  const strings = units.flatMap((unit, index) =>
+    decodedContentStrings(
+      unit,
+      (value) => {
+        detected ||= hasCredential(value);
+      },
+      (path, value) => {
+        const parts = logical.get(path) ?? [];
+        const part = { text: value, unit: index };
+        parts.push(part);
+        flat.push(part);
+        logical.set(path, parts);
+      }
+    )
+  );
+  const excluded =
+    detected ||
+    hasCredential(units.join('')) ||
+    strings.some(hasCredential) ||
+    hasCredential(strings.join('')) ||
+    [...logical.values()].some((parts) => hasCredential(parts.map((part) => part.text).join('')));
+  if (!excluded && holdFrom) {
+    // Pin the original units that can still complete a known secret. A large native wrapper
+    // must not let its early text fragment escape merely because later metadata fills the byte suffix.
+    for (const parts of [units.map((text, unit) => ({ text, unit })), flat, ...logical.values()]) {
+      const decoded = parts.map((part) => ({ ...part, text: decode(part.text) }));
+      const joined = decoded.map((part) => part.text).join('');
+      for (const secret of values) {
+        if (secret.length < 2) continue;
+        const tail = joined.slice(1 - secret.length);
+        for (
+          let start = tail.indexOf(secret[0]!);
+          start >= 0;
+          start = tail.indexOf(secret[0]!, start + 1)
+        ) {
+          const suffix = tail.slice(start);
+          if (!secret.startsWith(suffix)) continue;
+          let length = 0;
+          for (let index = decoded.length - 1; index >= 0; index--) {
+            length += decoded[index]!.text.length;
+            if (length >= suffix.length) {
+              holdFrom(decoded[index]!.unit);
+              break;
+            }
+          }
+          break;
+        }
+      }
+    }
+  }
+  return excluded;
+}
+/** Per-admission, in-memory reservations; Core remains the durable Turn budget authority. */
+const nativeAllowances = new WeakMap<
+  RuntimeCaptureInput,
+  { used: number; entries: Map<string, { digest: string; count: number }> }
+>();
+
 /** Emits a fact before its complete admitted body, preserving exact text and semantic JSON strings. */
 export async function emitRuntimeFact(
   input: RuntimeCaptureInput,
   source: { sourceRef: string; sourceSequence: number; sourceTimestamp?: string },
   fact: RuntimeFact,
-  body?: { bytes: Uint8Array; mediaType: 'text/plain' | 'application/json'; boundary: string }
+  body?: {
+    bytes: Uint8Array;
+    mediaType: 'text/plain' | 'application/json' | 'application/octet-stream';
+    boundary: string;
+  }
 ): Promise<void> {
   let content: RuntimeObservation['content'] = { state: 'not-applicable' };
   let admitted: Uint8Array | undefined;
+  const native = fact.kind === 'native-transcript' || fact.kind === 'runtime-log';
+  if (native && input.captureCoverage.value === 'off') {
+    fact = { ...fact, coverage: 'off' };
+    content = { state: 'off' };
+  }
   if (body) {
     if (input.captureCoverage.value === 'off') {
       content = { state: 'off' };
+    } else if (
+      native &&
+      (!Number.isSafeInteger(input.nativeLogMaxBytes) || input.nativeLogMaxBytes! <= 0)
+    ) {
+      content = { state: 'unavailable', reason: 'capture-failed' };
+      // The source was observed; missing admission authority is a content refusal, not a collector fault.
+      fact = {
+        ...fact,
+        native: fact.native
+          ? { ...fact.native, range: null, retainedBytes: 0, omittedBytes: body.bytes.byteLength }
+          : undefined,
+      };
     } else if (body.bytes.byteLength > RUNTIME_FRAME_MAX_BYTES) {
       content = { state: 'unavailable', reason: 'truncated' };
     } else if (
@@ -120,16 +248,62 @@ export async function emitRuntimeFact(
       content = { state: 'unavailable', reason: 'credential-excluded' };
     } else {
       admitted = body.bytes;
+      if (fact.kind === 'runtime-log' && fact.native) {
+        const allowance = nativeAllowances.get(input) ?? { used: 0, entries: new Map() };
+        nativeAllowances.set(input, allowance);
+        const identity = `${source.sourceRef}:${source.sourceSequence}`;
+        const digest = runtimeDigest(body.bytes);
+        const prior = allowance.entries.get(identity);
+        if (prior && prior.digest !== digest)
+          throw new Error('Native log replay content conflict.');
+        const count =
+          prior?.count ??
+          Math.min(body.bytes.byteLength, Math.max(0, input.nativeLogMaxBytes! - allowance.used));
+        if (!prior) {
+          allowance.used += count;
+          if (count > 0) allowance.entries.set(identity, { digest, count });
+        }
+        admitted = body.bytes.subarray(0, count);
+        fact = {
+          ...fact,
+          native: {
+            ...fact.native,
+            range: count
+              ? { start: fact.native.range!.start, end: fact.native.range!.start + count }
+              : null,
+            retainedBytes: count,
+            observedBytes: body.bytes.byteLength,
+            omittedBytes: body.bytes.byteLength - count,
+          },
+          ...(count < body.bytes.byteLength
+            ? { coverage: 'unavailable', reason: 'limit-exceeded' }
+            : {}),
+        };
+      }
       content = {
         state: 'expected',
         mediaType: body.mediaType,
         boundary: body.boundary,
-        bytes: body.bytes.byteLength,
-        sha256: runtimeDigest(body.bytes),
-        chunkCount: Math.ceil(body.bytes.byteLength / RUNTIME_CONTENT_CHUNK_BYTES),
+        bytes: admitted.byteLength,
+        sha256: runtimeDigest(admitted),
+        chunkCount: Math.ceil(admitted.byteLength / RUNTIME_CONTENT_CHUNK_BYTES),
       };
+      if (native && admitted.byteLength === 0) {
+        admitted = undefined;
+        content = { state: 'unavailable', reason: 'truncated' };
+      }
     }
   }
+  if (native && body && !admitted && fact.native)
+    fact = {
+      ...fact,
+      native: {
+        ...fact.native,
+        range: null,
+        retainedBytes: 0,
+        omittedBytes: body.bytes.byteLength,
+      },
+    };
   const safeFact =
     fact.toolName && containsCredential(fact.toolName, input.credentialValues)
       ? { ...fact, toolName: undefined }
@@ -166,6 +340,15 @@ export class RuntimeSemanticCapture {
   private readonly sequences = new Map<string, number>();
   private readonly units = new Map<string, RuntimeSemanticUnit>();
   private readonly completed = new Set<string>();
+  private readonly refusedNativeUnits = new Set<string>();
+  private readonly nativeUnits = new Map<
+    string,
+    Array<{
+      fact: RuntimeFact;
+      body: NonNullable<Parameters<typeof emitRuntimeFact>[3]>;
+      sourceTimestamp?: string | undefined;
+    }>
+  >();
   /** Binds one collector to immutable admission and its existing metadata/chunk writer. */
   public constructor(private readonly input: RuntimeCaptureInput) {}
   /** Reads the next source coordinate, including for native frames without message identifiers. */
@@ -179,6 +362,38 @@ export class RuntimeSemanticCapture {
     body?: Parameters<typeof emitRuntimeFact>[3],
     sourceTimestamp?: string
   ): Promise<void> {
+    if (
+      body &&
+      (fact.kind === 'native-transcript' || fact.kind === 'runtime-log') &&
+      this.input.captureCoverage.value === 'on'
+    ) {
+      if (this.refusedNativeUnits.has(sourceRef)) return;
+      const unit = this.nativeUnits.get(sourceRef) ?? [];
+      if (
+        unit.reduce((size, event) => size + event.body.bytes.byteLength, 0) +
+          body.bytes.byteLength >
+        RUNTIME_FRAME_MAX_BYTES
+      ) {
+        await emitRuntimeFact(
+          this.input,
+          { sourceRef, sourceSequence: this.nextSequence(sourceRef) },
+          {
+            ...fact,
+            coverage: 'unavailable',
+            reason: 'limit-exceeded',
+            native: fact.native
+              ? { ...fact.native, range: null, retainedBytes: 0, omittedBytes: null }
+              : undefined,
+          }
+        );
+        this.nativeUnits.delete(sourceRef);
+        this.refusedNativeUnits.add(sourceRef);
+        return;
+      }
+      unit.push({ fact, body: { ...body, bytes: Buffer.from(body.bytes) }, sourceTimestamp });
+      this.nativeUnits.set(sourceRef, unit);
+      return;
+    }
     const sourceSequence = this.nextSequence(sourceRef);
     this.sequences.set(sourceRef, sourceSequence + 1);
     const source = { sourceRef, sourceSequence, ...(sourceTimestamp ? { sourceTimestamp } : {}) };
@@ -235,6 +450,46 @@ export class RuntimeSemanticCapture {
   }
   /** Scans finite interrupted prefixes; a process crash instead leaves metadata expected and unpublished. */
   public async interrupt(): Promise<void> {
+    for (const [sourceRef, events] of this.nativeUnits) {
+      this.nativeUnits.delete(sourceRef);
+      const excluded = containsCredential(
+        events.map(({ body }) => Buffer.from(body.bytes).toString('utf8')),
+        this.input.credentialValues
+      );
+      for (const { fact, body, sourceTimestamp } of events) {
+        const sourceSequence = this.nextSequence(sourceRef);
+        this.sequences.set(sourceRef, sourceSequence + 1);
+        await emitRuntimeFact(
+          excluded
+            ? {
+                ...this.input,
+                emit: (record) =>
+                  this.input.emit({
+                    ...record,
+                    content: { state: 'unavailable', reason: 'credential-excluded' },
+                  }),
+              }
+            : this.input,
+          { sourceRef, sourceSequence, ...(sourceTimestamp ? { sourceTimestamp } : {}) },
+          excluded
+            ? {
+                ...fact,
+                coverage: 'unavailable',
+                reason: 'collector-failed',
+                native: fact.native
+                  ? {
+                      ...fact.native,
+                      range: null,
+                      retainedBytes: 0,
+                      omittedBytes: body.bytes.byteLength,
+                    }
+                  : undefined,
+              }
+            : fact,
+          excluded ? undefined : body
+        );
+      }
+    }
     for (const key of this.units.keys()) await this.flush(key, true);
     this.completed.clear();
   }
@@ -246,9 +501,7 @@ export class RuntimeSemanticCapture {
     if (
       !unit.reason &&
       containsCredential(
-        unit.events
-          .flatMap(({ body }) => decodedContentStrings(Buffer.from(body).toString('utf8')))
-          .join(''),
+        unit.events.map(({ body }) => Buffer.from(body).toString('utf8')),
         this.input.credentialValues
       )
     )
@@ -450,4 +703,404 @@ export class RuntimeJsonlReader {
       this.oversized = false;
     }
   }
+}
+
+/** One existing native source and its exact byte coordinate system. */
+export interface NativeCaptureSource {
+  readonly harness: string;
+  readonly format: string;
+  readonly runtimeOriginRef: string | null;
+  readonly preLaunchWatermark?: number;
+  readonly logSource?: 'stderr' | 'stdout-log';
+}
+
+/** Bounded raw-byte admission shared by adapter sources, before structural interpretation. */
+export class NativeRuntimeCapture {
+  private readonly positions = new Map<string, number>();
+  private readonly sequences = new Map<string, number>();
+  private pending: Array<{
+    sourceRef: string;
+    source: NativeCaptureSource;
+    bytes: Buffer;
+    start: number;
+    unit: { text: string; held: boolean; complete: boolean; rawOnly: boolean; size: number };
+  }> = [];
+  private readonly blocked = new Map<string, 'credential-excluded' | 'limit-exceeded'>();
+  private queue: Promise<void> = Promise.resolve();
+  private failure: unknown;
+  private stopped = false;
+  private abandoned = false;
+  private finishing: Promise<void> | undefined;
+  private readonly ended = new Set<string>();
+  private readonly lookbehind: number;
+  private readonly unboundedSecret: boolean;
+  private queuedBytes = 0;
+  private overflow: Error | undefined;
+  /** Shares the adapter's immutable admission and existing publication sink. */
+  public constructor(private readonly input: RuntimeCaptureInput) {
+    const required = Math.max(
+      64 * 1024,
+      ...input.credentialValues.map((value) => Buffer.byteLength(value) * 6 + 64)
+    );
+    this.unboundedSecret = required > RUNTIME_FRAME_MAX_BYTES;
+    this.lookbehind = Math.min(RUNTIME_FRAME_MAX_BYTES, required);
+  }
+  /**
+   * Admits an observed frame before structural parsing, in bounded publication pieces.
+   * Oversized SDK-owned frames remain borrowed until this promise settles; those callers await it.
+   * Pipe/read buffers inside the existing ceiling are copied immediately before their caller can reuse them.
+   */
+  public write(sourceRef: string, bytes: Uint8Array, source: NativeCaptureSource): Promise<void> {
+    if (this.stopped) return Promise.reject(this.failure ?? new Error('Native capture stopped.'));
+    if (this.overflow) return Promise.reject(this.overflow);
+    const retaining =
+      this.input.captureCoverage.value === 'on' &&
+      Number.isSafeInteger(this.input.nativeLogMaxBytes) &&
+      this.input.nativeLogMaxBytes! > 0;
+    const charge = retaining ? Math.min(bytes.byteLength, RUNTIME_FRAME_MAX_BYTES) : 0;
+    if (
+      (retaining && this.unboundedSecret) ||
+      this.queuedBytes + charge > RUNTIME_FRAME_MAX_BYTES
+    ) {
+      this.overflow = new Error('Native capture backlog exceeded its limit.');
+      return this.enqueue(async () => {
+        const start = this.positions.get(sourceRef) ?? source.preLaunchWatermark ?? 0;
+        await this.publish(
+          { sourceRef, source, bytes: Buffer.alloc(0), start },
+          false,
+          'limit-exceeded'
+        );
+        throw this.overflow;
+      });
+    }
+    const frame =
+      retaining && bytes.byteLength <= RUNTIME_FRAME_MAX_BYTES
+        ? Buffer.from(bytes)
+        : Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    this.queuedBytes += charge;
+    return this.enqueue(async () => {
+      if (this.ended.has(sourceRef)) throw new Error('Native source wrote after EOF.');
+      if (!retaining) {
+        const start = this.positions.get(sourceRef) ?? source.preLaunchWatermark ?? 0;
+        this.positions.set(sourceRef, start + frame.length);
+        // OFF or missing authority cannot impose a new runtime-result size bound.
+        // Only byte counts are consumed here; emitRuntimeFact refuses all body transfer.
+        await this.publish({ sourceRef, source, bytes: frame, start }, false);
+        return;
+      }
+      const position = this.positions.get(sourceRef) ?? source.preLaunchWatermark ?? 0;
+      this.positions.set(sourceRef, position + frame.length);
+      this.sources.set(sourceRef, source);
+      if (this.blocked.has(sourceRef)) return;
+      const jsonl = source.format.endsWith('-jsonl');
+      const boundedHold = source.format === 'deepseek-acp-update-json';
+      let unit = jsonl
+        ? this.pending.find((entry) => entry.sourceRef === sourceRef && !entry.unit.complete)?.unit
+        : undefined;
+      for (let offset = 0; offset < frame.length; ) {
+        if (this.abandoned) return;
+        unit ??= { text: '', held: true, complete: false, rawOnly: false, size: 0 };
+        const newline = jsonl ? frame.indexOf(10, offset) : -1;
+        const end = Math.min(
+          frame.length,
+          offset + 64 * 1024,
+          newline < 0 ? frame.length : newline + 1
+        );
+        const start = position + offset;
+        const copy = Buffer.from(frame.subarray(offset, end));
+        this.pending.push({ sourceRef, source, bytes: copy, start, unit });
+        unit.size += copy.length;
+        offset = end;
+        // Reads and pipe chunks are transport boundaries. Keep every byte of an unfinished
+        // JSONL unit in the existing bounded admission buffer, before publishing any piece.
+        const related = this.pending.filter((entry) => entry.sourceRef === sourceRef);
+        if (!boundedHold && unit.size > RUNTIME_FRAME_MAX_BYTES && !unit.rawOnly) {
+          // The parser ceiling bounds decoded admission, not native raw retention. Above it,
+          // stream with the existing raw/escaped cross-chunk scan and name the extraction gap.
+          unit.rawOnly = true;
+          unit.held = false;
+          const sourceSequence = this.sequences.get(sourceRef) ?? 0;
+          this.sequences.set(sourceRef, sourceSequence + 1);
+          await emitRuntimeFact(
+            this.input,
+            { sourceRef, sourceSequence },
+            {
+              kind: 'coverage',
+              runtimeOriginRef: source.runtimeOriginRef,
+              family: 'primary-content',
+              coverage: 'unavailable',
+              reason: 'limit-exceeded',
+            }
+          );
+        }
+        if (
+          boundedHold &&
+          related.reduce((size, entry) => size + entry.bytes.length, 0) > RUNTIME_FRAME_MAX_BYTES
+        ) {
+          await this.block(sourceRef, source, 'limit-exceeded');
+          return;
+        }
+        const complete = jsonl ? newline >= 0 && end === newline + 1 : end === frame.length;
+        if (complete && !unit.rawOnly) {
+          unit.text = Buffer.concat(
+            related.filter((entry) => entry.unit === unit).map((entry) => entry.bytes)
+          ).toString('utf8');
+        }
+        unit.complete = complete;
+        if (complete || unit.rawOnly) {
+          if (!(await this.admit(sourceRef, source))) return;
+        }
+        if (complete) unit = undefined;
+      }
+    }).finally(() => {
+      this.queuedBytes -= charge;
+    });
+  }
+  /** Applies the common decoded rule only once all observed bytes of a logical unit are held. */
+  private async admit(
+    sourceRef: string,
+    source: NativeCaptureSource,
+    final = false
+  ): Promise<boolean> {
+    if (this.blocked.has(sourceRef)) return false;
+    const related = this.pending.filter((entry) => entry.sourceRef === sourceRef);
+    const units = [...new Set(related.map((entry) => entry.unit))];
+    if (final) {
+      // A stopped source can leave a partial final line. Inspect its entire observed prefix
+      // together; the separate structural reader reports its partial-frame coverage.
+      for (const unit of units.filter((unit) => !unit.complete)) {
+        if (!unit.rawOnly)
+          unit.text = Buffer.concat(
+            related.filter((entry) => entry.unit === unit).map((entry) => entry.bytes)
+          ).toString('utf8');
+        unit.complete = true;
+      }
+    }
+    const rawIndex = units.findLastIndex((unit) => unit.rawOnly);
+    const rawOnly = rawIndex >= 0;
+    // An oversized unit ends the bounded decoded window. Later bounded units still keep
+    // their own decoded-prefix holds even while an older raw suffix is draining.
+    for (const [index, unit] of units.entries()) unit.held = index > rawIndex && !unit.complete;
+    const complete = units.filter((unit, index) => index > rawIndex && unit.complete);
+    if (
+      // The byte suffix also covers a UTF-8 code point split between ordinary log writes.
+      containsRawCredential(
+        Buffer.concat(related.map((entry) => entry.bytes)).toString('utf8'),
+        this.input.credentialValues
+      ) ||
+      containsCredential(
+        complete.map((unit) => unit.text),
+        this.input.credentialValues,
+        (from) => {
+          for (const unit of complete.slice(from)) unit.held = true;
+        }
+      )
+    ) {
+      await this.block(sourceRef, source, 'credential-excluded');
+      return false;
+    }
+    let waiting = related.reduce((size, entry) => size + entry.bytes.length, 0);
+    if (!rawOnly && waiting > RUNTIME_FRAME_MAX_BYTES) {
+      await this.block(sourceRef, source, 'limit-exceeded');
+      return false;
+    }
+    for (const entry of related) {
+      if (
+        waiting <= this.lookbehind + 64 * 1024 ||
+        entry.unit.held ||
+        waiting - entry.bytes.length < this.lookbehind
+      )
+        break;
+      this.pending.splice(this.pending.indexOf(entry), 1);
+      waiting -= entry.bytes.length;
+      await this.publish(entry, false);
+    }
+    return true;
+  }
+  /** Refuses a source at its first withheld byte and preserves the actual reason through drain. */
+  private async block(
+    sourceRef: string,
+    source: NativeCaptureSource,
+    reason: 'credential-excluded' | 'limit-exceeded'
+  ): Promise<void> {
+    const start =
+      this.pending.find((entry) => entry.sourceRef === sourceRef)?.start ??
+      this.positions.get(sourceRef) ??
+      source.preLaunchWatermark ??
+      0;
+    this.blocked.set(sourceRef, reason);
+    this.pending = this.pending.filter((entry) => entry.sourceRef !== sourceRef);
+    await this.publish(
+      { sourceRef, source, bytes: Buffer.alloc(0), start },
+      false,
+      reason,
+      reason === 'credential-excluded' ? reason : undefined
+    );
+  }
+  /** Drains observed source bytes without claiming native execution completion. */
+  public finish(): Promise<void> {
+    if (this.finishing) return this.finishing;
+    this.stopped = true;
+    this.finishing = this.enqueue(async () => {
+      for (const [sourceRef, source] of this.sources) await this.admit(sourceRef, source, true);
+      for (const entry of this.pending.splice(0)) await this.publish(entry, false);
+      for (const [sourceRef, position] of this.positions) {
+        const source = this.sources.get(sourceRef);
+        if (source)
+          await this.publish(
+            { sourceRef, source, start: position, bytes: Buffer.alloc(0) },
+            this.ended.has(sourceRef),
+            this.blocked.get(sourceRef)
+          );
+      }
+    });
+    return this.finishing;
+  }
+  /** Records readable EOF only when the adapter actually observes it. */
+  public end(sourceRef: string): void {
+    void this.enqueue(async () => {
+      this.ended.add(sourceRef);
+    }).catch(() => undefined);
+  }
+  /** Drains a failed source's admitted prefix and names its gap on that same source sequence. */
+  public unavailable(
+    sourceRef: string,
+    fact: RuntimeFact & { kind: 'coverage'; coverage: 'unavailable' }
+  ): Promise<void> {
+    return this.enqueue(async () => {
+      const source = this.sources.get(sourceRef);
+      if (source) await this.admit(sourceRef, source, true);
+      const prefix = this.pending.filter((entry) => entry.sourceRef === sourceRef);
+      this.pending = this.pending.filter((entry) => entry.sourceRef !== sourceRef);
+      for (const entry of prefix) await this.publish(entry, false);
+      const sourceSequence = this.sequences.get(sourceRef) ?? 0;
+      this.sequences.set(sourceRef, sourceSequence + 1);
+      await emitRuntimeFact(this.input, { sourceRef, sourceSequence }, fact);
+    });
+  }
+  /** Stops future publication on the adapter's existing abandonment boundary. */
+  public abandon(): void {
+    this.abandoned = true;
+    this.stopped = true;
+    this.pending = [];
+  }
+  private readonly sources = new Map<string, NativeCaptureSource>();
+  /** Serializes all pipes/sources in observed order and preserves an entered publication failure. */
+  private enqueue(work: () => Promise<void>): Promise<void> {
+    const result = this.queue.then(async () => {
+      if (this.failure) throw this.failure;
+      if (!this.abandoned) await work();
+    });
+    this.queue = result.catch((error: unknown) => {
+      this.failure ??= error;
+    });
+    return result;
+  }
+  /** Emits exact ranges through the same expected/body publication owner as semantic capture. */
+  private async publish(
+    entry: { sourceRef: string; source: NativeCaptureSource; bytes: Buffer; start: number },
+    sourceEnded: boolean,
+    reason?: 'collector-failed' | 'limit-exceeded' | 'credential-excluded',
+    contentReason?: 'credential-excluded'
+  ): Promise<void> {
+    if (this.abandoned) return;
+    const { sourceRef, source, bytes, start } = entry;
+    this.sources.set(sourceRef, source);
+    const sourceSequence = this.sequences.get(sourceRef) ?? 0;
+    this.sequences.set(sourceRef, sourceSequence + 1);
+    await emitRuntimeFact(
+      contentReason
+        ? {
+            ...this.input,
+            emit: (record) =>
+              this.input.emit({
+                ...record,
+                content: { state: 'unavailable', reason: contentReason },
+              }),
+          }
+        : this.input,
+      { sourceRef, sourceSequence },
+      {
+        kind: source.logSource ? 'runtime-log' : 'native-transcript',
+        runtimeOriginRef: source.runtimeOriginRef,
+        coverage:
+          this.input.captureCoverage.value === 'off'
+            ? 'off'
+            : reason
+              ? 'unavailable'
+              : 'collecting',
+        ...(reason ? { reason } : {}),
+        native: {
+          harness: source.harness,
+          authoredVersion: this.input.authoredVersion ?? 'unknown',
+          measuredVersion: null,
+          imageDigest: null,
+          format: source.format,
+          preLaunchWatermark: source.preLaunchWatermark ?? 0,
+          range: { start, end: start + bytes.length },
+          observedBytes: bytes.length,
+          retainedBytes: bytes.length,
+          omittedBytes: reason ? null : 0,
+          sourceEnded,
+          ...(source.logSource ? { logSource: source.logSource } : {}),
+        },
+      },
+      bytes.length
+        ? { bytes, mediaType: 'application/octet-stream', boundary: 'native-content-v1' }
+        : undefined
+    );
+  }
+}
+
+/**
+ * Selects exact member text from an already owner-validated JSON envelope without reserializing values.
+ * This framing walk supplies native bytes; structural extraction remains the adapter's separate job.
+ */
+export function nativeJsonMember(text: string, path: readonly string[]): string | undefined {
+  const space = (offset: number): number => {
+    while (offset < text.length && /\s/.test(text[offset]!)) offset++;
+    return offset;
+  };
+  const end = (start: number): number => {
+    let quoted = false;
+    let depth = 0;
+    for (let index = start; index < text.length; index++) {
+      const character = text[index]!;
+      if (quoted) {
+        if (character === '\\') index++;
+        else if (character === '"') {
+          quoted = false;
+          if (!depth) return index + 1;
+        }
+      } else if (character === '"') quoted = true;
+      else if (character === '{' || character === '[') depth++;
+      else if (character === '}' || character === ']') {
+        if (!depth) return index;
+        if (--depth === 0) return index + 1;
+      } else if (!depth && (character === ',' || /\s/.test(character))) return index;
+    }
+    return text.length;
+  };
+  let offset = space(0);
+  for (const member of path) {
+    if (text[offset] !== '{') return undefined;
+    offset = space(offset + 1);
+    let selected: number | undefined;
+    while (offset < text.length && text[offset] !== '}') {
+      if (text[offset] !== '"') return undefined;
+      const keyEnd = end(offset);
+      const key: unknown = JSON.parse(text.slice(offset, keyEnd));
+      offset = space(keyEnd);
+      if (text[offset] !== ':') return undefined;
+      offset = space(offset + 1);
+      if (key === member) selected = offset;
+      offset = space(end(offset));
+      if (text[offset] === '}') break;
+      if (text[offset] !== ',') return undefined;
+      offset = space(offset + 1);
+    }
+    if (selected === undefined) return undefined;
+    offset = selected;
+  }
+  return text.slice(offset, end(offset));
 }

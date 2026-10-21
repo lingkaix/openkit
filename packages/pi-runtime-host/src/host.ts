@@ -909,12 +909,22 @@ export class PiRuntimeHost {
     this.#io.send({ event: 'ui_unsupported', method, turnId: this.#turn?.turnId ?? null });
   }
 
-  /** Forwards one completed native session event; streaming deltas are not forwarded. */
+  /** Forwards observed native session events without outward-content selection. */
   #forwardNative(turnId: string, event: AgentSessionEvent): void {
-    if (event.type === 'message_update') return;
     let bytes: number;
     try {
-      bytes = Buffer.byteLength(JSON.stringify(event), 'utf8');
+      const original = JSON.stringify(event);
+      // The channel redacts control frames. Native truth must instead refuse a secret-bearing unit.
+      if (this.secrets().some((secret) => secret && original.includes(secret))) {
+        this.#io.send({
+          bytes: Buffer.byteLength(original),
+          event: 'native_omitted',
+          turnId,
+          type: event.type,
+        });
+        return;
+      }
+      bytes = Buffer.byteLength(original, 'utf8');
     } catch {
       bytes = -1;
     }

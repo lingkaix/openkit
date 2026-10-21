@@ -19,6 +19,7 @@ import { CodexRuntimeCapture } from '../codex-runtime-capture.js';
 import { LIFECYCLE_DEFAULTS, LifecycleDeadline } from '../lifecycle-deadline.js';
 import { nativeStartupAdmission } from '../native-startup.js';
 import { validateTurnReasoningEffort } from '../reasoning-effort.js';
+import { NativeRuntimeCapture, runtimeRef } from '../runtime-capture.js';
 import { containTurnLifecycleRecorder } from '../turn-timeline.js';
 import {
   CODEX_APPROVAL_POLICY,
@@ -313,6 +314,8 @@ class CodexResidentSession implements WorkerResidentSession {
   private threadId: string | null = null;
   private rolloutPath: string | null = null;
   private child: ChildProcessWithoutNullStreams | null;
+  private nativeLogs: NativeRuntimeCapture | null = null;
+  private nativeLogSource = '';
   private phase: 'running' | 'stopping' | 'absent' | 'unknown' = 'running';
   private closing = false;
   private closePromise: Promise<void> | null = null;
@@ -325,7 +328,7 @@ class CodexResidentSession implements WorkerResidentSession {
   private pipesDrainEvaluated = false;
   private closeProofEvaluated = false;
   /** Releases the current Turn's observational wait; it never owns native stop. */
-  private cancelCaptureFinalization: (() => void) | null = null;
+  private cancelCaptureFinalization: ((deadline: LifecycleDeadline) => void) | null = null;
   private stdoutEnded = false;
   private stderrEnded = false;
   private pipeFailure = false;
@@ -406,7 +409,18 @@ class CodexResidentSession implements WorkerResidentSession {
     child.stdout.once('end', () => {
       this.stdoutEnded = true;
     });
+    child.stderr.on('data', (bytes: Buffer) => {
+      void this.nativeLogs
+        ?.write(this.nativeLogSource, bytes, {
+          harness: 'codex',
+          format: 'application/octet-stream',
+          runtimeOriginRef: null,
+          logSource: 'stderr',
+        })
+        .catch(() => undefined);
+    });
     child.stderr.once('end', () => {
+      this.nativeLogs?.end(this.nativeLogSource);
       this.stderrEnded = true;
     });
     child.stdout.once('error', () => {
@@ -677,6 +691,15 @@ class CodexResidentSession implements WorkerResidentSession {
     this.terminalProofEvaluated = false;
     this.lastTerminal = null;
     this.rpc.permissionRecords.length = 0;
+    this.nativeLogs = new NativeRuntimeCapture({
+      ...input.runtimeCapture,
+      credentialValues: [...input.runtimeCapture.credentialValues, ...this.secrets],
+    });
+    this.nativeLogSource = runtimeRef(
+      'rts',
+      input.runtimeCapture.packageSnapshotId,
+      `codex-stderr:${input.turnId}`
+    );
     let capture: CodexRuntimeCapture | null = null;
     let submitted = false;
     const native = {
@@ -781,7 +804,11 @@ class CodexResidentSession implements WorkerResidentSession {
       this.itemText.clear();
       this.active = false;
       // Stop collector scheduling immediately; a stalled observation sink must not delay native cleanup.
-      void (capture as CodexRuntimeCapture | null)?.invalidate().catch(() => undefined);
+      const stoppedCapture = capture as CodexRuntimeCapture | null;
+      void controlDeadline(
+        stoppedCapture?.invalidate() ?? Promise.resolve(),
+        native.deadline.remainingMs()
+      ).catch(() => stoppedCapture?.abandon());
       if (!this.unusable && !this.closing && !native.outstanding && !submitted) throw error;
       return this.abandonUnaccepted(error);
     }
@@ -988,11 +1015,23 @@ class CodexResidentSession implements WorkerResidentSession {
     const collectionCancelled = new Promise<void>((resolve) => {
       releaseCollection = resolve;
     });
-    const cancelCollection = () => {
+    let collectionStopStarted = false;
+    const cancelCollection = (deadline: LifecycleDeadline) => {
+      if (collectionStopStarted) return;
+      collectionStopStarted = true;
       collectionIncomplete = true;
-      // invalidate stops scheduling immediately and preserves accepted observations; its queue may still be stalled.
-      void capture?.invalidate().catch(() => undefined);
-      releaseCollection();
+      // Preserve observed log and rollout prefixes under the same stop allowance, including native crashes.
+      // A stalled sink cannot extend that allowance or publish new work after abandonment.
+      const logs = this.nativeLogs;
+      void controlDeadline(
+        Promise.all([logs?.finish(), capture?.invalidate()]),
+        deadline.remainingMs()
+      )
+        .catch(() => {
+          logs?.abandon();
+          capture?.abandon();
+        })
+        .finally(releaseCollection);
     };
     this.cancelCaptureFinalization = cancelCollection;
     const settled = completion
@@ -1026,7 +1065,10 @@ class CodexResidentSession implements WorkerResidentSession {
           };
         }
         await Promise.race([
-          capture?.finalize().catch(() => {
+          (async () => {
+            await capture?.finalize();
+            await this.nativeLogs?.finish();
+          })().catch(() => {
             collectionIncomplete = true;
           }),
           collectionCancelled,
@@ -1038,7 +1080,15 @@ class CodexResidentSession implements WorkerResidentSession {
         this.active = false;
         return this.withDiagnostics(result, collectionIncomplete);
       })
-      .finally(() => {
+      .finally(async () => {
+        const logs = this.nativeLogs;
+        this.nativeLogs = null;
+        await Promise.race([
+          logs?.finish().catch(() => {
+            collectionIncomplete = true;
+          }),
+          collectionCancelled,
+        ]);
         if (this.cancelCaptureFinalization === cancelCollection)
           this.cancelCaptureFinalization = null;
       });
@@ -1182,10 +1232,10 @@ class CodexResidentSession implements WorkerResidentSession {
   /** A malformed consumed native event stops this binding before settling its active Turn. */
   private invalidateTurn(
     status: string,
-    deadline?: LifecycleDeadline
+    deadline = new LifecycleDeadline(this.stopGraceMs * 2)
   ): Promise<WorkerAdapterResult> {
     this.unusable = true;
-    this.cancelCaptureFinalization?.();
+    this.cancelCaptureFinalization?.(deadline);
     if (this.invalidation) {
       return deadline
         ? controlDeadline(this.invalidation, deadline.remainingMs())

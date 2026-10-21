@@ -129,8 +129,7 @@ export class WorkerTranscriptWriter {
       },
     });
     const appended = this.appendJsonl('events.jsonl', record);
-    await this.enqueueLive(async () => {
-      await appended;
+    await this.enqueueLive(appended, async () => {
       await this.appendLive(record);
     });
     return record;
@@ -162,8 +161,7 @@ export class WorkerTranscriptWriter {
     const firstChunkSequence = this.sequence;
     this.sequence += chunkCount;
     const appended = this.appendJsonl('events.jsonl', record);
-    await this.enqueueLive(async () => {
-      await appended;
+    await this.enqueueLive(appended, async () => {
       await this.appendLive(record);
       for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex += 1) {
         const byteOffset = chunkIndex * RUNTIME_CONTENT_CHUNK_BYTES;
@@ -203,11 +201,17 @@ export class WorkerTranscriptWriter {
     throw this.liveStopReason;
   }
 
-  /** Serializes live acceptance as well as local append, including concurrent child sources and heartbeats. */
-  private enqueueLive(operation: () => Promise<void>): Promise<void> {
+  /** Joins local append settlement before reporting live acceptance or its original failure. */
+  private enqueueLive(appended: Promise<void>, operation: () => Promise<void>): Promise<void> {
     const enqueuedAt = performance.now();
     this.recordLifecycleFact?.({ label: 'transcript_enqueue' });
-    this.liveQueue = this.liveQueue.then(operation);
+    // Observe both promises immediately. An earlier live rejection must not skip the
+    // local append's settlement, leave its rejection unhandled, or replace the first failure.
+    this.liveQueue = Promise.allSettled([this.liveQueue, appended]).then(([live, local]) => {
+      if (live.status === 'rejected') throw live.reason;
+      if (local.status === 'rejected') throw local.reason;
+      return operation();
+    });
     // Observe rejection without recovering the delivery queue or changing its barrier.
     void this.liveQueue.then(
       () =>

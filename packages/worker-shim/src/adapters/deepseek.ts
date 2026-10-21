@@ -46,7 +46,13 @@ import type {
 import { LIFECYCLE_DEFAULTS, LifecycleDeadline } from '../lifecycle-deadline.js';
 import { nativeStartupAdmission } from '../native-startup.js';
 import { validateTurnReasoningEffort } from '../reasoning-effort.js';
-import { RuntimeSemanticCapture, runtimeOriginRef, runtimeRef } from '../runtime-capture.js';
+import {
+  NativeRuntimeCapture,
+  nativeJsonMember,
+  RuntimeSemanticCapture,
+  runtimeOriginRef,
+  runtimeRef,
+} from '../runtime-capture.js';
 import { containTurnLifecycleRecorder } from '../turn-timeline.js';
 
 /** Accumulated `session/update` payload ceiling for one Turn. */
@@ -97,6 +103,7 @@ interface ActiveTurn {
   deliveryDiagnostics: Record<string, string>;
   /** Existing structural collector, kept independent of native settlement proof. */
   capture: RuntimeSemanticCapture | null;
+  native: NativeRuntimeCapture | null;
   captureQueue: Promise<void>;
   captureAbandoned: boolean;
   sourceRef: string;
@@ -972,6 +979,7 @@ class DeepSeekSession implements WorkerResidentSession {
           phase,
           representation: 'snapshot',
         });
+        await turn.native?.finish();
         await turn.capture!.flushCompleted();
         if (phase !== 'completed') await turn.capture!.interrupt();
         await turn.capture!.emit(turn.sourceRef, {
@@ -994,6 +1002,15 @@ class DeepSeekSession implements WorkerResidentSession {
     const turn: ActiveTurn = {
       deliveryDiagnostics: {},
       capture: null,
+      native: input
+        ? new NativeRuntimeCapture({
+            ...input.runtimeCapture,
+            credentialValues: [
+              ...input.runtimeCapture.credentialValues,
+              ...secretValues(this.input),
+            ],
+          })
+        : null,
       captureQueue: Promise.resolve(),
       captureAbandoned: false,
       sourceRef: input
@@ -1009,6 +1026,7 @@ class DeepSeekSession implements WorkerResidentSession {
       abandonCapture: () => {
         if (turn.captureAbandoned) return;
         turn.captureAbandoned = true;
+        turn.native?.abandon();
         turn.deliveryDiagnostics.runtimeCapture = 'incomplete';
         // Subsequent calls are suppressed; an already-entered sink call remains in flight.
         void turn.capture
@@ -1340,7 +1358,10 @@ class DeepSeekSession implements WorkerResidentSession {
       )
     ).then(() => undefined);
     child.stderr.on('end', () => {
-      if (generation === this.generation) this.stderrEnded = true;
+      if (generation === this.generation) {
+        this.turn?.native?.end(`${this.turn.sourceRef}:stderr`);
+        this.stderrEnded = true;
+      }
     });
     for (const stream of [child.stdout, child.stderr])
       stream.on('error', () => {
@@ -1354,6 +1375,16 @@ class DeepSeekSession implements WorkerResidentSession {
     }
     child.stderr.on('data', (chunk: Buffer) => {
       if (generation !== this.generation) return;
+      const turn = this.turn;
+      if (turn?.native)
+        void turn.native
+          .write(`${turn.sourceRef}:stderr`, chunk, {
+            harness: 'deepseek',
+            format: 'application/octet-stream',
+            runtimeOriginRef: turn.originRef,
+            logSource: 'stderr',
+          })
+          .catch(() => undefined);
       if (this.stderr.length >= STDERR_CAPTURE_BYTES) return;
       this.stderr = Buffer.concat([this.stderr, chunk]).subarray(0, STDERR_CAPTURE_BYTES);
     });
@@ -1635,6 +1666,33 @@ class DeepSeekSession implements WorkerResidentSession {
    * out of the SDK's diagnostic log.
    */
   private admitNativeLine(line: string): void {
+    // Only the enclosing routing scalars are interpreted before raw source admission.
+    // Never retain the RPC carrier or reserialize the native update value.
+    const turn = this.turn;
+    if (turn?.native) {
+      try {
+        const method = nativeJsonMember(line, ['method']);
+        const session = nativeJsonMember(line, ['params', 'sessionId']);
+        const update = nativeJsonMember(line, ['params', 'update']);
+        if (
+          method &&
+          JSON.parse(method) === 'session/update' &&
+          session &&
+          JSON.parse(session) === this.sessionId &&
+          update !== undefined
+        ) {
+          void turn.native
+            .write(`${turn.sourceRef}:native`, Buffer.from(update), {
+              harness: 'deepseek',
+              format: 'deepseek-acp-update-json',
+              runtimeOriginRef: turn.originRef,
+            })
+            .catch(() => undefined);
+        }
+      } catch {
+        // The existing classifier owns malformed-envelope failure and native stop.
+      }
+    }
     const forwarded = this.classifyNativeLine(line);
     if (forwarded !== null && !this.outbound?.writableEnded) this.outbound?.write(`${forwarded}\n`);
   }

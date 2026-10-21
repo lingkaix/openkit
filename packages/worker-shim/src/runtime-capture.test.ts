@@ -2,10 +2,14 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { WorkerCanonicalEventRecord } from '@openkit/worker-protocol';
+import {
+  type WorkerCanonicalEventRecord,
+  WorkerObservationDataEmissionSchema,
+} from '@openkit/worker-protocol';
 import { expect, it } from 'vitest';
 import {
   emitRuntimeFact,
+  NativeRuntimeCapture,
   ParentRuntimeCapture,
   RUNTIME_FRAME_MAX_BYTES,
   RuntimeJsonlReader,
@@ -428,3 +432,274 @@ it('carries expected-only metadata through the real transcript writer before a u
     await rm(sessionDir, { recursive: true, force: true });
   }
 });
+
+/** Native facts use the existing wire envelope; source bytes are not semantic JSON. */
+function e1LogFact(start: number, bytes: number, logSource: 'stderr' | 'stdout-log') {
+  return {
+    kind: 'runtime-log' as const,
+    runtimeOriginRef: null,
+    coverage: 'collecting' as const,
+    native: {
+      harness: 'pi',
+      authoredVersion: '1.0.2',
+      measuredVersion: null,
+      imageDigest: null,
+      format: 'application/octet-stream',
+      preLaunchWatermark: 0,
+      range: { start, end: start + bytes },
+      observedBytes: bytes,
+      retainedBytes: bytes,
+      omittedBytes: 0,
+      sourceEnded: false,
+      logSource,
+    },
+  };
+}
+
+// RET Native Transcripts And Runtime Logs: one selected bound covers both log sources; exact bytes survive.
+it('RET E1 shares the selected log allowance across source publications and retry coordinates', async () => {
+  const received: Array<{ record: RuntimeObservation; body?: Buffer }> = [];
+  const input = {
+    packageSnapshotId: 'e1-package',
+    captureCoverage: { scope: 'task' as const, value: 'on' as const },
+    credentialValues: ['e1-secret-value'],
+    nativeLogMaxBytes: 7,
+    authoredVersion: '1.0.2',
+    emit: async (record: RuntimeObservation, body?: Uint8Array) => {
+      received.push({ record, ...(body ? { body: Buffer.from(body) } : {}) });
+    },
+  };
+  const secretReceived: Uint8Array[] = [];
+  const secret = new RuntimeSemanticCapture({
+    ...input,
+    emit: async (_record, bytes) => {
+      if (bytes) secretReceived.push(bytes);
+    },
+  });
+  await secret.emit('split-secret', e1LogFact(0, 10, 'stderr'), {
+    bytes: Buffer.from('e1-secret-'),
+    mediaType: 'application/octet-stream',
+    boundary: 'native-content-v1',
+  } as Parameters<typeof emitRuntimeFact>[3]);
+  await secret.emit('split-secret', e1LogFact(10, 5, 'stderr'), {
+    bytes: Buffer.from('value'),
+    mediaType: 'application/octet-stream',
+    boundary: 'native-content-v1',
+  } as Parameters<typeof emitRuntimeFact>[3]);
+  await secret.interrupt();
+  expect(secretReceived).toEqual([]);
+  for (const [sourceRef, logSource, bytes] of [
+    ['stderr', 'stderr', Buffer.from([0, 0xe2, 0x82, 0xac])],
+    ['stdout', 'stdout-log', Buffer.from([0xff, 0x61, 0x62, 0x63, 0x64])],
+    ['retry-stderr', 'stderr', Buffer.from('retry must not recharge')],
+  ] as const) {
+    await emitRuntimeFact(
+      input,
+      { sourceRef, sourceSequence: 0 },
+      e1LogFact(0, bytes.length, logSource),
+      {
+        bytes,
+        mediaType: 'application/octet-stream',
+        boundary: 'native-content-v1',
+      } as Parameters<typeof emitRuntimeFact>[3]
+    );
+  }
+  expect(Buffer.concat(received.flatMap(({ body }) => (body ? [body] : [])))).toEqual(
+    Buffer.from([0, 0xe2, 0x82, 0xac, 0xff, 0x61, 0x62])
+  );
+  const stdout = received.find(({ record, body }) => record.sourceRef === 'stdout' && body);
+  expect(stdout?.record.fact.native).toMatchObject({
+    range: { start: 0, end: 3 },
+    observedBytes: 5,
+    retainedBytes: 3,
+    omittedBytes: 2,
+  });
+  expect(received.some(({ record }) => record.fact.reason === 'limit-exceeded')).toBe(true);
+  expect(
+    received.filter(({ record, body }) => record.sourceRef === 'retry-stderr' && body)
+  ).toEqual([]);
+});
+
+// RET Capture Safety / Native Transcripts: missing authority never defaults native capture to an allowance.
+it('RET E1 refuses native bytes without selected authority while preserving OFF and secret controls', async () => {
+  const received: Array<{ record: RuntimeObservation; body?: Buffer }> = [];
+  const emit = async (record: RuntimeObservation, body?: Uint8Array) => {
+    received.push({ record, ...(body ? { body: Buffer.from(body) } : {}) });
+  };
+  const input = {
+    packageSnapshotId: 'e1-missing',
+    authoredVersion: '1.0.2',
+    captureCoverage: { scope: 'task' as const, value: 'on' as const },
+    credentialValues: ['e1-secret-value'],
+    emit,
+  };
+  const body = {
+    bytes: Buffer.from('safe-native'),
+    mediaType: 'application/octet-stream',
+    boundary: 'native-content-v1',
+  } as Parameters<typeof emitRuntimeFact>[3];
+  await emitRuntimeFact(
+    input,
+    { sourceRef: 'missing-authority', sourceSequence: 0 },
+    e1LogFact(0, 11, 'stderr'),
+    body
+  );
+  expect(received.some(({ body }) => body)).toBe(false);
+  expect(received.some(({ record }) => record.content.state === 'unavailable')).toBe(true);
+  received.length = 0;
+  await emitRuntimeFact(
+    { ...input, captureCoverage: { scope: 'task', value: 'off' } },
+    { sourceRef: 'off', sourceSequence: 0 },
+    e1LogFact(0, 11, 'stderr'),
+    body
+  );
+  expect(received.map(({ record }) => record.content.state)).toEqual(['off']);
+  expect(received.some(({ body }) => body)).toBe(false);
+  const split = streamingFixture(['e1-secret-value']);
+  await split.write(['e1-secret-']);
+  await split.write(['value'], true);
+  await split.capture.finalize();
+  expect(split.received.some(({ body }) => body)).toBe(false);
+  expect(
+    split.received.some(
+      ({ record }) =>
+        record.content.state === 'unavailable' && record.content.reason === 'credential-excluded'
+    )
+  ).toBe(true);
+});
+
+// RET Capture Safety: known credentials split across one semantic unit's chunks never enter native bodies.
+it('RET E REVIEW R1 refuses a decoded credential split across valid ACP native updates', async () => {
+  const received: Array<{ record: RuntimeObservation; body?: Buffer }> = [];
+  const capture = new NativeRuntimeCapture({
+    packageSnapshotId: 'e-review-acp-package',
+    captureCoverage: { scope: 'task', value: 'on' },
+    nativeLogMaxBytes: 16 * 1024 * 1024,
+    authoredVersion: '0.2.0-rc.2',
+    credentialValues: ['ret-e-synthetic-credential'],
+    emit: async (record, body) => {
+      received.push({
+        record: WorkerObservationDataEmissionSchema.parse(record),
+        ...(body ? { body: Buffer.from(body) } : {}),
+      });
+    },
+  });
+  const source = {
+    harness: 'deepseek',
+    format: 'deepseek-acp-update-json',
+    runtimeOriginRef: null,
+  };
+  const safeBytes = Buffer.from(
+    '{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ordinary output"}}'
+  );
+  await capture.write('independent-native-source', safeBytes, source);
+  for (const text of ['ret-e-', 'synthetic-credential']) {
+    const update = {
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text },
+    };
+    await capture.write('deepseek-source:native', Buffer.from(JSON.stringify(update)), source);
+  }
+  await capture.finish();
+  // Compare bytes before parsing; rejecting one source must preserve independently safe content.
+  expect(
+    Buffer.concat(
+      received.flatMap(({ record, body }) =>
+        record.sourceRef === 'independent-native-source' && body ? [body] : []
+      )
+    )
+  ).toEqual(safeBytes);
+  expect
+    .soft(
+      received.flatMap(({ record, body }) =>
+        record.sourceRef === 'deepseek-source:native' && body ? [body] : []
+      )
+    )
+    .toEqual([]);
+  expect
+    .soft(
+      received.some(
+        ({ record }) =>
+          record.sourceRef === 'deepseek-source:native' &&
+          record.content.state === 'unavailable' &&
+          record.content.reason === 'credential-excluded'
+      )
+    )
+    .toBe(true);
+});
+
+// RET Native Transcripts And Runtime Logs: arbitrary log bytes and non-JSON escapes survive unchanged.
+it('RET E REVIEW R4 preserves an ordinary Windows path and malformed escapes without a scanner crash', async () => {
+  for (const text of [String.raw`C:\Temp\report.txt`, String.raw`not JSON: \u12XZ \Q \q literal`]) {
+    const received: Array<{ record: RuntimeObservation; body?: Buffer }> = [];
+    const capture = new NativeRuntimeCapture({
+      packageSnapshotId: 'e-review-log-package',
+      captureCoverage: { scope: 'task', value: 'on' },
+      nativeLogMaxBytes: 16 * 1024 * 1024,
+      authoredVersion: '1.0.2',
+      credentialValues: ['ret-e-synthetic-credential'],
+      emit: async (record, body) => {
+        received.push({
+          record: WorkerObservationDataEmissionSchema.parse(record),
+          ...(body ? { body: Buffer.from(body) } : {}),
+        });
+      },
+    });
+    const bytes = Buffer.from(text);
+    const failure = await capture
+      .write('ordinary-log', bytes, {
+        harness: 'pi',
+        format: 'application/octet-stream',
+        runtimeOriginRef: null,
+        logSource: 'stderr',
+      })
+      .then(() => capture.finish())
+      .then(
+        () => null,
+        (error: unknown) => error
+      );
+    expect.soft(failure).toBeNull();
+    expect.soft(Buffer.concat(received.flatMap(({ body }) => (body ? [body] : [])))).toEqual(bytes);
+    expect.soft(received.some(({ record }) => record.fact.coverage === 'unavailable')).toBe(false);
+  }
+});
+
+// RET Native Transcripts And Runtime Logs: explicit truncation and safety refusal have distinct causes.
+it('RET E r2 REVIEW R2 keeps a limit-only native hold labelled as a limit through finalization', async () => {
+  const received: Array<{ record: RuntimeObservation; body?: Buffer }> = [];
+  const capture = new NativeRuntimeCapture({
+    packageSnapshotId: 'e-r2-limit-package',
+    captureCoverage: { scope: 'task', value: 'on' },
+    nativeLogMaxBytes: 16 * 1024 * 1024,
+    authoredVersion: '0.2.0-rc.2',
+    credentialValues: ['ret-e-synthetic-credential'],
+    emit: async (record, body) => {
+      received.push({
+        record: WorkerObservationDataEmissionSchema.parse(record),
+        ...(body ? { body: Buffer.from(body) } : {}),
+      });
+    },
+  });
+  // This incomplete prefix can require a bounded hold, but it is not the known credential.
+  await capture.write(
+    'limit-only-source',
+    Buffer.from(
+      JSON.stringify({
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: 'ret-e-' },
+        padding: 'x'.repeat(16 * 1024 * 1024),
+      })
+    ),
+    { harness: 'deepseek', format: 'deepseek-acp-update-json', runtimeOriginRef: null }
+  );
+  await capture.finish();
+  expect(received.flatMap(({ body }) => (body ? [body] : []))).toEqual([]);
+  expect(received.some(({ record }) => record.fact.reason === 'limit-exceeded')).toBe(true);
+  expect(
+    received.some(
+      ({ record }) =>
+        record.fact.reason === 'credential-excluded' ||
+        record.content.reason === 'credential-excluded'
+    )
+  ).toBe(false);
+}, 30_000);
