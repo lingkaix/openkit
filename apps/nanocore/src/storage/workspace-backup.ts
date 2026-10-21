@@ -45,8 +45,15 @@ import {
   inventoryRegularFiles,
   verifyDataRootBackupManifest,
 } from './data-root-backup.js';
-import { bindWorkspaceSqlite } from './db.js';
+import { bindCoreSqlite, bindWorkspaceSqlite } from './db.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
+import {
+  exportRecurringPortableHistory,
+  RECURRING_PORTABLE_FEATURE,
+  RECURRING_PORTABLE_PATHS,
+  readRecurringPortableFiles,
+  validateRecurringPortableHistory,
+} from './recurring-portable-history.js';
 import { assertWorkspaceArchiveFilePath } from './workspace-archive.js';
 import type {
   WorkspaceBackupCoverage,
@@ -181,6 +188,7 @@ export const WORKSPACE_BACKUP_DATABASE_FORMATS: Readonly<Record<string, number>>
   'light-app.kernel.1': 1,
   'light-app.kernel.2': 2,
 });
+const recurringPaths = Object.values(RECURRING_PORTABLE_PATHS);
 const omitted = new Set(['indexes', 'logs', 'projections']);
 const roots = new Set([
   'db',
@@ -198,6 +206,7 @@ const roots = new Set([
   'catalog',
   'runtime',
   'imports',
+  'records',
 ]);
 
 /** Emits only a fixed operator message; neither OS diagnostics nor retained content escapes. */
@@ -235,6 +244,8 @@ function files(root: string): string[] {
       const p = path ? `${path}/${name}` : name;
       if (!path && omitted.has(name)) continue;
       if (!path && !roots.has(name)) refuse('incomplete-closure');
+      if (p.startsWith('records/') && !recurringPaths.some((accepted) => accepted === p))
+        refuse('incomplete-closure');
       try {
         assertWorkspaceArchiveFilePath(p);
       } catch {
@@ -460,7 +471,12 @@ function databaseFormats(dataRoot: string, workspaceId: string, root: string) {
 }
 
 /** Reuses canonical native, Artifact, Source and Notebook readers on an isolated Workspace placement. */
-function graph(dataRoot: string, workspaceId: string, expectedRevision?: number) {
+function graph(
+  dataRoot: string,
+  workspaceId: string,
+  expectedRevision?: number,
+  requiredFeatures?: readonly string[]
+) {
   const root = join(dataRoot, 'workspaces', workspaceId);
   if (!existsSync(join(root, 'db/workspace.sqlite'))) refuse('incomplete-closure');
   const db = database(join(root, 'db/workspace.sqlite'));
@@ -488,6 +504,28 @@ function graph(dataRoot: string, workspaceId: string, expectedRevision?: number)
     const formats = databaseFormats(dataRoot, workspaceId, root);
     const records = loadWorkspaceFileRecords(dataRoot).find((r) => r.workspace.id === workspaceId);
     if (!records) refuse('incomplete-closure');
+    const references = {
+      workspaceId,
+      threadIds: new Set(records.threads.map((t) => t.id)),
+      turns: new Map(records.turns.map((t) => [t.id, t.threadId])),
+    };
+    const inheritedPath = join(root, 'imports/recurrence-history.json');
+    const inheritedRecurring = existsSync(inheritedPath)
+      ? readFileSync(inheritedPath, 'utf8')
+      : null;
+    if (inheritedRecurring !== null) validateRecurringPortableHistory(inheritedRecurring);
+    const portableFiles = new Map(
+      recurringPaths
+        .filter((path) => existsSync(join(root, path)))
+        .map((path) => [path, readFileSync(join(root, path), 'utf8')])
+    );
+    if (portableFiles.size || requiredFeatures?.includes(RECURRING_PORTABLE_FEATURE)) {
+      if (requiredFeatures && !requiredFeatures.includes(RECURRING_PORTABLE_FEATURE))
+        refuse('unsupported-format');
+      const history = readRecurringPortableFiles(portableFiles, references);
+      validateRecurringPortableHistory(JSON.stringify(history));
+    }
+
     const knowledgeBaseIds = [
       readDefaultKnowledgeBaseId({ dataRoot, scope: { kind: 'workspace', workspaceId } }),
     ];
@@ -535,6 +573,8 @@ function graph(dataRoot: string, workspaceId: string, expectedRevision?: number)
       .map((t) => t.id);
     return {
       capturedRevision,
+      references,
+      inheritedRecurring,
       formats,
       knowledgeBaseIds,
       privateAudienceRefs,
@@ -611,7 +651,10 @@ function report(
   };
 }
 
-/** Captures stopped authority under its root lock, or a verified, unlocked and strictly read-only H1 parent. */
+/**
+ * Captures stopped authority under its lock, or a verified, read-only H1 parent without a parent lock.
+ * Core recurring history uses its existing portable paths; scheduler authority never travels.
+ */
 export async function createWorkspaceBackup(
   input: WorkspaceBackupCreateInput
 ): Promise<WorkspaceBackupCreateResult> {
@@ -796,6 +839,7 @@ export async function createWorkspaceBackup(
       }
     }
     const core = database(corePath);
+    let hasRecurring = false;
     let accounts: WorkspaceBackupManifest['accounts'];
     try {
       const owner = core
@@ -809,16 +853,29 @@ export async function createWorkspaceBackup(
         )
         .pluck()
         .all(input.workspaceId) as string[];
-      for (const table of [
-        'recurring_schedules',
-        'recurring_occurrences',
-        'recurring_expired_ranges',
-        'scheduler_admission_entries',
-      ]) {
-        if (
-          core.prepare(`SELECT 1 FROM ${table} WHERE workspace_id=? LIMIT 1`).get(input.workspaceId)
-        )
-          refuse('incomplete-closure');
+      // Core owns native rows. Its existing portable owner emits inert history, never queue authority.
+      const recurring = exportRecurringPortableHistory(
+        bindCoreSqlite(core, staging.container),
+        input.workspaceId,
+        facts.inheritedRecurring,
+        [...facts.references.turns].map(([id, threadId]) => ({ id, threadId }))
+      );
+      validateRecurringPortableHistory(JSON.stringify(recurring));
+      hasRecurring =
+        facts.inheritedRecurring !== null ||
+        recurring.schedules.length > 0 ||
+        recurring.occurrences.length > 0 ||
+        recurring.expiredRanges.length > 0;
+      if (hasRecurring) {
+        mkdirSync(join(staging.workspaceRoot, 'records'), { mode: 0o700 });
+        const portableFiles = new Map<string, string>();
+        for (const [family, path] of Object.entries(RECURRING_PORTABLE_PATHS)) {
+          const rows = recurring[family as keyof typeof RECURRING_PORTABLE_PATHS];
+          const text = rows.map((row) => `${JSON.stringify(row)}\n`).join('');
+          writeFileSync(join(staging.workspaceRoot, path), text, { flag: 'wx', mode: 0o600 });
+          portableFiles.set(path, text);
+        }
+        readRecurringPortableFiles(portableFiles, facts.references);
       }
       if (memberIds.some((id) => !isEntityId('usr', id))) refuse('invalid-database');
       accounts = {
@@ -854,7 +911,7 @@ export async function createWorkspaceBackup(
       priorMoves: [],
       release: input.expectedRelease,
       databaseFormats: facts.formats,
-      requiredFeatures: [],
+      requiredFeatures: hasRecurring ? [RECURRING_PORTABLE_FEATURE] : [],
       capture: { startedAt, completedAt: new Date().toISOString(), consistency: 'quiescent' },
       inventory,
       inventoryDigest: digest(JSON.stringify(inventory)),
@@ -899,7 +956,13 @@ export async function createWorkspaceBackup(
       );
       syncCanonicalTree(staging.workspaceRoot);
       await withVerifiedWorkspaceBackupBundle(
-        { ...input, bundleRoot: staging.workspaceRoot },
+        {
+          ...input,
+          supportedRequiredFeatures: input.supportedRequiredFeatures ?? [
+            RECURRING_PORTABLE_FEATURE,
+          ],
+          bundleRoot: staging.workspaceRoot,
+        },
         async () => undefined
       );
     }
@@ -952,64 +1015,75 @@ export async function stageWorkspaceBackup(
   try {
     realDirectory(dirname(input.candidateRoot));
     if (lstatSync(input.candidateRoot, { throwIfNoEntry: false })) refuse('candidate-conflict');
-    return await withVerifiedWorkspaceBackupBundle(input, async (bundle) => {
-      const { manifest } = bundle;
-      if (
-        manifest.workspaceId !== input.expectedWorkspaceId ||
-        manifest.sourceDeploymentId !== input.expectedSourceDeploymentId
-      )
-        refuse('deployment-mismatch');
-      if (manifest.purpose !== input.purpose) refuse('invalid-bundle');
-      reserved = input.admission.reserve({
-        stagingBytes: BigInt(bundle.totalBytes),
-        extractionBytes: 0n,
-        derivativeBytes: 0n,
-        publicationBytes: 0n,
-      });
-      mkdirSync(input.candidateRoot, { mode: 0o700 });
-      owned = true;
-      staging = privateRoot(dirname(input.candidateRoot), manifest.workspaceId);
-      for (const entry of manifest.inventory) {
-        const path = join(staging.workspaceRoot, entry.path);
-        mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-        const fd = openSync(path, 'wx', 0o600);
-        try {
-          // Keep memory bounded independently of bundle file sizes.
-          for await (const chunk of bundle.readFile(entry.path)) {
-            let offset = 0;
-            while (offset < chunk.length) offset += writeSync(fd, chunk, offset);
-            reserved.recordWritten(chunk.length);
+    return await withVerifiedWorkspaceBackupBundle(
+      {
+        ...input,
+        supportedRequiredFeatures: input.supportedRequiredFeatures ?? [RECURRING_PORTABLE_FEATURE],
+      },
+      async (bundle) => {
+        const { manifest } = bundle;
+        if (
+          manifest.workspaceId !== input.expectedWorkspaceId ||
+          manifest.sourceDeploymentId !== input.expectedSourceDeploymentId
+        )
+          refuse('deployment-mismatch');
+        if (manifest.purpose !== input.purpose) refuse('invalid-bundle');
+        reserved = input.admission.reserve({
+          stagingBytes: BigInt(bundle.totalBytes),
+          extractionBytes: 0n,
+          derivativeBytes: 0n,
+          publicationBytes: 0n,
+        });
+        mkdirSync(input.candidateRoot, { mode: 0o700 });
+        owned = true;
+        staging = privateRoot(dirname(input.candidateRoot), manifest.workspaceId);
+        for (const entry of manifest.inventory) {
+          const path = join(staging.workspaceRoot, entry.path);
+          mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+          const fd = openSync(path, 'wx', 0o600);
+          try {
+            // Keep memory bounded independently of bundle file sizes.
+            for await (const chunk of bundle.readFile(entry.path)) {
+              let offset = 0;
+              while (offset < chunk.length) offset += writeSync(fd, chunk, offset);
+              reserved.recordWritten(chunk.length);
+            }
+          } finally {
+            closeSync(fd);
           }
-        } finally {
-          closeSync(fd);
+          chmodSync(path, entry.mode);
         }
-        chmodSync(path, entry.mode);
+        const facts = graph(
+          staging.container,
+          manifest.workspaceId,
+          manifest.capturedRevision,
+          manifest.requiredFeatures
+        );
+        if (
+          facts.formats.length !== manifest.databaseFormats.length ||
+          facts.formats.some(
+            (actual) =>
+              !isDeepStrictEqual(
+                actual.markers,
+                manifest.databaseFormats.find((declared) => declared.path === actual.path)?.markers
+              )
+          ) ||
+          !isDeepStrictEqual(facts.knowledgeBaseIds, manifest.knowledgeBaseIds)
+        )
+          refuse('unsupported-format');
+        for (const entry of manifest.inventory)
+          if (copyBytes(join(staging.workspaceRoot, entry.path)) !== entry.sha256)
+            refuse('invalid-database');
+        closePrivateBytes(staging.workspaceRoot);
+        publishCanonicalPath(staging.workspaceRoot, input.candidateRoot);
+        return {
+          disposition: 'staged',
+          candidateRoot: input.candidateRoot,
+          manifest,
+          report: report(manifest, bundle.manifestDigest, facts),
+        };
       }
-      const facts = graph(staging.container, manifest.workspaceId, manifest.capturedRevision);
-      if (
-        facts.formats.length !== manifest.databaseFormats.length ||
-        facts.formats.some(
-          (actual) =>
-            !isDeepStrictEqual(
-              actual.markers,
-              manifest.databaseFormats.find((declared) => declared.path === actual.path)?.markers
-            )
-        ) ||
-        !isDeepStrictEqual(facts.knowledgeBaseIds, manifest.knowledgeBaseIds)
-      )
-        refuse('unsupported-format');
-      for (const entry of manifest.inventory)
-        if (copyBytes(join(staging.workspaceRoot, entry.path)) !== entry.sha256)
-          refuse('invalid-database');
-      closePrivateBytes(staging.workspaceRoot);
-      publishCanonicalPath(staging.workspaceRoot, input.candidateRoot);
-      return {
-        disposition: 'staged',
-        candidateRoot: input.candidateRoot,
-        manifest,
-        report: report(manifest, bundle.manifestDigest, facts),
-      };
-    });
+    );
   } catch (error) {
     if (owned) rmSync(input.candidateRoot, { recursive: true, force: true });
     return failure(error, 'invalid-bundle');
