@@ -144,7 +144,7 @@ export async function startTurn(
     scope: { workspaceId: input.workspaceId, threadId: input.threadId },
     input,
     responseKind: 'turn',
-    execute: async () => {
+    execute: async (commandReceipt) => {
       const threadBusy = store
         .listThreadTurns(input.workspaceId, input.threadId)
         .some((turn) => !isSealedTurnTerminal(turn.status));
@@ -164,6 +164,7 @@ export async function startTurn(
       const observed = observeTurnAdmission({
         execute: (admit) =>
           startProductTurn({
+            commandReceipt,
             providerCredentialConfigured,
             subscriptionAccounts,
             input,

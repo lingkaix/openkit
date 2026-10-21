@@ -261,7 +261,7 @@ export async function runNanoHostAttemptRecoveryMaintenance(
         )
           continue;
         session = await cleanupPhysicalSession(coreDb, session, now, input.cleanupBackendSession);
-        const projection = projectCleanup(
+        const projection = await projectCleanup(
           workspace.db,
           session,
           workspace.environmentPackage,

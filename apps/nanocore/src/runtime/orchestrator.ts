@@ -25,6 +25,7 @@ import {
 import type { FsStore } from '../lib/store.js';
 import type { ProviderCredentialResolver, ProviderRegistry } from '../providers/registry.js';
 import type { WorkspaceDb } from '../storage/db.js';
+import type { IdempotentCommandReceipt } from './idempotent-command.js';
 import type { TurnExecutor, TurnStartRuntimeContext } from './types.js';
 
 /**
@@ -35,6 +36,8 @@ export interface StartTurnInput
     AgentSetupResolverDependencies,
     'providerCredentialConfigured' | 'subscriptionAccounts'
   > {
+  /** Original initiating command facts when this call creates the native Turn. */
+  commandReceipt?: IdempotentCommandReceipt;
   /** Exact durable execution attempt for the accepted pending Turn. */
   attemptId?: string;
   /** Scheduler-owned AgentSession id used when a lease already reserved lineage. */
@@ -366,6 +369,7 @@ export async function startTurn(input: StartTurnInput): Promise<TurnHandle> {
         ...(input.turnId ? { turnId: input.turnId } : {}),
         agentId: selectedAgent.id,
         executorKind: 'worker',
+        ...(input.commandReceipt ? { commandReceipt: input.commandReceipt } : {}),
         ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
       }
     ));

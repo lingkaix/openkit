@@ -7,6 +7,7 @@ import {
   type CommandRequestResponse,
   commandRequestKey,
 } from '../lib/store.js';
+import { ControlPendingCommandInputSchema } from '../runtime/pending-requests.js';
 import {
   mapCommandRequestRow,
   normalizeCommandRequestResponse,
@@ -30,6 +31,7 @@ export const CONTROL_ADMISSION_COMMANDS = [
   'thread.update',
   'thread.archive',
   'turn.start',
+  'task.start',
   'turn.input.submit',
   'conversation.submit',
 ] as const;
@@ -37,7 +39,6 @@ export const CONTROL_ADMISSION_COMMANDS = [
 /** Activated native command partitions share the original receipt owner, not a second ledger or Main backfill. */
 export const CONTROL_NATIVE_RECEIPT_COMMANDS = [
   ...CONTROL_ADMISSION_COMMANDS,
-  'task.start',
   'approval.respond',
   'user_input.answer',
   'pending_request.withdraw',
@@ -104,6 +105,9 @@ export const ControlAdmissionSchema = z
       z.array(ControlProductMutationSchema).min(1).max(CONTROL_PRODUCT_LIMITS.entries)
     ),
     entries: z.lazy(() => z.array(ControlProductEntrySchema).max(CONTROL_PRODUCT_LIMITS.entries)),
+    pending: z
+      .lazy(() => z.array(ControlPendingCommandInputSchema).max(CONTROL_PRODUCT_LIMITS.entries))
+      .optional(),
     audit: AuditEventSchema.extend({
       createdAt: z.string().datetime(),
       occurredAt: z.string().datetime(),

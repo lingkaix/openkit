@@ -52,7 +52,7 @@ export const ControlPendingReceiptSchema = z
 /** Complete native Pending publication packet; all immutable bytes are synchronized before SQL. */
 export const ControlPendingTransitionSchema = z
   .object({
-    input: ControlPendingCommandInputSchema,
+    input: z.lazy(() => ControlPendingCommandInputSchema),
     terminal: z.lazy(() => ControlTerminalTransitionSchema).optional(),
     admission: z.lazy(() => ControlAdmissionSchema).optional(),
     products: z.lazy(() =>

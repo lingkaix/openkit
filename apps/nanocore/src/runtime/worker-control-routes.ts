@@ -178,13 +178,12 @@ export function registerWorkerControlRoutes({
       arrivedAt
     );
     try {
-      const response = c.json(
-        workerControlGateway.appendEvent({
-          ...workerControlTokenHashAuthentication(c),
-          lineage: parsed.data.lineage,
-          record: parsed.data.record,
-        })
-      );
+      const accepted = workerControlGateway.appendEvent({
+        ...workerControlTokenHashAuthentication(c),
+        lineage: parsed.data.lineage,
+        record: parsed.data.record,
+      });
+      const response = c.json(accepted instanceof Promise ? await accepted : accepted);
       diagnose(response.status);
       return response;
     } catch (error) {

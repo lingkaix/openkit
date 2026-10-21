@@ -19,6 +19,7 @@ import { goalActor, readGoalView } from './goal-owner.js';
 import { reserveGoalTask } from './goal-task-admission.js';
 import {
   commandInputHash,
+  type IdempotentCommandReceipt,
   type InflightIdempotentCommand,
   runIdempotentCommand,
 } from './idempotent-command.js';
@@ -29,6 +30,8 @@ import { runWorkerTurnLoop } from './worker-turn-loop.js';
 /** Ordinary Task worker starter supplied by existing product Turn assembly. */
 export type TaskWorkerStarter = (input: {
   store: FsStore;
+  /** Original Task command facts committed with the admitted Turn. */
+  commandReceipt?: IdempotentCommandReceipt;
   triggerActor: { kind: 'user'; id: string };
   /** Native Task handoff cause supplied independently of the responsible actor. */
   triggerSource?: Awaited<ReturnType<FsStore['createTurn']>>['triggerSource'];
@@ -152,7 +155,7 @@ export function createCoordinatorTaskTool(options: {
           threadId,
           requestId,
         });
-        const turn = await runIdempotentCommand({
+        const turn = await runIdempotentCommand<Awaited<ReturnType<FsStore['createTurn']>>>({
           store: options.store,
           inflightCommands: options.inflightCommands,
           command: 'task.start',
@@ -161,7 +164,7 @@ export function createCoordinatorTaskTool(options: {
           input: { input: prompt },
           responseKind: 'turn',
           responseId: (turn) => turn.id,
-          execute: async () => {
+          execute: async (commandReceipt): Promise<Awaited<ReturnType<FsStore['createTurn']>>> => {
             await options.store.createThread(
               goal.workspaceId,
               input.request.objective.slice(0, 100),
@@ -224,6 +227,7 @@ export function createCoordinatorTaskTool(options: {
                 assertGoalTaskAdmission();
                 const ended = await options.startWorker({
                   store: options.store,
+                  commandReceipt,
                   triggerSource: { kind: 'handoff', summary: 'Task Worker handoff.' },
                   triggerActor: { kind: 'user', id: actor.userId },
                   requestActor: actor,

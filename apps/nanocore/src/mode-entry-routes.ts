@@ -31,6 +31,7 @@ import type { z } from 'zod';
 import { resolveAgentSetup } from './agents/setup-resolver.js';
 import { publishedErrorMessage } from './api-errors.js';
 import { listOutputArtifacts } from './artifact-catalog.js';
+import { prepareAuditEvent } from './audit-events.js';
 import type { Actor } from './auth/identity.js';
 import { currentWorkspaceAuthority } from './auth/operation-authorizer.js';
 import {
@@ -76,6 +77,7 @@ import {
   type ConversationCommandReceiptMetadata,
   DISPLAY_PROJECTION_REFRESH_ADMISSION,
   type FsStore,
+  type TerminalTurnPublication,
 } from './lib/store.js';
 import { LogicalModelRoutesExhaustedError } from './llm/gateway-routes.js';
 import { type ResolvedLogicalModel, resolveLogicalModel } from './llm/logical-models.js';
@@ -107,6 +109,7 @@ import {
   conversationTaskTurnId,
   findExactConversationWorkerOwnerReceipt,
   IdempotencyKeyConflictError,
+  type IdempotentCommandReceipt,
   type InflightIdempotentCommand,
   runIdempotentCommand,
 } from './runtime/idempotent-command.js';
@@ -2408,6 +2411,9 @@ export function createConversationService({
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
   readonly runtimeConfigManager: RuntimeConfigManager;
   readonly startModeWorkerTurn: (input: {
+    /** Original conversation command and its exact selected Worker response. */
+    readonly commandReceipt?: IdempotentCommandReceipt;
+    readonly commandReceiptResponse?: CommandRequestRecord['response'];
     readonly triggerActor: ActorRef;
     /** Known native Task admission cause, separate from actor identity. */
     readonly triggerSource?: z.infer<typeof TurnSchema>['triggerSource'];
@@ -2747,12 +2753,14 @@ export function createConversationService({
      * @param store Store that owns the Chat Thread.
      * @param workspaceId Workspace bound into the command scope.
      * @param threadId Thread bound into the command scope.
+     * @param commandReceipt Original command facts retained by the native result publication.
      * @returns Accepted Chat response and HTTP status.
      */
     async function executeChatCommand(
       store: FsStore,
       workspaceId: string,
-      threadId: string
+      threadId: string,
+      commandReceipt: IdempotentCommandReceipt
     ): Promise<ConversationCommandResult> {
       // A missing receipt cannot make an existing provider attempt fresh through changed routing.
       const providerTurnId = providerChatTurnId(
@@ -2978,6 +2986,57 @@ export function createConversationService({
         .filter(Boolean)
         .join('\n\n');
 
+      /** Builds the original receipt and Audit for the actual local terminal result. */
+      const terminalCommand = (
+        turn: z.infer<typeof TurnSchema>,
+        outcome: Pick<
+          ConversationCommandReceiptMetadata,
+          'resultKind' | 'status' | 'downstream'
+        > | null
+      ): NonNullable<TerminalTurnPublication['command']> => {
+        const { responseKind, command, ...receipt } = commandReceipt;
+        if (command !== 'conversation.submit')
+          throw new Error('Conversation publication requires its original conversation command.');
+        return {
+          receipt: {
+            ...receipt,
+            command,
+            response: {
+              kind: responseKind,
+              id: turn.id,
+              ...(outcome
+                ? {
+                    conversationMetadata: {
+                      ...outcome,
+                      targetRef: chatInput.targetRef,
+                      logicalModelId: freshLogicalModelId,
+                      receivingWorkspaceId: workspaceIdForOwner(turn.owner),
+                      receivingThreadId: turn.threadId,
+                    },
+                  }
+                : {}),
+            },
+          },
+          audit: {
+            ...prepareAuditEvent({
+              workspaceId: workspaceIdForOwner(turn.owner),
+              threadId: turn.threadId,
+              turnId: turn.id,
+              requestId: receipt.requestId,
+              actor: turn.triggerActor,
+              category: 'command',
+              action: command,
+              resource: `turn:${turn.id}`,
+              outcome: 'succeeded',
+              summary: 'Conversation result published.',
+              now: new Date(receipt.createdAt),
+            }),
+            createdAt: receipt.createdAt,
+            occurredAt: receipt.createdAt,
+          },
+        };
+      };
+
       /**
        * Creates the durable Chat Mode turn and its user-message item.
        *
@@ -3067,7 +3126,15 @@ export function createConversationService({
             status: 'completed',
             completedAt,
           },
-          { items: [refusedItem], requestId: chatInput.requestId }
+          {
+            items: [refusedItem],
+            requestId: chatInput.requestId,
+            command: terminalCommand(turn, {
+              resultKind: 'refused',
+              status: 200,
+              downstream: null,
+            }),
+          }
         );
 
         return ConversationCommandBodySchema.parse({
@@ -3120,7 +3187,15 @@ export function createConversationService({
         const completedTurn = await store.completeTurn(
           turn.id,
           { status: 'completed', completedAt },
-          { items: [answerItem], requestId: chatInput.requestId }
+          {
+            items: [answerItem],
+            requestId: chatInput.requestId,
+            command: terminalCommand(turn, {
+              resultKind: 'knowledge-answer',
+              status: 200,
+              downstream: null,
+            }),
+          }
         );
         return {
           body: ConversationCommandBodySchema.parse({
@@ -3367,6 +3442,20 @@ export function createConversationService({
                   chatInput.workerStorageChoice
                 );
                 const turn = await startModeWorkerTurn({
+                  commandReceipt,
+                  commandReceiptResponse: {
+                    kind: 'turn',
+                    id: turnId,
+                    conversationMetadata: {
+                      targetRef: chatInput.targetRef,
+                      logicalModelId: freshLogicalModelId,
+                      receivingWorkspaceId: workspaceId,
+                      receivingThreadId,
+                      downstream: { kind: 'task', turnId },
+                      resultKind: 'worker-turn',
+                      status: 202,
+                    },
+                  },
                   triggerSource: { kind: 'handoff', summary: 'Task Worker handoff.' },
                   ...fileOptions,
                   triggerActor,
@@ -3564,7 +3653,15 @@ export function createConversationService({
           const ended = await store.completeTurn(
             turn.id,
             { status: 'completed', completedAt: at },
-            { items: [item], requestId: chatInput.requestId }
+            {
+              items: [item],
+              requestId: chatInput.requestId,
+              command: terminalCommand(turn, {
+                resultKind: 'goal-intent',
+                status: 202,
+                downstream: { kind: 'goal', goalId, turnId: turn.id },
+              }),
+            }
           );
           return {
             body: ConversationCommandBodySchema.parse({
@@ -3759,17 +3856,11 @@ export function createConversationService({
                       message: 'Chat model work did not complete.',
                     }),
               },
-              { requestId: chatInput.requestId }
-            );
-            if (aborted) {
-              store.recordCommandRequest({
-                command: 'conversation.submit',
+              {
                 requestId: chatInput.requestId,
-                scope: { actorId, workspaceId, threadId },
-                inputHash: commandInputHash(conversationCommandInput(chatInput)),
-                response: { kind: 'turn', id: turn.id },
-              });
-            }
+                ...(aborted ? { command: terminalCommand(turn, null) } : {}),
+              }
+            );
           } catch {
             throw new TurnStartValidationError(
               'recovery_required',
@@ -3796,7 +3887,14 @@ export function createConversationService({
               status: 'completed',
               completedAt,
             },
-            { requestId: chatInput.requestId }
+            {
+              requestId: chatInput.requestId,
+              command: terminalCommand(turn, {
+                resultKind: 'clarification',
+                status: 202,
+                downstream: null,
+              }),
+            }
           );
           return {
             body: ConversationCommandBodySchema.parse({
@@ -3828,7 +3926,15 @@ export function createConversationService({
             status: 'completed',
             completedAt,
           },
-          { items: [item], requestId: chatInput.requestId }
+          {
+            items: [item],
+            requestId: chatInput.requestId,
+            command: terminalCommand(turn, {
+              resultKind: 'provider-answer',
+              status: 200,
+              downstream: null,
+            }),
+          }
         );
 
         return {
@@ -3868,7 +3974,8 @@ export function createConversationService({
     try {
       const result = await runIdempotentCommand({
         command: 'conversation.submit',
-        execute: () => executeChatCommand(store, workspaceId, threadId),
+        execute: (commandReceipt) =>
+          executeChatCommand(store, workspaceId, threadId, commandReceipt),
         inflightCommands,
         input: conversationCommandInput(chatInput),
         replay: async (record) => {
@@ -4726,6 +4833,8 @@ export function createTaskStartOperation({
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   readonly startModeWorkerTurn: (input: {
+    /** Original Task command facts committed with the admitted Turn. */
+    readonly commandReceipt?: IdempotentCommandReceipt;
     readonly triggerActor: ActorRef;
     /** Known native Task admission cause, separate from actor identity. */
     readonly triggerSource?: z.infer<typeof TurnSchema>['triggerSource'];
@@ -4843,12 +4952,14 @@ export function createTaskStartOperation({
      * @param store Store that owns the Task Thread.
      * @param workspaceId Workspace bound into the command scope.
      * @param threadId Thread bound into the command scope.
+     * @param commandReceipt Original Task command facts for native Turn admission.
      * @returns Accepted Task response.
      */
     async function executeTaskCommand(
       store: FsStore,
       workspaceId: string,
-      threadId: string
+      threadId: string,
+      commandReceipt: IdempotentCommandReceipt
     ): Promise<StartTaskModeResponse> {
       if (store.getThread(workspaceId, threadId).visibility !== 'workspace') {
         throw new TurnStartValidationError(
@@ -4986,6 +5097,7 @@ export function createTaskStartOperation({
             reserveTurn: () => ({ turnId: reservedTurnId }),
             startWorker: async ({ turnId, prepared, onAdmitted }) => {
               const turn = await startModeWorkerTurn({
+                commandReceipt,
                 triggerSource: { kind: 'handoff', summary: 'Task Worker handoff.' },
                 triggerActor,
                 requestActor: actor,
@@ -5099,7 +5211,8 @@ export function createTaskStartOperation({
       store.getThread(workspaceId, threadId);
       const result = await runIdempotentCommand({
         command: 'task.start',
-        execute: () => executeTaskCommand(store, workspaceId, threadId),
+        execute: (commandReceipt) =>
+          executeTaskCommand(store, workspaceId, threadId, commandReceipt),
         inflightCommands,
         input: requestInput,
         replay: async (record) => {

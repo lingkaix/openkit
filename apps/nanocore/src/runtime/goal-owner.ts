@@ -53,6 +53,7 @@ import {
   readCommandRequestRecordsFromSqlite,
   recordControlCommandRequestRecordInDb,
 } from '../storage/command-request-records.js';
+import { prepareControlPendingCommands } from '../storage/control-store-pending.js';
 import {
   applyControlProducts,
   assertControlProductWriter,
@@ -88,6 +89,8 @@ import {
 } from './idempotent-command.js';
 import { projectApprovalEffect } from './pending-request-disclosure.js';
 import {
+  applyControlPendingCommand,
+  ControlPendingCommandInputSchema,
   claimCommandIntentGrant,
   denyPendingRequest,
   finishPendingExecution,
@@ -97,6 +100,7 @@ import {
   isReadyOutcome,
   listThreadPendingRequests,
   type PendingRequestRecord,
+  type PreparedControlPendingCommand,
   projectApprovalRequest,
   raisePendingRequest,
   readPendingRequest,
@@ -625,6 +629,13 @@ export const ControlGoalCommandInputSchema = z
       .object({ scope: z.enum(['server', 'workspace', 'task']), value: z.enum(['off', 'on']) })
       .strict()
       .optional(),
+    pendingAdmission: z
+      .object({
+        entries: z.lazy(() => z.array(ControlProductEntrySchema)),
+        pending: z.lazy(() => z.array(ControlPendingCommandInputSchema)),
+      })
+      .strict()
+      .optional(),
     pendingItem: z
       .object({ id: z.string().min(1), entry: z.lazy(() => ControlProductEntrySchema) })
       .strict()
@@ -645,6 +656,7 @@ export interface ControlGoalCommandResult {
 }
 /** Native-only preparation. SQL compares each prepared Item's current descriptor before using its bytes. */
 export interface PreparedControlGoalCommand {
+  readonly pendingAdmission?: PreparedControlPendingCommand;
   readonly entries: readonly PreparedControlEntry[];
   readonly items: readonly {
     readonly item: Item;
@@ -724,7 +736,33 @@ export function prepareControlGoalCommand(
       throw new GoalCommandError('recovery_required', 'Goal Item identity is contradictory.');
     items.push({ item, revision: row.revision, contentJson: row.content_json });
   }
-  return { entries, items };
+  let pendingAdmission: PreparedControlPendingCommand | undefined;
+  if (input.pendingAdmission) {
+    if (
+      input.command.operation !== 'goal.plan.propose' ||
+      input.context.coordinatorTurnId ||
+      !input.proposalTurnId ||
+      input.pendingAdmission.pending.some(
+        (command) =>
+          command.action !== 'freeze' ||
+          command.turnId !== input.proposalTurnId ||
+          command.workspaceId !== db.workspaceId ||
+          command.executor !== 'coordinator' ||
+          command.agentId !== 'goal-coordinator'
+      )
+    )
+      throw new GoalCommandError(
+        'invalid_request',
+        'Pending admission requires the exact proposal Turn.'
+      );
+    pendingAdmission = prepareControlPendingCommands(
+      db,
+      input.pendingAdmission.pending,
+      binding,
+      input.pendingAdmission.entries
+    );
+  }
+  return { entries, items, ...(pendingAdmission ? { pendingAdmission } : {}) };
 }
 /** Reads one current native Turn without introducing a Store or a second connection. */
 function nativeTurn(db: WorkspaceDb, turnId: string, items: readonly Item[] = []): Turn {
@@ -1108,11 +1146,11 @@ function applyNativeGoalMutation(
       nativeTurns(db, goal.threadId).some((turn) => !isSealedTurnTerminal(turn.status))
     )
       throw new GoalCommandError('thread_busy', 'The Goal Thread already has a Turn in flight.');
-    // C2-B2: ordinary native admission must include frozen-outcome publication before this dependency guard can be removed; never admit a partial Turn tuple.
     if (
       listThreadPendingRequests(db.sqlite, goal.workspaceId, goal.threadId).some(
         (request) => request.requesterKind === 'coordinator' && isReadyOutcome(request)
-      )
+      ) &&
+      !nativeInput.pendingAdmission?.pending.length
     )
       throw new GoalCommandError(
         'recovery_required',
@@ -1135,15 +1173,21 @@ function applyNativeGoalMutation(
             captureCoverage: nativeInput.captureCoverage,
             error: null,
             configVersion: null,
-            startedAt: now(),
+            startedAt: nativeInput.receipt?.createdAt ?? now(),
             completedAt: null,
             durationMs: null,
             status: 'running',
           }),
         },
       ],
-      []
+      prepared.pendingAdmission?.entries ?? []
     );
+    if (nativeInput.pendingAdmission) {
+      if (!prepared.pendingAdmission)
+        throw new GoalCommandError('recovery_required', 'Pending admission was not prepared.');
+      for (const command of nativeInput.pendingAdmission.pending)
+        applyControlPendingCommand(db, command, prepared.pendingAdmission);
+    }
   }
   if (id === 'goal.create' && 'intent' in input) {
     if (goal) throw new GoalCommandError('revision_conflict', 'Goal already exists.');
@@ -1693,32 +1737,18 @@ export async function executeGoalOperation<K extends GoalOperationId>(
     const request = input.pendingRequestId
       ? readPendingRequest(db.sqlite, input.pendingRequestId)
       : null;
-    let administrator: ControlGoalCommandInput['administrator'] = null;
-    const authorityActor =
-      context.coordinatorTurnId && request?.decidingActorContext
-        ? request.decidingActorContext
-        : context.actor;
-    if (services.coreDb && isCurrentDeploymentAdministrator(services.coreDb, authorityActor))
-      administrator = requireCurrentDeploymentAdmin(services.coreDb, authorityActor);
-    let grantAdmission: ControlGoalCommandInput['grantAdmission'] = null;
+    const currentAdministrator = (): ControlGoalCommandInput['administrator'] => {
+      const authorityActor =
+        context.coordinatorTurnId && request?.decidingActorContext
+          ? request.decidingActorContext
+          : context.actor;
+      return services.coreDb && isCurrentDeploymentAdministrator(services.coreDb, authorityActor)
+        ? requireCurrentDeploymentAdmin(services.coreDb, authorityActor)
+        : null;
+    };
+    let administrator = currentAdministrator();
     const externalEvidence: ControlGoalCommandInput['externalEvidence'] = [];
     if (request && context.coordinatorTurnId) {
-      let failure: string | null = null;
-      if (
-        (services.grantAuthority && !services.grantAuthority(request)) ||
-        (services.coreDb &&
-          (!request.decidingActorContext ||
-            !authorizeWorkspace(services.coreDb, request.decidingActorContext, input.workspaceId, {
-              policyOperation: 'workspace.write',
-              mutating: true,
-            })))
-      )
-        failure = 'The deciding actor is no longer authorized.';
-      grantAdmission = {
-        requestId: request.requestId,
-        sourceHash: commandInputHash(request),
-        failure,
-      };
       if (request.governedIntent?.operation === 'goal.completion.accept')
         for (const evidence of StoredGoalCompletionCandidateV1Schema.parse(
           request.governedIntent.candidate
@@ -1802,6 +1832,48 @@ export async function executeGoalOperation<K extends GoalOperationId>(
         sourceHash: context.assistantHandoff.sourceHash,
       };
     }
+    const pendingAdmission =
+      proposalTurnId && goal
+        ? await store.prepareNativeTurnPendingAdmission(
+            {
+              id: proposalTurnId,
+              owner: { kind: 'workspace', workspaceId: goal.workspaceId },
+              threadId: goal.threadId,
+              triggerActor: { kind: 'user', id: context.actor.userId },
+              triggerSource: { kind: 'user-input', summary: 'Propose a Goal Plan' },
+              agentId: 'goal-coordinator',
+              error: null,
+              configVersion: null,
+              startedAt: receipt?.createdAt ?? now(),
+              completedAt: null,
+              durationMs: null,
+              status: 'running',
+              items: [],
+            },
+            'coordinator'
+          )
+        : undefined;
+    // Main-owned current authority is checked after all preparation, immediately before native submission.
+    administrator = currentAdministrator();
+    let grantAdmission: ControlGoalCommandInput['grantAdmission'] = null;
+    if (request && context.coordinatorTurnId) {
+      let failure: string | null = null;
+      if (
+        (services.grantAuthority && !services.grantAuthority(request)) ||
+        (services.coreDb &&
+          (!request.decidingActorContext ||
+            !authorizeWorkspace(services.coreDb, request.decidingActorContext, input.workspaceId, {
+              policyOperation: 'workspace.write',
+              mutating: true,
+            })))
+      )
+        failure = 'The deciding actor is no longer authorized.';
+      grantAdmission = {
+        requestId: request.requestId,
+        sourceHash: commandInputHash(request),
+        failure,
+      };
+    }
     const nativeInput = ControlGoalCommandInputSchema.parse({
       command: { operation: id, arguments: input },
       context,
@@ -1812,6 +1884,7 @@ export async function executeGoalOperation<K extends GoalOperationId>(
       grantAdmission,
       externalEvidence,
       proposalTurnId,
+      ...(pendingAdmission ? { pendingAdmission } : {}),
       captureCoverage: store.getLiveCaptureCoverage(),
       pendingItem,
     });

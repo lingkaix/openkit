@@ -233,13 +233,13 @@ async function raceProviderWithSignal<T>(
 /** Commits admitted fields before yielding so buffered observations cannot starve Worker heartbeats. */
 async function observeModelEvent(
   event: AssistantMessageEvent,
-  observer?: (event: ModelSemanticEvent) => void
+  observer?: (event: ModelSemanticEvent) => void | Promise<void>
 ): Promise<void> {
   if (!observer) return;
   const admitted = admittedModelEvent(event);
   if (admitted) {
-    observer(admitted);
-    // Each callback keeps its per-line fsync commit; yield changes scheduling, not durability.
+    await observer(admitted);
+    // The native acknowledgement retains durability; keep the existing heartbeat scheduling yield.
     await scheduler.yield();
   }
 }
@@ -483,7 +483,7 @@ async function completeObservedModel(
     while (true) {
       const result = await raceProviderWithSignal(() => iterator.next(), signal);
       if (result.done) {
-        transport.onModelEvent?.({ type: 'truncated' });
+        if (transport.onModelEvent) await transport.onModelEvent({ type: 'truncated' });
         throw piAiStreamFailure('Provider stream failed.', 'provider_stream_truncated');
       }
       const terminalMessage =
@@ -494,7 +494,7 @@ async function completeObservedModel(
             : undefined;
       const terminalFailure = terminalMessage ? terminalPiAiFailure(terminalMessage) : undefined;
       if (terminalMessage) onTerminal(terminalMessage, terminalFailure);
-      await observeModelEvent(result.value, transport.onModelEvent);
+      if (transport.onModelEvent) await observeModelEvent(result.value, transport.onModelEvent);
       validateEvent?.(result.value);
       if (result.value.type === 'done') {
         await inference.observe(terminalFailure);
@@ -507,7 +507,8 @@ async function completeObservedModel(
     }
   } catch (error) {
     localAbort.abort(error);
-    transport.onModelEvent?.({ type: transport.signal?.aborted ? 'interrupted' : 'failed' });
+    if (transport.onModelEvent)
+      await transport.onModelEvent({ type: transport.signal?.aborted ? 'interrupted' : 'failed' });
     throw error;
   } finally {
     await iterator.return?.();
@@ -870,7 +871,8 @@ export class PiAiGatewayClient {
       const interrupted = signal.aborted;
       localAbortController.abort(error);
       try {
-        transport.onModelEvent?.({ type: interrupted ? 'interrupted' : 'failed' });
+        if (transport.onModelEvent)
+          await transport.onModelEvent({ type: interrupted ? 'interrupted' : 'failed' });
       } finally {
         await iterator.return?.();
       }
@@ -1582,7 +1584,7 @@ export class PiAiGatewayClient {
     onUsage: ((usage: unknown) => void) | undefined,
     signal: AbortSignal,
     abortUpstream: (reason?: unknown) => void,
-    onModelEvent?: (event: ModelSemanticEvent) => void,
+    onModelEvent?: (event: ModelSemanticEvent) => void | Promise<void>,
     onInferenceTerminal?: (message: AssistantMessage, failure?: Error) => Promise<void>
   ): ReadableStream<Uint8Array> {
     const encoder = new TextEncoder();
@@ -1737,7 +1739,7 @@ export class PiAiGatewayClient {
               return;
             }
             if (result.done) {
-              onModelEvent?.({ type: 'truncated' });
+              if (onModelEvent) await onModelEvent({ type: 'truncated' });
               terminalFailure = piAiStreamFailure(
                 'Provider stream ended before terminal result',
                 'provider_stream_truncated'
@@ -1759,7 +1761,7 @@ export class PiAiGatewayClient {
               usageObserved = true;
               onUsage?.(event.type === 'done' ? event.message.usage : event.error.usage);
             }
-            await observeModelEvent(event, onModelEvent);
+            if (onModelEvent) await observeModelEvent(event, onModelEvent);
             validateEvent(event);
             if (event.type === 'done' || event.type === 'error')
               await onInferenceTerminal?.(
@@ -1970,7 +1972,7 @@ export class PiAiGatewayClient {
           const interrupted = signal.aborted;
           abortUpstream(error);
           try {
-            onModelEvent?.({ type: interrupted ? 'interrupted' : 'failed' });
+            if (onModelEvent) await onModelEvent({ type: interrupted ? 'interrupted' : 'failed' });
             terminalFailure = attachPiAiFailure(error);
           } catch (captureError) {
             terminalFailure = captureError;
@@ -1995,7 +1997,7 @@ export class PiAiGatewayClient {
         cancelled = true;
         abortUpstream(reason);
         try {
-          onModelEvent?.({ type: 'interrupted' });
+          if (onModelEvent) await onModelEvent({ type: 'interrupted' });
         } finally {
           await iterator.return?.();
         }
@@ -3765,7 +3767,7 @@ function toResponsesSseStream(
   signal: AbortSignal,
   abortUpstream: (reason?: unknown) => void,
   bridgeNames?: ResponsesBridgeNames,
-  onModelEvent?: (event: ModelSemanticEvent) => void,
+  onModelEvent?: (event: ModelSemanticEvent) => void | Promise<void>,
   onReasoningItem?: (item: Record<string, unknown>) => void,
   onInferenceTerminal?: (message: AssistantMessage, failure?: Error) => Promise<void>,
   envelope?: ResponsesNativeEnvelope
@@ -3881,7 +3883,7 @@ function toResponsesSseStream(
           const result = pending ?? (await raceProviderWithSignal(() => iterator.next(), signal));
           pending = undefined;
           if (result.done) {
-            onModelEvent?.({ type: 'truncated' });
+            if (onModelEvent) await onModelEvent({ type: 'truncated' });
             terminal = true;
             controller.error(
               piAiStreamFailure('Provider stream failed.', 'provider_stream_truncated')
@@ -3919,7 +3921,7 @@ function toResponsesSseStream(
             usageObserved = true;
             onUsage?.(event.type === 'done' ? event.message.usage : event.error.usage);
           }
-          await observeModelEvent(event, onModelEvent);
+          if (onModelEvent) await observeModelEvent(event, onModelEvent);
           if (event.type === 'done' || event.type === 'error')
             await onInferenceTerminal?.(
               event.type === 'done' ? event.message : event.error,
@@ -4307,7 +4309,7 @@ function toResponsesSseStream(
         const interrupted = signal.aborted;
         abortUpstream(error);
         try {
-          onModelEvent?.({ type: interrupted ? 'interrupted' : 'failed' });
+          if (onModelEvent) await onModelEvent({ type: interrupted ? 'interrupted' : 'failed' });
           controller.error(attachPiAiFailure(error));
         } catch (captureError) {
           controller.error(captureError);
@@ -4323,7 +4325,7 @@ function toResponsesSseStream(
       cancelled = true;
       abortUpstream(reason);
       try {
-        onModelEvent?.({ type: 'interrupted' });
+        if (onModelEvent) await onModelEvent({ type: 'interrupted' });
       } finally {
         await iterator.return?.();
       }

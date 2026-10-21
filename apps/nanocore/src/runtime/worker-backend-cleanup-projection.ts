@@ -92,22 +92,33 @@ export interface WorkerBackendCleanupProjectionResult {
  *
  * @param workspaceDb Workspace database owned by the scheduler admission user.
  * @param input Complete package-level teardown evidence input.
- * @returns Updated handles and deterministic teardown evidence.
- * @throws Error when either projection fails; every workspace write is rolled back.
+ * @returns Updated handles and deterministic teardown evidence after native durable acknowledgement.
+ * @throws Error on refusal or unknown acknowledgement; no physical release is inferred.
  */
-export function projectWorkerBackendCleanup(
+export async function projectWorkerBackendCleanup(
   workspaceDb: WorkspaceDb,
   input: ProjectWorkerBackendCleanupInput
-): WorkerBackendCleanupProjectionResult {
-  workspaceDb.sqlite.exec('BEGIN IMMEDIATE');
-  try {
-    const result = projectWorkerBackendCleanupInDb(workspaceDb, input);
-    workspaceDb.sqlite.exec('COMMIT');
-    return result;
-  } catch (error) {
-    workspaceDb.sqlite.exec('ROLLBACK');
-    throw error;
-  }
+): Promise<WorkerBackendCleanupProjectionResult> {
+  if (workspaceDb.sqlite.inTransaction)
+    throw new Error('Cleanup publication cannot span a Main transaction.');
+  const { getControlStoreWorkerClient } = await import('../storage/control-store-worker-client.js');
+  const { nativeProductScope } = await import('../storage/workspace-file-records.js');
+  const scope = nativeProductScope(workspaceDb.dataRoot, {
+    kind: 'workspace',
+    workspaceId: workspaceDb.workspaceId,
+  });
+  const client = getControlStoreWorkerClient();
+  const database = `workspace:${scope.path}`;
+  await client.open({
+    database,
+    path: scope.path,
+    dataRoot: workspaceDb.dataRoot,
+    create: false,
+    initialize: 'workspace',
+    productOwner: scope.owner,
+    contentMount: scope.contentMount,
+  });
+  return client.projectCleanup(database, input);
 }
 
 /** Applies the whole cleanup decision in the caller's owning transaction, without opening or committing a sibling body. */

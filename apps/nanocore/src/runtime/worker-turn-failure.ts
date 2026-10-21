@@ -214,7 +214,13 @@ export async function terminalizeGovernedWorkerTurn(
   }
 
   // All durable writes finish before this synchronous observer tail.
-  for (const event of notifications) input.store.emitTurnEvent(input.turnId, event);
+  for (const event of notifications) {
+    try {
+      input.store.emitTurnEvent(input.turnId, event);
+    } catch (error) {
+      errors.push(error);
+    }
+  }
 
   if (errors.length > 0) {
     throw new AggregateError(
@@ -308,6 +314,7 @@ async function reconcileCompletedTurn(
         input.turnId,
         {
           completedAt: authoritativeTurn.completedAt,
+          durationMs: authoritativeTurn.durationMs,
           error: null,
           status: 'completed',
         },
@@ -339,7 +346,13 @@ async function reconcileCompletedTurn(
   }
 
   // All durable writes finish before this synchronous observer tail.
-  for (const event of notifications) input.store.emitTurnEvent(input.turnId, event);
+  for (const event of notifications) {
+    try {
+      input.store.emitTurnEvent(input.turnId, event);
+    } catch (error) {
+      errors.push(error);
+    }
+  }
 
   if (errors.length > 0) {
     throw new AggregateError(

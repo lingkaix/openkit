@@ -118,7 +118,7 @@ import {
 } from './knowledge/user-memory-agent-maintenance.js';
 import { scanUserMemoryMaintenance } from './knowledge/user-memory-schedule.js';
 import { AutomationStore } from './lib/automation-store.js';
-import { FsStore, quickChatWorkspaceIdForUser } from './lib/store.js';
+import { type CommandRequestRecord, FsStore, quickChatWorkspaceIdForUser } from './lib/store.js';
 import { registerLlmGatewayRoutes, registerWorkerInferenceRoutes } from './llm/gateway-routes.js';
 import { GatewayUsageTracker } from './llm/gateway-usage.js';
 import { OpenAICompatibleProviderError } from './llm/openai-compatible-client.js';
@@ -182,7 +182,10 @@ import {
   goalActor,
   readGoalView,
 } from './runtime/goal-owner.js';
-import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
+import type {
+  IdempotentCommandReceipt,
+  InflightIdempotentCommand,
+} from './runtime/idempotent-command.js';
 import {
   acceptNanoHostAttemptHeartbeatByBinding,
   adoptNanoHostAttemptReconnect,
@@ -1334,6 +1337,10 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
    */
   async function startModeWorkerTurn(input: {
     readonly store: FsStore;
+    /** Original initiating command facts for native Turn admission. */
+    readonly commandReceipt?: IdempotentCommandReceipt;
+    /** Exact selected Worker conversation response, including its original routing metadata. */
+    readonly commandReceiptResponse?: CommandRequestRecord['response'];
     readonly triggerActor: ActorRef;
     /** Native admission cause; unrelated Worker restarts and follow-ups leave it absent. */
     readonly triggerSource?: z.infer<typeof TurnSchema>['triggerSource'];
@@ -1358,11 +1365,15 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     readonly onTurnCreated?: (
       turn: z.infer<typeof TurnSchema>,
       agentSessionId: string | null
-    ) => void;
+    ) => void | Promise<void>;
   }): Promise<z.infer<typeof TurnSchema>> {
     const snapshot = runtimeConfig();
     const handle = await startProductTurn({
       ...setupProviderSupply,
+      ...(input.commandReceipt ? { commandReceipt: input.commandReceipt } : {}),
+      ...(input.commandReceiptResponse
+        ? { commandReceiptResponse: input.commandReceiptResponse }
+        : {}),
       input: {
         input: input.prompt,
         ...(input.profileId ? { profileId: input.profileId } : {}),

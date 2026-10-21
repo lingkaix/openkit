@@ -61,6 +61,7 @@ import {
   type ControlReviewCommandInput,
   type CreateArtifactReviewInput,
 } from '../artifact-reviews.js';
+import { prepareAuditEvent } from '../audit-events.js';
 import { assertScopeAdmitted, isScopeAdmitted, refuseScope } from '../bootstrap/readiness.js';
 import { resolveDataRoot } from '../config/data-root.js';
 import {
@@ -105,7 +106,7 @@ import type {
   ExecutionJournalSettlement,
 } from '../runtime/execution-step-journal.js';
 import { ensureTurnFeedback } from '../runtime/feedback.js';
-import { commandInputHash } from '../runtime/idempotent-command.js';
+import { commandInputHash, type IdempotentCommandReceipt } from '../runtime/idempotent-command.js';
 import type {
   ControlPendingCommandInput,
   ControlPendingCommandResult,
@@ -135,7 +136,10 @@ import {
   recordCommandRequestRecord,
   recordCommandRequestRecordInDb,
 } from '../storage/command-request-records.js';
-import type { ControlAdmission } from '../storage/control-store-admission.js';
+import {
+  type ControlAdmission,
+  ControlAdmissionSchema,
+} from '../storage/control-store-admission.js';
 import type { ControlPendingTransition } from '../storage/control-store-pending.js';
 import {
   type ControlProductEntry,
@@ -671,6 +675,10 @@ export const DEFAULT_CAPTURE_COVERAGE_BINDING: CaptureCoverageBinding = {
 };
 
 interface CreateTurnOptions {
+  /** Actual initiating command facts committed with this admitted Turn, never a later receipt backfill. */
+  commandReceipt?: IdempotentCommandReceipt;
+  /** Exact entry-owned response metadata, including a selected Worker's original conversation receipt. */
+  commandReceiptResponse?: CommandRequestRecord['response'];
   /** Native internal-role admission facts retained on the existing Turn. */
   internalExecution?: Turn['internalExecution'];
   /** Exact ordered metadata and verified private payload sources published with this Turn. */
@@ -1760,6 +1768,7 @@ export class FsStore {
    * @param initialNotebookSchemaText Exact imported scope schema; fresh creation uses the default schema.
    * @param initialNotebookSources Verified and reminted Source blobs in the same first Notebook tree.
    * @param fileWriteAdmission Request admission for synchronous staging and final file publication. No scope spans native content awaits.
+   * @param finalizeNativeWorkspace Stopped private SQL dependencies, after native history verification and before publication.
    */
   private async persistNewWorkspaceAtomically(
     records: WorkspaceFileRecords,
@@ -1769,7 +1778,8 @@ export class FsStore {
     initialNotebookFiles?: Readonly<Record<string, string>>,
     initialNotebookSchemaText?: string,
     initialNotebookSources?: Readonly<Record<string, string>>,
-    fileWriteAdmission?: FileStorageAdmission
+    fileWriteAdmission?: FileStorageAdmission,
+    finalizeNativeWorkspace?: (stage: ImportWorkspaceStage) => void
   ): Promise<void> {
     const dataRoot = this.dataRoot;
     if (!dataRoot) {
@@ -2008,6 +2018,8 @@ export class FsStore {
           readNativeTurnEvents(scope, history.turn),
         ]),
       });
+      // The stopped importer joins verified native dependent rows before the private root becomes visible.
+      finalizeNativeWorkspace?.({ workspaceId, workspaceRoot: stagingRoot });
       const publishFiles = () => {
         writeWorkspaceFileRecords(stagingRoot, records);
         publishCanonicalPath(stagingRoot, finalRoot);
@@ -2677,6 +2689,8 @@ export class FsStore {
     /** Immutable capture admission for imported Turns; absence remains unknown history. */
     turnCaptureCoverage?: ReadonlyMap<string, CaptureCoverageBinding>;
     stageWorkspace?: (stage: ImportWorkspaceStage) => void;
+    /** Stopped private SQL dependency publication after native products exist and before the root rename. */
+    finalizeNativeWorkspace?: (stage: ImportWorkspaceStage) => void;
     /** Request capacity applies only during synchronous file mutation, never native content awaits. */
     fileWriteAdmission?: FileStorageAdmission;
   }): Promise<WorkspaceRecord> {
@@ -2787,7 +2801,8 @@ export class FsStore {
       input.initialNotebookFiles,
       input.initialNotebookSchemaText,
       input.initialNotebookSources,
-      input.fileWriteAdmission
+      input.fileWriteAdmission,
+      input.finalizeNativeWorkspace
     );
 
     this.workspaces.set(workspace.id, workspace);
@@ -3294,7 +3309,14 @@ export class FsStore {
       contentMount: scope.contentMount,
     });
     if (admission)
-      return (await client.transition(database, { ...admission, products, entries })).response.id;
+      return (
+        await client.transition(database, {
+          ...admission,
+          products,
+          entries,
+          ...(pending?.length ? { pending: [...pending] } : {}),
+        })
+      ).response.id;
     await client.products(database, {
       products,
       entries,
@@ -3369,6 +3391,19 @@ export class FsStore {
       counts.set(item.turnId, offset + 1);
     }
     return entries;
+  }
+
+  /** Prepares the actual Pending freeze and immutable Items for a native owner that admits its own Turn. */
+  public async prepareNativeTurnPendingAdmission(
+    turn: Turn,
+    executor: 'worker' | 'coordinator'
+  ): Promise<{ entries: ControlProductEntry[]; pending: readonly ControlPendingCommandInput[] }> {
+    const admission = await this.turnAdmissionHooks?.prepareAdmission?.(turn, executor);
+    const entries = await this.preparePendingItems(
+      this.nativeScope(turn.owner),
+      admission?.items ?? []
+    );
+    return { entries, pending: admission?.pending ?? [] };
   }
 
   /** Executes one closed Pending transition with its complete prepared Item and original receipt tuple. */
@@ -4429,6 +4464,52 @@ export class FsStore {
         options.executorKind
       );
       const pendingEntries = await this.preparePendingItems(scope, pendingAdmission?.items ?? []);
+      let commandAdmission: Pick<ControlAdmission, 'receipt' | 'audit'> | undefined;
+      if (options.commandReceipt) {
+        const { responseKind, ...receipt } = options.commandReceipt;
+        const response = options.commandReceiptResponse ?? { kind: responseKind, id: turn.id };
+        const conversation = response.conversationMetadata;
+        const selectedWorker =
+          receipt.command === 'conversation.submit' &&
+          conversation?.resultKind === 'worker-turn' &&
+          conversation.downstream?.kind === 'task' &&
+          conversation.downstream.turnId === turn.id &&
+          conversation.receivingWorkspaceId === workspaceId &&
+          conversation.receivingThreadId === threadId &&
+          typeof receipt.scope.threadId === 'string' &&
+          readNativeProduct(scope, 'thread', receipt.scope.threadId) !== undefined;
+        if (
+          responseKind !== 'turn' ||
+          response.kind !== 'turn' ||
+          response.id !== turn.id ||
+          receipt.scope.workspaceId !== workspaceId ||
+          (receipt.command === 'conversation.submit'
+            ? !selectedWorker
+            : receipt.scope.threadId !== threadId || conversation !== undefined)
+        )
+          throw new Error('Turn admission requires its exact original command response and scope.');
+        commandAdmission = {
+          receipt: ControlAdmissionSchema.shape.receipt.parse({
+            ...receipt,
+            response,
+          }),
+          audit: ControlAdmissionSchema.shape.audit.parse(
+            prepareAuditEvent({
+              workspaceId,
+              threadId,
+              turnId: turn.id,
+              requestId: receipt.requestId,
+              actor: turn.triggerActor,
+              category: 'command',
+              action: receipt.command,
+              resource: `turn:${turn.id}`,
+              outcome: 'succeeded',
+              summary: 'Turn admitted.',
+              now: new Date(receipt.createdAt),
+            })
+          ),
+        };
+      }
       if (isSealedTurnTerminal(turn.status)) {
         await this.createNativeTerminalTurn(
           scope,
@@ -4473,7 +4554,7 @@ export class FsStore {
           },
         ],
         pendingEntries,
-        undefined,
+        commandAdmission,
         undefined,
         pendingAdmission?.pending
       );
@@ -4793,9 +4874,11 @@ export class FsStore {
       ...patch,
       completedAt,
       durationMs:
-        completedAt && before.startedAt
-          ? Math.max(0, new Date(completedAt).getTime() - new Date(before.startedAt).getTime())
-          : (patch.durationMs ?? before.durationMs),
+        patch.durationMs !== undefined
+          ? patch.durationMs
+          : completedAt && before.startedAt
+            ? Math.max(0, new Date(completedAt).getTime() - new Date(before.startedAt).getTime())
+            : (patch.durationMs ?? before.durationMs),
       items: [...items.values()],
     });
     if (!isSealedTurnTerminal(turn.status) || !turn.completedAt)

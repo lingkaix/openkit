@@ -290,6 +290,16 @@ function flush(owner: OwnedDatabase): void {
               request.transition,
               request.preparedEntries ?? []
             );
+            if (!result.replayed)
+              for (const command of request.transition.pending ?? []) {
+                if (owner.scopeDb?.scope !== 'workspace')
+                  throw new ControlProductPreconditionError();
+                applyControlPendingCommand(
+                  owner.scopeDb,
+                  command,
+                  request.preparedPending ?? { entries: [], dependencies: [] }
+                );
+              }
             outcome = {
               version: CONTROL_WORKER_VERSION,
               id: request.id,
@@ -856,7 +866,7 @@ function receive(value: unknown): void {
               owner.contentMount,
               value.transition.entries
             );
-            if (value.operation === 'products' && value.transition.pending?.length) {
+            if (value.transition.pending?.length) {
               if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
               preparedPending = prepareControlPendingCommands(
                 owner.scopeDb,

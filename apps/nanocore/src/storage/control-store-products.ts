@@ -1011,6 +1011,7 @@ export function applyControlPublication(
       .map((entry) => entry.id),
   ];
   let newCompletion = false;
+  const sessionProjections = new Map<string, ReturnType<typeof readProduct>>();
   for (const entry of proof.entries) {
     if (entry.input.kind !== 'event') continue;
     if (input.category !== 'already-decided-publication')
@@ -1073,12 +1074,38 @@ export function applyControlPublication(
         if (proof.hasCompletion || newCompletion) throw new ControlProductPreconditionError();
         newCompletion = true;
       }
+    } else if (
+      data.type === 'agent-session-updated' &&
+      data.agentSession &&
+      typeof data.agentSession === 'object'
+    ) {
+      const snapshot = data.agentSession as Record<string, unknown>;
+      const session = readProduct(db.sqlite, proof.owner, 'agent-session', String(snapshot.id));
+      if (
+        proof.owner.kind !== 'workspace' ||
+        !session ||
+        session.record.workspaceId !== proof.owner.workspaceId ||
+        session.record.threadId !== turn.record.threadId ||
+        !isDeepStrictEqual(
+          StoredEventV1Schema.parse({
+            ...(preparedPayloads.get(entry) as object),
+            data: { ...data, agentSession: session.record },
+          }).data,
+          data
+        )
+      )
+        throw new ControlProductPreconditionError();
+      sessionProjections.set(String(snapshot.id), session);
     } else throw new ControlProductPreconditionError();
     writes.push(entry);
   }
   if (input.category !== 'display-projection-refresh')
     applyProducts(db.sqlite, proof.owner, [], writes, input.turnId);
   else for (const entry of writes) appendProductEntry(db.sqlite, entry);
+  // Session notifications publish the actual same-Thread native projection and cannot move it through a trigger.
+  for (const [id, session] of sessionProjections)
+    if (!isDeepStrictEqual(readProduct(db.sqlite, proof.owner, 'agent-session', id), session))
+      throw new ControlProductPreconditionError();
   // The decided tuple must still name the verified bytes after every local SQL effect.
   const written = new Set(
     writes.filter((entry) => entry.input.kind === 'item').map((entry) => entry.id)
@@ -1328,27 +1355,52 @@ export async function prepareControlTerminal(
   );
   const dependencies: { entry: PreparedControlEntry; contentJson: string; revision: number }[] = [];
   if (sealedTurn) {
-    const tail = db.sqlite
+    const retained = db.sqlite
       .prepare(
-        "SELECT schema_version,sequence,revision,content_json FROM control_product_entries WHERE kind='event' AND turn_id=? ORDER BY sequence DESC LIMIT 1"
+        "SELECT schema_version,sequence,revision,content_json FROM control_product_entries WHERE kind='event' AND turn_id=? ORDER BY sequence"
       )
-      .get(turn.id) as
-      | { schema_version: number; sequence: number; revision: number; content_json: string }
-      | undefined;
-    if (tail) {
-      const original = terminalEvents[0]!;
+      .all(turn.id) as {
+      schema_version: number;
+      sequence: number;
+      revision: number;
+      content_json: string;
+    }[];
+    const original = terminalEvents[0]!;
+    let hasCompletion = false;
+    for (const row of retained) {
+      if (row.schema_version !== 1) throw new ControlProductPreconditionError();
+      const [entry] = prepareEntries(
+        input.owner,
+        contentMount,
+        [
+          {
+            kind: 'event',
+            turnId: String(turn.id),
+            sequence: row.sequence,
+            expectedRevision: row.revision - 1,
+            content: ControlProductEntrySchema.shape.content.parse(JSON.parse(row.content_json)),
+          },
+        ],
+        turn,
+        sealedTurn
+      );
+      if (!entry) throw new ControlProductPreconditionError();
       if (
-        tail.schema_version !== 1 ||
-        original.input.sequence !== tail.sequence ||
-        !isDeepStrictEqual(JSON.parse(tail.content_json), original.input.content)
-      )
-        throw new ControlProductPreconditionError();
-      dependencies.push({
-        entry: original,
-        contentJson: tail.content_json,
-        revision: tail.revision,
-      });
+        (preparedPayloads.get(entry) as { data: { type: string } }).data.type === 'turn-completed'
+      ) {
+        if (
+          hasCompletion ||
+          row.sequence !== original.input.sequence ||
+          !isDeepStrictEqual(JSON.parse(row.content_json), original.input.content)
+        )
+          throw new ControlProductPreconditionError();
+        hasCompletion = true;
+      }
+      dependencies.push({ entry, contentJson: row.content_json, revision: row.revision });
     }
+    // Retained partial terminal metadata can lack its event. Fill only the exact next original completion.
+    if (!hasCompletion && original.input.sequence !== (retained.at(-1)?.sequence ?? 0) + 1)
+      throw new ControlProductPreconditionError();
   }
   const ids = new Set<string>();
   for (const item of snapshot.items) {

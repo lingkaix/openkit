@@ -1,14 +1,4 @@
 import { createHash } from 'node:crypto';
-import {
-  type BigIntStats,
-  closeSync,
-  constants,
-  existsSync,
-  fsyncSync,
-  ftruncateSync,
-  lstatSync,
-  openSync,
-} from 'node:fs';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -26,7 +16,6 @@ import {
   SystemPromptDigestSchema,
   TurnIdSchema,
   WorkspaceIdSchema,
-  writeRetainedV1,
 } from '@openkit/protocol';
 import { WorkerObservationDataSchema } from '@openkit/worker-protocol';
 import type Database from 'better-sqlite3';
@@ -38,12 +27,9 @@ import type { CoreDb, WorkspaceDb } from './db.js';
 import { StoredThreadSnapshotV1Schema } from './retained-work-events-v1.js';
 import { StoredTurnV1Schema, StoredWorkOwnerV1Schema } from './retained-work-metadata-v1.js';
 import {
-  appendCanonicalTextFile,
+  nativeProductScope,
   preserveDescriptiveRecord,
-  readCanonicalFile,
-  readPublishedTurnFileRecords,
-  syncCanonicalDirectory,
-  writeFileAtomic,
+  readNativeTurnHistory,
 } from './workspace-file-records.js';
 
 /** A scoped citation; publication edges are minted only by the storage owner. */
@@ -441,180 +427,40 @@ export function readWorkObservations(
   }
 }
 
-/** Commits exact admitted bodies through evidence, then the single observation publication marker. */
-export function appendWorkObservation(
+/** Awaits expected metadata first; only durable evidence bytes can authorize the later publication marker. */
+export async function appendWorkObservation(
   workspaceDb: WorkspaceDb | CoreDb,
-  input: {
-    readonly threadId: string;
-    readonly turnId: string;
-    readonly observation: WorkObservationDraft;
-    readonly bodies: readonly AdmittedWorkBody[];
-    /** Records expected byte identity without writing content pending semantic-unit admission. */
-    readonly deferBodyPublication?: true;
-  }
-): {
-  readonly disposition: 'committed' | 'duplicate';
-  readonly observation: WorkObservationRecord;
-} {
-  const binding = readWorkObservationTurnBinding(workspaceDb, input);
-  if (!binding.coverage) throw new Error('recovery_required: missing capture coverage');
-  const draft = draftSchema.parse(input.observation);
-  if (
-    draft.type === 'env.bound' &&
-    (workspaceDb.scope === 'core'
-      ? draft.payload.workspaceId !== undefined ||
-        (draft.payload.owner as { kind?: string } | undefined)?.kind !== 'server'
-      : draft.payload.workspaceId !== workspaceDb.workspaceId || draft.payload.owner !== undefined)
-  )
-    throw new Error('Environment binding database owner mismatch.');
-  if (draft.refs?.some((ref) => ref.edge !== 'association') || 'bodies' in draft.payload)
-    throw new Error('Publication descriptors belong to the observation writer');
-  if (input.bodies.length && binding.coverage.value !== 'on')
-    throw new Error('Capture coverage is off');
-  if (input.bodies.length && draft.type !== 'model.observed' && draft.type !== 'runtime.observed')
-    throw new Error('This observation type has no admitted body');
-  if (
-    input.bodies.length &&
-    (draft.payload.content as { state?: string } | undefined)?.state !== 'expected'
-  )
-    throw new Error('Body requires an expected-content declaration');
-  const bodyIds = new Set<string>();
-  const descriptors = input.bodies.map((body) => {
-    if (
-      !body.id ||
-      bodyIds.has(body.id) ||
-      !body.mediaType ||
-      !body.boundary ||
-      !(body.bytes instanceof Uint8Array) ||
-      body.bytes.byteLength > 16 * 1024 * 1024
-    )
-      throw new Error('Invalid or duplicate admitted body');
-    bodyIds.add(body.id);
-    return {
-      id: body.id,
-      bytes: body.bytes.byteLength,
-      mediaType: body.mediaType,
-      boundary: body.boundary,
-      sha256: createHash('sha256').update(body.bytes).digest('hex'),
-      bundleId: workObservationBodyBundleId(
-        workspaceDb.scope === 'core' ? { kind: 'server' } : workspaceDb.workspaceId,
-        input.threadId,
-        input.turnId,
-        draft.id,
-        body.id
-      ),
-    };
+  input: ControlWorkObservationPreparation
+): Promise<Pick<ControlWorkObservationResult, 'disposition' | 'observation'>> {
+  if (workspaceDb.sqlite.inTransaction)
+    throw new Error('Observation submission cannot span a Main transaction');
+  const owner: ControlProductOwner =
+    workspaceDb.scope === 'core'
+      ? { kind: 'server' }
+      : { kind: 'workspace', workspaceId: workspaceDb.workspaceId };
+  const prepared = prepareControlWorkObservation(owner, input);
+  const scope = nativeProductScope(workspaceDb.dataRoot, owner);
+  // Load only on the producer path; the native SQL owner must not start another writer host.
+  const { getControlStoreWorkerClient } = await import('./control-store-worker-client.js');
+  const client = getControlStoreWorkerClient();
+  const database = `${workspaceDb.scope}:${scope.path}`;
+  await client.open({
+    database,
+    path: scope.path,
+    dataRoot: workspaceDb.dataRoot,
+    create: false,
+    initialize: workspaceDb.scope,
+    productOwner: owner,
+    contentMount: scope.contentMount,
   });
-  const refs: WorkObservationReference[] = descriptors.map((body) => ({
-    kind: 'evidence-bundle',
-    scope: {
-      ...(workspaceDb.scope === 'core'
-        ? { owner: 'server' }
-        : { workspaceId: workspaceDb.workspaceId }),
-      pathClass: 'backend',
-    },
-    locator: body.bundleId,
-    digest: body.sha256,
-    edge: 'publication' as const,
-  }));
-  const path = join(binding.root, 'observations.jsonl');
-  const state = readAppendState(workspaceDb, path, input.turnId);
-  const { committedBytes, totalBytes } = state;
-  const existing = state.records.get(draft.id);
-  const candidate = parseWorkObservationRecord({
-    ...draft,
-    payload:
-      descriptors.length && draft.type !== 'runtime.observed'
-        ? {
-            ...draft.payload,
-            bodies: descriptors.map((body) => ({ ...body, state: 'expected' as const })),
-          }
-        : existing?.payload.bodies && draft.type === 'model.observed'
-          ? { ...draft.payload, bodies: existing.payload.bodies }
-          : draft.payload,
-    v: 1,
-    seq: existing?.seq ?? state.records.size + 1,
-    turnId: input.turnId,
-  });
-  if (draft.type === 'runtime.observed' && descriptors.length) {
-    const expected = WorkerObservationDataSchema.parse(draft.payload).content;
-    const body = descriptors[0];
-    if (
-      expected.state !== 'expected' ||
-      descriptors.length !== 1 ||
-      !body ||
-      body.bytes !== expected.bytes ||
-      `sha256:${body.sha256}` !== expected.sha256 ||
-      body.boundary !== expected.boundary ||
-      body.mediaType !== expected.mediaType
-    )
-      throw new Error('Runtime body contradicts its expected declaration');
-  }
-  if (existing && !isDeepStrictEqual(existing, candidate))
-    throw new Error('recovery_required: observation identity conflict');
-  const requiredFeatures = z.array(z.string()).parse(binding.raw.requiredFeatures ?? []);
-  if (!requiredFeatures.includes('openkit.work-observations.v1')) {
-    writeFileAtomic(
-      join(binding.root, 'turn.json'),
-      `${JSON.stringify(writeRetainedV1({ ...binding.raw, requiredFeatures: [...requiredFeatures, 'openkit.work-observations.v1'] }), null, 2)}\n`
-    );
-  }
-  // Replays synchronize even a previously failed commit. A fresh line's fsync also commits truncation.
-  if (existing || committedBytes !== totalBytes) {
-    const fd = openSync(path, constants.O_WRONLY | constants.O_NOFOLLOW);
-    try {
-      if (committedBytes !== totalBytes) ftruncateSync(fd, committedBytes);
-      if (existing) fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
-    if (existing) syncCanonicalDirectory(binding.root);
-  }
-  if (!existing) {
-    appendObservationRecord(path, state, candidate);
-  } else {
-    state.totalBytes = state.committedBytes;
-    state.stamp = lstatSync(path, { bigint: true });
-  }
-  // Metadata replay neither withdraws an existing publication nor publishes deferred content.
-  if (!descriptors.length || input.deferBodyPublication)
-    return { disposition: existing ? 'duplicate' : 'committed', observation: candidate };
-  const publicationId = `${draft.id}:publication`;
-  const priorPublication = state.records.get(publicationId);
-  const publication: WorkObservationRecord = {
-    v: 1,
-    id: publicationId,
-    type: 'content.published',
-    seq: priorPublication?.seq ?? state.records.size + 1,
-    ts: draft.ts,
-    obs: draft.obs,
-    turnId: input.turnId,
-    parent: draft.id,
-    ret: 'turn-evidence',
-    refs,
-    payload: { bodies: descriptors },
-  };
-  if (priorPublication && !isDeepStrictEqual(priorPublication, publication))
-    throw new Error('recovery_required: observation publication conflict');
-  // A committed marker survives lawful evidence expiry; replay never recreates its bytes.
-  if (priorPublication) return { disposition: 'duplicate', observation: candidate };
-  for (const [index, body] of input.bodies.entries()) {
-    const descriptor = descriptors[index];
-    if (!descriptor) throw new Error('Missing body descriptor');
-    const retained = retainWorkObservationBody(workspaceDb, {
-      bundleId: descriptor.bundleId,
-      threadId: input.threadId,
-      turnId: input.turnId,
-      createdAt: draft.ts,
-      sha256: descriptor.sha256,
-      bytes: body.bytes,
-    });
-    if (retained === 'expired')
-      throw new Error('recovery_required: unpublished body was lawfully expired');
-  }
-  if (descriptors.length)
-    appendObservationRecord(path, state, parseWorkObservationRecord(publication));
-  return { disposition: existing ? 'duplicate' : 'committed', observation: candidate };
+  // This is the existing expectation/publication lifecycle, not a second writer or a retry.
+  // If independent evidence publication fails, the original expected observation remains available to its gap fact.
+  const expected = await client.observation(database, { ...prepared, publishBodies: false });
+  if (!prepared.publishBodies)
+    return { disposition: expected.disposition, observation: expected.observation };
+  const published = publishControlWorkObservationBodies(workspaceDb, input);
+  const result = await client.observation(database, published);
+  return { disposition: expected.disposition, observation: result.observation };
 }
 
 /** Exact immutable body identity prepared before the native SQL transition. */
@@ -857,7 +703,25 @@ function assertControlObservationLineage(
   const parentRow = sqlite
     .prepare('SELECT * FROM control_work_observations WHERE turn_id=? AND id=?')
     .get(input.turnId, record.parent) as ControlObservationRow | undefined;
-  if (!parentRow) throw new Error('recovery_required: missing native observation parent');
+  if (!parentRow) {
+    // Portable remint preserves the format's Item parent alternative; it is not an observation-only edge.
+    const itemRow = sqlite
+      .prepare(
+        "SELECT identity_json FROM control_product_entries WHERE kind='item' AND turn_id=? AND id=? ORDER BY revision DESC LIMIT 1"
+      )
+      .get(input.turnId, record.parent) as { identity_json: string } | undefined;
+    const item = itemRow ? (JSON.parse(itemRow.identity_json) as Record<string, unknown>) : null;
+    if (
+      record.type !== 'content.published' &&
+      !(record.type === 'model.observed' && record.payload.direction === 'response') &&
+      item?.id === record.parent &&
+      item.turnId === input.turnId &&
+      item.threadId === input.threadId &&
+      isDeepStrictEqual(item.owner, owner)
+    )
+      return;
+    throw new Error('recovery_required: missing native observation parent');
+  }
   const parent = decodeControlObservation(parentRow, input.turnId);
   if (parent.seq >= record.seq)
     throw new Error('recovery_required: invalid native observation parent order');
@@ -872,9 +736,9 @@ function assertControlObservationLineage(
     throw new Error('recovery_required: model observation request lineage mismatch');
   if (record.type === 'content.published') {
     const bodies = z.array(bodyDescriptorSchema).parse(record.payload.bodies);
-    assertControlBodyDescriptors(owner, input, parent, bodies);
+    // Import remints observation and bundle identities through their exact maps. Retained meaning uses the bound descriptors and refs, not a live producer's id derivation.
+    assertControlBodyDescriptors(owner, input, parent, bodies, false);
     if (
-      record.id !== `${parent.id}:publication` ||
       record.ts !== parent.ts ||
       record.obs !== parent.obs ||
       record.ret !== 'turn-evidence' ||
@@ -889,7 +753,8 @@ function assertControlBodyDescriptors(
   owner: ControlProductOwner,
   input: { readonly threadId: string; readonly turnId: string },
   record: WorkObservationRecord,
-  bodies: readonly WorkObservationBodyDescriptor[]
+  bodies: readonly WorkObservationBodyDescriptor[],
+  requireDerivedIdentity = true
 ): void {
   if (!bodies.length) return;
   if (
@@ -902,14 +767,15 @@ function assertControlBodyDescriptors(
     bodyDescriptorSchema.parse(body);
     if (
       body.bytes > 16 * 1024 * 1024 ||
-      body.bundleId !==
-        workObservationBodyBundleId(
-          owner.kind === 'server' ? owner : owner.workspaceId,
-          input.threadId,
-          input.turnId,
-          record.id,
-          body.id
-        )
+      (requireDerivedIdentity &&
+        body.bundleId !==
+          workObservationBodyBundleId(
+            owner.kind === 'server' ? owner : owner.workspaceId,
+            input.threadId,
+            input.turnId,
+            record.id,
+            body.id
+          ))
     )
       throw new Error('recovery_required: observation body owner mismatch');
   }
@@ -1351,91 +1217,6 @@ export function applyControlTurnReap(
   return prepared ? applyControlWorkObservation(sqlite, owner, prepared).observation : null;
 }
 
-/** Validated writer projection; canonical files remain authoritative and reads always validate them. */
-interface ObservationAppendState {
-  readonly records: Map<string, WorkObservationRecord>;
-  committedBytes: number;
-  totalBytes: number;
-  stamp: BigIntStats | undefined;
-}
-
-// Scope reusable state to the borrowed database lifetime, without a second durable index.
-const observationAppendStates = new WeakMap<
-  WorkspaceDb | CoreDb,
-  Map<string, ObservationAppendState>
->();
-
-/** Opens a ledger with full validation; only this writer's unchanged committed prefix is reusable. */
-function readAppendState(
-  workspaceDb: WorkspaceDb | CoreDb,
-  path: string,
-  turnId: string
-): ObservationAppendState {
-  const states = observationAppendStates.get(workspaceDb) ?? new Map();
-  observationAppendStates.set(workspaceDb, states);
-  const cached = states.get(path);
-  const stamp = lstatSync(path, { bigint: true, throwIfNoEntry: false });
-  if (
-    cached &&
-    stamp?.isFile() &&
-    cached.stamp &&
-    stamp.dev === cached.stamp.dev &&
-    stamp.ino === cached.stamp.ino &&
-    stamp.size === cached.stamp.size &&
-    stamp.mtimeNs === cached.stamp.mtimeNs &&
-    stamp.ctimeNs === cached.stamp.ctimeNs
-  )
-    return cached;
-  // Replacement, edits, a torn tail, another handle's write and failed synchronization all reopen.
-  states.delete(path);
-  const { rows, committedBytes, totalBytes } = readRows(path, turnId);
-  const state: ObservationAppendState = {
-    records: new Map(rows.map((row) => [row.id, row])),
-    committedBytes,
-    totalBytes,
-    stamp,
-  };
-  states.set(path, state);
-  return state;
-}
-
-/** Advances validated state only after the existing file-and-directory synchronization succeeds. */
-function appendObservationRecord(
-  path: string,
-  state: ObservationAppendState,
-  record: WorkObservationRecord
-): void {
-  const text = `${JSON.stringify(record)}\n`;
-  // Keep emitted bytes independent of mutable objects returned to producers.
-  const retained = parseWorkObservationRecord(JSON.parse(text));
-  appendCanonicalTextFile(path, text);
-  state.records.set(retained.id, retained);
-  state.committedBytes += Buffer.byteLength(text);
-  state.totalBytes = state.committedBytes;
-  state.stamp = lstatSync(path, { bigint: true });
-}
-
-/** Validates all complete records and preserves the exact truncation boundary for the writer. */
-function readRows(
-  path: string,
-  turnId: string
-): { rows: WorkObservationRecord[]; committedBytes: number; totalBytes: number } {
-  if (!existsSync(path)) return { rows: [], committedBytes: 0, totalBytes: 0 };
-  const bytes = readCanonicalFile(path);
-  const committedBytes = bytes.lastIndexOf(0x0a) + 1;
-  const rows: WorkObservationRecord[] = [];
-  const ids = new Set<string>();
-  const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, committedBytes));
-  for (const line of text.split('\n').slice(0, -1)) {
-    const row = parseWorkObservationRecord(JSON.parse(line));
-    if (row.seq !== rows.length + 1 || row.turnId !== turnId || ids.has(row.id))
-      throw new Error('recovery_required: corrupt observation sequence or identity');
-    ids.add(row.id);
-    rows.push(row);
-  }
-  return { rows, committedBytes, totalBytes: bytes.length };
-}
-
 /** Fixed adapter tool vocabulary permitted in ordinary timeline labels. */
 const timelineToolNames = new Set([
   'exec_command',
@@ -1578,12 +1359,15 @@ export function readThreadRuntimeActivity(
       entries.length = 0;
     }
     try {
-      const published = readPublishedTurnFileRecords(
-        workspaceDb.dataRoot,
-        workspaceDb.workspaceId,
-        input.threadId,
+      const published = readNativeTurnHistory(
+        nativeProductScope(workspaceDb.dataRoot, {
+          kind: 'workspace',
+          workspaceId: workspaceDb.workspaceId,
+        }),
         turnId
       );
+      if (published && published.turn.threadId !== input.threadId)
+        throw new Error('Runtime activity Turn belongs to another Thread.');
       const reply = published?.turn.items.findLast(
         (item) =>
           item.type === 'assistant-message' && item.text.length > 0 && isSafeTimelineText(item.text)

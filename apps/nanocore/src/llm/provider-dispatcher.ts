@@ -76,7 +76,7 @@ export interface LLMGatewayTransportContext {
   /** Absolute Gateway deadline in milliseconds on the executor clock (production Date.now); never reset per attempt. */
   readonly deadline?: number;
   /** Private observer for admitted semantic events, before public response conversion. */
-  readonly onModelEvent?: (event: ModelSemanticEvent) => void;
+  readonly onModelEvent?: (event: ModelSemanticEvent) => void | Promise<void>;
   /** Private observer after OpenKit admission/options, immediately before handing the attempt to stock pi-ai. */
   readonly onProviderHandoff?: () => void;
   /** Synchronous observer for selected Provider HTTP 400-599 rejections; supplies no routing evidence. */
@@ -154,7 +154,9 @@ export class LLMGatewayProviderDispatcher {
     ) {
       throw new GatewayUnsupportedFeatureError('chat completions');
     }
-    const transport = this.captureTransport(provider, request, context);
+    const transport = context.capture
+      ? await this.captureTransport(provider, request, context)
+      : context.transport;
     const models = await resolveGatewaySubscriptionModels(
       provider,
       this.providerSubscriptionAccountManager,
@@ -202,7 +204,9 @@ export class LLMGatewayProviderDispatcher {
     ) {
       throw new GatewayUnsupportedFeatureError('chat completions stream');
     }
-    const transport = this.captureTransport(provider, request, context);
+    const transport = context.capture
+      ? await this.captureTransport(provider, request, context)
+      : context.transport;
     const models = await resolveGatewaySubscriptionModels(
       provider,
       this.providerSubscriptionAccountManager,
@@ -243,7 +247,9 @@ export class LLMGatewayProviderDispatcher {
   ): Promise<OpenAICompatibleResponsesResponse> {
     assertResponsesRequestAdmission(request, false);
     this.assertConfiguredModel(provider, request.model);
-    const transport = this.captureTransport(provider, request, context);
+    const transport = context.capture
+      ? await this.captureTransport(provider, request, context)
+      : context.transport;
     const models = await resolveGatewaySubscriptionModels(
       provider,
       this.providerSubscriptionAccountManager,
@@ -289,7 +295,9 @@ export class LLMGatewayProviderDispatcher {
   ): Promise<ReadableStream<Uint8Array>> {
     assertResponsesRequestAdmission(request, true);
     this.assertConfiguredModel(provider, request.model);
-    const transport = this.captureTransport(provider, request, context);
+    const transport = context.capture
+      ? await this.captureTransport(provider, request, context)
+      : context.transport;
     const models = await resolveGatewaySubscriptionModels(
       provider,
       this.providerSubscriptionAccountManager,
@@ -342,21 +350,20 @@ export class LLMGatewayProviderDispatcher {
     provider: ResolvedLLMProviderConfig,
     request: OpenAICompatibleChatCompletionRequest | OpenAICompatibleResponsesRequest,
     context: LLMGatewayDispatchContext
-  ): LLMGatewayTransportContext | undefined {
+  ): LLMGatewayTransportContext | undefined | Promise<LLMGatewayTransportContext> {
     if (!context.capture) return context.transport;
     const capture = new ModelCapture(
       context.capture,
       provider.apiKey ? [provider.apiKey] : [],
       provider.id
     );
-    capture.request(request);
-    return {
+    return capture.request(request).then(() => ({
       ...context.transport,
-      onModelEvent: (event) => {
-        capture.event(event);
-        context.transport?.onModelEvent?.(event);
+      onModelEvent: async (event) => {
+        await capture.event(event);
+        if (context.transport?.onModelEvent) await context.transport.onModelEvent(event);
       },
-    };
+    }));
   }
 
   private recordUsage(
