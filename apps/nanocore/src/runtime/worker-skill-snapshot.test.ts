@@ -284,7 +284,7 @@ describe('exact retained Worker Skill delivery', () => {
       const failure =
         tamper === 'missing snapshot' ? CatalogContentUnavailableError : CatalogIntegrityError;
       if (boundary === 'aep') expect(() => resolvePackage()).toThrow(failure);
-      else await expect(await prepare()).rejects.toBeInstanceOf(failure);
+      else await expect(prepare()).rejects.toBeInstanceOf(failure);
     });
   });
 
@@ -311,7 +311,7 @@ describe('exact retained Worker Skill delivery', () => {
     else if (claim === 'version') skill.version = 'invented-version';
     else if (claim === 'source') skill.sourceRef = 'invented-source';
     else skill.id = 'unavailable-entry';
-    await expect(await prepare(candidate)).rejects.toThrow(
+    await expect(prepare(candidate)).rejects.toThrow(
       claim === 'digest' || claim === 'entry' ? CatalogNotFoundError : CatalogIntegrityError
     );
   });
@@ -324,7 +324,7 @@ describe('exact retained Worker Skill delivery', () => {
       expectedRevision: first.catalog.revision,
     });
     expect(() => resolvePackage()).toThrow();
-    await expect(await prepare()).rejects.toThrow(CatalogNotFoundError);
+    await expect(prepare()).rejects.toThrow(CatalogNotFoundError);
   });
 
   it.each([
@@ -379,7 +379,7 @@ describe('exact retained Worker Skill delivery', () => {
     });
     syncBuiltinESMExports();
     if (boundary === 'aep') expect(() => resolvePackage()).toThrow(failure);
-    else await expect(await prepare()).rejects.toThrow(failure);
+    else await expect(prepare()).rejects.toThrow(failure);
     expect(changed).toBe(true);
   });
 
@@ -399,7 +399,7 @@ describe('exact retained Worker Skill delivery', () => {
         },
       },
     });
-    await expect(await prepare()).rejects.toThrow(CatalogNotFoundError);
+    await expect(prepare()).rejects.toThrow(CatalogNotFoundError);
   });
 
   it.each([
@@ -453,7 +453,7 @@ describe('exact retained Worker Skill delivery', () => {
     syncBuiltinESMExports();
     if (boundary === 'aep')
       expect(() => resolvePackage(selectedSetup)).toThrow(CatalogNotFoundError);
-    else await expect(await prepare()).rejects.toThrow(CatalogNotFoundError);
+    else await expect(prepare()).rejects.toThrow(CatalogNotFoundError);
     expect(changed).toBe(true);
   });
 
@@ -507,7 +507,7 @@ describe('exact retained Worker Skill delivery', () => {
       },
     });
     expect(() => resolvePackage()).toThrow(CatalogContentUnavailableError);
-    await expect(await prepare()).rejects.toThrow(CatalogContentUnavailableError);
+    await expect(prepare()).rejects.toThrow(CatalogContentUnavailableError);
   });
 
   it('refuses corrupt launch before any Sandbox backend call', async () => {
