@@ -30,10 +30,7 @@ import {
 } from '../internal-agents/internal-agent-loop.js';
 import { readInternalContextEvidence } from '../internal-agents/internal-context-evidence.js';
 import { resolveInternalRoleProfile } from '../internal-agents/profile-resolver.js';
-import {
-  redactInternalAgentDiagnosticValue,
-  redactInternalAgentText,
-} from '../internal-agents/redaction.js';
+import { redactInternalAgentText } from '../internal-agents/redaction.js';
 import {
   internalContextFailure,
   prepareInternalAgentContext,
@@ -813,14 +810,14 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
                     : 'in_progress',
                 tool: call.name,
                 server: null,
+                // Preserve authored fields; diagnostic-key filtering would erase numeric token limits.
                 arguments:
                   typeof call.arguments === 'object' &&
                   call.arguments !== null &&
                   !Array.isArray(call.arguments)
-                    ? (redactInternalAgentDiagnosticValue(call.arguments) as Record<
-                        string,
-                        unknown
-                      >)
+                    ? (JSON.parse(
+                        redactInternalAgentText(JSON.stringify(call.arguments))
+                      ) as Record<string, unknown>)
                     : null,
                 result:
                   result?.role === 'tool'
