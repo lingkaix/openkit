@@ -1548,18 +1548,28 @@ describe('quick chat app API', () => {
         });
 
         const usage = workspaceDb.sqlite
-          .prepare('SELECT * FROM usage_records WHERE capability_call_id = ?')
-          .get(call?.call_id) as Record<string, unknown> | undefined;
+          .prepare('SELECT * FROM usage_records WHERE capability_call_id = ? ORDER BY source')
+          .all(call?.call_id) as Array<Record<string, unknown>>;
 
-        expect(usage).toMatchObject({
-          request_id: null,
-          thread_id: thread.id,
-          turn_id: parsed.turn.id,
-          category: 'llm',
-          quantity: 7,
-          unit: 'tokens',
-          workspace_id: workspace.id,
-        });
+        expect(usage).toEqual(
+          [
+            ['input', 3],
+            ['output', 4],
+          ].map(([component, quantity]) =>
+            expect.objectContaining({
+              capability_call_id: call?.call_id,
+              request_id: null,
+              thread_id: thread.id,
+              turn_id: parsed.turn.id,
+              category: 'llm',
+              quantity,
+              source: `llm-gateway-adapter-reported:${component}`,
+              unit: 'tokens',
+              workspace_id: workspace.id,
+            })
+          )
+        );
+        expect(usage.reduce((total, record) => total + Number(record.quantity), 0)).toBe(7);
         expect(
           workspaceDb.sqlite
             .prepare('SELECT * FROM audit_events WHERE capability_call_id = ?')
@@ -3139,23 +3149,30 @@ describe('quick chat app API', () => {
       thread_id: fixture.selectors.threadId,
       turn_id: body.turn.id,
     });
-    expect(
-      workspaceDb.sqlite
-        .prepare('SELECT * FROM usage_records WHERE capability_call_id = ?')
-        .all(call.call_id)
-    ).toEqual([
-      expect.objectContaining({
-        category: 'llm',
-        model_id: 'quick-chat',
-        provider_ref: 'ollama',
-        quantity: 12,
-        unit: 'tokens',
-        request_id: null,
-        workspace_id: fixture.selectors.workspaceId,
-        thread_id: fixture.selectors.threadId,
-        turn_id: body.turn.id,
-      }),
-    ]);
+    const usage = workspaceDb.sqlite
+      .prepare('SELECT * FROM usage_records WHERE capability_call_id = ? ORDER BY source')
+      .all(call.call_id) as Array<Record<string, unknown>>;
+    expect(usage).toEqual(
+      [
+        ['input', 7],
+        ['output', 5],
+      ].map(([component, quantity]) =>
+        expect.objectContaining({
+          capability_call_id: call.call_id,
+          category: 'llm',
+          model_id: 'quick-chat',
+          provider_ref: 'ollama',
+          quantity,
+          source: `llm-gateway-adapter-reported:${component}`,
+          unit: 'tokens',
+          request_id: null,
+          workspace_id: fixture.selectors.workspaceId,
+          thread_id: fixture.selectors.threadId,
+          turn_id: body.turn.id,
+        })
+      )
+    );
+    expect(usage.reduce((total, record) => total + Number(record.quantity), 0)).toBe(12);
     expect(
       workspaceDb.sqlite
         .prepare(
@@ -3171,6 +3188,11 @@ describe('quick chat app API', () => {
     expect(
       workspaceDb.sqlite.prepare('SELECT COUNT(*) AS count FROM capability_calls').get()
     ).toEqual({ count: 1 });
+    expect(
+      workspaceDb.sqlite
+        .prepare('SELECT * FROM usage_records WHERE capability_call_id = ? ORDER BY source')
+        .all(call.call_id)
+    ).toEqual(usage);
   });
 
   it('refuses an unavailable Assistant model before Provider or Turn admission', async () => {

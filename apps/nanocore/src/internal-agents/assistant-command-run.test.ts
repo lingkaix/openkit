@@ -449,18 +449,27 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
       operation: 'quick_chat',
     });
     const records = listWorkspaceUsageRecords(f.workspaceDb, f.workspaceId);
-    expect(records).toHaveLength(1);
-    expect(records[0]).toMatchObject({
-      workspaceId: f.workspaceId,
-      responsibleUserId: SKILL_READER_ID,
-      requestId: null,
-      threadId: f.threadId,
-      turnId: f.turn.id,
-      providerRef: 'provider',
-      capabilityCallId: calls[0]!.id,
-      quantity: 20,
-      unit: 'tokens',
-    });
+    expect(records).toHaveLength(2);
+    expect([...records].sort((a, b) => (a.source ?? '').localeCompare(b.source ?? ''))).toEqual(
+      [
+        ['input', 17],
+        ['output', 3],
+      ].map(([component, quantity]) =>
+        expect.objectContaining({
+          workspaceId: f.workspaceId,
+          responsibleUserId: SKILL_READER_ID,
+          requestId: null,
+          threadId: f.threadId,
+          turnId: f.turn.id,
+          providerRef: 'provider',
+          capabilityCallId: calls[0]!.id,
+          quantity,
+          source: `llm-gateway-adapter-reported:${component}`,
+          unit: 'tokens',
+        })
+      )
+    );
+    expect(records.reduce((total, record) => total + record.quantity, 0)).toBe(20);
     expect(
       f.workspaceDb.sqlite
         .prepare('SELECT * FROM audit_events WHERE capability_call_id = ?')
@@ -638,8 +647,34 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
       ).toEqual({ request_id: requestId });
     }
     const usage = listWorkspaceUsageRecords(f.workspaceDb, f.workspaceId);
-    expect(usage).toHaveLength(summaryCalls + 1);
-    expect(usage.every((record) => record.quantity === 10 && record.requestId === null)).toBe(true);
+    expect(usage).toHaveLength((summaryCalls + 1) * 2);
+    expect(usage.every((record) => record.requestId === null)).toBe(true);
+    for (const call of calls) {
+      const callUsage = usage
+        .filter((record) => record.capabilityCallId === call.id)
+        .sort((a, b) => (a.source ?? '').localeCompare(b.source ?? ''));
+      expect(callUsage).toEqual(
+        [
+          ['input', 7],
+          ['output', 3],
+        ].map(([component, quantity]) =>
+          expect.objectContaining({
+            capabilityCallId: call.id,
+            requestId: null,
+            workspaceId: f.workspaceId,
+            threadId: f.threadId,
+            turnId: f.turn.id,
+            quantity,
+            source: `llm-gateway-adapter-reported:${component}`,
+            unit: 'tokens',
+          })
+        )
+      );
+      expect(callUsage.reduce((total, record) => total + record.quantity, 0)).toBe(10);
+    }
+    expect(usage.reduce((total, record) => total + record.quantity, 0)).toBe(
+      (summaryCalls + 1) * 10
+    );
     expect(
       f.store
         .listThreadItems(f.workspaceId, f.threadId)
@@ -778,8 +813,23 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
     expect(calls).toHaveLength(2);
     expect(new Set(calls.map((call) => call.id)).size).toBe(2);
     const records = listWorkspaceUsageRecords(f.workspaceDb, f.workspaceId);
-    expect(records).toHaveLength(2);
-    expect(records.map((record) => record.quantity).sort((a, b) => a - b)).toEqual([12, 17]);
+    expect(records).toHaveLength(4);
+    const usageByCall = calls.map((call) =>
+      records
+        .filter((record) => record.capabilityCallId === call.id)
+        .sort((a, b) => (a.source ?? '').localeCompare(b.source ?? ''))
+    );
+    expect(
+      usageByCall
+        .map((rows) => rows.reduce((total, record) => total + record.quantity, 0))
+        .sort((a, b) => a - b)
+    ).toEqual([12, 17]);
+    expect(
+      usageByCall.map((rows) => rows.map((record) => record.quantity)).sort((a, b) => a[0]! - b[0]!)
+    ).toEqual([
+      [9, 3],
+      [13, 4],
+    ]);
     for (const call of calls) {
       expect(call).toMatchObject({
         requestId: null,
@@ -788,16 +838,25 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
         threadId: f.threadId,
         turnId: f.turn.id,
       });
-      expect(records.filter((record) => record.capabilityCallId === call.id)).toEqual([
-        expect.objectContaining({
-          requestId: null,
-          responsibleUserId: SKILL_READER_ID,
-          workspaceId: f.workspaceId,
-          threadId: f.threadId,
-          turnId: f.turn.id,
-          providerRef: 'provider',
-        }),
-      ]);
+      expect(
+        records
+          .filter((record) => record.capabilityCallId === call.id)
+          .sort((a, b) => (a.source ?? '').localeCompare(b.source ?? ''))
+      ).toEqual(
+        ['input', 'output'].map((component) =>
+          expect.objectContaining({
+            capabilityCallId: call.id,
+            requestId: null,
+            responsibleUserId: SKILL_READER_ID,
+            workspaceId: f.workspaceId,
+            threadId: f.threadId,
+            turnId: f.turn.id,
+            providerRef: 'provider',
+            source: `llm-gateway-adapter-reported:${component}`,
+            unit: 'tokens',
+          })
+        )
+      );
       expect(
         f.workspaceDb.sqlite
           .prepare('SELECT * FROM audit_events WHERE capability_call_id = ?')

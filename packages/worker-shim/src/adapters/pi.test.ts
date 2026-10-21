@@ -3510,3 +3510,138 @@ it('s4: reports an effective native Extension override instead of the requested 
   expect(result.diagnostics?.omittedModalities).toBe('pdf');
   expect(result.diagnostics?.stderr).toContain('S4-NATIVE-INPUT:["text","image"]');
 }, 180000);
+
+// RET Native Transcripts And Runtime Logs: the exact native session remains authoritative across resume.
+it(
+  'RET E6 retains first-Turn and resumed-Turn native file bytes from their own watermarks',
+  async () => {
+    const f = await fixture((_request, n) => ({ text: `E6 answer-${n}` }));
+    f.capability.bound = true;
+    const first = await f.open();
+    const received: Array<{ record: RuntimeObservation; body?: Buffer }> = [];
+    const input = turnInput(f.dirs, {
+      prompt: 'first E6 prompt',
+      turnId: 'tu_00000000-0000-7e49-8268-e35715b55d0c',
+    });
+    const runtimeCapture = {
+      ...input.runtimeCapture,
+      captureCoverage: { scope: 'task' as const, value: 'on' as const },
+      nativeLogMaxBytes: 7,
+      authoredVersion: '1.0.2',
+      emit: async (record: RuntimeObservation, body?: Uint8Array) => {
+        received.push({ record, ...(body ? { body: Buffer.from(body) } : {}) });
+      },
+    };
+    expect((await (await first.startTurn({ ...input, runtimeCapture })).settled).status).toBe(
+      'completed'
+    );
+    const handle = await first.nativeHandle();
+    expect(handle.state).toBe('ready');
+    if (handle.state !== 'ready') throw new Error('Expected the real persisted Pi session.');
+    const { path } = JSON.parse(handleText(handle.reference)) as { path: string };
+    const before = await readFile(path);
+    /** Groups actual publications by native source without parsing their body bytes. */
+    const sources = () => {
+      const result = new Map<string, Buffer[]>();
+      for (const { record, body } of received)
+        if (record.fact.kind === 'native-transcript' && body) {
+          const chunks = result.get(record.sourceRef) ?? [];
+          chunks.push(body);
+          result.set(record.sourceRef, chunks);
+        }
+      return [...result.values()].map((chunks) => Buffer.concat(chunks));
+    };
+    const firstSources = sources();
+    await first.close();
+    received.length = 0;
+    const resumed = await f.open(handle.reference);
+    const secondInput = turnInput(f.dirs, {
+      prompt: 'second E6 prompt',
+      turnId: 'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4',
+    });
+    expect(
+      (
+        await (
+          await resumed.startTurn({
+            ...secondInput,
+            runtimeCapture: { ...runtimeCapture, packageSnapshotId: 'e6-successor-package' },
+            runtimeProvenance: {
+              ...secondInput.runtimeProvenance!,
+              lineage: {
+                ...secondInput.runtimeProvenance!.lineage,
+                packageSnapshotId: 'e6-successor-package',
+              },
+            },
+          })
+        ).settled
+      ).status
+    ).toBe('completed');
+    const after = await readFile(path);
+    expect(after.subarray(0, before.length)).toEqual(before);
+    const delta = after.subarray(before.length);
+    expect(delta.length).toBeGreaterThan(0);
+    expect(f.inference.requests).toHaveLength(2);
+    expect(firstSources.some((bytes) => bytes.equals(before))).toBe(true);
+    expect(sources().some((bytes) => bytes.equals(delta))).toBe(true);
+    expect(
+      received.some(
+        ({ record }) =>
+          record.fact.kind === 'native-transcript' &&
+          record.fact.native?.preLaunchWatermark === before.length &&
+          record.fact.native.range?.start === before.length
+      )
+    ).toBe(true);
+    expect(f.inference.requests).toHaveLength(2);
+  },
+  TIMEOUT
+);
+
+it(
+  'RET E6 retains bounded actual log pipes independently of the private native channel on cancellation',
+  async () => {
+    const f = await fixture(() => ({ hang: true }));
+    const extensions = join(f.dirs.stateRoot, 'agent', 'extensions');
+    await mkdir(extensions, { recursive: true });
+    await writeFile(
+      join(extensions, 'e6-logs.ts'),
+      `export default function(pi) { pi.on('input', async () => { process.stdout.write(Buffer.from([0x61,0,0x62])); await new Promise(r => setTimeout(r, 40)); process.stderr.write(Buffer.from([0xe2,0x82,0xac,0x63,0x64,0x65])); return {action:'continue'}; }); }`
+    );
+    f.capability.bound = true;
+    const session = await f.open();
+    const received: Array<{ record: RuntimeObservation; body?: Buffer }> = [];
+    const input = turnInput(f.dirs, {
+      prompt: 'E6 cancel',
+      turnId: 'tu_00000000-0000-701a-ab45-3210b32e0cff',
+    });
+    const active = await session.startTurn({
+      ...input,
+      runtimeCapture: {
+        ...input.runtimeCapture,
+        captureCoverage: { scope: 'task', value: 'on' },
+        ...{ nativeLogMaxBytes: 7, authoredVersion: '1.0.2' },
+        emit: async (record, body) => {
+          received.push({ record, ...(body ? { body: Buffer.from(body) } : {}) });
+        },
+      },
+    });
+    await vi.waitFor(() => expect(f.inference.requests.length).toBe(1), { timeout: 20_000 });
+    await active.interrupt();
+    expect((await active.settled).status).toBe('interrupted');
+    const logs = received.filter(({ record, body }) => record.fact.kind === 'runtime-log' && body);
+    expect(Buffer.concat(logs.map(({ body }) => body!))).toEqual(
+      Buffer.from([0x61, 0, 0x62, 0xe2, 0x82, 0xac, 0x63])
+    );
+    expect(logs.map(({ record }) => record.fact.native?.logSource)).toContain('stdout-log');
+    expect(logs.map(({ record }) => record.fact.native?.logSource)).toContain('stderr');
+    expect(
+      received.some(
+        ({ record }) =>
+          record.fact.kind === 'runtime-log' && record.fact.reason === 'limit-exceeded'
+      )
+    ).toBe(true);
+    expect(
+      received.some(({ record, body }) => record.fact.kind === 'native-transcript' && body)
+    ).toBe(true);
+  },
+  TIMEOUT
+);

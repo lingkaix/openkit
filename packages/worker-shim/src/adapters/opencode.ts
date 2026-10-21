@@ -26,6 +26,7 @@ import { LIFECYCLE_DEFAULTS, LifecycleDeadline } from '../lifecycle-deadline.js'
 import { nativeStartupAdmission } from '../native-startup.js';
 import { validateTurnReasoningEffort } from '../reasoning-effort.js';
 import {
+  NativeRuntimeCapture,
   RuntimeCaptureStoppedError,
   type RuntimeFact,
   RuntimeSemanticCapture,
@@ -254,6 +255,9 @@ async function supervise(
     JSON.stringify(serverConfig(directories.pluginDir, directories.skillsDir))
   );
 
+  let activeNative: NativeRuntimeCapture | null = null;
+  let nativeSource = '';
+  let nativeOrigin: string | null = null;
   let stdout = '';
   let stderr = '';
   const stdoutDecoder = new StringDecoder('utf8');
@@ -310,17 +314,35 @@ async function supervise(
     spawnError = error;
   });
   child.stdout?.on('data', (chunk: Buffer) => {
+    void activeNative
+      ?.write(`${nativeSource}:stdout`, chunk, {
+        harness: 'opencode',
+        format: 'application/octet-stream',
+        runtimeOriginRef: nativeOrigin,
+        logSource: 'stdout-log',
+      })
+      .catch(() => undefined);
     stdout = appendBounded(stdout, stdoutDecoder.write(chunk));
   });
   child.stderr?.on('data', (chunk: Buffer) => {
+    void activeNative
+      ?.write(`${nativeSource}:stderr`, chunk, {
+        harness: 'opencode',
+        format: 'application/octet-stream',
+        runtimeOriginRef: nativeOrigin,
+        logSource: 'stderr',
+      })
+      .catch(() => undefined);
     stderr = appendBounded(stderr, stderrDecoder.write(chunk));
   });
   child.stdout?.once('end', () => {
+    activeNative?.end(`${nativeSource}:stdout`);
     drainAttempted = true;
     stdoutEnded = true;
     stdout = appendBounded(stdout, stdoutDecoder.end());
   });
   child.stderr?.once('end', () => {
+    activeNative?.end(`${nativeSource}:stderr`);
     drainAttempted = true;
     stderrEnded = true;
     stderr = appendBounded(stderr, stderrDecoder.end());
@@ -659,6 +681,29 @@ async function supervise(
           `${sessionId}:${turn.turnId}`
         );
         const originRef = runtimeOriginRef(turn.runtimeCapture.packageSnapshotId, sessionId);
+        const native = new NativeRuntimeCapture({
+          ...turn.runtimeCapture,
+          emit: (record, body) =>
+            captureAbandoned ? Promise.resolve() : turn.runtimeCapture.emit(record, body),
+          credentialValues: [
+            ...turn.runtimeCapture.credentialValues,
+            ...secretValues,
+            basicAuth(password),
+          ],
+        });
+        activeNative = native;
+        nativeSource = sourceRef;
+        nativeOrigin = originRef;
+        const children = new OpenCodeChildCapture(
+          client,
+          sessionId,
+          turn.runtimeCapture.packageSnapshotId,
+          sourceRef,
+          capture,
+          native,
+          () => captureAbandoned,
+          turn.runtimeCapture.captureCoverage.value === 'on'
+        );
         const prepare = async (): Promise<WorkerResidentTurn | undefined> => {
           turnState = 'active';
           const setupDeadline = new LifecycleDeadline(
@@ -809,6 +854,11 @@ async function supervise(
             if (publishedBoundary) assertPublishedBoundary(publishedBoundary, previous);
             before = new Set(previous.map((message) => message.id));
             await nativeDeadline(
+              'child source preparation',
+              children.prepare(rpc),
+              setupDeadline.workRemainingMs()
+            );
+            await nativeDeadline(
               'structural preparation',
               (async () => {
                 await capture.emit(sourceRef, {
@@ -913,14 +963,34 @@ async function supervise(
           } else {
             refused = await prepare();
           }
-          if (refused) return refused;
+          if (refused) {
+            native.abandon();
+            if (activeNative === native) activeNative = null;
+            return refused;
+          }
         } catch (error) {
+          native.abandon();
+          if (activeNative === native) activeNative = null;
           // Queued cancellation has made no native request and needs no failed-start drain.
           turnState = 'idle';
           throw error;
         }
         let interruptDeadline: LifecycleDeadline | undefined;
         let nativePhase: RuntimeFact['phase'] = 'unknown';
+        const rawSnapshots = new Map<string, string>();
+        const observeNative = async (row: unknown): Promise<void> => {
+          if (captureAbandoned) return;
+          const id = row && typeof row === 'object' && 'id' in row ? String(row.id) : '';
+          if (before.has(id)) return;
+          const snapshot = JSON.stringify(row);
+          if (rawSnapshots.get(id) === snapshot) return;
+          await native.write(`${sourceRef}:native`, Buffer.from(snapshot), {
+            harness: 'opencode',
+            format: 'opencode-message-json',
+            runtimeOriginRef: originRef,
+          });
+          rawSnapshots.set(id, snapshot);
+        };
         const capturedSnapshots = new Map<string, string>();
         const observeMessages = async (messages: NativeMessage[]): Promise<void> => {
           if (captureAbandoned) return;
@@ -978,6 +1048,8 @@ async function supervise(
               lostNative,
             ]).finally(() => nativeExit.signal.removeEventListener('abort', onExit));
           },
+          nativeObserved: observeNative,
+          childrenObserved: (rpc) => children.collect(rpc),
           observed: observeMessages,
           captureStopped: (error) => ownedCaptureStop !== null && error === ownedCaptureStop,
           published: async (messages) => {
@@ -1006,6 +1078,9 @@ async function supervise(
                 runtimeOriginRef: originRef,
                 phase: nativePhase,
               });
+              await children.finish();
+              await native.finish();
+              activeNative = null;
               await capture.flushCompleted();
               if (!nativeTerminal || nativePhase === 'interrupted') await capture.interrupt();
               if (!nativeTerminal)
@@ -1070,6 +1145,10 @@ async function supervise(
             return { ...result, nativeEvidence: nativeEvidence() };
           })
           .finally(() => {
+            if (activeNative === native) {
+              native.abandon();
+              activeNative = null;
+            }
             turnState = 'idle';
           });
         settled.catch(() => undefined);
@@ -1665,7 +1744,212 @@ async function waitForToolGeneration(
   }
 }
 
+/** Reads only native-declared descendants, within the existing Turn poll and cleanup budgets. */
+class OpenCodeChildCapture {
+  private readonly parents = new Map<string, string>();
+  private readonly before = new Map<string, Set<string>>();
+  private readonly snapshots = new Map<string, string>();
+  private readonly origins = new Set<string>();
+  private available = false;
+  private failed = false;
+  private identities = 0;
+
+  public constructor(
+    private readonly client: OpenCodeClient,
+    private readonly root: string,
+    private readonly namespace: string,
+    private readonly source: string,
+    private readonly capture: RuntimeSemanticCapture,
+    private readonly native: NativeRuntimeCapture,
+    private readonly abandoned: () => boolean,
+    private readonly enabled: boolean
+  ) {}
+
+  /** Take pre-prompt identity watermarks; an unreadable baseline cannot admit later history. */
+  public async prepare(rpc: NativeRpc): Promise<void> {
+    this.available = typeof this.client.session.list === 'function';
+    if (!this.available) {
+      await this.coverage('unsupported');
+      return;
+    }
+    await this.read(true, rpc);
+    if (!this.failed) await this.coverage(this.enabled ? 'collecting' : 'off');
+  }
+
+  public async collect(rpc: NativeRpc): Promise<void> {
+    if (this.available && !this.failed && !this.abandoned()) await this.read(false, rpc);
+  }
+
+  /** End the observer, without inferring that any child execution has completed. */
+  public async finish(): Promise<void> {
+    if (this.available && !this.failed && !this.abandoned()) await this.coverage('ended');
+  }
+
+  private async coverage(
+    coverage: 'collecting' | 'off' | 'ended' | 'unsupported' | 'unavailable',
+    reason?: 'collector-failed' | 'malformed-frame' | 'limit-exceeded'
+  ): Promise<void> {
+    if (this.abandoned()) return;
+    for (const family of ['child-metadata', 'child-content'] as const)
+      await this.capture.emit(this.source, {
+        kind: 'coverage',
+        runtimeOriginRef: runtimeOriginRef(this.namespace, this.root),
+        family,
+        coverage,
+        ...(reason ? { reason } : {}),
+      });
+  }
+
+  private async gap(reason: 'collector-failed' | 'malformed-frame' | 'limit-exceeded') {
+    this.failed = true;
+    await this.coverage('unavailable', reason);
+  }
+
+  private async read(baseline: boolean, rpc: NativeRpc): Promise<void> {
+    // Bounds only this optional source traversal, never the native Turn or primary result.
+    let pages = 0;
+    const descendants = new Map<string, string>();
+    const sources = new Set(this.parents.keys());
+    const queue = [this.root];
+    for (const parent of queue) {
+      let cursor: string | undefined;
+      const cursors = new Set<string>();
+      do {
+        if (this.abandoned()) return;
+        if (++pages > 64) return this.gap('limit-exceeded');
+        let response: Awaited<ReturnType<OpenCodeClient['session']['list']>>;
+        try {
+          response = await rpc(
+            'session.list children',
+            this.client.session.list({
+              parentID: parent,
+              limit: 100,
+              order: 'asc',
+              ...(cursor ? { cursor } : {}),
+            })
+          );
+        } catch {
+          return this.gap('collector-failed');
+        }
+        if (!Array.isArray(response?.data)) return this.gap('malformed-frame');
+        for (const row of response.data) {
+          if (
+            !row ||
+            typeof row.id !== 'string' ||
+            !row.id ||
+            row.parentID !== parent ||
+            row.id === this.root ||
+            descendants.has(row.id) ||
+            (this.parents.has(row.id) && this.parents.get(row.id) !== parent)
+          )
+            return this.gap('malformed-frame');
+          sources.add(row.id);
+          if (sources.size > 32) return this.gap('limit-exceeded');
+          descendants.set(row.id, parent);
+          queue.push(row.id);
+        }
+        const next = this.nextCursor(response.cursor, cursors);
+        if (next === false) return this.gap('malformed-frame');
+        cursor = next;
+      } while (cursor);
+    }
+    // A vanished previously admitted source is a gap, not proof of a completed child.
+    for (const id of this.parents.keys())
+      if (!descendants.has(id)) return this.gap('collector-failed');
+    // Resolve the complete bounded lineage before admitting any bytes from this poll.
+    for (const [id, parent] of descendants) {
+      this.parents.set(id, parent);
+      const origin = runtimeOriginRef(this.namespace, id);
+      const source = `${this.source}:child:${runtimeRef('rts', this.namespace, id)}`;
+      if (!this.origins.has(id)) {
+        await this.capture.emit(source, {
+          kind: 'origin',
+          runtimeOriginRef: origin,
+          parentRuntimeOriginRef: runtimeOriginRef(this.namespace, parent),
+          phase: 'unknown',
+        });
+        this.origins.add(id);
+      }
+      const before = this.before.get(id) ?? new Set<string>();
+      this.before.set(id, before);
+      let cursor: string | undefined;
+      const cursors = new Set<string>();
+      const seen = new Set<string>();
+      do {
+        if (this.abandoned()) return;
+        if (++pages > 64) return this.gap('limit-exceeded');
+        let response: Awaited<ReturnType<OpenCodeClient['message']['list']>>;
+        try {
+          response = await rpc(
+            'message.list child',
+            this.client.message.list({
+              sessionID: id,
+              order: 'asc',
+              ...(cursor ? { cursor } : {}),
+            })
+          );
+        } catch {
+          return this.gap('collector-failed');
+        }
+        if (!Array.isArray(response?.data)) return this.gap('malformed-frame');
+        for (const row of response.data) {
+          // Routing identity only: retain the native SDK row before interpreting its content.
+          if (!row || typeof row.id !== 'string' || !row.id || seen.has(row.id))
+            return this.gap('malformed-frame');
+          seen.add(row.id);
+          if (seen.size > 4096) return this.gap('limit-exceeded');
+          if (baseline) {
+            if (++this.identities > 4096) return this.gap('limit-exceeded');
+            before.add(row.id);
+          } else if (!before.has(row.id)) {
+            const key = `${id}:${row.id}`;
+            const snapshot = JSON.stringify(row);
+            const digest = createHash('sha256').update(snapshot).digest('hex');
+            if (this.snapshots.get(key) === digest) continue;
+            if (!this.snapshots.has(key) && ++this.identities > 4096)
+              return this.gap('limit-exceeded');
+            await this.native.write(`${source}:native`, Buffer.from(snapshot), {
+              harness: 'opencode',
+              format: 'opencode-message-json',
+              runtimeOriginRef: origin,
+            });
+            this.snapshots.set(key, digest);
+            let message: NativeMessage;
+            try {
+              message = readMessage(row);
+            } catch {
+              await this.capture.emit(source, {
+                kind: 'coverage',
+                runtimeOriginRef: origin,
+                family: 'child-content',
+                coverage: 'unavailable',
+                reason: 'malformed-frame',
+              });
+              continue;
+            }
+            await captureOpenCodeMessage(this.capture, source, origin, this.namespace, message);
+          }
+        }
+        const next = this.nextCursor(response.cursor, cursors);
+        if (next === false) return this.gap('malformed-frame');
+        cursor = next;
+      } while (cursor);
+    }
+  }
+
+  private nextCursor(value: unknown, seen: Set<string>): string | undefined | false {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const next = (value as { next?: unknown }).next;
+    if (next === undefined || next === null) return undefined;
+    if (typeof next !== 'string' || !next || seen.has(next)) return false;
+    seen.add(next);
+    return next;
+  }
+}
+
 async function settleTurn(options: {
+  nativeObserved?: (row: unknown) => Promise<void>;
+  childrenObserved?: (rpc: NativeRpc) => Promise<void>;
   before: Set<string>;
   promptId: string;
   child: ChildProcess;
@@ -1719,16 +2003,28 @@ async function settleTurn(options: {
         break;
       }
       // Reuse the native poll owner so structural facts survive a later terminal or host loss.
-      const observed = await listMessages(options.client, options.sessionId, options.rpc);
+      const observed = await listMessages(
+        options.client,
+        options.sessionId,
+        options.rpc,
+        options.nativeObserved
+      );
       try {
         await options.observed(observed);
       } catch (error) {
         if (!options.captureStopped(error)) throw error;
       }
-      // Four read RPCs per poll must leave CPU time for twenty resident bindings to prepare.
+      await options.childrenObserved?.(options.rpc);
+      // Four primary read RPCs per poll must leave CPU time for twenty resident bindings to prepare.
       await delay(1_000);
     }
-    const all = await listMessages(options.client, options.sessionId, options.rpc);
+    const all = await listMessages(
+      options.client,
+      options.sessionId,
+      options.rpc,
+      options.nativeObserved
+    );
+    await options.childrenObserved?.(options.rpc);
     const messages = all.filter((message) => !options.before.has(message.id));
     // Correlate and freeze provenance before structural publication or capture finalization.
     const result = {
@@ -1803,7 +2099,8 @@ interface NativeMessage {
 async function listMessages(
   client: OpenCodeClient,
   sessionId: string,
-  rpc: NativeRpc
+  rpc: NativeRpc,
+  observeNative?: (row: unknown) => Promise<void>
 ): Promise<NativeMessage[]> {
   const rows: NativeMessage[] = [];
   const identities = new Set<string>();
@@ -1822,6 +2119,7 @@ async function listMessages(
       throw new Error('OpenCode message list has an unknown shape.');
     }
     for (const row of response.data) {
+      await observeNative?.(row);
       const { content, ...envelope } = row as Record<string, unknown>;
       contentBytes += nativeBytes(content);
       envelopeBytes += nativeBytes(envelope);

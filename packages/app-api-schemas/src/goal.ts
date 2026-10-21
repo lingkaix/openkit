@@ -1,8 +1,10 @@
 import {
   AccessTokenIdSchema,
   PolicyDelegationV1Schema,
+  PolicyResourceV1Schema,
   RequestIdSchema,
   ThreadIdSchema,
+  TurnIdSchema,
   UserIdSchema,
   WorkspaceIdSchema,
 } from '@openkit/protocol';
@@ -17,7 +19,93 @@ const text = z.string().trim().min(1).max(16_000);
 export const GoalDomainProposalSchema = z
   .object({
     id: PolicyDelegationV1Schema.shape.id,
-    scope: PolicyDelegationV1Schema.shape.scope,
+    scope: PolicyDelegationV1Schema.shape.scope.extend({
+      // Keep browser imports neutral; NanoCore checks exact parity with the native Policy registry.
+      actions: z
+        .array(
+          z.enum([
+            'api.call',
+            'administration.configuration.apply',
+            'approval.respond',
+            'artifact.read',
+            'artifact.write',
+            'audit.read',
+            'deployment.recover',
+            'invitation.respond',
+            'knowledge.propose',
+            'knowledge.read',
+            'knowledge.write',
+            'llm.gateway.use',
+            'membership.manage',
+            'network.egress',
+            'review.apply',
+            'runtime.launch',
+            'thread.read',
+            'tool.grant',
+            'tool.use',
+            'turn.run',
+            'vault.admin',
+            'vault.use',
+            'workspace.configure',
+            'workspace.export',
+            'workspace.leave',
+            'workspace.lifecycle',
+            'workspace.read',
+            'workspace.write',
+          ])
+        )
+        .min(1),
+      resources: z
+        .array(
+          z.union([
+            z
+              .object({
+                kind: z.literal('container'),
+                container: z.discriminatedUnion('kind', [
+                  z
+                    .object({
+                      kind: z.literal('goal'),
+                      id,
+                      owner: z
+                        .object({ kind: z.literal('workspace'), workspaceId: WorkspaceIdSchema })
+                        .strict(),
+                    })
+                    .strict(),
+                  z
+                    .object({
+                      kind: z.literal('workspace'),
+                      id: WorkspaceIdSchema,
+                      owner: z
+                        .object({ kind: z.literal('workspace'), workspaceId: WorkspaceIdSchema })
+                        .strict(),
+                    })
+                    .strict(),
+                  z
+                    .object({
+                      kind: z.literal('thread'),
+                      id: ThreadIdSchema,
+                      owner: z
+                        .object({ kind: z.literal('workspace'), workspaceId: WorkspaceIdSchema })
+                        .strict(),
+                    })
+                    .strict(),
+                  z
+                    .object({
+                      kind: z.literal('turn'),
+                      id: TurnIdSchema,
+                      owner: z
+                        .object({ kind: z.literal('workspace'), workspaceId: WorkspaceIdSchema })
+                        .strict(),
+                    })
+                    .strict(),
+                ]),
+              })
+              .strict(),
+            PolicyResourceV1Schema.options[1],
+          ])
+        )
+        .min(1),
+    }),
     lifetime: PolicyDelegationV1Schema.shape.lifetime,
   })
   .strict();

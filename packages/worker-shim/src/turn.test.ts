@@ -17,6 +17,7 @@ import { classifyDeepSeekStop, deepseekResidentAdapter } from './adapters/deepse
 import { createOpenCodeAdapter, OPENCODE_PROVIDER_ID } from './adapters/opencode.js';
 import { projectPiTurnSettlement } from './adapters/pi.js';
 import type { SandboxIntegrationClient } from './integration-client.js';
+import { emitRuntimeFact } from './runtime-capture.js';
 import { runResidentTurn } from './turn.js';
 
 const CAUSE_CANARIES = [
@@ -629,3 +630,185 @@ async function captureBoundaryResident(
         : fact.kind === 'origin' && fact.phase === 'interrupted',
   };
 }
+
+/** Runs the existing AEP reader and real observation writer; the resident records only its supplied admission. */
+async function e8Admission(bound: unknown, value: 'on' | 'off' = 'on', publishNative = false) {
+  const root = mkdtempSync(join(tmpdir(), 'ret-e8-'));
+  const lineage = {
+    workspaceId: 'ws_00000000-0000-78c8-b187-86e7b47012bf',
+    threadId: 'th_00000000-0000-7a09-9d23-e6a0be04b0de',
+    turnId: 'tu_00000000-0000-7285-81af-9881e8673872',
+    agentSessionId: 'as_00000000-0000-7cdd-bdd1-9b4637990c65',
+    packageSnapshotId: 'e8-package',
+  };
+  const packagePath = join(root, 'package.json');
+  writeFileSync(
+    packagePath,
+    JSON.stringify({
+      control: {
+        adapter: { kind: 'openkit-worker-shim', targetRuntime: 'pi' },
+        mode: 'sandbox-integration',
+        bindings: {
+          capabilities: {
+            pathPrefix: '/capabilities/',
+            tokenRef: 'runtime://openkit/capability-token',
+          },
+          inference: { pathPrefix: '/inference/', tokenRef: 'runtime://openkit/inference-token' },
+          workerControl: {
+            pathPrefix: '/worker-control/',
+            tokenRef: 'runtime://openkit/worker-control-token',
+          },
+        },
+      },
+      llm: {
+        mode: 'gateway',
+        preferredLogicalModelId: 'model',
+        routes: [
+          {
+            id: 'route',
+            model: 'model',
+            providerInstanceId: 'provider',
+            credentialVisibility: 'placeholder',
+            endpoint: { kind: 'openai-compatible', upstream: { kind: 'nanocore-gateway' } },
+          },
+        ],
+      },
+      observability: {
+        captureCoverage: { scope: 'workspace', value },
+        evidence: bound === undefined ? {} : { nativeLogMaxBytes: bound },
+      },
+      agent: { runtimeKind: 'pi', runtimeVersion: 'authored-label-not-measured' },
+      runtime: {
+        image: { kind: 'reference', ref: 'fixture:authored-tag', pullPolicy: 'never' },
+        command: { argv: ['openkit-worker-shim'], workingDirectory: root },
+      },
+      extensions: { openkit: { turnInput: 'E8 admission' } },
+      scope: lineage,
+    })
+  );
+  let capture: WorkerResidentTurnInput['runtimeCapture'] | undefined;
+  const transmitted: Array<{ event: { type: string; data: unknown } }> = [];
+  try {
+    const result = await runResidentTurn({
+      adapterId: 'pi',
+      packagePath,
+      lineage,
+      sessionDir: join(root, 'capture'),
+      turnDirectory: join(root, 'turn'),
+      credentialValues: [],
+      environment: {},
+      nativeEnvironment: null,
+      runtimeEnvironmentNames: new Set(),
+      signal: new AbortController().signal,
+      tokens: {
+        capabilityToken: 'capability-value',
+        controlToken: 'control-value',
+        inferenceToken: 'inference-value',
+      },
+      onStarted() {},
+      onTurnBarrier() {},
+      integration: {
+        ready: Promise.resolve(),
+        bindTurnRouteTokens() {},
+        clearTurnRouteTokens() {},
+        async drainTurn() {
+          return 0;
+        },
+      } as unknown as SandboxIntegrationClient,
+      fetch: async (url, init) => {
+        if (String(url).endsWith('/events/append'))
+          transmitted.push(JSON.parse(String(init?.body)).record);
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ accepted: true, diagnostics: [], schemaVersion: 2 }),
+        };
+      },
+      resident: {
+        exited: new Promise<void>(() => undefined),
+        childState: () => 'running',
+        close: async () => undefined,
+        nativeHandle: async () => ({ state: 'pending' }),
+        startTurn: async (input) => {
+          capture = input.runtimeCapture;
+          if (publishNative)
+            await emitRuntimeFact(
+              input.runtimeCapture,
+              { sourceRef: 'e8-native', sourceSequence: 0 },
+              {
+                kind: 'runtime-log',
+                runtimeOriginRef: null,
+                coverage: 'collecting',
+                native: {
+                  harness: 'pi',
+                  authoredVersion: 'authored-label-not-measured',
+                  measuredVersion: null,
+                  imageDigest: null,
+                  format: 'application/octet-stream',
+                  preLaunchWatermark: 0,
+                  range: { start: 0, end: 2 },
+                  observedBytes: 2,
+                  retainedBytes: 2,
+                  omittedBytes: 0,
+                  sourceEnded: false,
+                  logSource: 'stderr',
+                },
+              },
+              {
+                bytes: Buffer.from('ok'),
+                mediaType: 'application/octet-stream',
+                boundary: 'native-content-v1',
+              } as Parameters<typeof emitRuntimeFact>[3]
+            );
+          return {
+            interrupt: async () => undefined,
+            settled: Promise.resolve({
+              assistantText: null,
+              status: 'completed',
+              stopReason: 'completed',
+            }),
+          };
+        },
+      },
+    });
+    return { result, capture, transmitted };
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// RET Native Transcripts And Runtime Logs: pass the selected immutable bound and authored provenance, never measured identity.
+it('RET E8 supplies the selected AEP bound and authored version without manufacturing measured identity', async () => {
+  const f = await e8Admission(7);
+  expect(f.result).toEqual({ status: 'completed' });
+  expect(f.capture).toMatchObject({
+    nativeLogMaxBytes: 7,
+    authoredVersion: 'authored-label-not-measured',
+  });
+  expect(f.capture?.captureCoverage).toEqual({ scope: 'workspace', value: 'on' });
+  expect((f.capture as unknown as { measuredVersion?: unknown }).measuredVersion ?? null).toBe(
+    null
+  );
+  expect((f.capture as unknown as { imageDigest?: unknown }).imageDigest ?? null).toBe(null);
+  const off = await e8Admission(7, 'off');
+  expect(off.capture?.captureCoverage).toEqual({ scope: 'workspace', value: 'off' });
+  expect(off.capture).toMatchObject({ nativeLogMaxBytes: 7 });
+});
+
+// RET Native Transcripts And Runtime Logs: missing or invalid historical authority refuses native content.
+it.each([
+  undefined,
+  0,
+])('RET E8 refuses native publication for selected bound %s', async (bound) => {
+  const f = await e8Admission(bound, 'on', true);
+  expect(
+    f.transmitted.filter((record) => record.event.type === 'observation.content.chunk')
+  ).toHaveLength(0);
+  expect(
+    f.transmitted.some(
+      (record) =>
+        record.event.type === 'observation.recorded' &&
+        (record.event.data as { content: { state: string } }).content.state === 'unavailable'
+    )
+  ).toBe(true);
+});
