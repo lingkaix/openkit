@@ -23,6 +23,7 @@ import {
   readNativeProductEntries,
   readNativeTurnHistory,
 } from '../storage/workspace-file-records.js';
+import { createThread as createThreadCommand } from '../thread-routes.js';
 import { FsStore } from './store.js';
 
 const roots: string[] = [];
@@ -81,6 +82,117 @@ function message(
 }
 
 describe('native Store authority and immutable closure', () => {
+  it('acknowledges independent concurrent shared Thread creations without losing parent metadata', async () => {
+    const f = fixture();
+    const workspace = await f.store.createWorkspace('Concurrent parent metadata');
+    const before = structuredClone(f.store.getWorkspace(workspace.id));
+    const commands = ['First independent Thread', 'Second independent Thread'].map((name) => ({
+      workspaceId: workspace.id,
+      requestId: randomUUID(),
+      name,
+      visibility: 'workspace' as const,
+    }));
+    const dependencies: Parameters<typeof createThreadCommand>[1] = {
+      store: f.store,
+      inflightCommands: new WeakMap(),
+    };
+    const startedAt = Date.now();
+    const outcomes = await Promise.allSettled(
+      commands.map((command) => createThreadCommand(command, dependencies, actor.id))
+    );
+    const acknowledgedAt = Date.now();
+    expect(outcomes).toMatchObject([{ status: 'fulfilled' }, { status: 'fulfilled' }]);
+    const threads = outcomes.map((outcome) => {
+      if (outcome.status === 'rejected') throw outcome.reason;
+      return outcome.value;
+    });
+    expect(new Set(threads.map((thread) => thread.id)).size).toBe(2);
+    for (const [index, thread] of threads.entries()) {
+      expect(thread).toMatchObject({
+        owner: { kind: 'workspace', workspaceId: workspace.id },
+        visibility: 'workspace',
+        name: commands[index]!.name,
+        preview: commands[index]!.name,
+      });
+      expect(Date.parse(thread.createdAt)).toBeGreaterThanOrEqual(startedAt);
+      expect(Date.parse(thread.updatedAt)).toBeGreaterThanOrEqual(Date.parse(thread.createdAt));
+      expect(Date.parse(thread.updatedAt)).toBeLessThanOrEqual(acknowledgedAt);
+      expect(f.store.getThread(workspace.id, thread.id)).toEqual(thread);
+    }
+    const ids = threads.map((thread) => thread.id).sort();
+    expect(
+      f.store
+        .listThreads(workspace.id)
+        .map((thread) => thread.id)
+        .sort()
+    ).toEqual(ids);
+    const after = structuredClone(f.store.getWorkspace(workspace.id));
+    expect({ ...after, counts: before.counts, updatedAt: before.updatedAt }).toEqual(before);
+    expect(after.counts).toEqual({ ...before.counts, threadCount: before.counts.threadCount + 2 });
+    expect(Date.parse(after.updatedAt)).toBeGreaterThanOrEqual(
+      Math.max(
+        Date.parse(before.updatedAt),
+        ...threads.map((thread) => Date.parse(thread.createdAt))
+      )
+    );
+    expect(Date.parse(after.updatedAt)).toBeLessThanOrEqual(acknowledgedAt);
+
+    await shutdownControlStoreWorkerClient();
+    const reopened = new FsStore({ dataRoot: f.root });
+    expect(reopened.getWorkspace(workspace.id)).toEqual(after);
+    for (const thread of threads)
+      expect(reopened.getThread(workspace.id, thread.id)).toEqual(thread);
+    const replayDependencies: Parameters<typeof createThreadCommand>[1] = {
+      store: reopened,
+      inflightCommands: new WeakMap(),
+    };
+    expect(
+      await Promise.all(
+        commands.map((command) => createThreadCommand(command, replayDependencies, actor.id))
+      )
+    ).toEqual(threads);
+    const scope = nativeProductScope(f.root, { kind: 'workspace', workspaceId: workspace.id });
+    const reader = openControlStoreProductReadHandle(scope.path, scope.owner);
+    try {
+      expect(reader.sqlite.prepare('SELECT id FROM control_threads ORDER BY id').all()).toEqual(
+        ids.map((id) => ({ id }))
+      );
+      expect(
+        reader.sqlite
+          .prepare(
+            "SELECT request_id, response_id FROM idempotency_requests WHERE command_name = 'thread.create' ORDER BY request_id"
+          )
+          .all()
+      ).toEqual(
+        commands
+          .map((command, index) => ({
+            request_id: command.requestId,
+            response_id: threads[index]!.id,
+          }))
+          .sort((left, right) => left.request_id.localeCompare(right.request_id))
+      );
+      expect(
+        reader.sqlite
+          .prepare(
+            "SELECT request_id, thread_id, resource, outcome FROM audit_events WHERE action = 'thread.create' ORDER BY request_id"
+          )
+          .all()
+      ).toEqual(
+        commands
+          .map((command, index) => ({
+            request_id: command.requestId,
+            thread_id: threads[index]!.id,
+            resource: `thread:${threads[index]!.id}`,
+            outcome: 'succeeded',
+          }))
+          .sort((left, right) => left.request_id.localeCompare(right.request_id))
+      );
+    } finally {
+      reader.close();
+    }
+    expect(reopened.getWorkspace(workspace.id)).toEqual(after);
+  });
+
   it('publishes a service terminal tuple only after commit and retries a real SQL rollback', async () => {
     const f = await workspaceFixture();
     const item = message(f.turn, 'Terminal result');

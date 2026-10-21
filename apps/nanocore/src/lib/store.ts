@@ -4305,18 +4305,9 @@ export class FsStore {
     });
     if (this.dataRoot) {
       const scope = this.nativeScope({ kind: 'workspace', workspaceId });
-      const previous = readNativeProduct(scope, 'workspace', workspaceId);
-      if (!previous) throw new StoreRecordNotFoundError(`Workspace not found: ${workspaceId}`);
       const committedId = await this.writeNativeProducts(
         scope,
-        [
-          {
-            kind: 'workspace',
-            expectedRevision: previous.revision,
-            record: writeRetainedV1({ ...previous.record, updatedAt: thread.createdAt }),
-          },
-          { kind: 'thread', expectedRevision: 0, record: writeRetainedV1(thread) },
-        ],
+        [{ kind: 'thread', expectedRevision: 0, record: writeRetainedV1(thread) }],
         [],
         admission
       );

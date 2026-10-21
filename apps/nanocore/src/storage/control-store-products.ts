@@ -17,6 +17,7 @@ import {
   KnowledgeBaseIdSchema,
   RequestIdSchema,
   readRetainedV1,
+  writeRetainedV1,
 } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { z } from 'zod';
@@ -338,6 +339,29 @@ function applyProducts(
   terminalTurnId?: string
 ): void {
   assertControlProductWriter(sqlite);
+  if (owner.kind === 'workspace' && !mutations.some((input) => input.kind === 'workspace')) {
+    const createdThreads = mutations
+      .filter((input) => input.kind === 'thread')
+      .map((input) => decode('thread', input.record, owner))
+      .filter((record) => !readProduct(sqlite, owner, 'thread', record.id as string));
+    if (createdThreads.length > 0) {
+      const workspace = readProduct(sqlite, owner, 'workspace', owner.workspaceId);
+      if (!workspace) throw new ControlProductPreconditionError();
+      // Independent Thread admissions derive their incidental parent touch inside the deciding transaction.
+      const updatedAt = createdThreads.reduce(
+        (latest, thread) => (String(thread.createdAt) > latest ? String(thread.createdAt) : latest),
+        String(workspace.record.updatedAt)
+      );
+      mutations = [
+        {
+          kind: 'workspace',
+          expectedRevision: workspace.revision,
+          record: writeRetainedV1({ ...workspace.record, updatedAt }),
+        },
+        ...mutations,
+      ];
+    }
+  }
   const terminalBefore = terminalTurnId
     ? readProduct(sqlite, owner, 'turn', terminalTurnId)
     : undefined;
@@ -1732,7 +1756,7 @@ function applyTerminalExecution(
     terminalCause: root.terminal_cause ?? String(turn.status),
     exclusionRefs,
   };
-  // Workspace qualification requires RD-B's owner-qualified primitive and actual Workspace0012, not a cast or alternate SQL writer.
+  // Workspace qualification requires the owner-qualified journal primitive and Workspace0012, not a cast or alternate SQL writer.
   settleExecutionJournalStep(db, settled);
   const after = db.sqlite
     .prepare('SELECT revision FROM control_executions WHERE id=?')
