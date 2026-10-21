@@ -1,3 +1,4 @@
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 // openkit-test-platform: posix
 
 // Snapshot containment fixtures require POSIX symbolic-link behavior.
@@ -34,9 +35,10 @@ import {
 import { type AgentToolResult, runInternalAgentLoop } from './internal-agent-loop.js';
 
 const fixtures: Array<{ coreDb: CoreDb; dataRoot: string }> = [];
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
   syncBuiltinESMExports();
+  await shutdownControlStoreWorkerClient();
   for (const { coreDb, dataRoot } of fixtures.splice(0)) {
     coreDb.sqlite.close();
     fs.rmSync(dataRoot, { recursive: true, force: true });

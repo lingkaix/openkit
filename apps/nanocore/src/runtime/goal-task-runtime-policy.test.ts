@@ -32,6 +32,7 @@ import {
 import { EMPTY_POLICY_DOCUMENT, policyDigest } from '../policy/statements.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -77,6 +78,7 @@ import type { WorkerMcpGateway } from './worker-mcp-gateway.js';
 const cleanup: (() => void | Promise<void>)[] = [];
 afterEach(async () => {
   await closeRetrievalServices();
+  await shutdownControlStoreWorkerClient();
   for (const close of cleanup.splice(0).reverse()) await close();
 });
 

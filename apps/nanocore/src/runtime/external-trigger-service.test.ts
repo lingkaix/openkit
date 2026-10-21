@@ -11,6 +11,7 @@ import { FsStore } from '../lib/store.js';
 import { createOperationInvocation } from '../operation-composition.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { findExternalTriggerAdmission } from '../storage/external-trigger-admissions.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
@@ -44,6 +45,7 @@ afterEach(async () => {
   await new Promise<void>((resolve) => setImmediate(resolve));
   vi.restoreAllMocks();
   vi.useRealTimers();
+  await shutdownControlStoreWorkerClient();
   for (const { root, db } of owned.splice(0)) {
     db.sqlite.close();
     rmSync(root, { recursive: true, force: true });

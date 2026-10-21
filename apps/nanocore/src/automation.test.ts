@@ -6,6 +6,7 @@ import { ensureLocalUser } from './auth/identity.js';
 import { createAutomationOperationImplementations } from './automation-operations.js';
 import { AutomationStore } from './lib/automation-store.js';
 import { FsStore } from './lib/store.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -59,7 +60,8 @@ async function fixture() {
     },
   };
 }
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const { root, db } of owned.splice(0)) {
     db.sqlite.close();
     rmSync(root, { recursive: true, force: true });

@@ -18,6 +18,7 @@ import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { FsStore } from './lib/store.js';
 import { createOperationInvocation } from './operation-composition.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { verifyWorkspaceExportTree } from './storage/workspace-export.js';
@@ -82,7 +83,7 @@ it('sends unexpected lifecycle admission-read failures to the HTTP error handler
     expect(listServerAuditEvents(f.coreDb)).toEqual(beforeAudit);
   } finally {
     read.mockRestore();
-    f.close();
+    await f.close();
   }
 });
 
@@ -152,7 +153,7 @@ it('allows the administrator recovery-state read through a closed mutation gate 
     );
     expect(listServerAuditEvents(f.coreDb)).toEqual(beforeAudit);
   } finally {
-    f.close();
+    await f.close();
   }
 });
 
@@ -219,8 +220,9 @@ async function fixture(
       inflightCommands: new WeakMap(),
     }),
     workspaceId,
-    close: () => {
+    close: async () => {
       coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { recursive: true, force: true });
     },
   };
@@ -349,7 +351,7 @@ it.each(
     if (id === 'workspace.deleted-recover')
       expect(result).toMatchObject({ code: 'recovery_required' });
   } finally {
-    state.close();
+    await state.close();
   }
 });
 
@@ -473,7 +475,7 @@ it.each([
       []
     );
   } finally {
-    f.close();
+    await f.close();
   }
 });
 
@@ -532,7 +534,7 @@ it.each([
         .all(requestId)
     ).toEqual([]);
   } finally {
-    f.close();
+    await f.close();
   }
 });
 
@@ -578,7 +580,7 @@ it('refuses HTTP user.disable during closed product admission without disabling 
       )
     ).toBeNull();
   } finally {
-    f.close();
+    await f.close();
   }
 });
 
@@ -723,7 +725,7 @@ it('preserves administrator actor, original deletion owner, exact retry and reco
         .all(body.recovery.import.importedWorkspaceId)
     ).toEqual([{ user_id: 'usr_00000000-0000-7000-8000-000000000001', status: 'active' }]);
   } finally {
-    f.close();
+    await f.close();
   }
 });
 
@@ -773,7 +775,7 @@ it('keeps a readonly Workspace credential from changing members or creating a co
         .all(requestId)
     ).toEqual([]);
   } finally {
-    f.close();
+    await f.close();
   }
 });
 
@@ -854,7 +856,7 @@ it('retains private ownership in the narrow administrator deletion recovery expo
       expect.objectContaining({ actor: { kind: 'user', id: testEntityId('usr', 'target') } }),
     ]);
   } finally {
-    f.close();
+    await f.close();
   }
 });
 
@@ -911,6 +913,6 @@ it('lets a non-owner member transfer ownership and replay after another member t
       { user_id: testEntityId('usr', 'member'), status: 'active', revision: 1 },
     ]);
   } finally {
-    f.close();
+    await f.close();
   }
 });

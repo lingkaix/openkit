@@ -20,6 +20,7 @@ import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb } from './db.js';
 import { applyMigrations } from './migrate.js';
 
@@ -90,8 +91,9 @@ async function fixture() {
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  onTestFinished(() => {
+  onTestFinished(async () => {
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   const workspace = async (name: string) => {

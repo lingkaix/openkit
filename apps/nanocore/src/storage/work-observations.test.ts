@@ -22,6 +22,7 @@ import {
 import { FsStore } from '../lib/store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { createTestStore } from '../test-support/store.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openWorkspaceDb, type WorkspaceDb } from './db.js';
 import { applyScopedMigrations } from './migrate.js';
 import {
@@ -34,8 +35,9 @@ import {
 
 const roots: string[] = [];
 const databases: WorkspaceDb[] = [];
-afterEach(() => {
+afterEach(async () => {
   for (const db of databases.splice(0)) if (db.sqlite.open) db.sqlite.close();
+  await shutdownControlStoreWorkerClient();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 

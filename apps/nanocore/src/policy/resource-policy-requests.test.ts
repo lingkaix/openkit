@@ -17,6 +17,7 @@ import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import { FsStore } from '../lib/store.js';
 import type { AdmittedOperationContext } from '../operation-contract.js';
 import { grantCommandIntentRequest } from '../runtime/pending-requests.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
@@ -121,9 +122,10 @@ async function fixture() {
     resource,
     boundary,
     raise,
-    close: () => {
+    close: async () => {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { recursive: true, force: true });
     },
   };
@@ -170,7 +172,7 @@ describe('resource Policy Pending Request commands', () => {
       ).toThrow('contradictory');
       expect(f.store.listThreadItems(f.workspace.id, f.thread.id)).toEqual([]);
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -230,7 +232,7 @@ describe('resource Policy Pending Request commands', () => {
         'resource is unavailable'
       );
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -298,7 +300,7 @@ describe('resource Policy Pending Request commands', () => {
         expect.objectContaining({ kind: 'managed-boundary', scope: f.boundary.scope }),
       ]);
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -457,7 +459,7 @@ describe('resource Policy Pending Request commands', () => {
         loadedPolicy()
       );
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -501,7 +503,7 @@ describe('resource Policy Pending Request commands', () => {
           .get(record.requestId)
       ).toEqual({ claim: 'unclaimed' });
     } finally {
-      f.close();
+      await f.close();
     }
   });
 
@@ -515,7 +517,7 @@ describe('resource Policy Pending Request commands', () => {
       );
       expect(parse(readFileSync(f.configPath, 'utf8')).workspace.name).toBe('Changed elsewhere');
     } finally {
-      f.close();
+      await f.close();
     }
   });
 });

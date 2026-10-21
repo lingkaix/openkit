@@ -11,6 +11,7 @@ import { createEvaluationJudgementOperationImplementations } from './evaluation-
 import { FsStore } from './lib/store.js';
 import type { AdmittedOperationContext } from './operation-contract.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { ensureLocalUser } from './test-support/local-user.js';
@@ -31,9 +32,10 @@ it('joins exact human annotations and corrections to ordinary transactional comm
   const workspaceId = workspace.id;
   recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: userId });
   const db = openWorkspaceDb(root, workspaceId);
-  onTestFinished(() => {
+  onTestFinished(async () => {
     if (db.sqlite.open) db.sqlite.close();
     if (coreDb.sqlite.open) coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(root, { recursive: true, force: true });
   });
   applyScopedMigrations(db);

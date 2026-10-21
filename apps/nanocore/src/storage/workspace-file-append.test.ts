@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { writeRetainedV1 } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createTestStore } from '../test-support/store.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 
 const partialWriteState = vi.hoisted(() => ({ calls: 0, failSync: false, fullReads: 0 }));
 
@@ -90,11 +91,12 @@ describe('canonical append writes', () => {
     } finally {
       partialWriteState.failSync = false;
       db.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
 
-  it('retains full recovery validation for incomplete append boundaries', () => {
+  it('retains full recovery validation for incomplete append boundaries', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-append-tail-'));
     const path = join(root, 'events.jsonl');
     try {
@@ -108,6 +110,7 @@ describe('canonical append writes', () => {
       appendFileSync(path, '{malformed}');
       expect(() => appendCanonicalTextFile(path, '{"id":"refused"}\n')).toThrow(SyntaxError);
     } finally {
+      await shutdownControlStoreWorkerClient();
       rmSync(root, { recursive: true, force: true });
     }
   });

@@ -11,15 +11,17 @@ import { OperationError } from './operation-error.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { artifactFilePayloadPath } from './storage/artifacts/file-records.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
 import { applyScopedMigrations } from './storage/migrate.js';
 import { createTestStore } from './test-support/store.js';
 
 const roots: string[] = [],
   databases: WorkspaceDb[] = [];
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
   for (const db of databases.splice(0)) if (db.sqlite.open) db.sqlite.close();
+  await shutdownControlStoreWorkerClient();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 /** Domain admission is explicit; capture, canonical bytes, command concurrency and receipts are real. */

@@ -9,6 +9,7 @@ import { FsStore } from './lib/store.js';
 import { feedbackFilePath, readTurnFeedback } from './runtime/feedback.js';
 import { raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
 import { createSchedulerAdmissionEntry } from './scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -186,8 +187,9 @@ async function createCoreAudienceFixture() {
   return {
     app,
     approvalTurn,
-    close: () => {
+    close: async () => {
       coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { force: true, recursive: true });
     },
     coreDb,
@@ -449,7 +451,7 @@ describe('core Thread audience', () => {
       expect(rejected.status).toBe(409);
       expect(await (await read()).json()).toEqual(history);
     } finally {
-      fixture.close();
+      await fixture.close();
     }
   });
 
@@ -497,7 +499,7 @@ describe('core Thread audience', () => {
         ]);
       }
     } finally {
-      fixture.close();
+      await fixture.close();
     }
   });
 
@@ -511,7 +513,7 @@ describe('core Thread audience', () => {
       });
       expect(response.status).toBe(401);
     } finally {
-      fixture.close();
+      await fixture.close();
     }
   });
 
@@ -575,7 +577,7 @@ describe('core Thread audience', () => {
         if (actor.scope !== 'server-admin') expect(listText).not.toContain(denied.name);
       }
     } finally {
-      fixture.close();
+      await fixture.close();
     }
   });
 
@@ -620,7 +622,7 @@ describe('core Thread audience', () => {
         }
       }
     } finally {
-      fixture.close();
+      await fixture.close();
     }
   });
 
@@ -670,7 +672,7 @@ describe('core Thread audience', () => {
         }
       }
     } finally {
-      fixture.close();
+      await fixture.close();
     }
   });
 
@@ -826,7 +828,7 @@ describe('core Thread audience', () => {
         }
       }
     } finally {
-      fixture.close();
+      await fixture.close();
     }
   });
 
@@ -911,7 +913,7 @@ describe('core Thread audience', () => {
         expect(body.name).not.toBe('Owner private create');
       }
     } finally {
-      fixture.close();
+      await fixture.close();
     }
   });
 });

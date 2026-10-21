@@ -24,6 +24,7 @@ import { startCapabilityCall } from '../capability/usage-ledger.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
 import { createDefaultWorkerMcpGateway } from '../runtime/worker-mcp-gateway.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import {
   openCoreDb,
   openWorkspaceDb,
@@ -43,6 +44,8 @@ import { isScopeAdmitted } from './readiness.js';
 const disposals: Array<() => Promise<void> | void> = [];
 afterEach(async () => {
   vi.restoreAllMocks();
+  await shutdownControlStoreWorkerClient();
+  await (await import('../storage/control-store-worker-client.js')).shutdownControlStoreWorkerClient();
   for (const dispose of disposals.splice(0).reverse()) await dispose();
 });
 
@@ -495,6 +498,10 @@ describe('retired registry consumers and retained Core migration', () => {
     f.coreDb.sqlite.close();
     // Reset modules rather than clearing an admission map or manufacturing a retired registry row.
     // This is an in-process cold-open seam test, not proof of the index.ts process phase ordering.
+    await shutdownControlStoreWorkerClient();
+    await (
+      await import('../storage/control-store-worker-client.js')
+    ).shutdownControlStoreWorkerClient();
     vi.resetModules();
     const dbOwner = await import('../storage/db.js');
     const readiness = await import('./readiness.js');

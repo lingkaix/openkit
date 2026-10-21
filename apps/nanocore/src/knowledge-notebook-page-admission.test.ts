@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createRuntimeConfigManager } from './config/runtime-config.js';
 import { FsStore } from './lib/store.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -144,7 +145,8 @@ function removal(created: Awaited<ReturnType<typeof createPage>>) {
   };
 }
 
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const f of fixtures.splice(0)) {
     if (f.workspaceDb.sqlite.open) f.workspaceDb.sqlite.close();
     if (f.coreDb.sqlite.open) f.coreDb.sqlite.close();

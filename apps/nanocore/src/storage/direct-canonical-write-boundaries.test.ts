@@ -1,4 +1,5 @@
 import { createTestStore } from '../test-support/store.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 // openkit-test-platform: posix
 
 import { createHash } from 'node:crypto';
@@ -185,7 +186,10 @@ function workspaceImportPayload(
  */
 async function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
   const restartRoot = mkdtempSync(join(tmpdir(), 'openkit-local-refusal-'));
-  onTestFinished(() => rmSync(restartRoot, { recursive: true, force: true }));
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
+    return rmSync(restartRoot, { recursive: true, force: true });
+  });
   const seed = new FsStore({ dataRoot: restartRoot });
   const sibling = await seed.createWorkspace('Healthy refusal control');
   const siblingThread = await seed.createThread(sibling.id, 'Retained sibling thread');
@@ -371,7 +375,7 @@ describe('direct canonical write boundaries', () => {
 });
 
 describe('canonical file durability failures', () => {
-  it('preserves the prior backup manifest when file synchronization fails before publication', () => {
+  it('preserves the prior backup manifest when file synchronization fails before publication', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-manifest-pre-sync-'));
     const path = join(root, 'manifest.json');
     writeStorageJsonAtomically(path, { revision: 1 });
@@ -385,11 +389,12 @@ describe('canonical file durability failures', () => {
       );
     } finally {
       durability.fail = undefined;
+      await shutdownControlStoreWorkerClient();
       rmSync(root, { force: true, recursive: true });
     }
   });
 
-  it('does not acknowledge a backup manifest when directory synchronization fails after rename', () => {
+  it('does not acknowledge a backup manifest when directory synchronization fails after rename', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-manifest-post-sync-'));
     const path = join(root, 'manifest.json');
     durability.events.length = 0;
@@ -402,6 +407,7 @@ describe('canonical file durability failures', () => {
       expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual({ revision: 2 });
     } finally {
       durability.fail = undefined;
+      await shutdownControlStoreWorkerClient();
       rmSync(root, { force: true, recursive: true });
     }
   });
@@ -475,6 +481,7 @@ describe('single-file publication seam', () => {
       expect(f.read()).toBe(f.expected);
       if (kind === 'vault') expect(statSync(f.path).mode & 0o777).toBe(0o600);
     } finally {
+      await shutdownControlStoreWorkerClient();
       rmSync(f.root, { force: true, recursive: true });
     }
   });
@@ -498,6 +505,7 @@ describe('single-file publication seam', () => {
       ).toBe(false);
     } finally {
       durability.fail = undefined;
+      await shutdownControlStoreWorkerClient();
       rmSync(f.root, { force: true, recursive: true });
     }
   });
@@ -520,6 +528,7 @@ describe('single-file publication seam', () => {
       expect(f.read()).toBe(f.expected);
     } finally {
       durability.fail = undefined;
+      await shutdownControlStoreWorkerClient();
       rmSync(f.root, { force: true, recursive: true });
     }
   });
@@ -529,7 +538,7 @@ describe('uncommitted ancestor recovery', () => {
   it.each([
     'flat',
     'nested',
-  ] as const)('retries the failed ancestor synchronization for a %s manifest directory', (shape) => {
+  ] as const)('retries the failed ancestor synchronization for a %s manifest directory', async (shape) => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-manifest-ancestor-retry-'));
     const directory = shape === 'flat' ? join(root, 'new') : join(root, 'new', 'nested');
     const path = join(directory, 'manifest.json');
@@ -559,6 +568,7 @@ describe('uncommitted ancestor recovery', () => {
       ).toBe(true);
     } finally {
       durability.fail = undefined;
+      await shutdownControlStoreWorkerClient();
       rmSync(root, { recursive: true, force: true });
     }
   });

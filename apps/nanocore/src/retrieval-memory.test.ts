@@ -38,6 +38,7 @@ import {
 } from './retrieval-knowledge-adapter.js';
 import { closeRetrievalServices } from './retrieval-service.js';
 import { installPendingRequestAdmission } from './runtime/pending-request-flow.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from './storage/db.js';
 import {
   assertKnowledgeRetrievalTraceReadable,
@@ -180,6 +181,7 @@ async function fixture(imported = false) {
     for (const user of users) user.writer.userDb.sqlite.close();
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   return {

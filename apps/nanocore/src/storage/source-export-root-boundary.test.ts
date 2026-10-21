@@ -15,6 +15,7 @@ import { FsStore } from '../lib/store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb } from './db.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
 import { applyMigrations } from './migrate.js';
@@ -36,8 +37,9 @@ async function sourceSnapshot() {
   const root = mkdtempSync(join(tmpdir(), 'source-export-root-boundary-'));
   const dataRoot = join(root, 'deployment');
   const coreDb = openCoreDb(dataRoot);
-  onTestFinished(() => {
+  onTestFinished(async () => {
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(root, { recursive: true, force: true });
   });
   applyMigrations(coreDb);

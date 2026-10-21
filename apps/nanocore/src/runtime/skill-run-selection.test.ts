@@ -13,6 +13,7 @@ import {
 } from '../catalog/resource-catalog.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
@@ -27,9 +28,10 @@ import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js
 import { listSchedulerExecutionAttemptsForTurn } from './execution-attempt-records.js';
 
 const cleanup: Array<() => void> = [];
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
-  for (const close of cleanup.splice(0).reverse()) close();
+  await shutdownControlStoreWorkerClient();
+  for (const close of cleanup.splice(0).reverse()) await close();
 });
 
 /** Real catalog snapshots and command storage meet the existing modeled Worker boundary. */

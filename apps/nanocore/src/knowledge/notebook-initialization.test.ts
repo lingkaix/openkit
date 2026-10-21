@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { RequestIdSchema } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { FsStore } from '../lib/store.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { createTestStore } from '../test-support/store.js';
@@ -35,8 +36,9 @@ function fixture() {
     resolvedReferences: new Map<string, ReadonlySet<string>>(),
   }));
   const input = { workspaceRoot, workspaceId, workspaceDb, initialization, revalidate };
-  onTestFinished(() => {
+  onTestFinished(async () => {
     workspaceDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   return {
@@ -56,7 +58,10 @@ function fixture() {
 describe('Fresh Workspace notebook admission inside native staging', () => {
   it('seeds no-argument disk-backed Workspace creation with only the exact service-owned index', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'notebook-empty-store-'));
-    onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      return rmSync(dataRoot, { recursive: true, force: true });
+    });
     const store = createTestStore({ dataRoot });
     const workspace = await store.createWorkspace('Empty service seed');
     const notebook = new KnowledgeNotebook({
@@ -196,7 +201,10 @@ User-authored note.
 
   it('keeps import without native attribution refused before Workspace publication', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'notebook-unattributed-import-'));
-    onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      return rmSync(dataRoot, { recursive: true, force: true });
+    });
     const source = new FsStore();
     const workspace = await source.createWorkspace('Unattributed import');
     const target = createTestStore({ dataRoot });

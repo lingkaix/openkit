@@ -12,6 +12,7 @@ import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import { FsStore } from '../lib/store.js';
 import { executeGoalOperation } from '../runtime/goal-owner.js';
 import { readPendingRequest } from '../runtime/pending-requests.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -24,7 +25,8 @@ import { EMPTY_POLICY_DOCUMENT, policyDigest } from './statements.js';
 import { evaluateWorkspaceMemberAccess } from './workspace-access.js';
 
 const cleanup: (() => void)[] = [];
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const fn of cleanup.splice(0)) fn();
 });
 

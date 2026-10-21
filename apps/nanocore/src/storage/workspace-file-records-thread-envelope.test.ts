@@ -20,6 +20,7 @@ import {
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from '../test-support/local-user.js';
 import { createTestStore } from '../test-support/store.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb } from './db.js';
 import { applyMigrations } from './migrate.js';
 
@@ -56,7 +57,10 @@ function threadRecord(dataRoot: string, workspaceId: string, threadId: string) {
  */
 async function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
   const restartRoot = mkdtempSync(join(tmpdir(), 'openkit-local-refusal-'));
-  onTestFinished(() => rmSync(restartRoot, { recursive: true, force: true }));
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
+    return rmSync(restartRoot, { recursive: true, force: true });
+  });
   const seed = new FsStore({ dataRoot: restartRoot });
   const sibling = await seed.createWorkspace('Healthy refusal control');
   const siblingThread = await seed.createThread(sibling.id, 'Retained sibling thread');
@@ -321,6 +325,7 @@ it.each([
     await expectLocalWorkspaceRefusal(dataRoot, workspace.id);
     expect(readFileSync(persisted.path, 'utf8')).toBe(bytes);
   } finally {
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   }
 });
@@ -361,6 +366,7 @@ it('preserves current administration entry and validates its envelope without re
       privateOwnerUserId: userId,
     });
   } finally {
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   }
 });

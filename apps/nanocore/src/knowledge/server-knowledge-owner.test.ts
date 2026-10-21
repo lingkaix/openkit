@@ -6,6 +6,7 @@ import { ContentReferenceSchema, KnowledgeBaseIdSchema } from '@openkit/protocol
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { FsStore } from '../lib/store.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
@@ -28,8 +29,9 @@ function fixture() {
   const userId = ensureLocalUser(coreDb);
   const actor = { kind: 'local' as const, userId };
   const store = new FsStore({ dataRoot });
-  onTestFinished(() => {
+  onTestFinished(async () => {
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   return { coreDb, actor, store, inflightCommands: new WeakMap(), dataRoot };

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ensureLocalUser } from '../auth/identity.js';
 import { AutomationStore } from '../lib/automation-store.js';
 import { FsStore } from '../lib/store.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import type { RecurringPreparation } from '../storage/recurring-records.js';
@@ -97,7 +98,8 @@ async function fixture() {
     },
   };
 }
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const { root, db, services } of owned.splice(0)) {
     for (const service of services) service.stop();
     db.sqlite.close();

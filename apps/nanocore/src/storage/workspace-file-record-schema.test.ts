@@ -22,6 +22,7 @@ import { ensureLocalUser } from '../test-support/local-user.js';
 import { createTestStore } from '../test-support/store.js';
 import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb } from './db.js';
 import { applyMigrations } from './migrate.js';
 
@@ -125,7 +126,10 @@ async function createCanonicalRecordFixture() {
  */
 async function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
   const restartRoot = mkdtempSync(join(tmpdir(), 'openkit-local-refusal-'));
-  onTestFinished(() => rmSync(restartRoot, { recursive: true, force: true }));
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
+    return rmSync(restartRoot, { recursive: true, force: true });
+  });
   const seed = createTestStore({ dataRoot: restartRoot });
   const sibling = await seed.createWorkspace('Healthy refusal control');
   const siblingThread = await seed.createThread(sibling.id, 'Retained sibling thread');

@@ -15,6 +15,7 @@ import { isWorkspaceOperationAuthorized } from '../auth/operation-authorizer.js'
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { FsStore } from '../lib/store.js';
 import { type KnowledgeRetrievalAccess, threadReadable } from '../retrieval-knowledge-adapter.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
@@ -51,9 +52,10 @@ async function fixture() {
     actor: { kind: 'user', id: userId },
     requestActor: { kind: 'local', userId },
   };
-  onTestFinished(() => {
+  onTestFinished(async () => {
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   const read = (reference: string) =>

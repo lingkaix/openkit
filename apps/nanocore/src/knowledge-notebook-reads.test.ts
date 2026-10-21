@@ -20,6 +20,7 @@ import {
   readAuthorizedWorkspaceNotebookPages,
 } from './retrieval-knowledge-adapter.js';
 import { closeRetrievalServices } from './retrieval-service.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import {
   rebuildWorkspaceDerivedIndexes,
@@ -45,6 +46,7 @@ afterEach(async () => {
   await closeRetrievalServices();
   vi.restoreAllMocks();
   for (const db of databases.splice(0)) db.sqlite.close();
+  await shutdownControlStoreWorkerClient();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 

@@ -15,6 +15,7 @@ import { allocateEntityId, formatReferenceUri } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { FsStore } from '../lib/store.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { restoreDataRootBackup, writeHotDataRootBackup } from '../storage/data-root-backup.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { readDataRootLayoutMarker } from '../storage/fs-layout.js';
@@ -40,8 +41,9 @@ import { parseOkfDocument, updateOkfFrontmatter } from './okf.js';
 
 const roots: string[] = [];
 const databases: ReturnType<typeof openCoreDb>[] = [];
-afterEach(() => {
+afterEach(async () => {
   for (const database of databases.splice(0)) database.sqlite.close();
+  await shutdownControlStoreWorkerClient();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 

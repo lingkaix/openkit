@@ -13,6 +13,7 @@ import { ALREADY_DECIDED_PUBLICATION_ADMISSION, FsStore } from '../lib/store.js'
 import { ModelCapture } from '../llm/model-capture.js';
 import { terminalizeGovernedWorkerTurn } from '../runtime/worker-turn-failure.js';
 import { createTestStore } from '../test-support/store.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openWorkspaceDb, type WorkspaceDb } from './db.js';
 import { applyScopedMigrations } from './migrate.js';
 import { appendRecoveredTurnObservation } from './work-observation-recovery.js';
@@ -25,8 +26,9 @@ import {
 const completedAt = '2026-09-29T00:01:00.000Z';
 const roots: string[] = [];
 const databases: WorkspaceDb[] = [];
-afterEach(() => {
+afterEach(async () => {
   for (const db of databases.splice(0)) if (db.sqlite.open) db.sqlite.close();
+  await shutdownControlStoreWorkerClient();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 

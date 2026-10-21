@@ -12,6 +12,7 @@ import { readDefaultKnowledgeBaseId, readKnowledgeMounts } from '../config/knowl
 import { FsStore } from '../lib/store.js';
 import { createOperationInvocation } from '../operation-composition.js';
 import type { KnowledgeRetrievalAccess } from '../retrieval-knowledge-adapter.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
@@ -37,9 +38,10 @@ async function fixture() {
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
   applyScopedMigrations(workspaceDb);
-  onTestFinished(() => {
+  onTestFinished(async () => {
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   const actor = { kind: 'session' as const, userId };

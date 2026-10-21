@@ -27,13 +27,15 @@ import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-us
 import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
 import { readPublishedTurnFileRecords } from './workspace-file-records.js';
 
 const fixtures: Array<{ root: string; db: ReturnType<typeof openCoreDb> }> = [];
 const nodeFs = createRequire(import.meta.url)('node:fs') as typeof import('node:fs');
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const { root, db } of fixtures.splice(0)) {
     if (db.sqlite.open) db.sqlite.close();
     rmSync(root, { recursive: true, force: true });

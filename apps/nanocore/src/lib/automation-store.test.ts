@@ -10,6 +10,7 @@ import {
   requireSchedulerAdmissionEntry,
   retryDeniedSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { exportRecurringPortableHistory } from '../storage/recurring-portable-history.js';
@@ -41,9 +42,10 @@ function fixture() {
     },
   };
 }
-afterEach(() => {
+afterEach(async () => {
   const remaining = fixtures.splice(0);
   for (const { db } of remaining) if (db.sqlite.open) db.sqlite.close();
+  await shutdownControlStoreWorkerClient();
   for (const root of new Set(remaining.map((entry) => entry.root)))
     rmSync(root, { recursive: true, force: true });
 });

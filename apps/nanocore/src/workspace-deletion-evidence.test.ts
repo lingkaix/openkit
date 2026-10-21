@@ -6,6 +6,7 @@ import { expect, it } from 'vitest';
 import { AutomationStore } from './lib/automation-store.js';
 import { FsStore } from './lib/store.js';
 import { createSchedulerAdmissionEntry } from './scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { insertExternalTriggerAdmission } from './storage/external-trigger-admissions.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
@@ -180,6 +181,7 @@ it('retains the immutable external admission join in deletion evidence before it
     expect(() => verifyWorkspaceDeletionClosure({ ...input, closureRoot })).not.toThrow();
   } finally {
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   }
 });

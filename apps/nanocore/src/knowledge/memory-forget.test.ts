@@ -183,11 +183,12 @@ async function fixture(sourceBacked = false) {
       workspaceId: request.workspaceId,
       threadId: request.threadId,
     });
-  onTestFinished(() => {
+  onTestFinished(async () => {
     vi.restoreAllMocks();
     writer.workspaceDb.sqlite.close();
     if (writer.userDb.sqlite.open) writer.userDb.sqlite.close();
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   return { writer, request, apply, decide, content, saved, notebook, turn, thread, source };

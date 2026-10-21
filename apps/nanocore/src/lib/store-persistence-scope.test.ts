@@ -1,3 +1,4 @@
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { createTestStore } from '../test-support/store.js';
 // openkit-test-platform: posix
 
@@ -121,6 +122,7 @@ describe('FsStore workspace persistence scope', () => {
     } catch (error) {
       updateError = error;
     } finally {
+      await shutdownControlStoreWorkerClient();
       rmSync(blockedArtifactsRoot);
       mkdirSync(blockedArtifactsRoot);
     }
@@ -314,8 +316,9 @@ describe('FsStore workspace persistence scope', () => {
       ownerUserId: FIXTURE_LOCAL_USER_ID,
       workspaceId: workspace.id,
     });
-    onTestFinished(() => {
+    onTestFinished(async () => {
       coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { recursive: true, force: true });
     });
     const app = createApp({ coreDb, dataRoot, store });
@@ -437,9 +440,10 @@ vi.mock('node:fs', async (importOriginal) => {
 });
 
 const roots: string[] = [];
-afterEach(() => {
+afterEach(async () => {
   trace.beforeRename = undefined;
   trace.fail = undefined;
+  await shutdownControlStoreWorkerClient();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 

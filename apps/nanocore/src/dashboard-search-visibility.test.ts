@@ -1,3 +1,4 @@
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 // openkit-test-platform: posix
 
 import { createHash } from 'node:crypto';
@@ -484,6 +485,7 @@ describe('dashboard and search Thread audiences', () => {
       await closeRetrievalServices();
       vi.restoreAllMocks();
       coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });

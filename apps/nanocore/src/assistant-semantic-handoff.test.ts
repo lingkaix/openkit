@@ -55,6 +55,7 @@ import {
   listSchedulerAdmissionEntriesForWorkspace,
 } from './scheduler-records.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { allocateRetrievalTraceId, readTurnRetrievalTraces } from './storage/retrieval-traces.js';
@@ -199,6 +200,7 @@ async function fixture(targetWorkspaceId?: string) {
     launches.mockRestore();
     if (workspaceDb.sqlite.open) workspaceDb.sqlite.close();
     if (coreDb.sqlite.open) coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   const requestId = randomUUID();

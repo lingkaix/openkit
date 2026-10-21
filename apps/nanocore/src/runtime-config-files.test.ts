@@ -145,6 +145,7 @@ describe('runtime config file API', () => {
       expect(await response.json()).toMatchObject({ code: 'policy_write_required' });
       expect(readFileSync(join(dataRoot, 'config/server.jsonc'), 'utf8')).toBe(before);
     } finally {
+      await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });

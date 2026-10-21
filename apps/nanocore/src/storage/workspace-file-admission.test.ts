@@ -5,12 +5,14 @@ import { allocateEntityId, ItemSchema, readRetainedV1, WorkOwnerSchema } from '@
 import { afterEach, describe, expect, it } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import { createTestStore } from '../test-support/store.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openWorkspaceDb } from './db.js';
 import { WorkOwnershipViolationError } from './fs-layout.js';
 
 const roots: string[] = [];
 const actor = { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' };
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 

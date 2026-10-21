@@ -6,6 +6,7 @@ import type { Item } from '@openkit/protocol';
 import { allocateEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FsStore } from '../lib/store.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { createTestStore } from '../test-support/store.js';
 import {
   type AgentMessage,
@@ -39,11 +40,12 @@ const currentMessage: AgentMessage = {
   ],
 };
 
-afterEach(() => {
+afterEach(async () => {
   itemIdsByTurn.clear();
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
   vi.useRealTimers();
+  await shutdownControlStoreWorkerClient();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 

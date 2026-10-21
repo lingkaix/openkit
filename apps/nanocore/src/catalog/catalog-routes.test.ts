@@ -10,6 +10,7 @@ import { createCoreClient } from '@openkit/core-client';
 import { ApiErrorSchema } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import { FsStore } from '../lib/store.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
@@ -83,6 +84,7 @@ describe('resource catalog operations', () => {
       });
     } finally {
       f.coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(f.dataRoot, { force: true, recursive: true });
     }
   });
@@ -233,6 +235,7 @@ describe('resource catalog operations', () => {
       );
     } finally {
       f.coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(f.dataRoot, { force: true, recursive: true });
     }
   });
@@ -291,6 +294,7 @@ describe('resource catalog operations', () => {
       expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id)).toEqual(before);
     } finally {
       f.coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(f.dataRoot, { force: true, recursive: true });
     }
   });
@@ -311,6 +315,7 @@ describe('resource catalog operations', () => {
       expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id).revision).toBe(0);
     } finally {
       f.coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(f.dataRoot, { force: true, recursive: true });
     }
   });
@@ -408,6 +413,7 @@ describe('resource catalog operations', () => {
         }),
       ]);
     } finally {
+      await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { force: true, recursive: true });
     }
   });
@@ -456,6 +462,7 @@ describe('resource catalog operations', () => {
       );
       expect(escaped.status).toBe(400);
     } finally {
+      await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { force: true, recursive: true });
     }
   });

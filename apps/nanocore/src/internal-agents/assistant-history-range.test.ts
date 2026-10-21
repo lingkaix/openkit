@@ -7,6 +7,7 @@ import { allocateEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import type { Actor } from '../auth/identity.js';
 import { FsStore } from '../lib/store.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { readRetrievalTrace } from '../storage/retrieval-traces.js';
@@ -49,8 +50,9 @@ async function fixture(
 ) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'assistant-history-range-'));
   const coreDb = openCoreDb(dataRoot);
-  onTestFinished(() => {
+  onTestFinished(async () => {
     if (coreDb.sqlite.open) coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   applyMigrations(coreDb);

@@ -1,3 +1,4 @@
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { createTestStore } from './test-support/store.js';
 import { captureWorkspaceSourceFixture } from './test-support/workspace-source.js';
 // openkit-test-platform: posix
@@ -64,6 +65,7 @@ const sourceDbs: CoreDb[] = [];
 afterEach(async () => {
   await closeRetrievalServices();
   for (const db of sourceDbs.splice(0)) db.sqlite.close();
+  await shutdownControlStoreWorkerClient();
   for (const root of testRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 

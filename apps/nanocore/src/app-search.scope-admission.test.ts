@@ -7,6 +7,7 @@ import { createAppSearchOperationImplementations } from './app-search-operation-
 import { refuseScope } from './bootstrap/readiness.js';
 import { FsStore } from './lib/store.js';
 import { admitOperation } from './operation-resolvers.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -72,6 +73,7 @@ it('searches healthy authorized siblings without reading quarantined or unauthor
     }
   } finally {
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   }
 });

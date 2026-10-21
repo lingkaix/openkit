@@ -1,3 +1,4 @@
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 // openkit-test-platform: posix
 
 import { createHash, randomUUID } from 'node:crypto';
@@ -958,6 +959,7 @@ describe('Generative UI Thread audience', () => {
       }
     } finally {
       coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });

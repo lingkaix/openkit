@@ -8,6 +8,7 @@ import { RegisterKnowledgeSourceResponseSchema } from '@openkit/app-api-schemas'
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
@@ -54,6 +55,7 @@ async function fixture() {
     await closeRetrievalServices();
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   return { dataRoot, coreDb, userId, store, workspace, workspaceDb, notebook, root, register };

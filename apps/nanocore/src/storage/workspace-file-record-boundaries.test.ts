@@ -26,6 +26,7 @@ import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { createTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb } from './db.js';
 import { ensureLayout } from './fs-layout.js';
 import { applyMigrations } from './migrate.js';
@@ -108,7 +109,10 @@ function sourceBoundaryApp(f: Awaited<ReturnType<typeof createBoundaryFixture>>)
 /** Fresh import supplies actual User attribution; no materialized page directory initializes content. */
 async function createNotebookBoundaryFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-file-record-notebook-'));
-  onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
+    return rmSync(dataRoot, { recursive: true, force: true });
+  });
   const source = new FsStore();
   const workspace = await source.createWorkspace('Notebook boundary workspace');
   const store = createTestStore({ dataRoot });
@@ -153,7 +157,10 @@ async function createNotebookBoundaryFixture() {
  */
 async function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
   const restartRoot = mkdtempSync(join(tmpdir(), 'openkit-local-refusal-'));
-  onTestFinished(() => rmSync(restartRoot, { recursive: true, force: true }));
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
+    return rmSync(restartRoot, { recursive: true, force: true });
+  });
   const seed = createTestStore({ dataRoot: restartRoot });
   const sibling = await seed.createWorkspace('Healthy refusal control');
   const siblingThread = await seed.createThread(sibling.id, 'Retained sibling thread');

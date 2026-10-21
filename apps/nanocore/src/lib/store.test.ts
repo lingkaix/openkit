@@ -699,7 +699,10 @@ describe('FsStore persistence', () => {
 
     // A separate restart root keeps refusal from masking the repaired-history control below.
     const restartRoot = mkdtempSync(join(tmpdir(), 'openkit-introduction-restart-'));
-    onTestFinished(() => rmSync(restartRoot, { recursive: true, force: true }));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      return rmSync(restartRoot, { recursive: true, force: true });
+    });
     cpSync(dataRoot, restartRoot, { recursive: true });
     const copiedWorkspaceRoot = join(restartRoot, 'workspaces', workspace.id);
     const copiedLog = join(

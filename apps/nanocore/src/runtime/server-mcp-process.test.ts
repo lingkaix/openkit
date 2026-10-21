@@ -12,6 +12,7 @@ import {
   updateMcpBinding,
 } from '../catalog/resource-catalog.js';
 import { FsStore } from '../lib/store.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { ensureWorkspaceLayout } from '../storage/fs-layout.js';
 import { applyMigrations } from '../storage/migrate.js';
@@ -116,6 +117,7 @@ it('partitions shared stdio sessions and mutable data by consuming Workspace and
   } finally {
     await gateway.close();
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   }
 });

@@ -5,6 +5,7 @@ import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import { createTestStore } from '../test-support/store.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import {
   loadServerThreadRecords,
   readServerTurnEvents,
@@ -16,7 +17,10 @@ const families = ['Server Turn', 'Server Item', 'Server transcript event'] as co
 /** Publishes one native Server Turn, Item row and transcript row through FsStore. */
 async function createServerRetainedFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-server-retained-formats-'));
-  onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
+    return rmSync(dataRoot, { recursive: true, force: true });
+  });
   const store = createTestStore({ dataRoot });
   const thread = await store.createServerThread('Retained Server formats');
   const actor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;

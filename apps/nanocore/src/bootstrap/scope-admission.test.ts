@@ -7,6 +7,7 @@ import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { startCapabilityCall } from '../capability/usage-ledger.js';
 import { FsStore } from '../lib/store.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import {
   openBootVerifiedWorkspaceDb,
   openCoreDb,
@@ -34,7 +35,8 @@ function root(): string {
   roots.push(path);
   return path;
 }
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const path of roots.splice(0)) rmSync(path, { recursive: true, force: true });
 });
 

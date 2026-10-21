@@ -11,13 +11,15 @@ import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb } from './db.js';
 import { applyMigrations } from './migrate.js';
 import { WORKSPACE_EXPORT_ARCHIVE_MEDIA_TYPE } from './workspace-archive.js';
 
 const fixtures: Array<{ coreDb: ReturnType<typeof openCoreDb>; dataRoot: string }> = [];
 
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const fixture of fixtures.splice(0)) {
     fixture.coreDb.sqlite.close();
     rmSync(fixture.dataRoot, { recursive: true, force: true });

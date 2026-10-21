@@ -3,12 +3,10 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import type { Server as HttpServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
 import { serve } from '@hono/node-server';
 import { resolveWorkspaceMcpServer, type WorkspaceMcpServerCatalog } from '@openkit/config-schema';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-
 import { createDefaultWorkerControlGateway } from './app.js';
 import { listServerAuditEvents } from './audit-events.js';
 import {
@@ -16,7 +14,6 @@ import {
   revokeOpenKitAccessTokenRecord,
   setDefaultServerAdminTokenId,
 } from './auth/access-token-store.js';
-
 import {
   composeWorkspaceMcpCatalog,
   createMcpConfig,
@@ -41,6 +38,7 @@ import { bindNanoHostAttemptRouteTokenHashes } from './runtime/nanohost-attempt-
 import { listThreadPendingRequests, readPendingRequest } from './runtime/pending-requests.js';
 import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import { createSchedulerAdmissionEntry } from './scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { users } from './storage/schema/index.js';
@@ -62,6 +60,7 @@ const cleanups: (() => void | Promise<void>)[] = [];
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  await shutdownControlStoreWorkerClient();
   for (const close of cleanups.splice(0).reverse()) await close();
 });
 

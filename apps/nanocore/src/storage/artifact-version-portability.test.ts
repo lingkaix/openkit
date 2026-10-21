@@ -23,6 +23,7 @@ import {
   saveWorkspaceMaterialRevision,
 } from '../workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
 import { verifyWorkspaceExportTree } from './workspace-export.js';
@@ -37,8 +38,9 @@ function digest(bytes: Uint8Array): string {
 it('preserves exact historical bytes, parents and publication lineage through Workspace import and reopen', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'artifact-version-portability-'));
   const coreDb = openCoreDb(dataRoot);
-  onTestFinished(() => {
+  onTestFinished(async () => {
     if (coreDb.sqlite.open) coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   applyMigrations(coreDb);
@@ -290,8 +292,9 @@ it('preserves exact historical bytes, parents and publication lineage through Wo
 it('retains historical Artifact event snapshots and Item deltas after a newer version is imported', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'artifact-version-events-'));
   const coreDb = openCoreDb(dataRoot);
-  onTestFinished(() => {
+  onTestFinished(async () => {
     if (coreDb.sqlite.open) coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   applyMigrations(coreDb);
@@ -422,8 +425,9 @@ it('retains historical Artifact event snapshots and Item deltas after a newer ve
 it('round trips target-owned judgements, exact range results and candidate choices with reminted references', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'evaluation-portability-'));
   const coreDb = openCoreDb(dataRoot);
-  onTestFinished(() => {
+  onTestFinished(async () => {
     if (coreDb.sqlite.open) coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   applyMigrations(coreDb);

@@ -8,6 +8,7 @@ import { ensureLocalUser } from '../auth/identity.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { FsStore } from '../lib/store.js';
 import { createOperationInvocation } from '../operation-composition.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -90,10 +91,11 @@ async function fixture(actorKind: 'session' | 'local' = 'session') {
     setCandidates(value: readonly GoalWorkerCandidate[]) {
       candidates = value;
     },
-    close() {
+    async close() {
       vi.restoreAllMocks();
       db.sqlite.close();
       coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(root, { recursive: true, force: true });
     },
   };
@@ -133,7 +135,7 @@ it.each([
     expect(JSON.parse((await f.tool.execute({})).content[0]!.text!)).toEqual({ items: [] });
     expect(f.tools.map((tool) => tool.name)).toEqual(names);
   } finally {
-    f.close();
+    await f.close();
   }
 });
 
@@ -150,7 +152,7 @@ it.each([
     expect(JSON.parse(result.content[0]!.text!)).toMatchObject({ code: 'invalid_request' });
     expect(resources).not.toHaveBeenCalled();
   } finally {
-    f.close();
+    await f.close();
   }
 });
 
@@ -178,7 +180,7 @@ it('preserves blocked supply and refuses a failed catalog read instead of return
     });
     expect(JSON.stringify(result)).not.toContain('PRIVATE_DIAGNOSTIC_CANARY');
   } finally {
-    f.close();
+    await f.close();
   }
 });
 
@@ -193,7 +195,7 @@ it('rechecks actor authority before publishing discovery', async () => {
     expect(result.isError).toBe(true);
     expect(JSON.stringify(result)).not.toContain('selected-worker');
   } finally {
-    f.close();
+    await f.close();
   }
 });
 
@@ -208,7 +210,7 @@ it('refuses an ended Coordinator before reading catalog content', async () => {
     expect((await f.tool.execute({})).isError).toBe(true);
     expect(resources).not.toHaveBeenCalled();
   } finally {
-    f.close();
+    await f.close();
   }
 });
 
@@ -244,6 +246,6 @@ it('refuses incomplete or oversized discovery without publishing a partial candi
       code: 'result_too_large',
     });
   } finally {
-    f.close();
+    await f.close();
   }
 });

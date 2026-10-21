@@ -15,6 +15,7 @@ import {
 import { createEvaluationOperationImplementations } from './evaluation-operations.js';
 import { FsStore } from './lib/store.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { ensureLocalUser } from './test-support/local-user.js';
@@ -22,9 +23,10 @@ import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const roots: string[] = [];
 const databases: Array<CoreDb | WorkspaceDb> = [];
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
   for (const db of databases.splice(0).reverse()) if (db.sqlite.open) db.sqlite.close();
+  await shutdownControlStoreWorkerClient();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 

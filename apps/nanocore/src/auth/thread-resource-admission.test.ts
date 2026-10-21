@@ -18,6 +18,7 @@ import {
 import { FsStore } from '../lib/store.js';
 import { admitOperation } from '../operation-resolvers.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
@@ -139,6 +140,7 @@ describe('managed Thread native admission', () => {
     } finally {
       kernel.mockRestore();
       db.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
@@ -279,6 +281,7 @@ it('uses one concrete Kernel decision for an exact admitted Worker Agent', async
   } finally {
     kernel.mockRestore();
     db.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   }
 });
