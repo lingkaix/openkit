@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: in-progress
+status: implemented
 date: "2026-10-18"
 ---
 # File Storage And Knowledge Packages
@@ -31,7 +31,7 @@ Acceptance: exact canonical/package path alignment and justified differences; cl
 
 ## Checkpoint
 
-The first draft separates the shared contract from existing implementation projections. Source inventory and classification remain uncommitted evidence. Product implementation is not started by this documentation work.
+The documentation cut is implemented on main through `16162581c`. The accepted owner contains the file-reference, Knowledge package and byte-facade boundaries. Facade and leased-mount implementation remain deferred under that owner. The intent revisions below preserve the design sequence; this closeout claims no product or live acceptance.
 
 ## Intent Revision 2
 

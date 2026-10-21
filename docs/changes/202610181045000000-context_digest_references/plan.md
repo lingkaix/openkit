@@ -1,6 +1,6 @@
 ---
 type: change-plan
-status: in-progress
+status: implemented
 date: "2026-10-18"
 ---
 # Context Digest References
@@ -23,7 +23,7 @@ An independent real producer/consumer regression covers original deletion/replac
 
 ## Working Checkpoint
 
-Separate branch lane/aw-context-digest normally merged current main and released L-ID head at6bee9dceffa3bf0c5b466821a86feced5eb8fb1e. Storage source890 remains unchanged beneath it. Implementation in progress, no gate or landing claim. Landing waits for complete qualification, owning dependency and coordinator pre-reset cut announcement.
+Reference retention and live delivery are implemented on main through `346423f85` and `d5c8b428a`; `74c133a91` records the accepted Material handoff correction. The pre-reset landing hold is closed. The following paragraphs preserve pre-landing findings, corrections and failed gates, not current landing blockers. This closeout adds no live acceptance claim.
 
 A current-delivery gap was found before activation: arbitrary binary attachments currently rely on the eager read-only original view, while the implemented bounded Tools expose text and explicit image/PDF views. Removing the original view without another admitted raw-byte route can make those inputs unusable. The current source is prepared for fresh review, not approved for activation. Preserve usable live input delivery and settle its smallest join with the coordinator; do not treat changed owner wording or a passing history regression as proof of the complete feature. The Store default-Knowledge-Base creator/import dependency is now resolved at its independently verified exact source head. No complete-directory or repository-gate pass is claimed.
 
