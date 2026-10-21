@@ -575,3 +575,45 @@ describe('source-bound internal rolling context', () => {
     expect(answer).toHaveBeenCalledTimes(1);
   });
 });
+
+// One admitted deadline covers preparation, summarization and ordinary execution.
+it.each([
+  'summary',
+  'ordinary',
+] as const)('labels the shared %s deadline without inventing a phase', async (phase) => {
+  vi.useFakeTimers();
+  const f = fixture(phase === 'summary' ? 8 : 0);
+  let release!: (value: InternalAgentProviderResponse) => void;
+  const request = input(f, {
+    limits: { ...limits, deadlineMs: 25 },
+    callProvider: () =>
+      new Promise<InternalAgentProviderResponse>((resolve) => {
+        release = resolve;
+      }),
+  });
+  let failure: unknown;
+  if (phase === 'summary') {
+    const pending = prepareInternalAgentContext(request).catch((error: unknown) => {
+      failure = error;
+    });
+    await vi.advanceTimersByTimeAsync(25);
+    await pending;
+    release(response('PRIVATE_LATE_SUMMARY'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(summaries(f)).toEqual([]);
+  } else {
+    const prepared = await prepareInternalAgentContext(request);
+    await vi.advanceTimersByTimeAsync(26);
+    try {
+      prepared.assertCurrent();
+    } catch (error) {
+      failure = error;
+    }
+    expect(request.callProvider).not.toHaveBeenCalled();
+  }
+  expect(failure).toMatchObject({ code: 'internal_agent_context_deadline' });
+  expect(internalContextFailure(failure)).toEqual({
+    code: 'internal_agent_context_deadline',
+    message: 'The admitted internal Agent deadline expired.',
+  });
+});
