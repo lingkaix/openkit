@@ -11,11 +11,29 @@ import {
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { isMainThread } from 'node:worker_threads';
-import { ContentReferenceSchema, KnowledgeBaseIdSchema, readRetainedV1 } from '@openkit/protocol';
+import {
+  AuditEventSchema,
+  ContentReferenceSchema,
+  KnowledgeBaseIdSchema,
+  RequestIdSchema,
+  readRetainedV1,
+} from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { z } from 'zod';
+import type { CommandRequestResponse } from '../lib/store.js';
+import {
+  createExecutionStepJournalReader,
+  settleExecutionJournalStep,
+} from '../runtime/execution-journal.js';
+import type { ExecutionJournalSettlement } from '../runtime/execution-step-journal.js';
+import { StoredRuntimeEvidenceV1Schema } from '../runtime/runtime-evidence-v1.js';
+import type { CoreDb, WorkspaceDb } from './db.js';
 import { StoredServerEventV1Schema } from './retained-server-work-v1.js';
-import { StoredEventV1Schema, StoredThreadSnapshotV1Schema } from './retained-work-events-v1.js';
+import {
+  StoredEventV1Schema,
+  StoredThreadSnapshotV1Schema,
+  StoredTurnSnapshotV1Schema,
+} from './retained-work-events-v1.js';
 import { StoredItemV1Schema } from './retained-work-items-v1.js';
 import {
   StoredAgentSessionV1Schema,
@@ -103,6 +121,9 @@ export class ControlProductPreconditionError extends Error {
   }
 }
 
+// Prepared values are native-local capabilities, not trusted descriptors supplied over transport.
+const preparedPayloads = new WeakMap<PreparedControlEntry, unknown>();
+
 const tables = {
   workspace: 'control_workspaces',
   thread: 'control_threads',
@@ -115,6 +136,18 @@ const schemas = {
   'agent-session': StoredAgentSessionV1Schema,
   turn: StoredTurnV1Schema,
 } as const;
+/** Only absent decided fields can be filled after sealing; identity and populated outcomes never change. */
+const terminalFillableFields = new Set([
+  'error',
+  'completedAt',
+  'durationMs',
+  'agentId',
+  'agentProfileId',
+  'agentSessionId',
+  'triggerSource',
+  'configVersion',
+]);
+
 type MetadataRow = {
   id: string;
   schema_version: number;
@@ -196,15 +229,27 @@ function decodeRow(kind: ControlProductKind, row: MetadataRow, owner: ControlPro
   return { revision: row.revision, record };
 }
 
-/** Preserves immutable identity and refuses terminal work whose complete native tuple is not prepared in B1. */
+/** Preserves immutable identity and keeps terminal admission private to the complete SQL owner. */
 function checkReplacement(
   kind: ControlProductKind,
   before: Record<string, unknown> | undefined,
-  after: Record<string, unknown>
+  after: Record<string, unknown>,
+  terminalTurnId?: string
 ): void {
-  if (kind === 'turn' && after.status !== 'pending' && after.status !== 'running')
+  if (
+    kind === 'turn' &&
+    after.id !== terminalTurnId &&
+    after.status !== 'pending' &&
+    after.status !== 'running'
+  )
     throw new ControlProductPreconditionError();
   if (!before) return;
+  if (
+    kind === 'turn' &&
+    before.id !== terminalTurnId &&
+    !['pending', 'running'].includes(String(before.status))
+  )
+    throw new ControlProductPreconditionError();
   if (
     kind === 'agent-session' &&
     (before.status === 'closed' || before.status === 'failed') &&
@@ -258,7 +303,24 @@ export function applyControlProducts(
   mutations: readonly ControlProductMutation[],
   entries: readonly PreparedControlEntry[]
 ): void {
+  applyProducts(sqlite, owner, mutations, entries);
+}
+
+/** Shared SQL mechanics; only the complete terminal owner supplies its exact terminal identity. */
+function applyProducts(
+  sqlite: Database.Database,
+  owner: ControlProductOwner,
+  mutations: readonly ControlProductMutation[],
+  entries: readonly PreparedControlEntry[],
+  terminalTurnId?: string
+): void {
   assertControlProductWriter(sqlite);
+  const terminalBefore = terminalTurnId
+    ? readProduct(sqlite, owner, 'turn', terminalTurnId)
+    : undefined;
+  const terminalWasSealed =
+    terminalBefore !== undefined &&
+    !['pending', 'running'].includes(String(terminalBefore.record.status));
   const seen = new Set<string>();
   for (const kind of ['workspace', 'thread', 'agent-session', 'turn'] as const) {
     for (const input of mutations.filter((value) => value.kind === kind)) {
@@ -268,8 +330,32 @@ export function applyControlProducts(
       if (seen.has(key)) throw new ControlProductPreconditionError();
       seen.add(key);
       const previous = readProduct(sqlite, owner, kind, id);
-      if ((previous?.revision ?? 0) !== input.expectedRevision)
+      const terminalReplay =
+        kind === 'turn' &&
+        id === terminalTurnId &&
+        previous &&
+        !['pending', 'running'].includes(String(previous.record.status));
+      if ((previous?.revision ?? 0) !== input.expectedRevision && !terminalReplay)
         throw new ControlProductPreconditionError();
+      if (terminalReplay) {
+        const candidate = { ...record };
+        if (
+          candidate.requiredFeatures === undefined &&
+          previous.record.requiredFeatures !== undefined
+        )
+          candidate.requiredFeatures = previous.record.requiredFeatures;
+        // An exact replay can fill missing references without advancing metadata or the Goal marker.
+        if (isDeepStrictEqual(previous.record, candidate)) continue;
+        if (
+          input.expectedRevision !== previous.revision ||
+          Object.keys({ ...previous.record, ...candidate }).some(
+            (field) =>
+              !isDeepStrictEqual(previous.record[field], candidate[field]) &&
+              !(terminalFillableFields.has(field) && previous.record[field] == null)
+          )
+        )
+          throw new ControlProductPreconditionError();
+      }
       if (
         kind === 'thread' &&
         !previous &&
@@ -283,7 +369,7 @@ export function applyControlProducts(
           .get(record.privateOwnerUserId as string)
       )
         throw new ControlProductPreconditionError();
-      checkReplacement(kind, previous?.record, record);
+      checkReplacement(kind, previous?.record, record, terminalTurnId);
       const retained = previous
         ? (sqlite.prepare(`SELECT record_json FROM ${tables[kind]} WHERE id=?`).get(id) as {
             record_json: string;
@@ -294,7 +380,13 @@ export function applyControlProducts(
         retained ? JSON.parse(retained.record_json) : undefined,
         previous?.record,
         input.record
-      );
+      ) as Record<string, unknown>;
+      if (
+        terminalReplay &&
+        replacement.requiredFeatures === undefined &&
+        previous.record.requiredFeatures !== undefined
+      )
+        replacement.requiredFeatures = previous.record.requiredFeatures;
       decode(kind, replacement, owner);
       const columns: Record<string, string | number | null> = {
         id,
@@ -339,7 +431,11 @@ export function applyControlProducts(
     const record = decode(input.kind, input.record, owner);
     if (input.kind === 'turn') {
       const thread = readProduct(sqlite, owner, 'thread', record.threadId as string);
-      if (thread?.record.status !== 'active') throw new ControlProductPreconditionError();
+      if (
+        !thread ||
+        ((record.id !== terminalTurnId || !terminalWasSealed) && thread.record.status !== 'active')
+      )
+        throw new ControlProductPreconditionError();
       if (record.agentSessionId != null) {
         const session = readProduct(
           sqlite,
@@ -350,8 +446,8 @@ export function applyControlProducts(
         if (
           !session ||
           session.record.threadId !== record.threadId ||
-          session.record.status === 'closed' ||
-          session.record.status === 'failed'
+          (record.id !== terminalTurnId &&
+            (session.record.status === 'closed' || session.record.status === 'failed'))
         )
           throw new ControlProductPreconditionError();
       }
@@ -380,8 +476,32 @@ export function applyControlProducts(
   for (const entry of entries) {
     const input = entry.input;
     const turn = readProduct(sqlite, owner, 'turn', input.turnId);
-    if (!turn || JSON.parse(entry.identityJson).threadId !== turn.record.threadId)
+    if (
+      !turn ||
+      JSON.parse(entry.identityJson).threadId !== turn.record.threadId ||
+      (input.turnId !== terminalTurnId &&
+        !['pending', 'running'].includes(String(turn.record.status)))
+    )
       throw new ControlProductPreconditionError();
+    if (input.turnId === terminalTurnId) {
+      const replay = sqlite
+        .prepare(
+          'SELECT id,revision,content_json,identity_json FROM control_product_entries WHERE kind=? AND turn_id=? AND sequence=?'
+        )
+        .get(input.kind, input.turnId, input.sequence) as
+        | { id: string; revision: number; content_json: string; identity_json: string }
+        | undefined;
+      if (replay) {
+        if (
+          replay.id !== entry.id ||
+          replay.revision !== input.expectedRevision + 1 ||
+          replay.identity_json !== entry.identityJson ||
+          !isDeepStrictEqual(JSON.parse(replay.content_json), input.content)
+        )
+          throw new ControlProductPreconditionError();
+        continue;
+      }
+    }
     const last = sqlite
       .prepare(
         'SELECT max(sequence) AS sequence FROM control_product_entries WHERE kind=? AND turn_id=?'
@@ -395,7 +515,8 @@ export function applyControlProducts(
     if (
       input.sequence !== (last.sequence ?? 0) + 1 ||
       input.expectedRevision !== (previous?.revision ?? 0) ||
-      (previous && previous.identity_json !== entry.identityJson)
+      (previous && previous.identity_json !== entry.identityJson) ||
+      (input.turnId === terminalTurnId && terminalWasSealed && previous !== undefined)
     )
       throw new ControlProductPreconditionError();
     sqlite
@@ -434,47 +555,71 @@ export function prepareControlEntries(
   contentMount: ControlProductContentMount | undefined,
   entries: readonly ControlProductEntry[]
 ): PreparedControlEntry[] {
+  return prepareEntries(owner, contentMount, entries);
+}
+
+/** Verifies a scoped immutable object and synchronizes its bytes and directory before any deciding transaction. */
+function synchronizeControlContent(
+  owner: ControlProductOwner,
+  contentMount: ControlProductContentMount | undefined,
+  content: ControlProductEntry['content']
+): Buffer {
+  if (isMainThread || !contentMount || content.byteLength > CONTROL_PRODUCT_LIMITS.payloadBytes)
+    throw new ControlProductPreconditionError();
+  const reference = content.reference;
+  assertControlProductOwner(owner, reference.locator.ownerScope);
+  if (
+    reference.range !== null ||
+    reference.availability !== 'available' ||
+    reference.knowledgeBaseId !== contentMount.knowledgeBaseId ||
+    reference.locator.mount !== contentMount.mount
+  )
+    throw new ControlProductPreconditionError();
+  const root = realpathSync(contentMount.root);
+  const path = resolve(root, reference.locator.path);
+  const rel = relative(root, path);
+  if (rel.startsWith('..') || isAbsolute(rel) || realpathSync(dirname(path)) !== dirname(path))
+    throw new ControlProductPreconditionError();
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  let bytes: Buffer;
+  try {
+    const metadata = fstatSync(fd);
+    if (!metadata.isFile() || metadata.size !== content.byteLength)
+      throw new ControlProductPreconditionError();
+    bytes = readFileSync(fd);
+    if (`sha256:${createHash('sha256').update(bytes).digest('hex')}` !== reference.contentDigest)
+      throw new ControlProductPreconditionError();
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  const directory = openSync(
+    dirname(path),
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW
+  );
+  try {
+    fsyncSync(directory);
+  } finally {
+    closeSync(directory);
+  }
+  return bytes;
+}
+
+/** Reads and synchronizes immutable content before SQL; the terminal identity is private to complete preparation. */
+function prepareEntries(
+  owner: ControlProductOwner,
+  contentMount: ControlProductContentMount | undefined,
+  entries: readonly ControlProductEntry[],
+  terminal?: Record<string, unknown>,
+  sealedTurn?: Record<string, unknown>
+): PreparedControlEntry[] {
   if (isMainThread) throw new ControlProductPreconditionError();
   return entries.map((input) => {
-    if (!contentMount || input.content.byteLength > CONTROL_PRODUCT_LIMITS.payloadBytes)
-      throw new ControlProductPreconditionError();
-    const reference = input.content.reference;
-    assertControlProductOwner(owner, reference.locator.ownerScope);
-    if (
-      reference.range !== null ||
-      reference.availability !== 'available' ||
-      reference.knowledgeBaseId !== contentMount.knowledgeBaseId ||
-      reference.locator.mount !== contentMount.mount
-    )
-      throw new ControlProductPreconditionError();
-    const root = realpathSync(contentMount.root);
-    const path = resolve(root, reference.locator.path);
-    const rel = relative(root, path);
-    if (rel.startsWith('..') || isAbsolute(rel) || realpathSync(dirname(path)) !== dirname(path))
-      throw new ControlProductPreconditionError();
-    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-    let value: unknown;
-    try {
-      const metadata = fstatSync(fd);
-      if (!metadata.isFile() || metadata.size !== input.content.byteLength)
-        throw new ControlProductPreconditionError();
-      const bytes = readFileSync(fd);
-      if (`sha256:${createHash('sha256').update(bytes).digest('hex')}` !== reference.contentDigest)
-        throw new ControlProductPreconditionError();
-      value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
-    const directory = openSync(
-      dirname(path),
-      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW
+    const value: unknown = JSON.parse(
+      new TextDecoder('utf-8', { fatal: true }).decode(
+        synchronizeControlContent(owner, contentMount, input.content)
+      )
     );
-    try {
-      fsyncSync(directory);
-    } finally {
-      closeSync(directory);
-    }
     if (input.kind === 'item') {
       const item = readRetainedV1(value, () => StoredItemV1Schema.parse(value));
       assertControlProductOwner(owner, item.owner);
@@ -489,7 +634,9 @@ export function prepareControlEntries(
         responsibleUserId: 'responsibleUserId' in item ? item.responsibleUserId : null,
         causationId: item.causationId ?? null,
       };
-      return { input, id: item.id, identityJson: JSON.stringify(identity) };
+      const prepared = { input, id: item.id, identityJson: JSON.stringify(identity) };
+      preparedPayloads.set(prepared, item);
+      return prepared;
     }
     const event = readRetainedV1(value, () =>
       owner.kind === 'server'
@@ -507,10 +654,25 @@ export function prepareControlEntries(
     if (input.expectedRevision !== 0 || !event.threadId)
       throw new ControlProductPreconditionError();
     const data = event.data;
-    if (
+    const terminalEvent =
       data.type === 'turn-completed' ||
       ('turn' in data && data.turn.status !== 'pending' && data.turn.status !== 'running') ||
-      (data.type === 'turn-started' && data.status !== 'pending' && data.status !== 'running')
+      (data.type === 'turn-started' && data.status !== 'pending' && data.status !== 'running');
+    if (
+      terminalEvent &&
+      (!terminal ||
+        terminal.id !== input.turnId ||
+        !('turn' in data) ||
+        data.turn.status !== terminal.status ||
+        !terminalSnapshotFieldMatches('error', data.turn.error, terminal.error, sealedTurn) ||
+        !terminalSnapshotFieldMatches(
+          'completedAt',
+          data.turn.completedAt,
+          terminal.completedAt,
+          sealedTurn
+        ) ||
+        (data.type === 'turn-completed' &&
+          !terminalStopReasonMatches(data.stopReason, terminal.status)))
     )
       throw new ControlProductPreconditionError();
     const referencedItemIds = new Set<string>();
@@ -544,13 +706,714 @@ export function prepareControlEntries(
         referencedItemIds
       );
     }
-    return {
+    const prepared = {
       input,
       id: `${input.turnId}:${event.sequence}`,
       identityJson: JSON.stringify({ threadId: event.threadId, turnId: input.turnId }),
       referencedItemIds: [...referencedItemIds],
     };
+    preparedPayloads.set(prepared, event);
+    return prepared;
   });
+}
+
+/** Closed original command partitions whose terminal publication can own their receipt. */
+const terminalReceiptSchema = z
+  .object({
+    key: z.string().min(1),
+    command: z.enum([
+      'conversation.submit',
+      'task.start',
+      'turn.start',
+      'turn.input.submit',
+      'turn.interrupt',
+      'knowledge.tell',
+      'knowledge.maintain',
+      'knowledge.server.tell',
+      'knowledge.server.maintain',
+    ]),
+    requestId: RequestIdSchema,
+    scope: z.record(z.string(), z.string()),
+    inputHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    response: z
+      .object({
+        kind: z.string().min(1),
+        id: z.string().min(1),
+        conversationMetadata: z.unknown().optional(),
+      })
+      .strict(),
+    createdAt: z.string().datetime(),
+    expiresAt: z.string().datetime(),
+  })
+  .strict();
+
+/** Complete local terminal tuple. Null execution means no native execution, not proof of release. */
+export const ControlTerminalTransitionSchema = z
+  .object({
+    owner: z.union([
+      StoredWorkOwnerV1Schema.options[0].strict(),
+      StoredWorkOwnerV1Schema.options[1].strict(),
+    ]),
+    turn: ControlProductMutationSchema.extend({ kind: z.literal('turn') }),
+    products: z.array(ControlProductMutationSchema).max(CONTROL_PRODUCT_LIMITS.entries),
+    entries: z.array(ControlProductEntrySchema).min(1).max(CONTROL_PRODUCT_LIMITS.entries),
+    reap: z.object({ reason: z.string().min(1), inferredBy: z.string().min(1) }).strict(),
+    evidence: z.array(StoredRuntimeEvidenceV1Schema).max(CONTROL_PRODUCT_LIMITS.entries),
+    evidenceContent: z
+      .array(ControlProductEntrySchema.shape.content)
+      .max(CONTROL_PRODUCT_LIMITS.entries),
+    command: z
+      .object({
+        receipt: terminalReceiptSchema,
+        audit: AuditEventSchema.extend({
+          createdAt: z.string().datetime(),
+          occurredAt: z.string().datetime(),
+        }),
+      })
+      .strict()
+      .nullable(),
+    execution: z
+      .object({
+        executionId: z.string().min(1),
+        terminalStepId: z.string().min(1),
+        expectedRevision: z.number().int().positive(),
+        cleanupStepId: z.string().min(1),
+      })
+      .strict()
+      .nullable(),
+  })
+  .strict();
+/** Parsed complete native terminal input; it carries facts and references, never executable callbacks. */
+export type ControlTerminalTransition = z.infer<typeof ControlTerminalTransitionSchema>;
+
+/** Native-local preparation token. It cannot be serialized or substituted with a transport descriptor. */
+export interface PreparedControlTerminal {
+  readonly turnId: string;
+}
+/** Bounded materialized facts; the caller must not publish them until its outer FULL COMMIT succeeds. */
+export interface ControlTerminalResult {
+  readonly turnId: string;
+  readonly revision: number;
+  readonly replayed: boolean;
+  readonly reap: { readonly id: string; readonly sequence: number } | null;
+  readonly response: CommandRequestResponse | null;
+  readonly execution: {
+    readonly executionId: string;
+    readonly revision: number;
+    readonly phase: 'closing' | 'closed';
+  } | null;
+}
+
+// Load the existing domain owners during preparation to avoid their Store/admission import cycle.
+// No import or asynchronous work occurs in the deciding body.
+let terminalOwners:
+  | {
+      store: typeof import('../lib/store.js');
+      requests: typeof import('./command-request-records.js');
+      audit: typeof import('../audit-events.js');
+      task: typeof import('../runtime/task-terminal-fact.js');
+      evidence: typeof import('../runtime/runtime-evidence.js');
+      observations: typeof import('./work-observations.js');
+    }
+  | undefined;
+
+const terminalPreparations = new WeakMap<
+  PreparedControlTerminal,
+  {
+    sqlite: Database.Database;
+    input: ControlTerminalTransition;
+    entries: PreparedControlEntry[];
+    dependencies: { entry: PreparedControlEntry; contentJson: string; revision: number }[];
+    evidenceBundles: { id: string; rowJson: string }[];
+    executionSnapshot: { rootJson: string; terminalJson: string; cleanupJson: string } | null;
+  }
+>();
+
+/** A sealed snapshot remains immutable when an absent field is later filled in canonical metadata. */
+function terminalSnapshotFieldMatches(
+  field: string,
+  actual: unknown,
+  expected: unknown,
+  sealedTurn: Record<string, unknown> | undefined
+): boolean {
+  return (
+    isDeepStrictEqual(actual, expected) ||
+    (sealedTurn !== undefined && terminalFillableFields.has(field) && actual == null)
+  );
+}
+
+/** Keeps the existing sealed outcome mapping, including bounded successful stopping conditions. */
+function terminalStopReasonMatches(reason: unknown, status: unknown): boolean {
+  if (status === 'completed')
+    return ['completed', 'length', 'budget_exhausted'].includes(String(reason));
+  if (status === 'failed') return reason === 'error';
+  return (status === 'cancelled' || status === 'interrupted') && reason === 'aborted';
+}
+
+/** Resolves the physical SQL owner from the supplied same-connection domain handle. */
+function terminalOwner(db: CoreDb | WorkspaceDb, owner: ControlProductOwner): void {
+  assertControlProductOwner(
+    db.scope === 'core' ? { kind: 'server' } : { kind: 'workspace', workspaceId: db.workspaceId },
+    owner
+  );
+  // Drizzle exposes the bound client. A sibling ORM must never join this tuple by implication.
+  if (!('$client' in db.db) || db.db.$client !== db.sqlite)
+    throw new ControlProductPreconditionError();
+}
+
+/** Synchronizes actual immutable terminal bodies and captures dependencies outside SQL, never on Main. */
+export async function prepareControlTerminal(
+  db: CoreDb | WorkspaceDb,
+  value: ControlTerminalTransition,
+  contentMount: ControlProductContentMount | undefined
+): Promise<PreparedControlTerminal> {
+  if (isMainThread || db.sqlite.inTransaction) throw new ControlProductPreconditionError();
+  if (!terminalOwners) {
+    const [store, requests, audit, task, evidence, observations] = await Promise.all([
+      import('../lib/store.js'),
+      import('./command-request-records.js'),
+      import('../audit-events.js'),
+      import('../runtime/task-terminal-fact.js'),
+      import('../runtime/runtime-evidence.js'),
+      import('./work-observations.js'),
+    ]);
+    terminalOwners = { store, requests, audit, task, evidence, observations };
+  }
+  if (db.sqlite.inTransaction) throw new ControlProductPreconditionError();
+  const input = ControlTerminalTransitionSchema.parse(value);
+  terminalOwner(db, input.owner);
+  const turn = decode('turn', input.turn.record, input.owner);
+  if (
+    ['pending', 'running'].includes(String(turn.status)) ||
+    !turn.completedAt ||
+    input.products.some((product) => product.kind === 'turn') ||
+    input.products.length + input.entries.length + 1 > CONTROL_PRODUCT_LIMITS.entries ||
+    Buffer.byteLength(JSON.stringify(input)) > CONTROL_PRODUCT_LIMITS.metadataBytes
+  )
+    throw new ControlProductPreconditionError();
+  for (const content of input.evidenceContent)
+    synchronizeControlContent(input.owner, contentMount, content);
+  const before = readProduct(db.sqlite, input.owner, 'turn', String(turn.id));
+  const sealedTurn =
+    before && !['pending', 'running'].includes(String(before.record.status))
+      ? before.record
+      : undefined;
+  const entries = prepareEntries(input.owner, contentMount, input.entries, turn, sealedTurn);
+  if (entries.some((entry) => entry.input.turnId !== turn.id))
+    throw new ControlProductPreconditionError();
+  const terminalEvents = entries.filter((entry) => {
+    const event = preparedPayloads.get(entry) as { data?: { type?: string } };
+    return event.data?.type === 'turn-completed';
+  });
+  if (terminalEvents.length !== 1) throw new ControlProductPreconditionError();
+  const snapshot = (
+    preparedPayloads.get(terminalEvents[0]!) as {
+      data: { turn: { items: Record<string, unknown>[] } };
+    }
+  ).data.turn;
+  // Transcript snapshots deliberately omit capture declarations; use that family's existing projection.
+  const snapshotMetadata = StoredTurnSnapshotV1Schema.parse({ ...snapshot, items: [] });
+  const terminalMetadata = StoredTurnSnapshotV1Schema.parse({ ...turn, items: [] });
+  if (
+    Object.keys({ ...snapshotMetadata, ...terminalMetadata }).some(
+      (field) =>
+        !terminalSnapshotFieldMatches(
+          field,
+          snapshotMetadata[field as keyof typeof snapshotMetadata],
+          terminalMetadata[field as keyof typeof terminalMetadata],
+          sealedTurn
+        )
+    ) ||
+    terminalEvents[0]!.input.sequence !==
+      Math.max(
+        ...entries
+          .filter((entry) => entry.input.kind === 'event')
+          .map((entry) => entry.input.sequence)
+      )
+  )
+    throw new ControlProductPreconditionError();
+  const supplied = new Map(
+    entries.filter((entry) => entry.input.kind === 'item').map((entry) => [entry.id, entry])
+  );
+  const dependencies: { entry: PreparedControlEntry; contentJson: string; revision: number }[] = [];
+  if (sealedTurn) {
+    const tail = db.sqlite
+      .prepare(
+        "SELECT schema_version,sequence,revision,content_json FROM control_product_entries WHERE kind='event' AND turn_id=? ORDER BY sequence DESC LIMIT 1"
+      )
+      .get(turn.id) as
+      | { schema_version: number; sequence: number; revision: number; content_json: string }
+      | undefined;
+    if (tail) {
+      const original = terminalEvents[0]!;
+      if (
+        tail.schema_version !== 1 ||
+        original.input.sequence !== tail.sequence ||
+        !isDeepStrictEqual(JSON.parse(tail.content_json), original.input.content)
+      )
+        throw new ControlProductPreconditionError();
+      dependencies.push({
+        entry: original,
+        contentJson: tail.content_json,
+        revision: tail.revision,
+      });
+    }
+  }
+  const ids = new Set<string>();
+  for (const item of snapshot.items) {
+    const id = (item as { id: string }).id;
+    if (ids.has(id)) throw new ControlProductPreconditionError();
+    ids.add(id);
+    let prepared = supplied.get(id);
+    if (!prepared) {
+      const row = db.sqlite
+        .prepare(
+          "SELECT sequence,revision,content_json FROM control_product_entries WHERE kind='item' AND turn_id=? AND id=? ORDER BY revision DESC LIMIT 1"
+        )
+        .get(turn.id, id) as
+        | { sequence: number; revision: number; content_json: string }
+        | undefined;
+      if (!row) throw new ControlProductPreconditionError();
+      prepared = prepareEntries(
+        input.owner,
+        contentMount,
+        [
+          {
+            kind: 'item',
+            turnId: String(turn.id),
+            sequence: row.sequence,
+            expectedRevision: row.revision - 1,
+            content: ControlProductEntrySchema.shape.content.parse(JSON.parse(row.content_json)),
+          },
+        ],
+        turn
+      )[0]!;
+      dependencies.push({ entry: prepared, contentJson: row.content_json, revision: row.revision });
+    }
+    if (
+      !isDeepStrictEqual(
+        preparedPayloads.get(prepared),
+        StoredItemV1Schema.parse({ ...item, schemaVersion: 1 })
+      )
+    )
+      throw new ControlProductPreconditionError();
+  }
+  if ([...supplied.keys()].some((id) => !ids.has(id))) throw new ControlProductPreconditionError();
+  const bundleIds = [...new Set(input.evidence.flatMap((record) => record.evidenceBundleIds))];
+  if (bundleIds.length > CONTROL_PRODUCT_LIMITS.entries)
+    throw new ControlProductPreconditionError();
+  const evidenceBundles = bundleIds.map((id) => {
+    const row = db.sqlite
+      .prepare('SELECT * FROM evidence_bundles WHERE evidence_bundle_id=?')
+      .get(id) as Record<string, unknown> | undefined;
+    if (
+      !row ||
+      row.schema_version !== 1 ||
+      input.owner.kind !== 'workspace' ||
+      row.workspace_id !== input.owner.workspaceId ||
+      row.thread_id !== turn.threadId ||
+      row.turn_id !== turn.id ||
+      row.agent_session_id !== (turn.agentSessionId ?? null) ||
+      z
+        .array(z.string())
+        .parse(JSON.parse(String(row.required_features_json)))
+        .some(
+          (feature) =>
+            ![
+              'runtime.evidence.v1',
+              'worker.runtime-provenance.v1',
+              'openkit.work-observations.v1',
+            ].includes(feature)
+        )
+    )
+      throw new ControlProductPreconditionError();
+    const rowJson = JSON.stringify(row);
+    if (Buffer.byteLength(rowJson) > CONTROL_PRODUCT_LIMITS.metadataBytes)
+      throw new ControlProductPreconditionError();
+    return { id, rowJson };
+  });
+  let executionSnapshot: { rootJson: string; terminalJson: string; cleanupJson: string } | null =
+    null;
+  if (input.execution) {
+    const ref = { owner: input.owner, executionId: input.execution.executionId };
+    const reader = createExecutionStepJournalReader(db, input.owner);
+    const snapshot = readTerminalExecutionSnapshot(db.sqlite, input.execution);
+    // Decode through the existing journal owner outside SQL, then recheck its exact bytes in the deciding body.
+    await Promise.all([
+      reader.readExecution(ref),
+      reader.readInvocation({ execution: ref, stepId: input.execution.terminalStepId }),
+      reader.readInvocation({ execution: ref, stepId: input.execution.cleanupStepId }),
+    ]);
+    if (
+      db.sqlite.inTransaction ||
+      !isDeepStrictEqual(snapshot, readTerminalExecutionSnapshot(db.sqlite, input.execution))
+    )
+      throw new ControlProductPreconditionError();
+    executionSnapshot = snapshot;
+  }
+  const token = Object.freeze({ turnId: String(turn.id) });
+  terminalPreparations.set(token, {
+    sqlite: db.sqlite,
+    input: structuredClone(input),
+    entries,
+    dependencies,
+    evidenceBundles,
+    executionSnapshot,
+  });
+  return token;
+}
+
+/** Checks and retains the original receipt; an earlier admission receipt does not skip terminal publication. */
+function applyTerminalReceipt(
+  db: CoreDb | WorkspaceDb,
+  input: ControlTerminalTransition
+): CommandRequestResponse | null {
+  if (!input.command) return null;
+  const { receipt, audit } = input.command;
+  if (!terminalOwners) throw new ControlProductPreconditionError();
+  const { commandRequestKey } = terminalOwners.store;
+  const { mapCommandRequestRow, normalizeCommandRequestResponse } = terminalOwners.requests;
+  const { recordServerAuditEvent, recordWorkspaceAuditEvent } = terminalOwners.audit;
+  const owner = input.owner;
+  if (
+    receipt.scope.userId !== undefined ||
+    receipt.scope.appId !== undefined ||
+    (owner.kind === 'server'
+      ? receipt.scope.coreId !== 'server' || receipt.scope.workspaceId !== undefined
+      : receipt.scope.workspaceId !== owner.workspaceId || receipt.scope.coreId !== undefined) ||
+    receipt.key !== commandRequestKey(receipt.command, receipt.requestId, receipt.scope) ||
+    receipt.expiresAt <= receipt.createdAt ||
+    audit.action !== receipt.command ||
+    audit.requestId !== receipt.requestId ||
+    audit.outcome !== 'succeeded' ||
+    audit.workspaceId !== (owner.kind === 'server' ? null : owner.workspaceId) ||
+    audit.threadId !== input.turn.record.threadId ||
+    audit.turnId !== input.turn.record.id
+  )
+    throw new ControlProductPreconditionError();
+  const response = normalizeCommandRequestResponse(
+    receipt.command,
+    receipt.response as CommandRequestResponse
+  );
+  const row = db.sqlite
+    .prepare(
+      'SELECT schema_version AS schemaVersion,request_key AS key,command_name AS command,request_id AS requestId,scope_json AS scopeJson,input_hash AS inputHash,response_kind AS responseKind,response_id AS responseId,response_json AS responseJson,created_at AS createdAt,expires_at AS expiresAt FROM idempotency_requests WHERE request_key=?'
+    )
+    .get(receipt.key) as Parameters<typeof mapCommandRequestRow>[0] | undefined;
+  if (row) {
+    const prior = mapCommandRequestRow(row);
+    if (
+      prior.command !== receipt.command ||
+      prior.requestId !== receipt.requestId ||
+      prior.inputHash !== receipt.inputHash ||
+      !isDeepStrictEqual(prior.scope, receipt.scope) ||
+      !isDeepStrictEqual(prior.response, response)
+    )
+      throw new ControlProductPreconditionError();
+    const localAudit = db.sqlite
+      .prepare(
+        'SELECT schema_version FROM audit_events WHERE action=? AND request_id=? AND workspace_id IS ? AND thread_id=? AND turn_id=? AND outcome=? LIMIT 1'
+      )
+      .get(
+        receipt.command,
+        receipt.requestId,
+        audit.workspaceId,
+        audit.threadId,
+        audit.turnId,
+        'succeeded'
+      ) as { schema_version: number } | undefined;
+    if (localAudit?.schema_version !== 1) throw new ControlProductPreconditionError();
+    return prior.response;
+  }
+  // Never prune another producer's rows or replace an existing request identity during closeout.
+  db.sqlite
+    .prepare(
+      'INSERT INTO idempotency_requests (schema_version,request_key,command_name,request_id,scope_json,input_hash,response_kind,response_id,response_json,created_at,expires_at) VALUES (1,?,?,?,?,?,?,?,?,?,?)'
+    )
+    .run(
+      receipt.key,
+      receipt.command,
+      receipt.requestId,
+      JSON.stringify(receipt.scope),
+      receipt.inputHash,
+      response.kind,
+      response.id,
+      response.conversationMetadata === undefined
+        ? null
+        : JSON.stringify(response.conversationMetadata),
+      receipt.createdAt,
+      receipt.expiresAt
+    );
+  const {
+    id,
+    createdAt,
+    occurredAt,
+    workspaceId: _workspaceId,
+    protocolVersion,
+    authentication,
+    notebookAdmission,
+    policyInvocation,
+    policyWriteOutcome,
+    ...facts
+  } = audit;
+  const event = {
+    ...facts,
+    auditEventId: id,
+    now: new Date(createdAt),
+    occurredAt: new Date(occurredAt),
+    ...(protocolVersion === undefined ? {} : { protocolVersion }),
+    ...(authentication === undefined ? {} : { authentication }),
+    ...(notebookAdmission === undefined ? {} : { notebookAdmission }),
+    ...(policyInvocation === undefined ? {} : { policyInvocation }),
+    ...(policyWriteOutcome === undefined ? {} : { policyWriteOutcome }),
+  };
+  if (db.scope === 'core') recordServerAuditEvent({ ...event, coreDb: db });
+  else recordWorkspaceAuditEvent({ ...event, workspaceDb: db, workspaceId: db.workspaceId });
+  return response;
+}
+
+/** Captures exact local journal descriptors for a recheck after asynchronous preparation and inside SQL. */
+function readTerminalExecutionSnapshot(
+  sqlite: Database.Database,
+  execution: NonNullable<ControlTerminalTransition['execution']>
+) {
+  const root = sqlite
+    .prepare('SELECT * FROM control_executions WHERE id=?')
+    .get(execution.executionId);
+  const terminal = sqlite
+    .prepare('SELECT * FROM control_execution_steps WHERE execution_id=? AND step_id=?')
+    .get(execution.executionId, execution.terminalStepId);
+  const cleanup = sqlite
+    .prepare('SELECT * FROM control_execution_steps WHERE execution_id=? AND step_id=?')
+    .get(execution.executionId, execution.cleanupStepId);
+  if (!root || !terminal || !cleanup) throw new ControlProductPreconditionError();
+  return {
+    rootJson: JSON.stringify(root),
+    terminalJson: JSON.stringify(terminal),
+    cleanupJson: JSON.stringify(cleanup),
+  };
+}
+
+/** Ends only the actual terminal-publication step and preserves the already-admitted cleanup intent and exclusion. */
+function applyTerminalExecution(
+  db: CoreDb | WorkspaceDb,
+  input: ControlTerminalTransition
+): ControlTerminalResult['execution'] {
+  const execution = input.execution;
+  const turn = input.turn.record;
+  const tableExists = db.sqlite
+    .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='control_executions'")
+    .get();
+  const roots = tableExists
+    ? (db.sqlite.prepare('SELECT * FROM control_executions WHERE work_id=?').all(turn.id) as {
+        id: string;
+        schema_version: number;
+        owner_json: string;
+        definition_version: string;
+        phase: string;
+        revision: number;
+        exclusion_refs_json: string;
+        terminal_cause: string | null;
+      }[])
+    : [];
+  if (!execution) {
+    if (roots.length || turn.agentSessionId != null) throw new ControlProductPreconditionError();
+    return null;
+  }
+  const root = roots.find((row) => row.id === execution.executionId);
+  if (
+    !root ||
+    roots.length !== 1 ||
+    root.schema_version !== 1 ||
+    !Number.isSafeInteger(root.revision) ||
+    root.revision < 1 ||
+    db.scope !== 'workspace' ||
+    root.definition_version !== 'workspace-worker-turn/v1' ||
+    !input.evidence.length ||
+    !isDeepStrictEqual(JSON.parse(root.owner_json), input.owner)
+  )
+    throw new ControlProductPreconditionError();
+  const step = db.sqlite
+    .prepare(
+      'SELECT schema_version,state,control_json,span_json FROM control_execution_steps WHERE execution_id=? AND step_id=?'
+    )
+    .get(root.id, execution.terminalStepId) as
+    | { schema_version: number; state: string; control_json: string; span_json: string }
+    | undefined;
+  const cleanup = db.sqlite
+    .prepare(
+      'SELECT schema_version,state,control_json FROM control_execution_steps WHERE execution_id=? AND step_id=?'
+    )
+    .get(root.id, execution.cleanupStepId) as
+    | { schema_version: number; state: string; control_json: string }
+    | undefined;
+  if (
+    !step ||
+    step.schema_version !== 1 ||
+    JSON.parse(step.control_json).kind !== 'terminal-publication' ||
+    !cleanup ||
+    cleanup.schema_version !== 1 ||
+    !['intent', 'completed', 'failed', 'unknown', 'cancelled'].includes(cleanup.state) ||
+    !['inspect-cleanup', 'fence', 'release'].includes(JSON.parse(cleanup.control_json).kind)
+  )
+    throw new ControlProductPreconditionError();
+  const outputRefs = input.entries.map((entry) => entry.content.reference.contentDigest);
+  if ((root.phase === 'closing' || root.phase === 'closed') && step.state === 'completed') {
+    if (!isDeepStrictEqual(JSON.parse(step.control_json).outputRefs, outputRefs))
+      throw new ControlProductPreconditionError();
+    return { executionId: root.id, revision: root.revision, phase: root.phase };
+  }
+  if (cleanup.state !== 'intent') throw new ControlProductPreconditionError();
+  const exclusionRefs = z
+    .array(z.string().min(1))
+    .min(1)
+    .parse(JSON.parse(root.exclusion_refs_json));
+  const span = JSON.parse(step.span_json) as ExecutionJournalSettlement['span'];
+  // Native decoding validates this retained span; no diagnostic field supplies control authority.
+  const settled: ExecutionJournalSettlement = {
+    ref: {
+      execution: { owner: input.owner, executionId: root.id },
+      stepId: execution.terminalStepId,
+    },
+    expectedExecutionRevision: execution.expectedRevision,
+    state: 'completed',
+    outputRefs,
+    span: {
+      ...span,
+      status: { code: 'OK' },
+      // Publication ends now; the product's earlier completion time is not this local step's clock.
+      endTimeUnixNano: BigInt(Date.now()) * 1_000_000n,
+    },
+    nextPhase: 'closing',
+    terminalCause: root.terminal_cause ?? String(turn.status),
+    exclusionRefs,
+  };
+  // Workspace qualification requires RD-B's owner-qualified primitive and actual Workspace0012, not a cast or alternate SQL writer.
+  settleExecutionJournalStep(db, settled);
+  const after = db.sqlite
+    .prepare('SELECT revision FROM control_executions WHERE id=?')
+    .get(root.id) as { revision: number };
+  return { executionId: root.id, revision: after.revision, phase: 'closing' };
+}
+
+/** Applies the complete terminal tuple in its caller's active savepoint. It never commits, publishes or acknowledges. */
+export function applyControlTerminal(
+  db: CoreDb | WorkspaceDb,
+  value: ControlTerminalTransition,
+  prepared: PreparedControlTerminal
+): ControlTerminalResult {
+  assertControlProductWriter(db.sqlite);
+  const input = ControlTerminalTransitionSchema.parse(value);
+  terminalOwner(db, input.owner);
+  const preparation = terminalPreparations.get(prepared);
+  if (
+    !preparation ||
+    preparation.sqlite !== db.sqlite ||
+    !isDeepStrictEqual(input, preparation.input)
+  )
+    throw new ControlProductPreconditionError();
+  if (
+    input.execution &&
+    (!preparation.executionSnapshot ||
+      !isDeepStrictEqual(
+        preparation.executionSnapshot,
+        readTerminalExecutionSnapshot(db.sqlite, input.execution)
+      ))
+  )
+    throw new ControlProductPreconditionError();
+  const turn = decode('turn', input.turn.record, input.owner);
+  const previous = readProduct(db.sqlite, input.owner, 'turn', String(turn.id));
+  if (previous) {
+    for (const field of ['startedAt', 'captureCoverage', 'fileInputs', 'internalExecution']) {
+      if (
+        previous.record[field] !== undefined &&
+        previous.record[field] !== null &&
+        !isDeepStrictEqual(previous.record[field], turn[field])
+      )
+        throw new ControlProductPreconditionError();
+    }
+  } else if (!turn.captureCoverage) throw new ControlProductPreconditionError();
+  for (const dependency of preparation.dependencies) {
+    const row = db.sqlite
+      .prepare(
+        'SELECT revision,content_json FROM control_product_entries WHERE kind=? AND turn_id=? AND id=? ORDER BY revision DESC LIMIT 1'
+      )
+      .get(dependency.entry.input.kind, turn.id, dependency.entry.id) as
+      | { revision: number; content_json: string }
+      | undefined;
+    if (!row || row.revision !== dependency.revision || row.content_json !== dependency.contentJson)
+      throw new ControlProductPreconditionError();
+  }
+  for (const bundle of preparation.evidenceBundles) {
+    if (
+      JSON.stringify(
+        db.sqlite
+          .prepare('SELECT * FROM evidence_bundles WHERE evidence_bundle_id=?')
+          .get(bundle.id)
+      ) !== bundle.rowJson
+    )
+      throw new ControlProductPreconditionError();
+  }
+  // A decided replay must not rewind companion projections changed by later ordinary commands.
+  applyProducts(
+    db.sqlite,
+    input.owner,
+    previous && !['pending', 'running'].includes(String(previous.record.status))
+      ? [input.turn]
+      : [...input.products, input.turn],
+    preparation.entries,
+    String(turn.id)
+  );
+  const terminalEvent = preparation.entries.find(
+    (entry) =>
+      (preparedPayloads.get(entry) as { data?: { type?: string } }).data?.type === 'turn-completed'
+  )!;
+  if (
+    db.sqlite
+      .prepare(
+        "SELECT 1 FROM control_product_entries WHERE kind='item' AND turn_id=? AND id NOT IN (SELECT value FROM json_each(?)) LIMIT 1"
+      )
+      .get(turn.id, JSON.stringify(terminalEvent.referencedItemIds ?? []))
+  )
+    throw new ControlProductPreconditionError();
+  if (!terminalOwners) throw new ControlProductPreconditionError();
+  if (db.scope === 'workspace')
+    terminalOwners.task.recordTaskTerminalFact(db, {
+      ...StoredTurnV1Schema.parse(turn),
+      items: [],
+    });
+  for (const record of input.evidence) {
+    if (
+      input.owner.kind !== 'workspace' ||
+      record.workspaceId !== input.owner.workspaceId ||
+      record.threadId !== turn.threadId ||
+      record.turnId !== turn.id ||
+      record.agentSessionId !== (turn.agentSessionId ?? null) ||
+      record.requiredFeatures.some(
+        (feature) => !['runtime.evidence.v1', 'worker.runtime-provenance.v1'].includes(feature)
+      )
+    )
+      throw new ControlProductPreconditionError();
+  }
+  terminalOwners.evidence.importWorkspaceRuntimeEvidence(db, input.evidence);
+  const reap = terminalOwners.observations.applyControlTurnReap(db.sqlite, input.owner, {
+    threadId: String(turn.threadId),
+    turnId: String(turn.id),
+    ...input.reap,
+  });
+  const response = applyTerminalReceipt(db, input);
+  const execution = applyTerminalExecution(db, input);
+  const current = readProduct(db.sqlite, input.owner, 'turn', String(turn.id));
+  if (!current) throw new ControlProductPreconditionError();
+  return {
+    turnId: String(turn.id),
+    revision: current.revision,
+    replayed:
+      previous !== undefined && !['pending', 'running'].includes(String(previous.record.status)),
+    reap: reap ? { id: reap.id, sequence: reap.seq } : null,
+    response,
+    execution,
+  };
 }
 
 /** A known retained metadata view; the SQL revision remains separate from descriptive payload fields. */
