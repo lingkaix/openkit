@@ -5,11 +5,11 @@ import { managedThreadPolicy } from '../test-support/resource-policy.js';
 import { canDiscloseThreadToAudience, isThreadVisible } from './thread-visibility.js';
 
 describe('current managed Thread audience', () => {
-  it('uses the loaded boundary for discovery, source reads and revocation, including administrators', () => {
+  it('uses the loaded boundary for discovery, source reads and revocation, including administrators', async () => {
     const store = new FsStore();
-    const workspace = store.createWorkspace('Managed audience');
-    const managed = store.createThread(workspace.id, 'Restricted');
-    const ordinary = store.createThread(workspace.id, 'Ordinary');
+    const workspace = await store.createWorkspace('Managed audience');
+    const managed = await store.createThread(workspace.id, 'Restricted');
+    const ordinary = await store.createThread(workspace.id, 'Ordinary');
     const userId = allocateEntityId('usr');
     const otherId = allocateEntityId('usr');
     let policy = managedThreadPolicy({
@@ -35,12 +35,12 @@ describe('current managed Thread audience', () => {
   });
 });
 
-it('does not copy a managed source into an unmanaged or different audience', () => {
+it('does not copy a managed source into an unmanaged or different audience', async () => {
   const store = new FsStore();
-  const workspace = store.createWorkspace('Source boundary');
-  const source = store.createThread(workspace.id, 'Managed source');
-  const destination = store.createThread(workspace.id, 'Broad destination');
-  const matching = store.createThread(workspace.id, 'Matching destination');
+  const workspace = await store.createWorkspace('Source boundary');
+  const source = await store.createThread(workspace.id, 'Managed source');
+  const destination = await store.createThread(workspace.id, 'Broad destination');
+  const matching = await store.createThread(workspace.id, 'Matching destination');
   const userId = allocateEntityId('usr');
   store.setWorkspaceResourcePolicyProjection(() => ({
     schemaVersion: 1,

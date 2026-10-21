@@ -268,8 +268,8 @@ async function fixture(reviewRequired = false, failAfterPublication = false) {
     workspaceMutationAdmission,
     openWorkspace: (id) => openWorkspaceDb(dataRoot, id),
     inflightCommands: new WeakMap(),
-    pin: (run) => {
-      pinKnowledgeManagerExecution(roleDependencies, run);
+    pin: async (run) => {
+      await pinKnowledgeManagerExecution(roleDependencies, run);
     },
     run: (run) => runKnowledgeManagerAgent(roleDependencies, run),
   };

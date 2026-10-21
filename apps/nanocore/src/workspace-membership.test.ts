@@ -214,7 +214,7 @@ describe('workspace membership foundation', () => {
       ensureLocalUser(coreDb);
       const store = new FsStore({ dataRoot });
       const input = { coreDb, store, userId: 'usr_00000000-0000-7000-8000-000000000001' };
-      ensureUserQuickChatWorkspace(input);
+      await ensureUserQuickChatWorkspace(input);
       const workspace = await store.ensureQuickChatWorkspace(
         'usr_00000000-0000-7000-8000-000000000001'
       );
@@ -239,7 +239,7 @@ describe('workspace membership foundation', () => {
         .prepare('SELECT * FROM workspace_registry WHERE workspace_id = ?')
         .all(workspace.id);
       const threads = store.listThreads(workspace.id);
-      expect(() => ensureUserQuickChatWorkspace(input)).toThrowError(
+      await expect(ensureUserQuickChatWorkspace(input)).rejects.toThrowError(
         WorkspaceOwnerMembershipRemovedError
       );
       expect(
@@ -335,10 +335,10 @@ describe('workspace membership foundation', () => {
   it('scopes workspace creation idempotency to the authenticated user', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-create-scope-'));
     const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
     const store = new FsStore({ dataRoot });
 
     try {
-      applyMigrations(coreDb);
       const now = Date.now();
       coreDb.sqlite
         .prepare(

@@ -40,7 +40,7 @@ it('retains the trusted reminted import base before Notebook publication', async
     return rmSync(dataRoot, { recursive: true, force: true });
   });
   const store = createTestStore({ dataRoot });
-  const source = store.createWorkspace('Source');
+  const source = await store.createWorkspace('Source');
   const workspaceId = allocateEntityId('ws');
   const knowledgeBaseId = allocateEntityId('kb');
   let stagedBase: unknown;

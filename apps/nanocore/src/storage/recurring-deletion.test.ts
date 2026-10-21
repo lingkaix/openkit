@@ -139,6 +139,7 @@ it('seals the complete recurring graph before deletion removes its Core rows and
     ).toEqual([{ audit_event_id: retainedCoreAudit.id }]);
   } finally {
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   }
 });

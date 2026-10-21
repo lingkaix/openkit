@@ -15,6 +15,7 @@ import { loadResourceCatalog } from '../catalog/resource-catalog.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { FsStore } from '../lib/store.js';
 import { createOperationInvocation } from '../operation-composition.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { users } from '../storage/schema/index.js';
@@ -24,8 +25,9 @@ import { createVaultReference } from '../vault/vault-references.js';
 import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
 
 const cleanup: (() => void)[] = [];
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
+  await shutdownControlStoreWorkerClient();
   for (const close of cleanup.splice(0).reverse()) close();
 });
 
@@ -310,7 +312,7 @@ describe('Server MCP administration owner and recovery', () => {
     const f = fixture();
     const requestId = randomUUID();
     await f.call('administration.server-mcp-create', { ...creation, requestId });
-    const workspace = f.store.createWorkspace('Ordinary member');
+    const workspace = await f.store.createWorkspace('Ordinary member');
     const member = createOpenKitAccessTokenRecord(f.coreDb, {
       ownerUserId: FIXTURE_LOCAL_USER_ID,
       scope: 'workspace',

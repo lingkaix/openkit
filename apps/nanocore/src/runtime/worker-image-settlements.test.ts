@@ -10,6 +10,7 @@ import {
   readNanoHostPhysicalConnectionContext,
 } from '../auth/nanohost-transport-session.js';
 import { FsStore } from '../lib/store.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import type { ExecutionStepControl } from './execution-step-journal.js';
@@ -122,6 +123,7 @@ async function preparationFixture() {
     client?.destroy();
     if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
     if (db.sqlite.open) db.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(root, { recursive: true, force: true });
   });
   applyMigrations(db);
@@ -184,12 +186,16 @@ describe('ordinary preparation adapter controls before journal wiring', () => {
     // Bind real caller provenance through Server history without creating a Workspace database.
     const actor: ExecutionStepControl['actor'] = { kind: 'user', id: ensureLocalUser(f.db) };
     const store = new FsStore({ dataRoot: f.root });
-    const thread = store.createServerThread(
+    const thread = await store.createServerThread(
       'Administrative image preparation',
       undefined,
       'conversation'
     );
-    const publicationTurn = store.createServerTurn(thread.id, 'Prepare the authored image.', actor);
+    const publicationTurn = await store.createServerTurn(
+      thread.id,
+      'Prepare the authored image.',
+      actor
+    );
     expect(getLocalUserId(f.db)).toBe(actor.id);
     expect(
       new FsStore({ dataRoot: f.root }).getServerTurn(thread.id, publicationTurn.id)

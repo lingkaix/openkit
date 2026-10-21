@@ -62,7 +62,7 @@ describe('projectAgentCatalogEntry', () => {
     expect(publicJson).not.toContain('opencode');
   });
 
-  it('rereads the current snapshot through the Workspace resources seam without persisting agents', () => {
+  it('rereads the current snapshot through the Workspace resources seam without persisting agents', async () => {
     const configured = createTestAgentSetup({
       agentId: 'agent_configured',
       displayName: 'Configured Worker',
@@ -72,7 +72,7 @@ describe('projectAgentCatalogEntry', () => {
       displayName: 'Later Worker',
     }).manifest;
     const store = new FsStore();
-    const workspace = store.createWorkspace('Catalog projection');
+    const workspace = await store.createWorkspace('Catalog projection');
     let manifests = [configured];
     store.setWorkspaceAgentCatalogProjection(() => projectAgentCatalogEntries(manifests));
 

@@ -244,7 +244,7 @@ it('forwards inherited optional metadata selectors through private native Memory
     workspaceId: workspace.id,
     ownerUserId: f.userId,
   });
-  openAssistantTimeline(f.store, workspace.id, f.userId, 'Private Assistant');
+  await openAssistantTimeline(f.store, workspace.id, f.userId, 'Private Assistant');
   const content = updateOkfFrontmatter({
     path: 'preferences.md',
     content: f.content('personal-selector evidence.'),
