@@ -318,7 +318,7 @@ Approval and artifact records may be materialized for query and UI convenience, 
 
 ## Item Delta Kinds
 
-A delta is an item-type-specific streaming update within an Item's lifecycle, separate from creation and completion. Each Item type MUST declare its supported delta kinds. The taxonomy MUST remain OpenKit-owned and projectable from native runtime streams.
+A delta is an item-type-specific streaming update within an Item's lifecycle, separate from creation and completion. Each Item type MUST declare its supported delta kinds. The OpenKit delta taxonomy should be easy for runtime adapters to project from native event streams while remaining OpenKit-owned.
 
 Delta kinds form a closed enum. Typed payloads MUST select their meaning by delta kind; low-level append, replace, and patch operations are subordinate payload details. Agents and adapters MUST NOT hide vendor-specific streaming modes inside existing kinds. A new kind requires a protocol compatibility note and conformance fixtures.
 
