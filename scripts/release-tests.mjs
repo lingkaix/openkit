@@ -306,9 +306,9 @@ export function prepareCoverage(owners, { root = process.cwd() } = {}) {
       'run',
       'build',
       ...owners.map((o) => `--filter=${o.name}${o.name === '@openkit/nanocore' ? '...' : '^...'}`),
-      // Worker transport tests import real NanoCore helpers whose native closure uses Policy.
+      // Worker transport tests import real NanoCore helpers that use Policy and Storage.
       ...(owners.some((o) => o.name === '@openkit/worker-shim')
-        ? ['--filter=@openkit/policy-kernel']
+        ? ['--filter=@openkit/policy-kernel', '--filter=@openkit/storage']
         : []),
     ]);
 }

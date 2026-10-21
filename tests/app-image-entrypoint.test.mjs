@@ -42,6 +42,14 @@ test('retires every upstream idle connection well before configured NanoCore idl
   assert.equal(configuredProxies.length, proxies.length, source);
 });
 
+test('preserves exact Artifact download length by excluding downloads from compression', async () => {
+  const source = await readFile(caddyfile, 'utf8');
+  assert.match(
+    source,
+    /@compressed \{\s+(?:#[^\n]*\n\s*)?not path \/api\/workspaces\/\*\/threads\/\*\/events \/api\/app\/operations\/artifact\.download\s+\}\s+encode @compressed gzip/u
+  );
+});
+
 test('uses the App HTTP upstream without publishing NanoHost transport', async () => {
   const source = await readFile(caddyfile, 'utf8');
   const privateTransport = source.indexOf('handle /api/nanohost/transport/*');
