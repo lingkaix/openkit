@@ -159,12 +159,12 @@ async function fixture(getBootReadiness?: () => BootReadinessSnapshot) {
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
+  const store = await createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({
     coreDb,
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
-  const store = await createDemoStore({ dataRoot });
   return {
     coreDb,
     store,
