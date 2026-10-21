@@ -5,7 +5,11 @@ import {
   workspaceIdForOwner,
 } from '@openkit/protocol';
 
-import { ALREADY_DECIDED_PUBLICATION_ADMISSION, type FsStore } from '../lib/store.js';
+import {
+  ALREADY_DECIDED_PUBLICATION_ADMISSION,
+  type FsStore,
+  type TerminalTurnPublication,
+} from '../lib/store.js';
 
 /** Input for idempotently projecting one governed-worker terminal outcome. */
 export interface TerminalizeGovernedWorkerTurnInput {
@@ -30,6 +34,8 @@ export interface TerminalizeGovernedWorkerTurnInput {
   readonly requestId: string | null;
   /** Product store that owns the turn. */
   readonly store: FsStore;
+  /** Existing native terminal facts supplied by the execution owner; omission creates no proof. */
+  readonly publication?: TerminalTurnPublication;
   /** Governed worker turn id. */
   readonly turnId: string;
 }
@@ -93,6 +99,7 @@ export async function terminalizeGovernedWorkerTurn(
   const explanation = recoveryOwnsOutcome ? initialTurn.error?.explanation : input.explanation;
   const safeExplanation = explanation ? GitFailureExplanationSchema.parse(explanation) : undefined;
   const errors: unknown[] = [];
+  const notifications: Array<Awaited<ReturnType<FsStore['persistTurnEvent']>>> = [];
   const turnPatch = {
     completedAt,
     error: {
@@ -103,19 +110,6 @@ export async function terminalizeGovernedWorkerTurn(
     status: input.outcome,
   } as const;
   let terminalTurn = initialTurn;
-
-  if (!turnMatchesOutcome(terminalTurn, input.outcome, errorCode, message)) {
-    try {
-      terminalTurn = await input.store.updateTurn(
-        input.turnId,
-        turnPatch,
-        ALREADY_DECIDED_PUBLICATION_ADMISSION
-      );
-    } catch (error) {
-      errors.push(error);
-      terminalTurn = input.store.getTurnById(input.turnId);
-    }
-  }
 
   const terminalSessionStatus = input.agentSessionRetained
     ? 'idle'
@@ -158,17 +152,19 @@ export async function terminalizeGovernedWorkerTurn(
   );
   if (terminalSession?.status === terminalSessionStatus && !sessionEventExists) {
     try {
-      await input.store.emitTurnEvent(
-        input.turnId,
-        {
-          data: { agentSession: terminalSession, type: 'agent-session-updated' },
-          event: 'agent.session.updated',
-          requestId: input.requestId,
-          threadId: terminalTurn.threadId,
-          turnId: terminalTurn.id,
-          workspaceId: workspaceIdForOwner(terminalTurn.owner),
-        },
-        ALREADY_DECIDED_PUBLICATION_ADMISSION
+      notifications.push(
+        await input.store.persistTurnEvent(
+          input.turnId,
+          {
+            data: { agentSession: terminalSession, type: 'agent-session-updated' },
+            event: 'agent.session.updated',
+            requestId: input.requestId,
+            threadId: terminalTurn.threadId,
+            turnId: terminalTurn.id,
+            workspaceId: workspaceIdForOwner(terminalTurn.owner),
+          },
+          ALREADY_DECIDED_PUBLICATION_ADMISSION
+        )
       );
     } catch (error) {
       errors.push(error);
@@ -178,28 +174,33 @@ export async function terminalizeGovernedWorkerTurn(
   const terminalEventExists = input.store
     .getTurnEvents(input.turnId)
     .some((event) => event.event === 'turn.completed' && event.data.type === 'turn-completed');
-  if (turnMatchesOutcome(terminalTurn, input.outcome, errorCode, message) && !terminalEventExists) {
+  if (
+    !turnMatchesOutcome(terminalTurn, input.outcome, errorCode, message) ||
+    !terminalEventExists ||
+    input.publication !== undefined
+  ) {
     try {
-      await input.store.emitTurnEvent(
-        input.turnId,
-        {
-          data: {
-            stopReason: input.outcome === 'failed' ? 'error' : 'aborted',
-            turn: terminalTurn,
-            type: 'turn-completed',
-          },
-          event: 'turn.completed',
-          requestId: input.requestId,
-          threadId: terminalTurn.threadId,
-          turnId: terminalTurn.id,
-          workspaceId: workspaceIdForOwner(terminalTurn.owner),
-        },
-        ALREADY_DECIDED_PUBLICATION_ADMISSION
-      );
+      terminalTurn = await input.store.completeTurn(input.turnId, turnPatch, {
+        ...input.publication,
+        requestId: input.requestId,
+        stopReason: input.outcome === 'failed' ? 'error' : 'aborted',
+      });
+      if (!terminalEventExists) {
+        const event = input.store
+          .getTurnEvents(input.turnId)
+          .find(
+            (event) => event.event === 'turn.completed' && event.data.type === 'turn-completed'
+          );
+        if (event) notifications.push(event);
+      }
     } catch (error) {
       errors.push(error);
+      terminalTurn = input.store.getTurnById(input.turnId);
     }
   }
+
+  // All durable writes finish before this synchronous observer tail.
+  for (const event of notifications) input.store.emitTurnEvent(input.turnId, event);
 
   if (errors.length > 0) {
     throw new AggregateError(
@@ -225,28 +226,8 @@ async function reconcileCompletedTurn(
   authoritativeTurn: ReturnType<FsStore['getTurnById']>
 ): Promise<ReturnType<FsStore['getTurnById']>> {
   const errors: unknown[] = [];
+  const notifications: Array<Awaited<ReturnType<FsStore['persistTurnEvent']>>> = [];
   let completedTurn = currentTurn;
-  if (
-    currentTurn.status !== 'completed' ||
-    currentTurn.completedAt !== authoritativeTurn.completedAt ||
-    currentTurn.error !== null
-  ) {
-    try {
-      completedTurn = await input.store.updateTurn(
-        input.turnId,
-        {
-          completedAt: authoritativeTurn.completedAt,
-          error: null,
-          status: 'completed',
-        },
-        ALREADY_DECIDED_PUBLICATION_ADMISSION
-      );
-    } catch (error) {
-      errors.push(error);
-      completedTurn = input.store.getTurnById(input.turnId);
-    }
-  }
-
   let idleSession = input.agentSessionId
     ? readAgentSession(input.store, input.agentSessionId)
     : null;
@@ -275,49 +256,69 @@ async function reconcileCompletedTurn(
     )
   ) {
     try {
-      await input.store.emitTurnEvent(
-        input.turnId,
-        {
-          data: { agentSession: idleSession, type: 'agent-session-updated' },
-          event: 'agent.session.updated',
-          requestId: input.requestId,
-          threadId: completedTurn.threadId,
-          turnId: completedTurn.id,
-          workspaceId: workspaceIdForOwner(completedTurn.owner),
-        },
-        ALREADY_DECIDED_PUBLICATION_ADMISSION
+      notifications.push(
+        await input.store.persistTurnEvent(
+          input.turnId,
+          {
+            data: { agentSession: idleSession, type: 'agent-session-updated' },
+            event: 'agent.session.updated',
+            requestId: input.requestId,
+            threadId: completedTurn.threadId,
+            turnId: completedTurn.id,
+            workspaceId: workspaceIdForOwner(completedTurn.owner),
+          },
+          ALREADY_DECIDED_PUBLICATION_ADMISSION
+        )
       );
     } catch (error) {
       errors.push(error);
     }
   }
+  const terminalEventExists = input.store
+    .getTurnEvents(input.turnId)
+    .some(
+      (event) =>
+        event.event === 'turn.completed' &&
+        event.data.type === 'turn-completed' &&
+        event.data.stopReason === 'completed'
+    );
   if (
-    !input.store
-      .getTurnEvents(input.turnId)
-      .some(
-        (event) =>
-          event.event === 'turn.completed' &&
-          event.data.type === 'turn-completed' &&
-          event.data.stopReason === 'completed'
-      )
+    currentTurn.status !== 'completed' ||
+    currentTurn.completedAt !== authoritativeTurn.completedAt ||
+    currentTurn.error !== null ||
+    !terminalEventExists ||
+    input.publication !== undefined
   ) {
     try {
-      await input.store.emitTurnEvent(
+      completedTurn = await input.store.completeTurn(
         input.turnId,
         {
-          data: { stopReason: 'completed', turn: completedTurn, type: 'turn-completed' },
-          event: 'turn.completed',
-          requestId: input.requestId,
-          threadId: completedTurn.threadId,
-          turnId: completedTurn.id,
-          workspaceId: workspaceIdForOwner(completedTurn.owner),
+          completedAt: authoritativeTurn.completedAt,
+          error: null,
+          status: 'completed',
         },
-        ALREADY_DECIDED_PUBLICATION_ADMISSION
+        {
+          ...input.publication,
+          requestId: input.requestId,
+          stopReason: 'completed',
+        }
       );
+      if (!terminalEventExists) {
+        const event = input.store
+          .getTurnEvents(input.turnId)
+          .find(
+            (event) => event.event === 'turn.completed' && event.data.type === 'turn-completed'
+          );
+        if (event) notifications.push(event);
+      }
     } catch (error) {
       errors.push(error);
+      completedTurn = input.store.getTurnById(input.turnId);
     }
   }
+
+  // All durable writes finish before this synchronous observer tail.
+  for (const event of notifications) input.store.emitTurnEvent(input.turnId, event);
 
   if (errors.length > 0) {
     throw new AggregateError(

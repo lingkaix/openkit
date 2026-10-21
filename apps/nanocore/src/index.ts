@@ -583,7 +583,7 @@ const workerPlacement = 'local' as const;
 const store = requireBootValue(sharedStore, 'Shared Workspace store was not initialized.');
 const automationStore = new AutomationStore(coreDb, workspaceMutationAdmission);
 const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
-reconcileWorkerMcpItems(coreDb.dataRoot, store);
+await reconcileWorkerMcpItems(coreDb.dataRoot, store);
 
 /**
  * Ensures the personal Quick Chat Workspace before Better Auth records a new active session.
