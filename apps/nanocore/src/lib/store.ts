@@ -3642,7 +3642,8 @@ export class FsStore {
     const owners: ControlProductOwner[] = [
       { kind: 'server' },
       ...listDirectoryNames(join(this.dataRoot, 'workspaces'))
-        .filter((id) => id !== '.staging')
+        // Match startup readers: refused scopes cannot participate in another owner's discovery.
+        .filter((id) => id !== '.staging' && isScopeAdmitted(this.dataRoot!, 'workspace', id))
         .map((workspaceId) => ({ kind: 'workspace' as const, workspaceId })),
     ];
     let result:
@@ -4707,7 +4708,7 @@ export class FsStore {
    *
    * @param turnId Turn identifier to update.
    * @param input Partial turn fields to merge onto the stored turn.
-   * @param admission Declared post-terminal category when the Turn is already sealed.
+   * @param admission Declared terminal category or original live command tuple.
    * @returns Updated turn after protocol validation.
    * @throws Error when the turn does not exist, the merged turn violates the protocol schema, or a post-terminal write is not admitted.
    */
