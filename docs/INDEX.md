@@ -156,6 +156,7 @@ and are not listed here.
 - `docs/specs/20261018-nanocore_interception_and_information_consolidation.md` — Accepted, Partial — Needed for the approved unified mediation and information-consolidation decisions.
 - `docs/specs/20261019-durable_execution_and_control_store.md` — Draft, Not Started — Scope-owned transactional control, durable execution, dispatch, immutable-content placement, and replacement of split-store recovery under the engineer decisio…
 - `docs/specs/20261020-compute_neutrality_target.md` — Draft, Not Started — This Draft records the proposed placement and carriage mapping, migration order, retained-meaning dispositions and validation limits.
+- `docs/specs/20261021-protocol_identifiers_and_enums.md` — Accepted, Partial — Entity prefixes, fixed derivation namespaces, canonical name bytes, and kind-specific admission.
 
 ## Terminal Specifications
 

@@ -16,7 +16,7 @@ Source: the coordinator's 11:30Z direction. P14 remains the complete identifier 
 
 ## Owners And Accepted Decisions
 
-[Core Protocol](../../core/protocol.md#ids) owns encoding, kind admission and exclusions. [One Identifier Mechanism](../../decisions/20261014-one_identifier_mechanism.md) owns the governing choice; [Pre-Stable Data Continuity](../../decisions/20261014-pre_stable_data_continuity.md) owns the reset boundary. Each allocating specification retains its exact name, trigger and lifecycle. P11's accepted owner batch through 4e0740f3 supplies the additional producer names, independent S51 remint table and immutable grant issuance rule; its drain landing must precede integration. Accepted owner text governs over prior preparation predictions or existing deterministic code.
+[Protocol Identifiers And Enums](../../specs/20261021-protocol_identifiers_and_enums.md#ids) owns encoding, kind admission and exclusions. [One Identifier Mechanism](../../decisions/20261014-one_identifier_mechanism.md) owns the governing choice; [Pre-Stable Data Continuity](../../decisions/20261014-pre_stable_data_continuity.md) owns the reset boundary. Each allocating specification retains its exact name, trigger and lifecycle. P11's accepted owner batch through 4e0740f3 supplies the additional producer names, independent S51 remint table and immutable grant issuance rule; its drain landing must precede integration. Accepted owner text governs over prior preparation predictions or existing deterministic code.
 
 ## Acceptance Observations
 

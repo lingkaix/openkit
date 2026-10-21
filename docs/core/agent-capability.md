@@ -128,6 +128,8 @@ Agent capability routing may consider:
 
 Agents should see stable local or protocol-level endpoints instead of provider-specific routing logic.
 
+NanoCore-managed supply and the upward interface remain Gateway-mediated; separately authorized non-LLM REST grants retain their existing network and credential contracts.
+
 ## Internal Role Tool Identity And Admission
 
 Every internal-role Tool has one governed canonical semantic ID and the same mechanically derived model name wherever it is supplied. The accepted [agent-facing naming decision](../decisions/20261017-agent_facing_naming.md) identifies the operation-identity owner for grammar, projection, length and collision checks. A Tool that projects an operation uses that operation's actual ID. Internal roles expose capabilities for their accepted product responsibilities; they do not acquire a general Worker harness by importing an installed MCP server's Tool catalog.
@@ -136,13 +138,13 @@ The canonical verb vocabulary is: `search` returns bounded candidates; `read` re
 
 The Knowledge Manager's `knowledge.notebook-workspace.update` is a narrowly owned exception for interpreted command text over a private unpublished virtual notebook. Its code-owned command set has no host process, host filesystem, network, credentials or general interpreter access. `knowledge.notebook.update` separately requests the exact-base notebook publication under current authority. Both use their resource owner's bounded schemas; neither grants generic shell execution or widens other internal roles.
 
-MCP may implement an exact admitted internal capability through reviewed server-side adapter code. Its Core schema, effect, scope and required confirmation remain owned by that capability's accepted contract. An upstream Tool name, schema, annotation, deployment activation or catalog selection cannot define internal-role eligibility. The exact server/Tool/configuration/schema tuple remains private dispatch and audit evidence, not a second model-visible identity class. A configuration binding selects an existing implementation; it cannot contain argument-mapping code or create an operation.
+Internal capability implementations MUST preserve the admitted Core contract for schema, effect, scope, and required confirmation. Implementation selection MUST NOT widen internal-role eligibility.
 
 A namespace is an organizational and semantic boundary, not a capability hierarchy. Admission of one exact ID grants neither sibling IDs, a wildcard prefix, other resources in the domain, nor authority over any concrete target.
 
 One canonical Tool ID MUST retain one semantic contract wherever it is reused. An incompatible target, output, authority, or effect requires a different resource or verb path; schema and implementation revisions remain separate evidence and MUST NOT be encoded as version suffixes in the ID.
 
-A provider adapter uses the naming owner's one collision-checked model projection and retains its request-local dispatch map. It MUST retain an exact alias-to-canonical-ID mapping, MUST NOT reconstruct identity or authority by parsing the alias, and MUST use the canonical ID for internal usage, audit, evidence and diagnostics. Where MCP implements that capability, retain its exact upstream identity separately as execution evidence without presenting the upstream schema/name as a model Tool.
+Tool projection MUST preserve canonical semantic identity and exact implementation evidence. Provider-facing names grant no identity or authority.
 
 Until a resource family is cut over, trusted server code creates Tool closures bound to the authenticated actor and exact role, scope, audience, budget, confirmation, credential, and delegation context required by existing owners. The model may provide only schema-admitted operation arguments and MUST NOT supply or widen those bound authority facts.
 

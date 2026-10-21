@@ -265,7 +265,7 @@ The authorized Thread dashboard exposes `taskInputs` as derived `{ itemId, objec
 
 ### Task Command Identifier Names
 
-The existing direct `task.start` reserved Turn uses `tu` UUIDv5 with exact JSON name `{ "command": "task.start", "actorId": actorId, "workspaceId": workspaceId, "threadId": threadId, "requestId": requestId }`. Every value is the original admitted direct-Task command scope. The existing Coordinator-created direct Task Thread uses `th` UUIDv5 name `["task", requestId]`, with its recorded admission request. [Core Protocol](../core/protocol.md#ids) supplies canonical name bytes under the [accepted declaration rule](../decisions/20261015-identifier_owner_declarations.md).
+The existing direct `task.start` reserved Turn uses `tu` UUIDv5 with exact JSON name `{ "command": "task.start", "actorId": actorId, "workspaceId": workspaceId, "threadId": threadId, "requestId": requestId }`. Every value is the original admitted direct-Task command scope. The existing Coordinator-created direct Task Thread uses `th` UUIDv5 name `["task", requestId]`, with its recorded admission request. [Protocol Identifiers And Enums](20261021-protocol_identifiers_and_enums.md#ids) supplies canonical name bytes under the [accepted declaration rule](../decisions/20261015-identifier_owner_declarations.md).
 
 Command-initiated Chat handoff Thread and first Task Turn use only [Chat Mode Assistant's complete ActorRef arrays](20260704-chat_mode_assistant.md#unified-command-branch-and-replay). A helper discriminator cannot replace those accepted names or authorize reuse of the originating Thread. Knowledge Store Implementation retains trace identity; Task admission supplies its recorded request values without allocating another trace.
 

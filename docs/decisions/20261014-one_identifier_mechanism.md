@@ -9,7 +9,7 @@ decider: Engineer (UUIDv7 unification); Coordinator and Consultant under delegat
 
 On 2026-10-14, the engineer proposed UUIDv7 unification as a question, the coordinator recommended it, and the engineer then confirmed it. Verbatim: "统一使用 UUIDv7：确认". Translation: "Use UUIDv7 everywhere: confirmed."
 
-The coordinator and Consultant agreed on prefixed canonical UUID text, preservation of derivation inputs and retry semantics, and a table limited to current entity kinds. Ruling 9 delegates ordinary acceptance when they agree. It leaves blockers, authorizations, important problems, and disagreements with the engineer. [Core Protocol](../core/protocol.md#ids) owns the format and encoding; record owners retain allocation authority and their existing lifecycles.
+The coordinator and Consultant agreed on prefixed canonical UUID text, preservation of derivation inputs and retry semantics, and a table limited to current entity kinds. Ruling 9 delegates ordinary acceptance when they agree. It leaves blockers, authorizations, important problems, and disagreements with the engineer. [Protocol Identifiers And Enums](../specs/20261021-protocol_identifiers_and_enums.md#ids) owns the format and encoding; record owners retain allocation authority and their existing lifecycles.
 
 Independent allocation uses UUIDv7. A kind with an owning derivation keeps its existing complete input and retry semantics, and encodes that input as UUIDv5 in one fixed OpenKit namespace per kind. Both use the same kind prefix, one underscore, and canonical lowercase UUID text in the 8-4-4-4-12 layout. Only a boundary whose field or parameter names the kind checks that prefix. It accepts version 7, and version 5 only for a kind with an owning derivation. Every other consumer keeps the identifier opaque.
 
@@ -47,7 +47,7 @@ Revisit the independent-generation format if millisecond time disclosure becomes
 
 ## Affected Owners
 
-- [Core Protocol](../core/protocol.md#ids): the shared text form, UUIDv7 generation, fixed kind namespaces, canonical derivation-name bytes, UUIDv5 output, validation at boundaries that name a kind, exclusions, and acceptance predicates.
+- [Protocol Identifiers And Enums](../specs/20261021-protocol_identifiers_and_enums.md#ids): the shared text form, UUIDv7 generation, fixed kind namespaces, canonical derivation-name bytes, UUIDv5 output, validation at boundaries that name a kind, exclusions, and acceptance predicates.
 - [Core Concepts](../core/core-concepts.md#identifier-semantics): the shared-format owner pointer and the exclusion of adapter-native runtime identifiers.
 - [Storage Layout And Record Ownership](../specs/20260703-storage_layout_record_ownership.md): derived Material, revision, Review, and follow-up Turn output encoding; transaction and uniqueness owners remain unchanged.
 - [Multi-User Workspace System](../specs/20260715-multi_user_workspace_system.md): Quick Chat Workspace output encoding; the canonical-user input and authorization predicates remain unchanged.

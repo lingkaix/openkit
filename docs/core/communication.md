@@ -223,7 +223,7 @@ Clients should close a turn stream only after receiving that canonical exact-own
 
 Status-aware HTTP replay MAY return `204 No Content` only when the reconnect cursor is already at or beyond a retained canonical exact-owner terminal-affiliated envelope. In the HTTP/SSE projection, that status is the only silent terminal replay signal. Opaque SSE close events, transport errors, or EventSource error callbacks are not terminal proof unless the client has already observed that canonical envelope.
 
-Clients that cannot observe HTTP status MUST rely on the canonical exact-owner terminal-affiliated envelope or a surfaced stream failure. A status-aware replay client may also rely on the explicit HTTP response above. A protocol-validation failure closes the active transport and makes that subscription hard-incompatible: it exposes no private recovery cursor, performs no automatic recovery, and adds no public recovery shape. A later caller-created subscription supplies only a caller-owned `since` value or no `since`, and it may fail again until an authoritative read establishes usable state or a compatible client-server upgrade is installed.
+Clients that cannot observe HTTP status MUST rely on the canonical exact-owner terminal-affiliated envelope or a surfaced stream failure. A status-aware replay client may also rely on the explicit HTTP response above. A protocol-validation failure closes the active transport and makes that subscription hard-incompatible: it exposes no private recovery cursor, performs no automatic recovery, and adds no public recovery shape. Later subscriptions follow [Protocol](protocol.md#stream-cursor-and-replay); transport reconnection MUST NOT invent or advance the caller-owned `since` value.
 
 ## Stream Cursor Projection
 
@@ -316,7 +316,7 @@ Communication with agents has three directions, each with one standard interface
 
 The tool surface a worker sees changes only at a Turn boundary, never inside a Turn.
 
-Inside the Sandbox, the worker's own configuration and tools, including MCP servers configured there, are the worker's. These directions govern only traffic that crosses the Sandbox boundary; storage and network containment still apply there. External routing follows [Sandbox](sandbox.md). NanoCore-managed supply and the upward interface remain Gateway-mediated; separately authorized non-LLM REST grants retain their existing network and credential contracts. This exception creates no upward route or NanoCore-managed MCP supply route.
+Inside the Sandbox, the worker's own configuration and tools, including MCP servers configured there, are the worker's. These directions govern only traffic that crosses the Sandbox boundary; storage and network containment still apply there. External routing follows [Sandbox](sandbox.md). [Agent Capability](agent-capability.md#routing) owns the managed-supply route and REST exception; transport selection MUST preserve those route contracts. This exception creates no upward route or NanoCore-managed MCP supply route.
 
 ## Control Plane
 

@@ -72,6 +72,12 @@ An MCP adapter may fill a capability only after that owner's contract accepts th
 
 The first implementation enables the Core Tools enumerated by the Assistant and native Kernel/UI table below plus progressive Skill reads. It enables no arbitrary third-party MCP Tool and defines no production MCP adapter profile here; the separately admitted vendor repository-read target does not establish that its production integration is implemented. The MCP lifecycle/approval contract below is ready for a bounded internal capability to use, and is verified with a code-owned test capability before such an adapter is enabled; this is infrastructure conformance, not a claim of a user-facing channel integration. Native Kernel/UI work does not wait for such an integration. New capabilities require a direct entry-owner amendment; adding a server to a catalog cannot silently widen the entry.
 
+### Internal Tool Dispatch Evidence
+
+MCP may implement an exact admitted internal capability through reviewed server-side adapter code. Its Core schema, effect, scope and required confirmation remain owned by that capability's accepted contract. An upstream Tool name, schema, annotation, deployment activation or catalog selection cannot define internal-role eligibility. The exact server/Tool/configuration/schema tuple remains private dispatch and audit evidence, not a second model-visible identity class. A configuration binding selects an existing implementation; it cannot contain argument-mapping code or create an operation.
+
+A provider adapter uses the naming owner's one collision-checked model projection and retains its request-local dispatch map. It MUST retain an exact alias-to-canonical-ID mapping, MUST NOT reconstruct identity or authority by parsing the alias, and MUST use the canonical ID for internal usage, audit, evidence and diagnostics. Where MCP implements that capability, retain its exact upstream identity separately as execution evidence without presenting the upstream schema/name as a model Tool.
+
 ### Named extension seams
 
 | Internal need | Existing owner and bounded extension |

@@ -277,7 +277,7 @@ This fail-closed rule does not apply to derived SQLite indexes and read models. 
 
 The Phase 1 Material graph is an explicit exception to the ordinary file-backed workspace-history default. Its three authoritative families and the command ledger that acknowledges their mutations live in the same `workspace.sqlite`; no Material authority exists under `files/`, `sources/`, `knowledge/`, `artifacts/`, or a private Material directory.
 
-Derived Material, revision, Artifact Review, and follow-up Turn identifiers retain their owning inputs and retry rules. Their output encoding uses the fixed kind namespaces and prefixed canonical UUIDv5 text in [Core Protocol](../core/protocol.md#ids), as recorded in [One Identifier Mechanism](../decisions/20261014-one_identifier_mechanism.md). Transaction keys, version-keyed Review uniqueness, and immutable parent linkage remain unchanged.
+Derived Material, revision, Artifact Review, and follow-up Turn identifiers retain their owning inputs and retry rules. Their output encoding uses the fixed kind namespaces and prefixed canonical UUIDv5 text in [Protocol Identifiers And Enums](20261021-protocol_identifiers_and_enums.md#ids), as recorded in [One Identifier Mechanism](../decisions/20261014-one_identifier_mechanism.md). Transaction keys, version-keyed Review uniqueness, and immutable parent linkage remain unchanged.
 
 The following name-byte table is a projection of [Work Resource Interaction Model](20260713-work_resource_interaction_model.md#artifact-and-item-lineage). That owner defines its actor and identifier values and retains allocation and retry authority. Each name is exactly the UTF-8 RFC 8785 JSON Canonicalization Scheme output for the listed JSON array; no storage-specific field is added.
 
