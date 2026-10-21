@@ -334,6 +334,8 @@ Material `sensitivity` is exactly `public`, `internal`, or `restricted` and is r
 
 ### Revision contract
 
+Direct Material revision save admits at most 16,777,216 bytes in the UTF-8 encoding of its exact content. Measure encoded bytes, including multibyte characters, before any effect. This deliberately closes the unbounded-input omission before `v0.1.0`; it does not change retained revision readability. Artifact-to-Material apply keeps its existing exact-original processor limit.
+
 Every saved revision MUST preserve its immutable content and creation metadata. Its digest addresses the exact content. Append-only judgements do not change those bytes, metadata or digest.
 
 The canonical revision SHOULD store a complete content snapshot for correctness and recovery. Diffs, summaries, extracted structure, and anchor maps are derived and MUST be reproducible from canonical revisions.
