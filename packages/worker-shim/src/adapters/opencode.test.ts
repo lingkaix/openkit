@@ -145,6 +145,7 @@ describe('OpenCode resident adapter', () => {
   it('RET E5 preserves original native row fields and order before assistant selection', async () => {
     const part = { type: 'reasoning', text: 'E5 native-only α', extra: { ordered: [3, null, 1] } };
     const f = timelineFixture('new', [part]);
+    f.client.session.list = async () => ({ cursor: {}, data: [] });
     const session = await f.adapter.openSession(openInput(f.layout, f.creds));
     sessions.push(session);
     const received: Array<{ record: RuntimeObservation; body?: Buffer }> = [];
@@ -195,11 +196,15 @@ describe('OpenCode resident adapter', () => {
     ).toBe(true);
     expect(
       received.some(
-        ({ record }) =>
-          record.fact.family === 'child-content' &&
-          ['unavailable', 'unsupported'].includes(record.fact.coverage ?? '')
+        ({ record }) => record.fact.family === 'child-content' && record.fact.coverage === 'ended'
       )
     ).toBe(true);
+    expect(
+      received.some(
+        ({ record }) =>
+          record.fact.family === 'child-content' && record.fact.coverage === 'unsupported'
+      )
+    ).toBe(false);
   });
 
   it('RET E5 bounds stderr and stdout logs together while exempting native transcripts', async () => {
@@ -258,6 +263,325 @@ describe('OpenCode resident adapter', () => {
         ({ record, body }) => record.fact.kind === 'native-transcript' && body && body.length > 7
       )
     ).toBe(true);
+  });
+
+  /**
+   * Supplies native SDK pages to the real adapter; the second parent poll changes only source data.
+   * Existing child rows precede prompt admission, and only native parent declarations grant reachability.
+   */
+  function e5ChildFixture(
+    fault?:
+      | 'wrong-parent'
+      | 'malformed'
+      | 'cyclic'
+      | 'replaced'
+      | 'missing'
+      | 'read-failure'
+      | 'session-pages'
+      | 'message-pages'
+  ) {
+    const f = timelineFixture('new');
+    let prompted = false;
+    let poll = 0;
+    const oldChild = {
+      id: 'child-before',
+      type: 'user',
+      time: { created: 1 },
+      text: 'PRE-LAUNCH CHILD',
+    };
+    const oldNested = {
+      id: 'nested-before',
+      type: 'user',
+      time: { created: 1 },
+      text: 'PRE-LAUNCH NESTED',
+    };
+    const childRows = [
+      {
+        id: 'child-answer',
+        type: 'assistant',
+        time: { created: 2 },
+        agent: 'build',
+        model: { id: 'prompt-model', providerID: OPENCODE_PROVIDER_ID },
+        finish: 'stop',
+        content: [{ type: 'reasoning', text: 'child native reasoning' }],
+        future: { exact: [3, null, 1], spacing: '  preserve  ' },
+      },
+      {
+        id: 'child-idle',
+        type: 'idle',
+        time: { created: 3 },
+        outcome: 'succeeded',
+        future: { detail: 'child tail' },
+      },
+    ];
+    const nestedRows = [
+      {
+        id: 'nested-answer',
+        type: 'assistant',
+        time: { created: 2 },
+        agent: 'build',
+        model: { id: 'prompt-model', providerID: OPENCODE_PROVIDER_ID },
+        finish: 'stop',
+        content: [{ type: 'text', text: 'nested native answer' }],
+        future: { original: 'nested-only', ordered: ['b', 'a'] },
+      },
+    ];
+    const poison = {
+      id: 'foreign-answer',
+      type: 'user',
+      time: { created: 4 },
+      text: 'FOREIGN OR REPLACED SOURCE',
+    };
+    const prompt = f.client.session.prompt;
+    f.client.session.prompt = vi.fn(async (...args) => {
+      prompted = true;
+      return prompt(...args);
+    });
+    f.client.session.create = vi.fn(f.client.session.create);
+    const get = f.client.session.get;
+    f.client.session.get = async (...args) => {
+      const info = await get(...args);
+      if (prompted) poll += 1;
+      return { ...info, time: { ...info.time, idle: poll === 1 ? 0 : Number.MAX_SAFE_INTEGER } };
+    };
+    // SessionInfo.parentID, not a send/wait receiver or an unfiltered global list, is the edge.
+    const listing = vi.fn(async (input?: { parentID?: string | null; cursor?: string }) => {
+      const parent = input?.parentID;
+      let data: object[] =
+        parent === 'sess-1'
+          ? [{ id: 'child-1', parentID: 'sess-1' }]
+          : parent === 'child-1'
+            ? [{ id: 'nested-1', parentID: 'child-1' }]
+            : parent === 'nested-1'
+              ? []
+              : [{ id: 'unrelated-1', parentID: 'other-root' }];
+      if (poll >= 2) {
+        if (fault === 'wrong-parent' && parent === 'sess-1')
+          data = [{ id: 'child-1', parentID: 'other-root' }];
+        if (fault === 'malformed' && parent === 'sess-1') data = [{ id: 42, parentID: 'sess-1' }];
+        if (fault === 'cyclic' && parent === 'nested-1')
+          data = [{ id: 'sess-1', parentID: 'nested-1' }];
+        if (fault === 'replaced') {
+          if (parent === 'sess-1') data = [{ id: 'nested-1', parentID: 'sess-1' }];
+          if (parent === 'nested-1') data = [{ id: 'child-1', parentID: 'nested-1' }];
+          if (parent === 'child-1') data = [];
+        }
+        if (fault === 'missing' && parent === 'sess-1') data = [];
+        if (fault === 'session-pages' && parent === 'sess-1') {
+          const page = Number(input?.cursor ?? 0);
+          return { data: [], cursor: page < 1024 ? { next: String(page + 1) } : {} };
+        }
+      }
+      return {
+        data: data.map((row) => ({
+          projectID: 'native-project',
+          cost: 0,
+          tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+          time: { created: 1, updated: 2 },
+          location: { directory: f.layout.work },
+          ...row,
+        })),
+        cursor: {},
+      };
+    });
+    f.client.session.list = listing as typeof f.client.session.list;
+    const messages = f.client.message.list;
+    const reading = vi.fn(async (...args: Parameters<typeof messages>) => {
+      const input = args[0];
+      if (input.sessionID === 'sess-1') return messages(...args);
+      if (poll >= 2 && input.sessionID === 'child-1') {
+        if (fault === 'read-failure') throw new Error('Native child message source disappeared.');
+        if (fault === 'message-pages') {
+          const page = Number(input.cursor ?? 0);
+          return {
+            data: [
+              {
+                id: `bounded-${page}`,
+                type: 'user',
+                time: { created: 4 },
+                text: 'bounded native page',
+              },
+            ],
+            cursor: page < 1024 ? { next: String(page + 1) } : {},
+          } as never;
+        }
+      }
+      const rows =
+        input.sessionID === 'child-1'
+          ? [oldChild, ...(prompted ? childRows : [])]
+          : input.sessionID === 'nested-1'
+            ? [oldNested, ...(prompted ? nestedRows : [])]
+            : [poison];
+      if (
+        poll >= 2 &&
+        fault &&
+        ['wrong-parent', 'malformed', 'cyclic', 'replaced', 'missing'].includes(fault)
+      )
+        rows.push(poison);
+      return { cursor: {}, data: rows } as never;
+    });
+    f.client.message.list = reading;
+    return { ...f, childRows, nestedRows, oldChild, oldNested, poison, listing, reading };
+  }
+
+  // RET Native Transcripts And Runtime Logs: include available children, exact native association and version provenance.
+  it('RET E5 includes declared nested children with exact bytes, pre-launch watermarks and actual parentage', async () => {
+    const f = e5ChildFixture();
+    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+    sessions.push(session);
+    const received: Array<{ record: RuntimeObservation; body?: Buffer; afterSettlement: boolean }> =
+      [];
+    let settled = false;
+    const input = turnInput(f.layout, f.creds, 'native-child-tree', 'prompt-model');
+    const active = await session.startTurn({
+      ...input,
+      runtimeCapture: {
+        ...input.runtimeCapture,
+        captureCoverage: { scope: 'task', value: 'on' },
+        ...{ nativeLogMaxBytes: 7, authoredVersion: '2.0.22-authored' },
+        emit: async (record, body) => {
+          received.push({
+            record,
+            ...(body ? { body: Buffer.from(body) } : {}),
+            afterSettlement: settled,
+          });
+        },
+      },
+    });
+    const result = await active.settled.then((value) => {
+      settled = true;
+      return value;
+    });
+    expect(result.status).toBe('completed');
+    const native = received.filter(
+      ({ record, body }) => record.fact.kind === 'native-transcript' && body
+    );
+    const bytes = Buffer.concat(native.map(({ body }) => body!));
+    // Compare native row bytes and order before any JSON parse or semantic projection.
+    const childBytes = f.childRows.map((row) => Buffer.from(JSON.stringify(row)));
+    const nestedBytes = f.nestedRows.map((row) => Buffer.from(JSON.stringify(row)));
+    expect(bytes.includes(Buffer.concat(childBytes))).toBe(true);
+    expect(bytes.includes(Buffer.concat(nestedBytes))).toBe(true);
+    expect(childBytes.map((row) => bytes.indexOf(row))).toEqual(
+      [...childBytes.map((row) => bytes.indexOf(row))].sort((a, b) => a - b)
+    );
+    for (const row of [f.oldChild, f.oldNested, f.poison])
+      expect(bytes.includes(Buffer.from(JSON.stringify(row)))).toBe(false);
+    expect(native.every(({ afterSettlement }) => !afterSettlement)).toBe(true);
+    const child = native.find(({ body }) => body!.includes(childBytes[0]!))!.record;
+    const nested = native.find(({ body }) => body!.includes(nestedBytes[0]!))!.record;
+    for (const [record, expected] of [
+      [child, Buffer.concat(childBytes)],
+      [nested, Buffer.concat(nestedBytes)],
+    ] as const)
+      expect(
+        Buffer.concat(
+          native
+            .filter(({ record: observed }) => observed.sourceRef === record.sourceRef)
+            .map(({ body }) => body!)
+        )
+      ).toEqual(expected);
+    const root = received.find(
+      ({ record }) => record.fact.kind === 'origin' && record.fact.phase === 'started'
+    )!.record.fact.runtimeOriginRef;
+    const origins = received.filter(({ record }) => record.fact.kind === 'origin');
+    expect(origins.map(({ record }) => record.fact)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          runtimeOriginRef: child.fact.runtimeOriginRef,
+          parentRuntimeOriginRef: root,
+        }),
+        expect.objectContaining({
+          runtimeOriginRef: nested.fact.runtimeOriginRef,
+          parentRuntimeOriginRef: child.fact.runtimeOriginRef,
+        }),
+      ])
+    );
+    expect(new Set([root, child.fact.runtimeOriginRef, nested.fact.runtimeOriginRef]).size).toBe(3);
+    expect(child.sourceRef).not.toBe(nested.sourceRef);
+    for (const record of [child, nested]) {
+      expect(record.content).toMatchObject({ state: 'expected', boundary: 'native-content-v1' });
+      expect(record.fact.native).toMatchObject({
+        harness: 'opencode',
+        authoredVersion: '2.0.22-authored',
+        measuredVersion: null,
+      });
+    }
+    expect(
+      f.listing.mock.calls.every(([input]) =>
+        ['sess-1', 'child-1', 'nested-1'].includes(input!.parentID!)
+      )
+    ).toBe(true);
+    expect(f.reading.mock.calls.some(([input]) => input.sessionID === 'unrelated-1')).toBe(false);
+    expect(f.client.session.create).toHaveBeenCalledTimes(1);
+    expect(f.client.session.prompt).toHaveBeenCalledTimes(1);
+    expect(
+      received.some(
+        ({ record }) =>
+          record.fact.family === 'child-content' && record.fact.coverage === 'unsupported'
+      )
+    ).toBe(false);
+  });
+
+  // RET Capture Coverage: source faults and bounds declare gaps, preserve admitted prefixes and cannot assert complete child history.
+  it.each([
+    { fault: 'wrong-parent', reason: 'malformed-frame' },
+    { fault: 'malformed', reason: 'malformed-frame' },
+    { fault: 'cyclic', reason: 'malformed-frame' },
+    { fault: 'replaced', reason: 'malformed-frame' },
+    { fault: 'missing', reason: 'collector-failed' },
+    { fault: 'read-failure', reason: 'collector-failed' },
+    { fault: 'session-pages', reason: 'limit-exceeded' },
+    { fault: 'message-pages', reason: 'limit-exceeded' },
+  ] as const)('RET E5 declares a $fault child-source gap without losing the admitted prefix', async ({
+    fault,
+    reason,
+  }) => {
+    const f = e5ChildFixture(fault);
+    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+    sessions.push(session);
+    const received: Array<{ record: RuntimeObservation; body?: Buffer }> = [];
+    const input = turnInput(f.layout, f.creds, `child-gap-${fault}`, 'prompt-model');
+    const active = await session.startTurn({
+      ...input,
+      runtimeCapture: {
+        ...input.runtimeCapture,
+        captureCoverage: { scope: 'task', value: 'on' },
+        ...{ nativeLogMaxBytes: 7, authoredVersion: '2.0.22' },
+        emit: async (record, body) => {
+          received.push({ record, ...(body ? { body: Buffer.from(body) } : {}) });
+        },
+      },
+    });
+    expect((await active.settled).status).toBe('completed');
+    const coverage = received.filter(({ record }) => record.fact.family === 'child-content');
+    expect(
+      coverage.some(
+        ({ record }) => record.fact.coverage === 'unavailable' && record.fact.reason === reason
+      )
+    ).toBe(true);
+    expect(
+      coverage.some(({ record }) => ['unsupported', 'ended'].includes(record.fact.coverage ?? ''))
+    ).toBe(false);
+    const bytes = Buffer.concat(
+      received
+        .filter(({ record, body }) => record.fact.kind === 'native-transcript' && body)
+        .map(({ body }) => body!)
+    );
+    expect(
+      bytes.includes(Buffer.from(f.childRows.map((row) => JSON.stringify(row)).join('')))
+    ).toBe(true);
+    expect(
+      bytes.includes(Buffer.from(f.nestedRows.map((row) => JSON.stringify(row)).join('')))
+    ).toBe(true);
+    for (const row of [f.oldChild, f.oldNested, f.poison])
+      expect(bytes.includes(Buffer.from(JSON.stringify(row)))).toBe(false);
+    expect(
+      f.reading.mock.calls.some(
+        ([input]) => input.sessionID === 'other-root' || input.sessionID === 'unrelated-1'
+      )
+    ).toBe(false);
+    expect(f.client.session.prompt).toHaveBeenCalledTimes(1);
   });
 
   it.each([
