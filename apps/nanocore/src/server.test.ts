@@ -1057,8 +1057,13 @@ class FakeTurnExecutor implements TurnExecutor {
   public get executionBackend() {
     return this.continuity.executionBackend;
   }
-  /** Observes full modeled closeout after a real dispatch tick; queued receipt gaps remain deciding failures. */
-  public async waitForFinished(store: FsStore, count = 1): Promise<void> {
+  /** Joins real modeled work; fault-injection cases must assert their exact closeout outcome. */
+  public async waitForFinished(
+    store: FsStore,
+    count = 1,
+    assertCloseouts: (closeouts: Promise<void>[]) => Promise<unknown> = (closeouts) =>
+      Promise.all(closeouts)
+  ): Promise<void> {
     const coreDb = this.fixtureOptions.coreDb!;
     const config = this.runtimeSnapshot!;
     // Forward both real mode owners and the native display write; a missing result still fails the original assertions.
@@ -1075,7 +1080,7 @@ class FakeTurnExecutor implements TurnExecutor {
         workspaceDataSourceCatalogs: config.workspaceDataSourceCatalogs,
         workspaceMcpServerCatalogs: config.workspaceMcpServerCatalogs,
       });
-      await Promise.all(
+      await assertCloseouts(
         this.closeouts.mock.results
           .filter((result) => result.type === 'return')
           .map((result) => result.value.closeout)
@@ -6630,7 +6635,17 @@ describe('nanocore server', () => {
           }
         )
       );
-      await executor.waitForFinished(store);
+      // Retain the checkpoint through the real closeout refusal, then test its missing-receipt recovery.
+      const assertRetainedCheckpointCloseout = async (closeouts: Promise<void>[]) => {
+        expect(closeouts).toHaveLength(1);
+        await expect(closeouts[0]).rejects.toMatchObject({
+          code: 'recovery_required',
+          message: 'The Task worker checkpoint is not ready for terminal cleanup.',
+          status: 409,
+        });
+      };
+      await executor.waitForFinished(store, 1, assertRetainedCheckpointCloseout);
+      expect(collector).toHaveBeenCalledTimes(1);
       collector.mockRestore();
       // Deliberately corrupt only the published receipt after the exact execution has closed; retained terminal owners drive recovery.
       const receiptDb = openTestWorkspaceDb(coreDb, 'ws_00000000-0000-7000-8000-000000000001');
@@ -6722,7 +6737,7 @@ describe('nanocore server', () => {
       await expect(conflictRes.json()).resolves.toMatchObject({
         code: 'idempotency_key_conflict',
       });
-      await executor.waitForFinished(store, 1);
+      await executor.waitForFinished(store, 1, assertRetainedCheckpointCloseout);
       expect(executor.startContexts).toHaveLength(1);
 
       const replayRes = await app.request(
@@ -6745,7 +6760,7 @@ describe('nanocore server', () => {
         state: 'completed',
         turn: { id: turn.id },
       });
-      await executor.waitForFinished(store, 1);
+      await executor.waitForFinished(store, 1, assertRetainedCheckpointCloseout);
       expect(executor.startContexts).toHaveLength(1);
       expect(
         store.getCommandRequest('task.start', requestId, {
