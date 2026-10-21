@@ -353,7 +353,7 @@ describe('Assistant conversation context portability', () => {
       'Maintain the notebook.',
       { kind: 'user', id: LOCAL_USER_ID },
       null,
-      { agentId: 'knowledge-manager', executorKind: 'assistant', startedAt: timestamp }
+      { agentId: 'knowledge-manager', startedAt: timestamp }
     );
     // Preserve real compaction pressure under the local bytes/3 estimate.
     const original = await message(
@@ -534,7 +534,7 @@ describe('Assistant conversation context portability', () => {
     const source = await seedTiedOrderSummaryChain();
     const control = await deployment();
     // Control only clock and entropy; import validation and canonical publication stay real.
-    const importReordered = (input: Parameters<typeof importVerifiedWorkspace>[0]) => {
+    const importReordered = async (input: Parameters<typeof importVerifiedWorkspace>[0]) => {
       vi.useFakeTimers({ toFake: ['Date'] });
       vi.setSystemTime(new Date(timestamp));
       let ordinal = 0;
@@ -556,7 +556,7 @@ describe('Assistant conversation context portability', () => {
         return array;
       });
       try {
-        return importVerifiedWorkspace(input);
+        return await importVerifiedWorkspace(input);
       } finally {
         entropy.mockRestore();
         vi.useRealTimers();
@@ -636,8 +636,8 @@ describe('Assistant conversation context portability', () => {
           .join('\n')}\n`
       );
     }
-    expect
-      .soft(() =>
+    await expect
+      .soft(
         importReordered({
           authorityUserId: LOCAL_USER_ID,
           coreDb: target.coreDb,
@@ -647,7 +647,7 @@ describe('Assistant conversation context portability', () => {
           verified: { ...source.verified, fileContents },
         })
       )
-      .toThrow(/summary predecessor is contradictory/);
+      .rejects.toThrow(/summary predecessor is contradictory/);
     expect.soft(readdirSync(join(target.dataRoot, 'workspaces')).sort()).toEqual(inventory);
     expect
       .soft(
@@ -890,18 +890,17 @@ describe('Assistant conversation context portability', () => {
         else trace.retrievalParameters.range.sourceDigest = sha('contradictory range');
         fileContents.set(path, JSON.stringify(trace));
       }
-      expect(
-        () =>
-          importVerifiedWorkspace({
-            authorityUserId: LOCAL_USER_ID,
-            coreDb: target.coreDb,
-            dataRoot: target.dataRoot,
-            requestId: randomUUID(),
-            store: target.store,
-            verified: { ...source.verified, fileContents },
-          }),
+      await expect(
+        importVerifiedWorkspace({
+          authorityUserId: LOCAL_USER_ID,
+          coreDb: target.coreDb,
+          dataRoot: target.dataRoot,
+          requestId: randomUUID(),
+          store: target.store,
+          verified: { ...source.verified, fileContents },
+        }),
         fault
-      ).toThrow(
+      ).rejects.toThrow(
         fault === 'selected digest'
           ? /conversation trace does not match its canonical Item/
           : fault === 'range digest'
