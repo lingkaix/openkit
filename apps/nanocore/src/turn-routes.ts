@@ -33,7 +33,7 @@ import {
   startProductTurn,
   validateLiveProductTurnAdmission,
 } from './runtime/product-turn-start.js';
-import type { TurnExecutor } from './runtime/types.js';
+import type { TurnCommandRuntimeContext, TurnExecutor } from './runtime/types.js';
 import { terminalizeGovernedWorkerTurn } from './runtime/worker-turn-failure.js';
 import {
   cancelSchedulerAdmissionEntry,
@@ -254,7 +254,11 @@ export async function startTurn(
 export async function interruptProductTurn(input: {
   readonly store: FsStore;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
-  readonly interruptInternalChatTurn?: (store: FsStore, turnId: string) => Promise<boolean>;
+  readonly interruptInternalChatTurn?: (
+    store: FsStore,
+    turnId: string,
+    context: TurnCommandRuntimeContext
+  ) => Promise<boolean>;
   /** Records fresh command acceptance without claiming terminal cleanup; replay omits it. */
   readonly onInterruptAccepted?: () => void;
   /** Authenticated command actor; direct runtime callers retain their admitted Turn actor. */
@@ -336,7 +340,7 @@ export async function interruptProductTurn(input: {
         );
       }
 
-      if (await interruptInternalChatTurn?.(store, turnId)) {
+      if (await interruptInternalChatTurn?.(store, turnId, { requestId, command })) {
         return acceptedTurn();
       }
 

@@ -15,6 +15,7 @@ import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js
 import type { ProviderSubscriptionAccountManager } from '../llm/provider-subscription-accounts.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import type { ProviderCredentialConfigured } from '../providers/registry.js';
+import type { TurnCommandRuntimeContext } from '../runtime/types.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { assembleBuiltInSystemPrompt } from './builtin-prompts.js';
 import { createCompactingInternalAgentProvider } from './compacting-context.js';
@@ -40,10 +41,26 @@ const activeKnowledgeRuns = new WeakMap<
 /** Stops an active KM Turn and waits for its ordinary terminal record before accepting Stop. */
 export async function interruptKnowledgeManagerTurn(
   store: FsStore,
-  turnId: string
+  turnId: string,
+  context?: TurnCommandRuntimeContext
 ): Promise<boolean> {
   const run = activeKnowledgeRuns.get(store)?.get(turnId);
   if (!run) return false;
+  if (context?.command) {
+    if (context.command.receipt.command !== 'turn.interrupt')
+      throw new Error('Internal interruption requires its original interrupt command.');
+    // Acknowledge acceptance before signaling cancellation; this proves no terminal outcome.
+    await store.updateTurn(
+      turnId,
+      {},
+      {
+        commandAdmission: {
+          ...context.command,
+          receipt: { ...context.command.receipt, command: 'turn.interrupt' },
+        },
+      }
+    );
+  }
   run.controller.abort();
   await run.finished;
   return true;

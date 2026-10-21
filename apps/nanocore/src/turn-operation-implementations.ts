@@ -54,9 +54,9 @@ export function createTurnOperationImplementations(
             coreDb: dependencies.coreDb,
             inflightCommands: dependencies.inflightCommands!,
             turnExecutor: dependencies.turnExecutor!,
-            interruptInternalChatTurn: async (store, turnId) =>
-              (await interruptAdministrationTurn(store, turnId)) ||
-              (await dependencies.conversationService!.interrupt(store, turnId)),
+            interruptInternalChatTurn: async (store, turnId, context) =>
+              (await interruptAdministrationTurn(store, turnId, context)) ||
+              (await dependencies.conversationService!.interrupt(store, turnId, context)),
             actor: context.actorRef,
           })
         );

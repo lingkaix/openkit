@@ -136,6 +136,7 @@ import {
   observeTurnAdmission,
   validateLiveProductTurnAdmission,
 } from './runtime/product-turn-start.js';
+import type { TurnCommandRuntimeContext } from './runtime/types.js';
 import {
   createWorkerCheckpointEvidenceDiagnostics,
   getWorkerCheckpoint,
@@ -4218,10 +4219,25 @@ export function createConversationService({
   return {
     targets,
     submit,
-    async interrupt(store: FsStore, turnId: string) {
-      if (await interruptKnowledgeManagerTurn(store, turnId)) return true;
+    async interrupt(store: FsStore, turnId: string, context?: TurnCommandRuntimeContext) {
+      if (await interruptKnowledgeManagerTurn(store, turnId, context)) return true;
       const run = activeChatRuns.get(store)?.get(turnId);
       if (!run) return false;
+      if (context?.command) {
+        if (context.command.receipt.command !== 'turn.interrupt')
+          throw new Error('Chat interruption requires its original interrupt command.');
+        // Keep the conversation receipt with its own terminal tuple; admit Stop before contact.
+        await store.updateTurn(
+          turnId,
+          {},
+          {
+            commandAdmission: {
+              ...context.command,
+              receipt: { ...context.command.receipt, command: 'turn.interrupt' },
+            },
+          }
+        );
+      }
       run.controller.abort();
       // Success requires the product owner to persist interruption, not just signal the provider.
       await run.finished;
