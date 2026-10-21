@@ -36,7 +36,7 @@ describe('Knowledge retrieval segmentation', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'retrieval-knowledge-cjk-'));
     testRoots.push(dataRoot);
     const store = createTestStore({ dataRoot });
-    const workspace = store.createWorkspace('Knowledge segmentation');
+    const workspace = await store.createWorkspace('Knowledge segmentation');
     const knowledgeBaseId = readDefaultKnowledgeBaseId({
       dataRoot,
       scope: { kind: 'workspace', workspaceId: workspace.id },

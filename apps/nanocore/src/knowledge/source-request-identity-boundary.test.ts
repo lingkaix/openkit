@@ -21,13 +21,13 @@ import * as sourcePublication from './source-publication.js';
 afterEach(() => vi.restoreAllMocks());
 
 /** One real current owner; requests cross the public parser, native publisher and actual local Storage. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'source-request-identity-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Source request identity');
+  const workspace = await store.createWorkspace('Source request identity');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
   applyScopedMigrations(workspaceDb);
@@ -74,7 +74,7 @@ function rawFiles(root: string): Record<string, string> {
 
 describe('public Source request identity', () => {
   it('refuses an opaque request ID before Source, raw original or command receipt effects', async () => {
-    const f = fixture();
+    const f = await fixture();
     const before = {
       revision: f.notebook.publishedRevision(),
       raw: rawFiles(join(f.root, 'raw')),
@@ -103,7 +103,7 @@ describe('public Source request identity', () => {
   });
 
   it('captures and replays one UUID request with exact original bytes and retained request identity', async () => {
-    const f = fixture();
+    const f = await fixture();
     const requestId = randomUUID();
     const response = await f.register(requestId);
     expect(response.status).toBe(200);
@@ -147,7 +147,7 @@ describe('public Source request identity', () => {
     'success',
     'refusal',
   ] as const)('closes its publication database after %s', async (outcome) => {
-    const f = fixture();
+    const f = await fixture();
     const publish = sourcePublication.publishCapturedSource;
     let publicationDb: WorkspaceDb | undefined;
     vi.spyOn(sourcePublication, 'publishCapturedSource').mockImplementation(async (...args) => {

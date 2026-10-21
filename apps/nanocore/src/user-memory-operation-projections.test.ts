@@ -15,7 +15,7 @@ import { ensureLocalUser } from './test-support/local-user.js';
 import { ensureUserQuickChatWorkspace } from './workspace-membership.js';
 
 /** Real authority, native invocation and delivery ledger; only the already tested role runner is injected. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'memory-km-operations-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -23,9 +23,9 @@ function fixture() {
   const actor = { kind: 'local' as const, userId };
   const store = new FsStore({ dataRoot });
   ensureUserQuickChatWorkspace({ coreDb, store, userId });
-  const workspace = store.ensureQuickChatWorkspace(userId);
-  const timeline = openAssistantTimeline(store, workspace.id, userId, 'Private question');
-  const turn = store.createTurn(
+  const workspace = await store.ensureQuickChatWorkspace(userId);
+  const timeline = await openAssistantTimeline(store, workspace.id, userId, 'Private question');
+  const turn = await store.createTurn(
     workspace.id,
     timeline.id,
     'My preference?',
@@ -93,7 +93,7 @@ function fixture() {
 }
 
 it('routes private Memory ask and tell to the User KM and retains exact delivered answer bytes', async () => {
-  const f = fixture();
+  const f = await fixture();
   expect(
     await f.invoke(
       'memory.ask',
@@ -139,10 +139,16 @@ it('routes private Memory ask and tell to the User KM and retains exact delivere
 });
 
 it('refuses a shared caller before User recall or tell and keeps human Review unavailable to a model', async () => {
-  const f = fixture();
-  const shared = f.store.createThread(f.workspace.id, 'Shared work', undefined, 'conversation', {
-    visibility: 'workspace',
-  });
+  const f = await fixture();
+  const shared = await f.store.createThread(
+    f.workspace.id,
+    'Shared work',
+    undefined,
+    'conversation',
+    {
+      visibility: 'workspace',
+    }
+  );
   const context = { ...f.context, queryContext: { threadId: shared.id } };
   await expect(
     f.invoke('memory.ask', { workspaceId: f.workspace.id, question: 'My preference?' }, context)

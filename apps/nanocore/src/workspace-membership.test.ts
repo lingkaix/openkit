@@ -36,7 +36,7 @@ function authForUser(userId: string): BetterAuthServer {
 }
 
 describe('workspace membership foundation', () => {
-  it('derives effective roles and candidates only from consistent active Core facts', () => {
+  it('derives effective roles and candidates only from consistent active Core facts', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-role-resolution-'));
     const coreDb = openCoreDb(dataRoot);
 
@@ -128,7 +128,9 @@ describe('workspace membership foundation', () => {
            WHERE workspace_id = 'ws_00000000-0000-72d2-bf6a-59509134d28f' AND user_id = 'usr_00000000-0000-7dce-aeaf-a1a2a6523aad'`
         )
         .run();
-      const filesystemOnlyWorkspace = new FsStore({ dataRoot }).createWorkspace('Filesystem only');
+      const filesystemOnlyWorkspace = await new FsStore({ dataRoot }).createWorkspace(
+        'Filesystem only'
+      );
 
       expect(
         resolveWorkspaceMembershipRelation(
@@ -204,7 +206,7 @@ describe('workspace membership foundation', () => {
     }
   });
 
-  it('provisions a first-use Quick Chat home and nominally refuses its retained removed owner membership', () => {
+  it('provisions a first-use Quick Chat home and nominally refuses its retained removed owner membership', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-quick-chat-tombstone-'));
     const coreDb = openCoreDb(dataRoot);
     try {
@@ -213,7 +215,9 @@ describe('workspace membership foundation', () => {
       const store = new FsStore({ dataRoot });
       const input = { coreDb, store, userId: 'usr_00000000-0000-7000-8000-000000000001' };
       ensureUserQuickChatWorkspace(input);
-      const workspace = store.ensureQuickChatWorkspace('usr_00000000-0000-7000-8000-000000000001');
+      const workspace = await store.ensureQuickChatWorkspace(
+        'usr_00000000-0000-7000-8000-000000000001'
+      );
       expect(
         resolveWorkspaceMembershipRelation(
           coreDb,
@@ -531,8 +535,8 @@ describe('workspace membership foundation', () => {
         )
         .run(Date.now(), Date.now(), Date.now(), Date.now());
       const store = new FsStore({ dataRoot });
-      const missing = store.createWorkspace('Missing membership');
-      const removed = store.createWorkspace('Removed membership');
+      const missing = await store.createWorkspace('Missing membership');
+      const removed = await store.createWorkspace('Removed membership');
       recordWorkspaceOwnerMembership({
         coreDb,
         ownerUserId: 'usr_00000000-0000-70a2-a677-942b1cfdc1b0',
@@ -609,7 +613,7 @@ describe('workspace membership foundation', () => {
         )
         .run(now, now, now, now);
       const store = new FsStore({ dataRoot });
-      const source = store.createWorkspace('Private export source');
+      const source = await store.createWorkspace('Private export source');
       recordWorkspaceOwnerMembership({
         coreDb,
         ownerUserId: 'usr_00000000-0000-778d-b552-9947e8876ed1',

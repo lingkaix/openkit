@@ -49,7 +49,7 @@ afterEach(async () => {
 });
 
 /** Real storage, current membership and Git provide independent read facts. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-notebook-reads-'));
   roots.push(dataRoot);
   const coreDb = openCoreDb(dataRoot);
@@ -57,7 +57,7 @@ function fixture() {
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Pinned notebook reads', {
+  const workspace = await store.createWorkspace('Pinned notebook reads', {
     requestId: randomUUID(),
     producer: { kind: 'user', id: LOCAL_USER_ID },
     instructionReference: 'test-owned-fresh-workspace',
@@ -75,7 +75,7 @@ function fixture() {
 }
 
 /** Publish test-owned content through the actual content owner, without claiming native admission. */
-function publish(f: ReturnType<typeof fixture>, changes: Record<string, string | null>) {
+function publish(f: Awaited<ReturnType<typeof fixture>>, changes: Record<string, string | null>) {
   const baseRevision = f.notebook.publishedRevision();
   const candidateRevision = f.notebook.prepare({
     baseRevision,
@@ -104,7 +104,7 @@ function page(title: string, refs: readonly string[] = [], body = 'Exact retaine
 
 describe('published Workspace notebook reads', () => {
   it('rebuilds indexes from one Git revision and resolves an admitted selection after later publication', async () => {
-    const f = fixture();
+    const f = await fixture();
     const content = serializeKnowledgePageFixture(
       {
         title: 'Pinned source knowledge',
@@ -160,8 +160,8 @@ describe('published Workspace notebook reads', () => {
     ]);
   });
 
-  it('fails closed on unknown source sensitivity rather than widening disclosure through a nested page', () => {
-    const f = fixture();
+  it('fails closed on unknown source sensitivity rather than widening disclosure through a nested page', async () => {
+    const f = await fixture();
     const origin = page('Unknown source restriction').replace(
       'sensitivity: internal',
       'sensitivity: future-private-rule'
@@ -178,8 +178,8 @@ describe('published Workspace notebook reads', () => {
     expect(readAuthorizedWorkspaceNotebookPages(f).pages).toEqual([]);
   });
 
-  it('uses current selected administrator credential admission without requiring membership and denies its revocation', () => {
-    const f = fixture();
+  it('uses current selected administrator credential admission without requiring membership and denies its revocation', async () => {
+    const f = await fixture();
     publish(f, { 'page.md': page('Administrator inspection') });
     const administratorId = addMember(f);
     const issued = createOpenKitAccessTokenRecord(f.coreDb, {
@@ -208,8 +208,8 @@ describe('published Workspace notebook reads', () => {
   });
 
   it('rechecks source audience at return when it changes during selected Source pointer verification', async () => {
-    const f = fixture();
-    const sourceThread = f.store.createThread(
+    const f = await fixture();
+    const sourceThread = await f.store.createThread(
       f.workspaceId,
       'Private source',
       undefined,
@@ -235,8 +235,8 @@ describe('published Workspace notebook reads', () => {
   });
 
   it('rechecks source audience immediately after a direct selected Source pointer read', async () => {
-    const f = fixture();
-    const thread = f.store.createThread(
+    const f = await fixture();
+    const thread = await f.store.createThread(
       f.workspaceId,
       'Current private audience',
       undefined,
@@ -260,8 +260,8 @@ describe('published Workspace notebook reads', () => {
     );
   });
 
-  it('does not turn raw acceptance or imported history into missing live source authority', () => {
-    const f = fixture();
+  it('does not turn raw acceptance or imported history into missing live source authority', async () => {
+    const f = await fixture();
     const refs = [
       `turn:${randomUUID()}`,
       `item:${randomUUID()}`,
@@ -286,8 +286,8 @@ describe('published Workspace notebook reads', () => {
     expect([...result.referenceProofs]).toEqual([]);
   });
 
-  it('keeps an exact narrow read useful when an unrelated retained page object is unavailable', () => {
-    const f = fixture();
+  it('keeps an exact narrow read useful when an unrelated retained page object is unavailable', async () => {
+    const f = await fixture();
     const content = page('Selected exact page');
     const revision = publish(f, {
       'selected.md': content,
@@ -308,7 +308,7 @@ describe('published Workspace notebook reads', () => {
   });
 
   it('keeps enumeration and recursive source reads pinned when publication advances during admission', async () => {
-    const f = fixture();
+    const f = await fixture();
     const source = await registerSource(f);
     const origin = page('Original nested source', [], 'ORIGINAL-IMMUTABLE-BYTES\n');
     const content = page('Selected page', [
@@ -343,8 +343,8 @@ describe('published Workspace notebook reads', () => {
   });
 
   it('filters foreign private source identity and denies exact historical reads after source revocation', async () => {
-    const f = fixture();
-    const sourceThread = f.store.createThread(
+    const f = await fixture();
+    const sourceThread = await f.store.createThread(
       f.workspaceId,
       'Source audience',
       undefined,
@@ -352,7 +352,7 @@ describe('published Workspace notebook reads', () => {
       { visibility: 'private', privateOwnerUserId: LOCAL_USER_ID }
     );
     const source = await registerSource(f, sourceThread.id);
-    const destination = f.store.createThread(f.workspaceId, 'Shared destination');
+    const destination = await f.store.createThread(f.workspaceId, 'Shared destination');
     // The public aggregate projects exact admitted Notebook pages; authored timestamps remain in OKF bytes.
     const entryBytes = (title: string, sourceReferences: string[], content: string) =>
       serializeKnowledgePageFixture(
@@ -375,7 +375,7 @@ describe('published Workspace notebook reads', () => {
       'public.md': entryBytes('Public page', [], 'Public control page.\n'),
     });
     // A later ordinary Store mutation refreshes the cached aggregate from both published pages.
-    f.store.createThread(f.workspaceId, 'Count refresh');
+    await f.store.createThread(f.workspaceId, 'Count refresh');
     expect(f.store.getWorkspace(f.workspaceId).counts.knowledgeEntryCount).toBe(2);
     expect(readAuthorizedWorkspaceNotebookPages(f).pages).toHaveLength(2);
     expect(knowledgeSourceAudienceReadable(f, source.id)).toBe(true);
@@ -463,8 +463,8 @@ describe('published Workspace notebook reads', () => {
     'membership',
     'credential',
     'disabled-user',
-  ] as const)('rechecks current %s after a page was selected', (condition) => {
-    const f = fixture();
+  ] as const)('rechecks current %s after a page was selected', async (condition) => {
+    const f = await fixture();
     const memberId = addMember(f);
     const issued = createOpenKitAccessTokenRecord(f.coreDb, {
       ownerUserId: memberId,
@@ -504,8 +504,8 @@ describe('published Workspace notebook reads', () => {
     'turn-chain',
     'nested-digest',
   ] as const)('excludes an exact %s contradiction without a source identity leak', async (condition) => {
-    const f = fixture();
-    const thread = f.store.createThread(f.workspaceId, 'Source Thread');
+    const f = await fixture();
+    const thread = await f.store.createThread(f.workspaceId, 'Source Thread');
     const source = await registerSource(f, thread.id);
     const origin = page('Origin');
     const refs =
@@ -520,9 +520,9 @@ describe('published Workspace notebook reads', () => {
             `source:${source.id}@${condition === 'pin' ? `sha256:${'f'.repeat(64)}` : source.contentDigest}`,
           ];
     const other =
-      condition === 'turn-chain' ? f.store.createThread(f.workspaceId, 'Other Thread') : null;
+      condition === 'turn-chain' ? await f.store.createThread(f.workspaceId, 'Other Thread') : null;
     const contradictoryTurn = other
-      ? f.store.createTurn(f.workspaceId, other.id, 'Other Turn', f.access.actor)
+      ? await f.store.createTurn(f.workspaceId, other.id, 'Other Turn', f.access.actor)
       : null;
     publish(f, { 'selected.md': page('Denied source page', refs), 'origin.md': origin });
     if (condition === 'turn-chain') {
@@ -539,7 +539,7 @@ describe('published Workspace notebook reads', () => {
   });
 
   it('keeps exact saved page bytes when its independent captured original changes', async () => {
-    const f = fixture();
+    const f = await fixture();
     const source = await registerSource(f);
     const content = page('Saved evidence', [`source:${source.id}@${source.contentDigest}`]);
     const revision = publish(f, { 'selected.md': content });
@@ -573,8 +573,8 @@ describe('published Workspace notebook reads', () => {
     ]);
   });
 
-  it('denies unpublished candidates and mismatched roots, and ignores physical page substitutions', () => {
-    const f = fixture();
+  it('denies unpublished candidates and mismatched roots, and ignores physical page substitutions', async () => {
+    const f = await fixture();
     const content = page('Published bytes');
     const revision = publish(f, { 'page.md': content });
     const candidate = f.notebook.prepare({
@@ -603,8 +603,8 @@ describe('published Workspace notebook reads', () => {
     ]);
   });
 
-  it('fails explicitly for missing selected Git objects without a physical-page fallback', () => {
-    const f = fixture();
+  it('fails explicitly for missing selected Git objects without a physical-page fallback', async () => {
+    const f = await fixture();
     const content = page('Missing selected object');
     const revision = publish(f, { 'page.md': content });
     const object = f.notebook.inspectRevision(revision).entries['page.md']!;
@@ -617,8 +617,8 @@ describe('published Workspace notebook reads', () => {
     ).toThrowError(expect.objectContaining({ code: 'recovery_required' }));
   });
 
-  it('enumerates published Git pages with one commit revision and separate exact digests', () => {
-    const f = fixture();
+  it('enumerates published Git pages with one commit revision and separate exact digests', async () => {
+    const f = await fixture();
     const content = page('Git inventory marker');
     const revision = publish(f, { 'nested/page.md': content });
     const inventory = collectKnowledgeInventory(f);
@@ -643,7 +643,7 @@ describe('published Workspace notebook reads', () => {
 
 /** Captured source fixtures use the native Source id owner and real captured-byte storage. */
 async function registerSource(
-  f: ReturnType<typeof fixture>,
+  f: Awaited<ReturnType<typeof fixture>>,
   originatingThreadId: string | null = null
 ) {
   const content = 'Exact independent source material.\n';
@@ -672,7 +672,7 @@ async function registerSource(
 }
 
 /** Adds a real currently active member without granting the private Source Thread audience. */
-function addMember(f: ReturnType<typeof fixture>): string {
+function addMember(f: Awaited<ReturnType<typeof fixture>>): string {
   const id = allocateEntityId('usr');
   const now = new Date().toISOString();
   f.coreDb.sqlite
@@ -689,7 +689,7 @@ function addMember(f: ReturnType<typeof fixture>): string {
 }
 
 /** Current membership revocation retains the required tombstone and lifecycle timestamps. */
-function removeMember(f: ReturnType<typeof fixture>, userId: string): void {
+function removeMember(f: Awaited<ReturnType<typeof fixture>>, userId: string): void {
   const now = new Date().toISOString();
   f.coreDb.sqlite
     .prepare(
@@ -699,6 +699,6 @@ function removeMember(f: ReturnType<typeof fixture>, userId: string): void {
 }
 
 /** Reads the base retained by the actual Workspace creator. */
-function workspacePageScope(f: ReturnType<typeof fixture>): string {
+function workspacePageScope(f: Awaited<ReturnType<typeof fixture>>): string {
   return `page/workspace/${f.workspaceId}/${readDefaultKnowledgeBaseId({ dataRoot: f.dataRoot, scope: { kind: 'workspace', workspaceId: f.workspaceId } })}`;
 }

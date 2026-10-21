@@ -60,16 +60,16 @@ function bytes(root: string): Record<string, string> {
 }
 
 /** Creates trusted registry identity before damaging only its Workspace authority. */
-function fixture(fault: 'corrupt' | 'missing' | 'records', personal = false) {
+async function fixture(fault: 'corrupt' | 'missing' | 'records', personal = false) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'retirement-cold-open-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
   const workspaceId = personal
-    ? store.ensureQuickChatWorkspace(FIXTURE_LOCAL_USER_ID).id
-    : store.createWorkspace('Retired history').id;
-  const siblingId = store.createWorkspace('Still admitted').id;
+    ? (await store.ensureQuickChatWorkspace(FIXTURE_LOCAL_USER_ID)).id
+    : (await store.createWorkspace('Retired history')).id;
+  const siblingId = (await store.createWorkspace('Still admitted')).id;
   for (const id of [workspaceId, siblingId])
     recordWorkspaceOwnerMembership({ coreDb, workspaceId: id, ownerUserId: FIXTURE_LOCAL_USER_ID });
   const admin = createOpenKitAccessTokenRecord(coreDb, {
@@ -259,7 +259,7 @@ describe('retired registry consumers and retained Core migration', () => {
     status,
     fault,
   }) => {
-    const f = fixture(fault);
+    const f = await fixture(fault);
     if (status === 'retired') {
       const response = await f.call('workspace.retire-quarantined', f.request);
       expect(response.status, await response.clone().text()).toBe(200);
@@ -478,7 +478,7 @@ describe('retired registry consumers and retained Core migration', () => {
     'missing',
     'records',
   ] as const)('reconstructs retirement exclusion before scoped work after a lost reply with %s authority', async (fault) => {
-    const f = fixture(fault);
+    const f = await fixture(fault);
     // Working baseline authority is reached before the new feature is required.
     expect(
       (await f.call('workspace.member-list', { workspaceId: f.siblingId }, f.member.secret)).status
@@ -576,7 +576,7 @@ describe('retired registry consumers and retained Core migration', () => {
   }, 20000);
 
   it('does not reprovision a retired personal identity while its user can still access a healthy sibling', async () => {
-    const f = fixture('missing', true);
+    const f = await fixture('missing', true);
     const response = await f.call('workspace.retire-quarantined', f.request);
     expect(response.status, await response.clone().text()).toBe(200);
     const tree = bytes(join(f.dataRoot, 'workspaces', f.workspaceId));

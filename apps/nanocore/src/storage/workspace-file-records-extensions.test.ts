@@ -52,12 +52,12 @@ function annotate(path: string, nested: readonly string[] = []): void {
  * @param workspaceId Owning Workspace that must be quarantined.
  * @returns Reopened Store and isolated root for additional native readback checks.
  */
-function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
+async function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
   const restartRoot = mkdtempSync(join(tmpdir(), 'openkit-local-refusal-'));
   onTestFinished(() => rmSync(restartRoot, { recursive: true, force: true }));
   const seed = new FsStore({ dataRoot: restartRoot });
-  const sibling = seed.createWorkspace('Healthy refusal control');
-  const siblingThread = seed.createThread(sibling.id, 'Retained sibling thread');
+  const sibling = await seed.createWorkspace('Healthy refusal control');
+  const siblingThread = await seed.createThread(sibling.id, 'Retained sibling thread');
   const siblingBefore = seed.getWorkspace(sibling.id);
   cpSync(dataRoot, restartRoot, { recursive: true, verbatimSymlinks: true });
 
@@ -94,7 +94,7 @@ function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
   );
   expect(reopened.getWorkspace(sibling.id)).toEqual(siblingBefore);
   expect(reopened.getThread(sibling.id, siblingThread.id)).toEqual(siblingThread);
-  const progress = reopened.createThread(sibling.id, 'Healthy sibling progress');
+  const progress = await reopened.createThread(sibling.id, 'Healthy sibling progress');
   expect(new FsStore({ dataRoot: restartRoot }).getThread(sibling.id, progress.id)).toEqual(
     progress
   );
@@ -107,7 +107,7 @@ describe('descriptive canonical history extensions', () => {
   it('preserves immutable Proposal bytes, ordered Review annotations and Source history on rewrite', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-knowledge-history-'));
     const store = createTestStore({ dataRoot });
-    const workspace = store.createWorkspace('Knowledge');
+    const workspace = await store.createWorkspace('Knowledge');
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const userId = ensureLocalUser(coreDb);
@@ -325,21 +325,21 @@ describe('descriptive canonical history extensions', () => {
     const reviewFile = JSON.parse(readFileSync(reviewPath, 'utf8'));
     reviewFile.decisions.push(reviewFile.decisions[0]);
     writeFileSync(reviewPath, JSON.stringify(reviewFile));
-    const refused = expectLocalWorkspaceRefusal(dataRoot, workspace.id);
+    const refused = await expectLocalWorkspaceRefusal(dataRoot, workspace.id);
     expect(
       loadWorkspaceFileRecords(refused.dataRoot).map(({ workspace }) => workspace.id)
     ).not.toContain(workspace.id);
   });
-  it('reads, updates and reopens Workspace, Actor, Item, Artifact and AgentSession history', () => {
+  it('reads, updates and reopens Workspace, Actor, Item, Artifact and AgentSession history', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-history-extensions-'));
     const store = createTestStore({ dataRoot });
-    const workspace = store.createWorkspace('History');
-    const thread = store.createThread(workspace.id, 'History');
-    const turn = store.createTurn(workspace.id, thread.id, 'Request', {
+    const workspace = await store.createWorkspace('History');
+    const thread = await store.createThread(workspace.id, 'History');
+    const turn = await store.createTurn(workspace.id, thread.id, 'Request', {
       kind: 'user',
       id: 'usr_00000000-0000-7000-8000-000000000001',
     });
-    store.createItem({
+    await store.createItem({
       id: 'it_00000000-0000-7107-a6b6-12de9088d8ca',
       owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: thread.id,
@@ -352,7 +352,7 @@ describe('descriptive canonical history extensions', () => {
       completedAt: workspace.createdAt,
     });
     const now = workspace.createdAt;
-    store.createAgentSession({
+    await store.createAgentSession({
       id: 'as_00000000-0000-74db-9692-cadae15b58fb',
       agentId: 'agent_history',
       workspaceId: workspace.id,
@@ -521,7 +521,7 @@ describe('descriptive canonical history extensions', () => {
     const damaged = JSON.parse(readFileSync(sessionPath, 'utf8'));
     damaged.status = 'future';
     writeFileSync(sessionPath, JSON.stringify(damaged));
-    const refused = expectLocalWorkspaceRefusal(dataRoot, workspace.id);
+    const refused = await expectLocalWorkspaceRefusal(dataRoot, workspace.id);
     expect(
       loadWorkspaceFileRecords(refused.dataRoot).map(({ workspace }) => workspace.id)
     ).not.toContain(workspace.id);

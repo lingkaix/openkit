@@ -54,7 +54,7 @@ function deployment() {
 /** The common native publisher supplies a governed binary Source with actual portable lineage. */
 async function capturedSource() {
   const f = deployment();
-  const workspace = f.store.createWorkspace('Portable binary Source');
+  const workspace = await f.store.createWorkspace('Portable binary Source');
   recordWorkspaceOwnerMembership({
     coreDb: f.coreDb,
     workspaceId: workspace.id,
@@ -65,15 +65,15 @@ async function capturedSource() {
   onTestFinished(() => workspaceDb.sqlite.close());
   const actor = { kind: 'user' as const, id: f.userId };
   const requestActor = { kind: 'local' as const, userId: f.userId };
-  const thread = f.store.createThread(workspace.id, 'Original binary evidence');
-  const turn = f.store.createTurn(
+  const thread = await f.store.createThread(workspace.id, 'Original binary evidence');
+  const turn = await f.store.createTurn(
     workspace.id,
     thread.id,
     'Capture the exact original.',
     actor,
     null
   );
-  f.store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
+  await f.store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
   const scope = { kind: 'workspace' as const, workspaceId: workspace.id };
   const owner = { dataRoot: f.dataRoot, ownerScope: scope };
   const notebook = new KnowledgeNotebook({

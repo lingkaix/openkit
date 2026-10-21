@@ -127,7 +127,7 @@ async function fixture(sourceBacked = false) {
     content: content('Private exact forgotten text.'),
     summary: 'Save my preference',
   });
-  const thread = openAssistantTimeline(store, DEMO_WORKSPACE_ID, userId, 'Private Timeline');
+  const thread = await openAssistantTimeline(store, DEMO_WORKSPACE_ID, userId, 'Private Timeline');
   const turn = await store.createTurn(
     DEMO_WORKSPACE_ID,
     thread.id,
@@ -205,7 +205,7 @@ describe('Item-confirmed self Memory forget', () => {
     });
     const sourceBase = f.notebook.publishedRevision();
     f.request.notebookRevision = sourceBase;
-    const prepared = prepareMemoryForget(f.writer, f.request);
+    const prepared = await prepareMemoryForget(f.writer, f.request);
     const record = readPendingRequest(f.writer.workspaceDb.sqlite, prepared.pendingRequestId)!;
     const preview = projectApprovalEffect({
       record,
@@ -306,7 +306,7 @@ describe('Item-confirmed self Memory forget', () => {
     'apply',
   ] as const)('rechecks canonical Source corruption before %s and withholds the captured preview without repair', async (stage) => {
     const f = await fixture(true);
-    const prepared = prepareMemoryForget(f.writer, f.request);
+    const prepared = await prepareMemoryForget(f.writer, f.request);
     if (stage === 'apply') await f.decide(prepared.pendingRequestId);
     const baseRevision = f.notebook.publishedRevision();
     const pointer = f.notebook.readSourcePointers(baseRevision)[f.source!.id]!;
@@ -409,7 +409,7 @@ describe('Item-confirmed self Memory forget', () => {
       candidateRevision: restored,
     }).revision;
     f.request.notebookRevision = restoredRevision;
-    const prepared = prepareMemoryForget(f.writer, f.request);
+    const prepared = await prepareMemoryForget(f.writer, f.request);
     const record = readPendingRequest(f.writer.workspaceDb.sqlite, prepared.pendingRequestId)!;
     f.writer.userDb.sqlite.close();
     const database = userDbPath(f.writer.coreDb.dataRoot, f.writer.actor.userId);
@@ -428,7 +428,7 @@ describe('Item-confirmed self Memory forget', () => {
 
   it('keeps Source inspection unjoined for a non-self administrator confirmation', async () => {
     const f = await fixture(true);
-    const prepared = prepareMemoryForget(f.writer, f.request);
+    const prepared = await prepareMemoryForget(f.writer, f.request);
     const administrator = administrativeReviewer(f.writer.coreDb);
     const record = readPendingRequest(f.writer.workspaceDb.sqlite, prepared.pendingRequestId)!;
     expect(
@@ -462,7 +462,7 @@ describe('Item-confirmed self Memory forget', () => {
     });
     const { threadId: _threadId, turnId: _turnId, ...input } = f.request;
     const before = f.writer.store.listThreadTurns(input.workspaceId, f.thread.id).length;
-    const result = prepareMemoryForgetCommand(f.writer, input);
+    const result = await prepareMemoryForgetCommand(f.writer, input);
     const turn = f.writer.store.getTurnById(result.turnId);
     expect(turn).toMatchObject({
       owner: { kind: 'workspace', workspaceId: input.workspaceId },
@@ -483,7 +483,7 @@ describe('Item-confirmed self Memory forget', () => {
 
   it('withholds captured Memory prose from a usable administrator after the owning User is disabled', async () => {
     const f = await fixture();
-    const prepared = prepareMemoryForget(f.writer, f.request);
+    const prepared = await prepareMemoryForget(f.writer, f.request);
     const record = readPendingRequest(f.writer.workspaceDb.sqlite, prepared.pendingRequestId)!;
     const actor = administrativeReviewer(f.writer.coreDb);
     const preview = () =>
@@ -496,7 +496,7 @@ describe('Item-confirmed self Memory forget', () => {
   });
   it('refuses an absent grant and mismatched private context without changing content', async () => {
     const f = await fixture();
-    const prepared = prepareMemoryForget(f.writer, f.request);
+    const prepared = await prepareMemoryForget(f.writer, f.request);
     await expect(f.apply(prepared.pendingRequestId)).rejects.toMatchObject({
       code: 'approval_required',
     });
@@ -532,7 +532,7 @@ describe('Item-confirmed self Memory forget', () => {
 
   it('captures exact disclosure and actual human decision but executes only the later apply', async () => {
     const f = await fixture();
-    const prepared = prepareMemoryForget(f.writer, f.request);
+    const prepared = await prepareMemoryForget(f.writer, f.request);
     expect(prepareMemoryForget(f.writer, f.request)).toEqual(prepared);
     const record = readPendingRequest(f.writer.workspaceDb.sqlite, prepared.pendingRequestId)!;
     expect(
@@ -583,7 +583,7 @@ describe('Item-confirmed self Memory forget', () => {
 
   it('refuses a stale target terminally and cannot use the grant after another edit', async () => {
     const f = await fixture();
-    const prepared = prepareMemoryForget(f.writer, f.request);
+    const prepared = await prepareMemoryForget(f.writer, f.request);
     await f.decide(prepared.pendingRequestId);
     const edited = await editMemoryPage(f.writer, {
       requestId: randomUUID(),
@@ -605,7 +605,7 @@ describe('Item-confirmed self Memory forget', () => {
 
   it('replays the exact outcome after decision delivery and a later new save', async () => {
     const f = await fixture();
-    const prepared = prepareMemoryForget(f.writer, f.request);
+    const prepared = await prepareMemoryForget(f.writer, f.request);
     await f.decide(prepared.pendingRequestId);
     const removed = await f.apply(prepared.pendingRequestId);
     // Deliver the person decision after apply: the shared pending owner clears its held result.
@@ -642,7 +642,7 @@ describe('Item-confirmed self Memory forget', () => {
 
   it('withholds confirmation prose after suppression even when Git publication fails and never repeats it', async () => {
     const f = await fixture();
-    const prepared = prepareMemoryForget(f.writer, f.request);
+    const prepared = await prepareMemoryForget(f.writer, f.request);
     await f.decide(prepared.pendingRequestId);
     const publish = vi.spyOn(KnowledgeNotebook.prototype, 'publish').mockImplementationOnce(() => {
       throw new Error('Publication outcome could not be established.');

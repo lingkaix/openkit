@@ -98,7 +98,7 @@ async function fixture(selected = true, description?: string) {
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Assistant command run');
+  const workspace = await store.createWorkspace('Assistant command run');
   recordWorkspaceOwnerMembership({
     coreDb,
     workspaceId: workspace.id,
@@ -116,8 +116,8 @@ async function fixture(selected = true, description?: string) {
       VALUES (?, ?, 'active', NULL, ?, NULL, 1, ?, ?)`)
     .run(workspace.id, SKILL_READER_ID, timestamp, timestamp, timestamp);
   const actor: Actor = { kind: 'session', userId: SKILL_READER_ID };
-  const thread = store.createThread(workspace.id, 'Assistant command');
-  const turn = store.createTurn(
+  const thread = await store.createThread(workspace.id, 'Assistant command');
+  const turn = await store.createTurn(
     workspace.id,
     thread.id,
     'Current canonical input.',
@@ -490,10 +490,10 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
     true,
   ])('accounts summary production and refuses revoked overview publication=%s', async (revokeOverview) => {
     const f = await fixture(false);
-    f.store.updateTurn(f.turn.id, { agentId: 'quick-chat' });
+    await f.store.updateTurn(f.turn.id, { agentId: 'quick-chat' });
     // Keep history large enough to require a summary with the local bytes/3 estimate.
     for (let index = 0; index < 8; index += 1) {
-      const earlier = f.store.createTurn(
+      const earlier = await f.store.createTurn(
         f.workspaceId,
         f.threadId,
         'Earlier request.',
@@ -502,7 +502,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
         { startedAt: `2026-10-15T00:00:0${index}.000Z`, agentId: 'quick-chat' }
       );
       for (const type of ['user-message', 'assistant-message'] as const) {
-        f.store.createItem({
+        await f.store.createItem({
           id: allocateEntityId('it'),
           owner: { kind: 'workspace', workspaceId: f.workspaceId },
           threadId: f.threadId,
@@ -517,7 +517,7 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
           completedAt: earlier.startedAt!,
         });
       }
-      f.store.updateTurn(earlier.id, { status: 'completed', completedAt: earlier.startedAt });
+      await f.store.updateTurn(earlier.id, { status: 'completed', completedAt: earlier.startedAt });
     }
     const assembly = assembleAssistantCommandRun({
       resources: f.resources,

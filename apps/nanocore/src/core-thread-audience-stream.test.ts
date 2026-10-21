@@ -24,13 +24,13 @@ const REVOKED_DELTA = 'audience-revoked-secret';
  *
  * @returns App, store, shared Turn, durable token id, and cleanup.
  */
-function createSharedStreamFixture() {
+async function createSharedStreamFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-thread-audience-stream-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Team');
+  const workspace = await store.createWorkspace('Team');
   recordWorkspaceOwnerMembership({
     coreDb,
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -47,14 +47,20 @@ function createSharedStreamFixture() {
       `INSERT INTO workspace_members (workspace_id, user_id, status, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES (?, 'usr_00000000-0000-73d4-904a-d4c4b905df7c', 'active', NULL, ?, NULL, 1, ?, ?)`
     )
     .run(workspace.id, STAMP, STAMP, STAMP);
-  const thread = store.createThread(workspace.id, 'shared stream', undefined, 'conversation', {
-    visibility: 'workspace',
-  });
-  const turn = store.createTurn(workspace.id, thread.id, 'Stream while a member', {
+  const thread = await store.createThread(
+    workspace.id,
+    'shared stream',
+    undefined,
+    'conversation',
+    {
+      visibility: 'workspace',
+    }
+  );
+  const turn = await store.createTurn(workspace.id, thread.id, 'Stream while a member', {
     kind: 'user',
     id: 'usr_00000000-0000-7000-8000-000000000001',
   });
-  store.createItem({
+  await store.createItem({
     completedAt: null,
     createdAt: STAMP,
     id: testEntityId('it', `it_stream_${turn.id}`),
@@ -117,7 +123,7 @@ function createSharedStreamFixture() {
   };
 }
 
-type StreamFixture = ReturnType<typeof createSharedStreamFixture>;
+type StreamFixture = Awaited<ReturnType<typeof createSharedStreamFixture>>;
 
 /**
  * Revokes the ordinary other member's current Workspace membership.
@@ -176,7 +182,7 @@ describe('core Thread audience streams', () => {
   it.each(REVOCATIONS)('blocks the next turn event after ordinary $kind revocation', async ({
     revoke,
   }) => {
-    const fixture = createSharedStreamFixture();
+    const fixture = await createSharedStreamFixture();
     const listenerSpy = vi.spyOn(fixture.store, 'addTurnListener');
     try {
       const response = await fixture.app.request(

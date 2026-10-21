@@ -53,7 +53,7 @@ async function fixture(typed = true, linked = true) {
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   let store = new FsStore({ dataRoot: root });
-  const workspace = store.createWorkspace('Policy context');
+  const workspace = await store.createWorkspace('Policy context');
   let db = openWorkspaceDb(root, workspace.id);
   applyScopedMigrations(db);
   cleanups.push(() => {
@@ -74,7 +74,7 @@ async function fixture(typed = true, linked = true) {
     )
   ).goal!;
   const scope = { workspaceId: workspace.id, threadId: goal.threadId, goalId: goal.goalId };
-  const coordinatorTurn = store.createTurn(
+  const coordinatorTurn = await store.createTurn(
     workspace.id,
     goal.threadId,
     'Coordinate',
@@ -134,7 +134,7 @@ async function fixture(typed = true, linked = true) {
     db
   );
   const requestId = randomUUID();
-  const thread = store.createThread(
+  const thread = await store.createThread(
     workspace.id,
     'Review',
     deriveEntityId('th', ['task', requestId]),
@@ -190,7 +190,7 @@ async function fixture(typed = true, linked = true) {
   const turnInput = serializeStructuredWorkerDelegationRequest(request);
   const agentId = 'application-worker';
   const agentSessionId = testEntityId('as', root);
-  const turn = store.createTurn(
+  const turn = await store.createTurn(
     workspace.id,
     thread.id,
     turnInput,
@@ -209,7 +209,7 @@ async function fixture(typed = true, linked = true) {
       }),
     }
   );
-  store.createItem({
+  await store.createItem({
     id: deriveEntityId('it', ['task-user', turn.id]),
     owner: { kind: 'workspace', workspaceId: workspace.id },
     threadId: thread.id,
@@ -279,7 +279,7 @@ async function fixture(typed = true, linked = true) {
     admission,
     turnInput,
     read: () => readGoalTaskPolicyContext({ coreDb, store, db, lineage }),
-    capture: () => {
+    capture: async () => {
       const requestId = randomUUID();
       const requestItemId = testEntityId('it', requestId);
       const args = { applicationId: '123' };
@@ -316,7 +316,7 @@ async function fixture(typed = true, linked = true) {
         approval: { kind: 'permission', title: 'Read application', description: 'Exact read' },
         now: new Date().toISOString(),
       });
-      store.createItem({
+      await store.createItem({
         id: requestItemId,
         owner: { kind: 'workspace', workspaceId: workspace.id },
         threadId: thread.id,
@@ -332,7 +332,7 @@ async function fixture(typed = true, linked = true) {
       });
       return captured;
     },
-    closeSource: () => {
+    closeSource: async () => {
       // Only retained local record owners are exercised; no Worker backend is submitted.
       const operation = recordSchedulerExecutionOperation(coreDb, {
         attemptId: attempt.attemptId,
@@ -364,9 +364,12 @@ async function fixture(typed = true, linked = true) {
           routesRevoked: true,
         },
       });
-      store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
+      await store.updateTurn(turn.id, {
+        status: 'completed',
+        completedAt: new Date().toISOString(),
+      });
     },
-    outcome: (pendingRequestId: string, administrator = false) => {
+    outcome: async (pendingRequestId: string, administrator = false) => {
       const now = new Date().toISOString();
       const decidingUserId = administrator ? testEntityId('usr', 'outcome-admin') : actor.userId;
       if (administrator)
@@ -388,7 +391,7 @@ async function fixture(typed = true, linked = true) {
       ).not.toBeNull();
       const outcomeSessionId = testEntityId('as', `${root}:outcome`);
       const outcomeInput = 'Receive pending request outcomes.';
-      const outcomeTurn = store.createTurn(
+      const outcomeTurn = await store.createTurn(
         workspace.id,
         thread.id,
         'Approval outcomes',
@@ -412,7 +415,7 @@ async function fixture(typed = true, linked = true) {
           now,
         })
       ).toHaveLength(1);
-      store.createItem({
+      await store.createItem({
         id: deriveEntityId('it', ['task-user', outcomeTurn.id]),
         owner: { kind: 'workspace', workspaceId: workspace.id },
         threadId: thread.id,
@@ -485,10 +488,10 @@ it.each([
 ])('retains original Task bounds for a later outcome Turn (administrator=%s)', async (administrator) => {
   const f = await fixture();
   const original = f.read()!;
-  const captured = f.capture();
+  const captured = await f.capture();
   f.closeSource();
   clearWorkerCheckpoint(f.db, f.lineage.workspaceId, f.lineage.threadId, f.lineage.turnId);
-  const lineage = f.outcome(captured.requestId, administrator);
+  const lineage = await f.outcome(captured.requestId, administrator);
   f.reopen();
   expect(
     readGoalTaskPolicyContext({ coreDb: f.coreDb, store: f.store, db: f.db, lineage })
@@ -506,7 +509,7 @@ it('retains original Task bounds for an ordinary checkpoint-free user follow-up'
   const agentId = 'followup-worker';
   const agentSessionId = testEntityId('as', 'ordinary-followup');
   const input = 'Review the next result.';
-  const turn = f.store.createTurn(
+  const turn = await f.store.createTurn(
     f.lineage.workspaceId,
     f.lineage.threadId,
     input,
@@ -519,7 +522,7 @@ it('retains original Task bounds for an ordinary checkpoint-free user follow-up'
       triggerSource: { kind: 'user-input', summary: 'Direct Worker input.' },
     }
   );
-  const item = f.store.createItem({
+  const item = await f.store.createItem({
     id: deriveEntityId('it', ['task-user', turn.id]),
     owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
     threadId: turn.threadId,
@@ -562,7 +565,7 @@ it('retains original Task bounds for an ordinary checkpoint-free user follow-up'
   const read = () =>
     readGoalTaskPolicyContext({ coreDb: f.coreDb, store: f.store, db: f.db, lineage });
   expect(read()).toEqual({ ...original, turnId: turn.id, agentId });
-  f.store.updateItem(item.id, { text: 'Contradictory follow-up input.' });
+  await f.store.updateItem(item.id, { text: 'Contradictory follow-up input.' });
   expect(read).toThrow();
 });
 
@@ -577,10 +580,10 @@ it.each([
   'stale-plan',
 ] as const)('refuses later outcome context with %s', async (corruption) => {
   const f = await fixture();
-  const captured = f.capture();
+  const captured = await f.capture();
   f.closeSource();
   clearWorkerCheckpoint(f.db, f.lineage.workspaceId, f.lineage.threadId, f.lineage.turnId);
-  const lineage = f.outcome(captured.requestId, true);
+  const lineage = await f.outcome(captured.requestId, true);
   if (corruption === 'changed-original-input')
     f.coreDb.sqlite
       .prepare('UPDATE scheduler_admission_entries SET turn_input=? WHERE turn_id=?')
@@ -628,7 +631,7 @@ it.each([
 it('keeps identical retained context for a real captured request after source closure and cleanup', async () => {
   const f = await fixture();
   const original = f.read();
-  const captured = f.capture();
+  const captured = await f.capture();
   f.closeSource();
   expect(f.read()).toEqual(original);
   expect(
@@ -661,9 +664,9 @@ it.each([
   'missing-close-proof',
 ] as const)('refuses a retained captured source with %s', async (corruption) => {
   const f = await fixture();
-  const captured = f.capture();
+  const captured = await f.capture();
   if (corruption === 'missing-close-proof') {
-    f.store.updateTurn(f.lineage.turnId, {
+    await f.store.updateTurn(f.lineage.turnId, {
       status: 'completed',
       completedAt: new Date().toISOString(),
     });
@@ -770,7 +773,7 @@ it.each([
       .prepare('UPDATE scheduler_admission_entries SET turn_input=? WHERE turn_id=?')
       .run('{}', f.lineage.turnId);
   if (corruption === 'wrong-worker')
-    f.store.updateTurn(f.lineage.turnId, { agentId: 'another-worker' });
+    await f.store.updateTurn(f.lineage.turnId, { agentId: 'another-worker' });
   if (corruption === 'cancelled-card')
     f.db.sqlite
       .prepare(

@@ -66,8 +66,8 @@ describe('scheduler dispatch service', () => {
   it('fails the original accepted Turn after preparation failure and reports its original error without retry', async () => {
     const coreDb = createMigratedCoreDb();
     const store = new FsStore({ dataRoot: coreDb.dataRoot });
-    const workspace = store.createWorkspace('Transient background workspace');
-    const thread = store.createThread(workspace.id, 'Transient background thread');
+    const workspace = await store.createWorkspace('Transient background workspace');
+    const thread = await store.createThread(workspace.id, 'Transient background thread');
     const recordingExecutor = new RecordingTurnExecutor({ coreDb });
     const failure = new Error('Transient AgentSession preparation failure');
     const turnExecutor: TurnExecutor = recordingExecutor;
@@ -92,7 +92,7 @@ describe('scheduler dispatch service', () => {
         workspaceId: workspace.id,
       });
       recordTestNativeRuntimeTarget(coreDb);
-      store.createTurn(
+      await store.createTurn(
         workspace.id,
         thread.id,
         'Prepare background work',
@@ -197,8 +197,8 @@ describe('scheduler dispatch service', () => {
   it('reads the current runtime snapshot before retrying a queued turn', async () => {
     const coreDb = createMigratedCoreDb();
     const store = new FsStore({ dataRoot: coreDb.dataRoot });
-    const workspace = store.createWorkspace('Background dispatch workspace');
-    const thread = store.createThread(workspace.id, 'Background dispatch thread');
+    const workspace = await store.createWorkspace('Background dispatch workspace');
+    const thread = await store.createThread(workspace.id, 'Background dispatch thread');
     const turnExecutor = new RecordingTurnExecutor({ coreDb });
     const providerCredentialResolver = vi.fn(() => null);
     const manifest = createTestAgentSetup({ mcpIds: ['echo'] }).manifest;
@@ -262,7 +262,7 @@ describe('scheduler dispatch service', () => {
         workspaceId: workspace.id,
       });
       recordTestNativeRuntimeTarget(coreDb);
-      store.createTurn(
+      await store.createTurn(
         workspace.id,
         thread.id,
         'Run from the owner store',

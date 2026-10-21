@@ -90,7 +90,7 @@ async function fixture(
   const userId = ensureLocalUser(coreDb);
   const actor = { kind: 'local' as const, userId };
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Goal Policy consumers');
+  const workspace = await store.createWorkspace('Goal Policy consumers');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const db = openWorkspaceDb(dataRoot, workspace.id);
   applyScopedMigrations(db);
@@ -136,7 +136,7 @@ async function fixture(
     )
   ).goal!;
   const scope = { workspaceId: workspace.id, threadId: goal.threadId, goalId: goal.goalId };
-  const coordinator = store.createTurn(
+  const coordinator = await store.createTurn(
     workspace.id,
     goal.threadId,
     'Coordinate',
@@ -278,7 +278,7 @@ async function fixture(
   };
   const setupMcp = async (administratorContinuation = false) => {
     const requestId = randomUUID();
-    const thread = store.createThread(
+    const thread = await store.createThread(
       workspace.id,
       'Issue Task',
       deriveEntityId('th', ['task', requestId]),
@@ -290,7 +290,7 @@ async function fixture(
     )();
     const prompt = serializeStructuredWorkerDelegationRequest(request);
     const agentSessionId = testEntityId('as', requestId);
-    let turn = store.createTurn(
+    let turn = await store.createTurn(
       workspace.id,
       thread.id,
       prompt,
@@ -309,7 +309,7 @@ async function fixture(
         }),
       }
     );
-    store.createItem({
+    await store.createItem({
       id: deriveEntityId('it', ['task-user', turn.id]),
       owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: thread.id,
@@ -321,7 +321,7 @@ async function fixture(
       createdAt: turn.startedAt!,
       completedAt: turn.startedAt!,
     });
-    store.createAgentSession({
+    await store.createAgentSession({
       id: agentSessionId,
       agentId,
       workspaceId: workspace.id,
@@ -437,9 +437,12 @@ async function fixture(
           routesRevoked: true,
         },
       });
-      store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
+      await store.updateTurn(turn.id, {
+        status: 'completed',
+        completedAt: new Date().toISOString(),
+      });
       clearWorkerCheckpoint(db, workspace.id, thread.id, turn.id);
-      store.updateAgentSession(agentSessionId, {
+      await store.updateAgentSession(agentSessionId, {
         status: 'closed',
         updatedAt: new Date().toISOString(),
       });
@@ -464,7 +467,7 @@ async function fixture(
       };
       const followupInput = 'Continue the same bounded issue review.';
       const followupSessionId = testEntityId('as', `${requestId}:continuation`);
-      turn = store.createTurn(
+      turn = await store.createTurn(
         workspace.id,
         thread.id,
         followupInput,
@@ -477,7 +480,7 @@ async function fixture(
           triggerSource: { kind: 'user-input', summary: 'Administrator continuation.' },
         }
       );
-      store.createItem({
+      await store.createItem({
         id: deriveEntityId('it', ['task-user', turn.id]),
         owner: { kind: 'workspace', workspaceId: workspace.id },
         threadId: thread.id,
@@ -489,7 +492,7 @@ async function fixture(
         createdAt: turn.startedAt!,
         completedAt: turn.startedAt!,
       });
-      store.createAgentSession({
+      await store.createAgentSession({
         id: followupSessionId,
         agentId,
         workspaceId: workspace.id,

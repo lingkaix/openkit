@@ -52,7 +52,7 @@ async function fixture(selected = false) {
   const actor = { kind: 'local' as const, userId };
   const actorRef = { kind: 'user' as const, id: userId };
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Context source verification');
+  const workspace = await store.createWorkspace('Context source verification');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const writer = {
     coreDb,
@@ -83,9 +83,14 @@ async function fixture(selected = false) {
       ),
       summary: 'Explicit personal preference',
     });
-  const thread = openAssistantTimeline(store, workspace.id, userId, 'Private Assistant');
-  const sourceTurn = store.createTurn(workspace.id, thread.id, 'Recall preferences.', actorRef);
-  store.createItem({
+  const thread = await openAssistantTimeline(store, workspace.id, userId, 'Private Assistant');
+  const sourceTurn = await store.createTurn(
+    workspace.id,
+    thread.id,
+    'Recall preferences.',
+    actorRef
+  );
+  await store.createItem({
     id: allocateEntityId('it'),
     owner: { kind: 'workspace', workspaceId: workspace.id },
     threadId: thread.id,
@@ -127,7 +132,7 @@ async function fixture(selected = false) {
     'retrieval-traces',
     `${reference.objectId}.json`
   );
-  store.updateTurn(sourceTurn.id, { status: 'completed', completedAt: timestamp });
+  await store.updateTurn(sourceTurn.id, { status: 'completed', completedAt: timestamp });
   const turn = store.createTurn(workspace.id, thread.id, 'Continue.', actorRef, null, {
     agentId: 'quick-chat',
     executorKind: 'assistant',

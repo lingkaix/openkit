@@ -26,14 +26,19 @@ afterEach(() => {
 });
 
 /** Real retained Turn and database; only the external Provider transport is fake. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'km-agent-'));
   roots.push(dataRoot);
   const store = createTestStore({ dataRoot });
-  const workspace = store.createWorkspace('Knowledge');
-  const thread = store.createThread(workspace.id, 'Knowledge', undefined, 'knowledge-manager');
+  const workspace = await store.createWorkspace('Knowledge');
+  const thread = await store.createThread(
+    workspace.id,
+    'Knowledge',
+    undefined,
+    'knowledge-manager'
+  );
   const actor = { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' };
-  const turn = store.createTurn(workspace.id, thread.id, 'Question', actor, null, {
+  const turn = await store.createTurn(workspace.id, thread.id, 'Question', actor, null, {
     agentId: 'knowledge-manager',
     executorKind: 'assistant',
   });
@@ -43,7 +48,7 @@ function fixture() {
 }
 
 it('runs a fresh configured Knowledge Manager Turn through the Gateway and retains its own usage lineage and actual Tool pairs', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const providerRegistry = new ProviderRegistry([
       {
@@ -230,8 +235,8 @@ it('runs a fresh configured Knowledge Manager Turn through the Gateway and retai
   }
 });
 
-it('commits a completed Tool pair once and never fabricates a result for an unsettled call', () => {
-  const f = fixture();
+it('commits a completed Tool pair once and never fabricates a result for an unsettled call', async () => {
+  const f = await fixture();
   try {
     const commit = createKnowledgeManagerTranscript(f.store, f.turn, f.actor);
     const messages = [
@@ -267,11 +272,11 @@ it('commits a completed Tool pair once and never fabricates a result for an unse
 });
 
 it('rejects mismatched Knowledge Manager run owners before configuration, current admission or Turn mutation', async () => {
-  const f = fixture();
+  const f = await fixture();
   const coreDb = openCoreDb(f.store.getDataRoot()!);
   try {
-    const serverThread = f.store.createServerThread('Server');
-    const serverTurn = f.store.createServerTurn(serverThread.id, 'Question', f.actor, null, {
+    const serverThread = await f.store.createServerThread('Server');
+    const serverTurn = await f.store.createServerTurn(serverThread.id, 'Question', f.actor, null, {
       agentId: 'knowledge-manager',
     });
     const runtimeConfig = vi.fn(() => {
@@ -316,7 +321,7 @@ it('rejects mismatched Knowledge Manager run owners before configuration, curren
         turn: serverTurn,
       })
     ).rejects.toThrow(/owner/i);
-    const other = f.store.createWorkspace('Other');
+    const other = await f.store.createWorkspace('Other');
     const otherDb = openWorkspaceDb(f.store.getDataRoot()!, other.id);
     try {
       await expect(

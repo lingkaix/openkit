@@ -29,14 +29,14 @@ describe('User-owned Thread read receipts', () => {
       rmSync(dataRoot, { recursive: true, force: true });
     });
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Shared conversations');
+    const workspace = await store.createWorkspace('Shared conversations');
     recordWorkspaceOwnerMembership({
       coreDb,
       workspaceId: workspace.id,
       ownerUserId: localUserId,
     });
-    const thread = store.createThread(workspace.id, 'Read receipts');
-    const turn = store.createTurn(workspace.id, thread.id, 'Prompt', {
+    const thread = await store.createThread(workspace.id, 'Read receipts');
+    const turn = await store.createTurn(workspace.id, thread.id, 'Prompt', {
       kind: 'user',
       id: localUserId,
     });
@@ -49,15 +49,15 @@ describe('User-owned Thread read receipts', () => {
       completedAt: '2026-10-16T00:00:00.000Z',
     };
     for (const id of [FIRST, SECOND])
-      store.createItem({ ...base, id, type: 'assistant-message', text: 'Reply' });
-    store.createItem({
+      await store.createItem({ ...base, id, type: 'assistant-message', text: 'Reply' });
+    await store.createItem({
       ...base,
       id: OWN,
       type: 'user-message',
       actor: { kind: 'user', id: localUserId },
       text: 'Prompt',
     });
-    store.createItem({
+    await store.createItem({
       ...base,
       id: STREAMING,
       type: 'assistant-message',
@@ -116,7 +116,7 @@ describe('User-owned Thread read receipts', () => {
     ).toBe(403);
     expect(await state()).toEqual({ readItemIds: [SECOND], unreadItemIds: [FIRST] });
 
-    const privateThread = store.createThread(
+    const privateThread = await store.createThread(
       workspace.id,
       'Other person',
       undefined,

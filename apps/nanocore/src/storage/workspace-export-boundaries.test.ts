@@ -156,10 +156,10 @@ function knowledgeSource(id: string): Record<string, unknown> {
 }
 
 /** Creates a file-backed route store containing the legacy demo workspace. */
-function createBoundaryStore(dataRoot: string): FsStore {
+async function createBoundaryStore(dataRoot: string): Promise<FsStore> {
   const store = createTestStore({ dataRoot });
   const demo = createDemoWorkspaceForUser('usr_00000000-0000-7000-8000-000000000001');
-  store.importWorkspaceSnapshot({
+  await store.importWorkspaceSnapshot({
     ...notebookImportFixture({ workspaceId: demo.workspace.id, knowledge: demo.knowledge }),
     workspace: demo.workspace,
     threads: [demo.thread],
@@ -340,7 +340,7 @@ describe('workspace export filesystem boundaries', () => {
     const parent = mkdtempSync(join(tmpdir(), 'openkit-import-source-boundary-'));
     const dataRoot = join(parent, 'data');
     const store = createTestStore({ dataRoot });
-    const workspace = store.createWorkspace('Unsafe raw locator');
+    const workspace = await store.createWorkspace('Unsafe raw locator');
     const coreDb = boundaryAuthority(dataRoot, workspace.id);
     const sourceContent = 'Contained original bytes.';
     const source = await captureWorkspaceSourceFixture({
@@ -598,7 +598,7 @@ describe('workspace export filesystem boundaries', () => {
 describe('workspace export route boundaries', () => {
   it('streams one zstd workspace archive from the verified export', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-export-archive-'));
-    const store = createBoundaryStore(dataRoot);
+    const store = await createBoundaryStore(dataRoot);
     const app = createApp({
       coreDb: boundaryAuthority(dataRoot, 'ws_00000000-0000-7000-8000-000000000001'),
       dataRoot,
@@ -654,7 +654,7 @@ describe('workspace export route boundaries', () => {
 
   it('round-trips Unicode and USTAR prefix paths through the strict archive importer', async () => {
     const sourceDataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-archive-unicode-source-'));
-    const sourceStore = createBoundaryStore(sourceDataRoot);
+    const sourceStore = await createBoundaryStore(sourceDataRoot);
     const sourceCoreDb = boundaryAuthority(
       sourceDataRoot,
       'ws_00000000-0000-7000-8000-000000000001'
@@ -717,7 +717,7 @@ describe('workspace export route boundaries', () => {
     const targetResponse = await createApp({
       dataRoot: targetDataRoot,
       fileAdmission,
-      store: createBoundaryStore(targetDataRoot),
+      store: await createBoundaryStore(targetDataRoot),
     }).request('/api/app/workspace-archives/import-dry-run', {
       body: archive,
       headers: { 'content-type': 'application/vnd.openkit.workspace-export+tar.zstd' },
@@ -757,8 +757,8 @@ describe('workspace export route boundaries', () => {
 
   it('fails closed when a worker-backed Turn has no S39 trace', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-export-s39-'));
-    const store = createBoundaryStore(dataRoot);
-    const turn = store.createTurn(
+    const store = await createBoundaryStore(dataRoot);
+    const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Export an untraced worker Turn',
@@ -767,7 +767,7 @@ describe('workspace export route boundaries', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
-    const session = store.createAgentSession({
+    const session = await store.createAgentSession({
       id: 'as_00000000-0000-7191-a06d-dfd2a31b7d87',
       agentId: 'agent_codex_host',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -777,7 +777,7 @@ describe('workspace export route boundaries', () => {
       createdAt: turn.startedAt ?? timestamp,
       updatedAt: turn.startedAt ?? timestamp,
     });
-    store.updateTurn(turn.id, { agentSessionId: session.id });
+    await store.updateTurn(turn.id, { agentSessionId: session.id });
     const app = createApp({
       coreDb: boundaryAuthority(dataRoot, 'ws_00000000-0000-7000-8000-000000000001'),
       dataRoot,
@@ -845,10 +845,10 @@ describe('workspace import route handles', () => {
   it.each([
     'legacy',
     'ws_00000000-0000-7000-8000-000000000001',
-  ])('refuses a verified portable PermissionDecision with invalid kind %s before Workspace publication', (decisionId) => {
+  ])('refuses a verified portable PermissionDecision with invalid kind %s before Workspace publication', async (decisionId) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-import-permission-kind-'));
     const sourceWorkspaceId = 'ws_00000000-0000-7000-8000-000000000001';
-    const store = createBoundaryStore(dataRoot);
+    const store = await createBoundaryStore(dataRoot);
     const coreDb = boundaryAuthority(dataRoot, sourceWorkspaceId);
     const workspaceDb = openWorkspaceDb(dataRoot, sourceWorkspaceId);
     try {
@@ -919,7 +919,7 @@ describe('workspace import route handles', () => {
 
   it('adds a missing root index while preserving imported reserved Markdown bytes', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-okf-index-'));
-    const store = createBoundaryStore(dataRoot);
+    const store = await createBoundaryStore(dataRoot);
     const exportId = 'wsexp_00000000-0000-7834-999b-c5b532335d3f';
     const exportRoot = join(
       dataRoot,
@@ -1044,7 +1044,7 @@ describe('workspace import route handles', () => {
     'import',
   ] as const)('rejects an unrelated-deployment server-managed handle on %s', async (route) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-foreign-handle-'));
-    const store = createBoundaryStore(dataRoot);
+    const store = await createBoundaryStore(dataRoot);
     const exportRoot = join(
       dataRoot,
       'server',
@@ -1096,7 +1096,7 @@ describe('workspace import route handles', () => {
     ['import', 'exportId'],
   ] as const)('rejects %s when the requested %s disagrees with the manifest', async (route, field) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-handle-'));
-    const store = createBoundaryStore(dataRoot);
+    const store = await createBoundaryStore(dataRoot);
     const app = createApp({
       coreDb: boundaryAuthority(dataRoot, 'ws_00000000-0000-7000-8000-000000000001'),
       dataRoot,
@@ -1156,7 +1156,7 @@ describe('workspace import route handles', () => {
 
   it('skips an orphan final workspace path when choosing a collision id', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-orphan-'));
-    const store = createBoundaryStore(dataRoot);
+    const store = await createBoundaryStore(dataRoot);
     const app = createApp({
       coreDb: boundaryAuthority(dataRoot, 'ws_00000000-0000-7000-8000-000000000001'),
       dataRoot,
@@ -1200,7 +1200,7 @@ describe('workspace import route handles', () => {
 
   it('skips a workspace id owned anywhere else in the deployment', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-import-registry-'));
-    const store = createBoundaryStore(dataRoot);
+    const store = await createBoundaryStore(dataRoot);
     const coreDb = openCoreDb(dataRoot);
 
     try {
@@ -1277,7 +1277,7 @@ describe('workspace import route handles', () => {
 describe('workspace archive import boundaries', () => {
   it('uses private staging modes and removes only the owned request directory', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-archive-staging-'));
-    const store = createBoundaryStore(dataRoot);
+    const store = await createBoundaryStore(dataRoot);
     const app = createApp({
       coreDb: boundaryAuthority(dataRoot, 'ws_00000000-0000-7000-8000-000000000001'),
       dataRoot,
@@ -1330,9 +1330,9 @@ describe('workspace archive import boundaries', () => {
     expect(readdirSync(requestsRoot)).toEqual([]);
   });
 
-  it('removes abandoned request staging only during explicit boot cleanup', () => {
+  it('removes abandoned request staging only during explicit boot cleanup', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-archive-cleanup-'));
-    createBoundaryStore(dataRoot);
+    await createBoundaryStore(dataRoot);
     const requestsRoot = join(dataRoot, 'server', 'files', 'workspace-archive-requests');
     mkdirSync(join(requestsRoot, 'request-abandoned'), { recursive: true });
     writeFileSync(join(requestsRoot, 'request-abandoned', 'partial'), 'partial');
@@ -1347,7 +1347,7 @@ describe('workspace archive import boundaries', () => {
     ['symbolic link', { name: 'linked', type: 'symlink', linkname: 'outside' }],
   ] as const)('rejects a tar %s and removes request staging', async (_label, header) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-archive-malicious-'));
-    const store = createBoundaryStore(dataRoot);
+    const store = await createBoundaryStore(dataRoot);
     const app = createApp({
       coreDb: boundaryAuthority(dataRoot, 'ws_00000000-0000-7000-8000-000000000001'),
       dataRoot,
@@ -1373,7 +1373,7 @@ describe('workspace archive import boundaries', () => {
 
   it('rejects a declared compressed body above the fixed ceiling before staging', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-archive-limit-'));
-    const app = createApp({ dataRoot, store: createBoundaryStore(dataRoot) });
+    const app = createApp({ dataRoot, store: await createBoundaryStore(dataRoot) });
 
     const response = await app.request('/api/app/workspace-archives/import-dry-run', {
       body: new Uint8Array([1]),
@@ -1390,7 +1390,7 @@ describe('workspace archive import boundaries', () => {
 
   it('rejects non-block-aligned bytes after the tar end marker', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-archive-tail-'));
-    const store = createBoundaryStore(dataRoot);
+    const store = await createBoundaryStore(dataRoot);
     const app = createApp({
       coreDb: boundaryAuthority(dataRoot, 'ws_00000000-0000-7000-8000-000000000001'),
       dataRoot,
@@ -1430,7 +1430,7 @@ describe('workspace archive import boundaries', () => {
 
   it('closes a staging file when the compressed body aborts upstream', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-archive-abort-'));
-    createBoundaryStore(dataRoot);
+    await createBoundaryStore(dataRoot);
     const complete = zstdDecompressSync(
       await archiveWithEntry({ name: 'partial.bin', type: 'file' }, Buffer.alloc(1024, 1))
     );
@@ -1474,7 +1474,7 @@ describe('workspace archive import boundaries', () => {
 
   it('requires a mutating request id before staging the archive body', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-archive-request-id-'));
-    const store = createBoundaryStore(dataRoot);
+    const store = await createBoundaryStore(dataRoot);
     const app = createApp({
       coreDb: boundaryAuthority(dataRoot, 'ws_00000000-0000-7000-8000-000000000001'),
       dataRoot,
@@ -1523,7 +1523,7 @@ describe('workspace portable authority boundaries', () => {
       }
 
       const sourceStore = new FsStore({ dataRoot: sourceDataRoot });
-      const sourceWorkspace = sourceStore.createWorkspace('Portable authority source');
+      const sourceWorkspace = await sourceStore.createWorkspace('Portable authority source');
       recordWorkspaceOwnerMembership({
         coreDb: sourceCoreDb,
         ownerUserId: 'usr_00000000-0000-7f08-b276-13c309e8c61d',
@@ -1729,12 +1729,12 @@ describe('workspace portable authority boundaries', () => {
 });
 
 describe('Workspace resource Policy portability', () => {
-  it('exports and remints a last-revoke boundary while rejecting unvalidated principals', () => {
+  it('exports and remints a last-revoke boundary while rejecting unvalidated principals', async () => {
     const root = mkdtempSync(join(tmpdir(), 'resource-policy-portable-'));
     try {
       const store = new FsStore();
-      const workspace = store.createWorkspace('Boundary workspace');
-      const thread = store.createThread(workspace.id, 'Managed Thread');
+      const workspace = await store.createWorkspace('Boundary workspace');
+      const thread = await store.createThread(workspace.id, 'Managed Thread');
       const input = minimalExportInput(
         join(root, 'export'),
         workspace.id,

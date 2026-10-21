@@ -51,7 +51,7 @@ afterEach(async () => {
 });
 
 /** Uses real schedule, queue, canonical history and package-attempt lineage without a backend effect. */
-function fixture(options: { privateSource?: boolean } = {}) {
+async function fixture(options: { privateSource?: boolean } = {}) {
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime('2026-10-18T00:00:00.000Z');
   const root = mkdtempSync(join(tmpdir(), 'external-trigger-'));
@@ -60,8 +60,8 @@ function fixture(options: { privateSource?: boolean } = {}) {
   owned.push({ root, db });
   const userId = ensureLocalUser(db);
   const store = new FsStore({ dataRoot: root });
-  const workspace = store.createWorkspace('External events');
-  const thread = store.createThread(
+  const workspace = await store.createWorkspace('External events');
+  const thread = await store.createThread(
     workspace.id,
     'Scheduled poll',
     undefined,
@@ -102,7 +102,7 @@ function fixture(options: { privateSource?: boolean } = {}) {
       },
     ]),
   });
-  function poll() {
+  async function poll() {
     const occurrence = schedules.collectScanCandidates(instant)[0]!;
     const accepted = schedules.commitAttempt(occurrence.id, occurrence.definitionRevision, {
       kind: 'ready',
@@ -117,7 +117,7 @@ function fixture(options: { privateSource?: boolean } = {}) {
     })!;
     const entry = requireSchedulerAdmissionEntry(db, accepted.queueEntryId!);
     const agentSessionId = allocateEntityId('as');
-    store.createAgentSession({
+    await store.createAgentSession({
       id: agentSessionId,
       agentId: manifest.id,
       workspaceId: workspace.id,
@@ -173,7 +173,7 @@ function fixture(options: { privateSource?: boolean } = {}) {
       environmentPackage,
     };
   }
-  const source = poll();
+  const source = await poll();
   const dependencies: ExternalTriggerServiceInput = {
     schedules,
     store,
@@ -197,9 +197,12 @@ function fixture(options: { privateSource?: boolean } = {}) {
     source,
     dependencies,
     admit,
-    nextPoll: () => {
-      store.updateTurn(source.turnId, { status: 'completed', completedAt: instant });
-      store.updateAgentSession(source.agentSessionId, { status: 'failed', updatedAt: instant });
+    nextPoll: async () => {
+      await store.updateTurn(source.turnId, { status: 'completed', completedAt: instant });
+      await store.updateAgentSession(source.agentSessionId, {
+        status: 'failed',
+        updatedAt: instant,
+      });
       closeSchedulerExecutionAttemptWithoutEffects(db, {
         attemptId: testEntityId('attempt', source.turnId),
         noOutstandingEffects: true,
@@ -208,7 +211,7 @@ function fixture(options: { privateSource?: boolean } = {}) {
       });
       instant = '2026-10-26T00:00:00.000Z';
       vi.setSystemTime(instant);
-      return poll();
+      return await poll();
     },
   };
 }
@@ -223,7 +226,7 @@ function queueCount(db: CoreDb): number {
 
 describe('bounded scheduled poll event admission', () => {
   it('joins the native Work Tool to isolated admission and refuses substituted scope and human entry', async () => {
-    const f = fixture();
+    const f = await fixture();
     const workspaceDb = openWorkspaceDb(f.root, f.source.workspaceId);
     applyScopedMigrations(workspaceDb);
     try {
@@ -302,7 +305,7 @@ describe('bounded scheduled poll event admission', () => {
   });
 
   it('refuses a managed poll brief before publishing an unmanaged child despite current source grants', async () => {
-    const f = fixture();
+    const f = await fixture();
     const agentId = f.store.getAgentSession(f.source.agentSessionId).agentId;
     const policy = managedThreadPolicy({
       workspaceId: f.source.workspaceId,
@@ -352,7 +355,7 @@ describe('bounded scheduled poll event admission', () => {
   });
 
   it('isolates two events in fresh shared child Threads while the first case is pending', async () => {
-    const f = fixture();
+    const f = await fixture();
     const [first, replay] = await Promise.all([
       f.admit(),
       f.admit({ input: 'Concurrent changed source content' }),
@@ -387,9 +390,9 @@ describe('bounded scheduled poll event admission', () => {
   });
 
   it('returns immutable original work after a later poll, Store/SQLite reopen and command receipt expiry', async () => {
-    const f = fixture();
+    const f = await fixture();
     const first = await f.admit();
-    const source = f.nextPoll();
+    const source = await f.nextPoll();
     const sourceRow = f.db.sqlite
       .prepare(
         'SELECT enqueued_at AS enqueuedAt FROM scheduler_admission_entries WHERE turn_id = ?'
@@ -424,14 +427,14 @@ describe('bounded scheduled poll event admission', () => {
     'failed',
     'interrupted',
   ] as const)('never relaunches accepted %s work', async (status) => {
-    const f = fixture();
+    const f = await fixture();
     const first = await f.admit();
     f.db.sqlite
       .prepare(
         "UPDATE scheduler_admission_entries SET status = 'admitted' WHERE queue_entry_id = ?"
       )
       .run(first.entry.queueEntryId);
-    f.store.updateTurn(first.turn.id, { status, completedAt: '2026-10-18T00:01:00.000Z' });
+    await f.store.updateTurn(first.turn.id, { status, completedAt: '2026-10-18T00:01:00.000Z' });
     const createTurn = vi.spyOn(f.store, 'createTurn');
     const repeated = await f.admit({ input: 'Try a replacement' });
     expect(repeated.turn.status).toBe(status);
@@ -441,7 +444,7 @@ describe('bounded scheduled poll event admission', () => {
   });
 
   it('accepts ordinary manifest-default reasoning effort without treating it as explicit queue input', async () => {
-    const f = fixture();
+    const f = await fixture();
     const snapshot = {
       ...f.dependencies.snapshot,
       agentManifests: f.dependencies.snapshot.agentManifests.map((manifest) => ({
@@ -456,7 +459,7 @@ describe('bounded scheduled poll event admission', () => {
   });
 
   it('retains accepted work with an unknown execution outcome without another admission', async () => {
-    const f = fixture();
+    const f = await fixture();
     const first = await f.admit();
     const sessionId = allocateEntityId('as');
     recordTestExecutionAttempt(f.db, {
@@ -469,7 +472,7 @@ describe('bounded scheduled poll event admission', () => {
       operationId: 'unknown-case-operation',
       now: () => '2026-10-18T00:00:01.000Z',
     });
-    f.store.updateTurn(first.turn.id, { status: 'running', agentSessionId: sessionId });
+    await f.store.updateTurn(first.turn.id, { status: 'running', agentSessionId: sessionId });
     const createTurn = vi.spyOn(f.store, 'createTurn');
     expect((await f.admit()).admission).toEqual(first.admission);
     expect(createTurn).not.toHaveBeenCalled();
@@ -477,7 +480,7 @@ describe('bounded scheduled poll event admission', () => {
   });
 
   it('returns recovery_required when the accepted queue is corrupt during publication failure handling', async () => {
-    const f = fixture();
+    const f = await fixture();
     vi.spyOn(f.store, 'createTurn').mockImplementation(() => {
       f.db.sqlite
         .prepare(
@@ -494,7 +497,7 @@ describe('bounded scheduled poll event admission', () => {
   });
 
   it('rolls back both queue and join on insertion failure and permits a later ordinary admission', async () => {
-    const f = fixture();
+    const f = await fixture();
     f.db.sqlite.exec(
       "CREATE TRIGGER reject_external BEFORE INSERT ON external_trigger_admissions BEGIN SELECT RAISE(ABORT, 'injected join refusal'); END"
     );
@@ -508,7 +511,7 @@ describe('bounded scheduled poll event admission', () => {
   });
 
   it('does not retry canonical publication after queue acceptance', async () => {
-    const f = fixture();
+    const f = await fixture();
     const createTurn = vi.spyOn(f.store, 'createTurn').mockImplementation(() => {
       throw new Error('injected publication failure');
     });
@@ -525,7 +528,7 @@ describe('bounded scheduled poll event admission', () => {
     'missing',
     'contradictory',
   ] as const)('requires inspection for %s canonical accepted work', async (damage) => {
-    const f = fixture();
+    const f = await fixture();
     const first = await f.admit();
     const path = join(
       f.root,
@@ -550,7 +553,7 @@ describe('bounded scheduled poll event admission', () => {
   });
 
   it('uses canonical target history when the derivative Store is stale', async () => {
-    const f = fixture();
+    const f = await fixture();
     const first = await f.admit();
     f.db.sqlite
       .prepare(
@@ -594,7 +597,7 @@ describe('bounded scheduled poll event admission', () => {
     'private-source',
     'closed-workspace',
   ] as const)('refuses %s before event effects', async (reason) => {
-    const f = fixture({ privateSource: reason === 'private-source' });
+    const f = await fixture({ privateSource: reason === 'private-source' });
     let source = f.source;
     if (reason === 'paused')
       f.schedules.updateAutomation(f.userId, f.schedule.id, {
@@ -633,7 +636,7 @@ describe('bounded scheduled poll event admission', () => {
     if (reason === 'stale-package') source = { ...source, packageSnapshotId: 'stale-package' };
     if (reason === 'stale-session') source = { ...source, agentSessionId: allocateEntityId('as') };
     if (reason === 'ended-turn')
-      f.store.updateTurn(source.turnId, {
+      await f.store.updateTurn(source.turnId, {
         status: 'completed',
         completedAt: '2026-10-18T00:01:00.000Z',
       });

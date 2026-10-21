@@ -28,15 +28,15 @@ import { WorkerGovernanceTurnExecutor } from './worker-governance-turn-executor.
 
 describe('release-declared catalog Skill supply', () => {
   let coreDb: ReturnType<typeof openCoreDb>;
-  let store: ReturnType<typeof createDemoStore>;
-  let turn: ReturnType<typeof store.createTurn>;
+  let store: Awaited<ReturnType<typeof createDemoStore>>;
+  let turn: Awaited<ReturnType<typeof store.createTurn>>;
   let digest: string;
 
   beforeEach(async () => {
     coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-skill-supply-')));
     applyMigrations(coreDb);
     store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-    turn = store.createTurn(
+    turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Use catalog Skill',

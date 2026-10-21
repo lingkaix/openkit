@@ -30,7 +30,7 @@ async function fixture() {
   const userId = ensureLocalUser(coreDb);
   const actor: Actor = { kind: 'local', userId };
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Joint domain publication');
+  const workspace = await store.createWorkspace('Joint domain publication');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const db = openWorkspaceDb(dataRoot, workspace.id);
   cleanup.push(() => {
@@ -80,7 +80,7 @@ async function fixture() {
   );
   const goal = created.goal!;
   const scope = { workspaceId: workspace.id, goalId: goal.goalId, threadId: goal.threadId };
-  const turn = store.createTurn(
+  const turn = await store.createTurn(
     workspace.id,
     goal.threadId,
     'Coordinate',

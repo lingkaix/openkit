@@ -77,7 +77,7 @@ function retainedTree(root: string): unknown[] {
 }
 
 /** Composes native HTTP, current credentials, real Core, file Store and the existing mutation gate. */
-function fixture(fault: 'corrupt' | 'missing' | 'records' | 'index' | 'healthy' = 'corrupt') {
+async function fixture(fault: 'corrupt' | 'missing' | 'records' | 'index' | 'healthy' = 'corrupt') {
   const dataRoot = mkdtempSync(join(tmpdir(), 'retained-retirement-'));
   const coreDb = databases.openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -88,8 +88,8 @@ function fixture(fault: 'corrupt' | 'missing' | 'records' | 'index' | 'healthy' 
     )
     .run(ADMIN);
   const store = new FsStore({ dataRoot });
-  const workspaceId = store.createWorkspace('Retained private canary').id;
-  const siblingId = store.createWorkspace('Healthy sibling').id;
+  const workspaceId = (await store.createWorkspace('Retained private canary')).id;
+  const siblingId = (await store.createWorkspace('Healthy sibling')).id;
   for (const id of [workspaceId, siblingId])
     recordWorkspaceOwnerMembership({ coreDb, workspaceId: id, ownerUserId: FIXTURE_LOCAL_USER_ID });
   coreDb.sqlite
@@ -226,7 +226,7 @@ function fixture(fault: 'corrupt' | 'missing' | 'records' | 'index' | 'healthy' 
   };
 }
 
-type Fixture = ReturnType<typeof fixture>;
+type Fixture = Awaited<ReturnType<typeof fixture>>;
 
 /** Reads Core authority, not a content projection or a response-derived expectation. */
 function registry(f: Fixture) {
@@ -351,7 +351,7 @@ async function expectRetired(f: Fixture, response: Response) {
 
 describe('retained-only quarantine retirement: native operation and Core authority', () => {
   it('CONTROL: current administrator and member reach baseline authority and the healthy sibling makes progress', async () => {
-    const f = fixture();
+    const f = await fixture();
     const response = await f.call('workspace.access-recovery-read', { workspaceId: f.siblingId });
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
@@ -389,7 +389,7 @@ describe('retained-only quarantine retirement: native operation and Core authori
     'corrupt',
     'missing',
   ] as const)('CONTROL: ordinary deletion cannot bypass %s hold authority', async (fault) => {
-    const f = fixture(fault);
+    const f = await fixture(fault);
     const before = registry(f);
     const tree = retainedTree(f.workspaceRoot);
     await expectRefused(
@@ -411,7 +411,7 @@ describe('retained-only quarantine retirement: native operation and Core authori
     'missing',
     'records',
   ] as const)('retires %s authority without opening content, altering any retained entry or releasing runtime fences', async (fault) => {
-    const f = fixture(fault);
+    const f = await fixture(fault);
     const runtime = retainRuntimeFences(f);
     const beforeRuntime = runtime();
     const tree = retainedTree(f.workspaceRoot);
@@ -453,7 +453,7 @@ describe('retained-only quarantine retirement: native operation and Core authori
   });
 
   it('rejects an original owner without administrator authority before disclosing a quarantined target', async () => {
-    const f = fixture();
+    const f = await fixture();
     const before = registry(f);
     await expectRefused(await f.call(OPERATION, f.request, f.member.secret), [403]);
     await expectRefused(
@@ -471,7 +471,7 @@ describe('retained-only quarantine retirement: native operation and Core authori
     'healthy',
     'index',
   ] as const)('refuses %s scope rather than treating index degradation as authority quarantine', async (fault) => {
-    const f = fixture(fault);
+    const f = await fixture(fault);
     const before = registry(f);
     await expectRefused(await f.call(OPERATION, f.request), [409]);
     expect(registry(f)).toEqual(before);
@@ -484,7 +484,7 @@ describe('retained-only quarantine retirement: native operation and Core authori
     'missing-registry',
     'deletion-owned',
   ] as const)('refuses %s without a retirement receipt or authority change', async (conflict) => {
-    const f = fixture();
+    const f = await fixture();
     const request = { ...f.request };
     if (conflict === 'revision') {
       request.expectedRegistryRevision = 2;
@@ -519,7 +519,7 @@ describe('retained-only quarantine retirement: native operation and Core authori
   });
 
   it('collapses duplicate delivery, retains the original audit/receipt, and conflicts on changed input or a second request', async () => {
-    const f = fixture();
+    const f = await fixture();
     const beforeAudit = rows(f, 'audit_events');
     const responses = await Promise.all([
       f.call(OPERATION, f.request),
@@ -563,7 +563,7 @@ describe('retained-only quarantine retirement: native operation and Core authori
     'contradictory-registry',
     'expired-receipt',
   ] as const)('fails closed on %s instead of applying retirement again', async (fault) => {
-    const f = fixture();
+    const f = await fixture();
     await expectRetired(f, await f.call(OPERATION, f.request));
     if (fault === 'missing-receipt') f.coreDb.sqlite.exec('DELETE FROM idempotency_requests');
     if (fault === 'missing-audit') f.coreDb.sqlite.exec('DELETE FROM audit_events');
@@ -586,7 +586,7 @@ describe('retained-only quarantine retirement: native operation and Core authori
     'audit_events',
     'idempotency_requests',
   ] as const)('rolls back all Core retirement authority when %s insertion fails, then permits the original request', async (table) => {
-    const f = fixture();
+    const f = await fixture();
     const before = registry(f);
     const audit = rows(f, 'audit_events');
     const receipts = rows(f, 'idempotency_requests');
@@ -608,7 +608,7 @@ describe('retained-only quarantine retirement: native operation and Core authori
     'revoke',
     'revision',
   ] as const)('closes and drains ordinary mutations and late publishers, then rechecks %s', async (outcome) => {
-    const f = fixture();
+    const f = await fixture();
     const leave = f.admission.enter(f.workspaceId)!;
     const leavePublisher = f.admission.enterLatePublisher(f.workspaceId, 'worker-turn-closeout')!;
     let settled = false;
@@ -652,7 +652,7 @@ describe('retained-only quarantine retirement: native operation and Core authori
   });
 
   it('exposes bounded quarantine and retirement metadata without content listing, paths or private material', async () => {
-    const f = fixture();
+    const f = await fixture();
     const content = vi.spyOn(f.store, 'getWorkspace');
     const listing = vi.spyOn(f.store, 'listWorkspaces');
     const open = vi.spyOn(databases, 'openWorkspaceDb');

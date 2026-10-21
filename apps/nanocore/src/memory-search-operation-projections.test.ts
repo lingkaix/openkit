@@ -21,7 +21,7 @@ import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js'
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /** Real bearer authentication selects each User; every page is published through the public operation. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'memory-search-public-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -45,7 +45,7 @@ function fixture() {
   });
   const store = new FsStore({ dataRoot });
   const app = createApp({ coreDb, dataRoot, store, mode: 'server' });
-  const workspace = store.createWorkspace('Memory query context', {
+  const workspace = await store.createWorkspace('Memory query context', {
     requestId: randomUUID(),
     producer: { kind: 'user', id: userIds[0]! },
     instructionReference: 'test-fixture:memory-search-context',
@@ -85,7 +85,7 @@ function fixture() {
 
 describe('public self Memory search', () => {
   it('uses the authenticated User private Timeline and returns exact Kernel selections without widening scope', async () => {
-    const f = fixture();
+    const f = await fixture();
     const pages = new Map<string, string>();
     let baseRevision: string | null = null;
     for (let index = 0; index < 6; index += 1) {
@@ -113,12 +113,12 @@ describe('public self Memory search', () => {
     const request = { workspaceId: f.workspace.id, query: 'auroramarker' };
 
     // A shared conversation cannot supply the private recall context or cause search to create one.
-    f.store.createThread(f.workspace.id, 'Shared conversation', undefined, 'conversation');
+    await f.store.createThread(f.workspace.id, 'Shared conversation', undefined, 'conversation');
     const withoutTimeline = await f.call(0, 'memory.search', request);
     expect([400, 403]).toContain(withoutTimeline.status);
     expect(withoutTimeline.body).not.toHaveProperty('selected');
     expect(f.store.listThreads(f.workspace.id)).toHaveLength(1);
-    const timeline = f.store.createThread(
+    const timeline = await f.store.createThread(
       f.workspace.id,
       'My private Assistant Timeline',
       undefined,
@@ -246,6 +246,6 @@ describe('public self Memory search', () => {
 });
 
 /** Reads the self-owned base created by the real Memory operation. */
-function userPageScope(f: ReturnType<typeof fixture>, userId: string): string {
+function userPageScope(f: Awaited<ReturnType<typeof fixture>>, userId: string): string {
   return `page/user/${userId}/${readDefaultKnowledgeBaseId({ dataRoot: f.dataRoot, scope: { kind: 'user', userId } })}`;
 }

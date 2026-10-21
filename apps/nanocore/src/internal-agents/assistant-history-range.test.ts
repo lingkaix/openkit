@@ -43,7 +43,7 @@ interface RangeResult {
 }
 
 /** Composes the real canonical record, identity, membership and query-owned trace owners. */
-function fixture(
+async function fixture(
   texts = [`${privateText} 😀漢e\u0301`.repeat(500), 'The unresolved decision is retained.'],
   agentId = 'quick-chat'
 ) {
@@ -56,7 +56,7 @@ function fixture(
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Exact source-bound history');
+  const workspace = await store.createWorkspace('Exact source-bound history');
   // The querying member must be removable without violating canonical owner continuity.
   const ownerUserId = allocateEntityId('usr');
   coreDb.sqlite
@@ -71,26 +71,26 @@ function fixture(
     VALUES (?, ?, 'active', ?, 1, ?, ?)`)
     .run(workspace.id, LOCAL_USER_ID, timestamp, timestamp, timestamp);
   const audience = { visibility: 'private' as const, privateOwnerUserId: LOCAL_USER_ID };
-  const source = store.createThread(
+  const source = await store.createThread(
     workspace.id,
     'Past source',
     undefined,
     'conversation',
     audience
   );
-  const destination = store.createThread(
+  const destination = await store.createThread(
     workspace.id,
     'Current conversation',
     undefined,
     'conversation',
     audience
   );
-  const sourceTurn = store.createTurn(workspace.id, source.id, 'Retained source.', {
+  const sourceTurn = await store.createTurn(workspace.id, source.id, 'Retained source.', {
     kind: 'user',
     id: LOCAL_USER_ID,
   });
   const items = texts.map((text) => message(store, sourceTurn, text));
-  const turn = store.createTurn(
+  const turn = await store.createTurn(
     workspace.id,
     destination.id,
     'Read exact source history.',
@@ -142,7 +142,7 @@ function message(
 }
 
 /** Binds the requested fixture range through its actual source-digest producer. */
-function range(f: ReturnType<typeof fixture>, items: readonly Item[] = f.items) {
+function range(f: Awaited<ReturnType<typeof fixture>>, items: readonly Item[] = f.items) {
   return {
     threadId: items[0]!.threadId,
     firstItemId: items[0]!.id,
@@ -152,7 +152,7 @@ function range(f: ReturnType<typeof fixture>, items: readonly Item[] = f.items) 
 }
 
 /** Supplies only model query data; all identity and audience inputs stay in trusted assembly. */
-function execute(f: ReturnType<typeof fixture>, query: unknown) {
+function execute(f: Awaited<ReturnType<typeof fixture>>, query: unknown) {
   return f.history.tool.execute(query, {
     callId: randomUUID(),
     signal: new AbortController().signal,
@@ -175,7 +175,7 @@ function sha(value: string) {
 }
 
 /** Reads actual immutable query trace bytes instead of treating a returned reference as proof. */
-function traces(f: ReturnType<typeof fixture>) {
+function traces(f: Awaited<ReturnType<typeof fixture>>) {
   const directory = join(
     f.dataRoot,
     'workspaces',
@@ -211,7 +211,7 @@ function expectUnavailable(envelope: AgentToolResult) {
 
 describe('Assistant exact source-bound history ranges', () => {
   it('reads the exact committed range of a real current-run compaction summary and keeps its trace readable after terminal status changes', async () => {
-    const f = fixture([], 'knowledge-manager');
+    const f = await fixture([], 'knowledge-manager');
     // Preserve real compaction pressure under the local bytes/3 estimate.
     const source = message(
       f.store,
@@ -298,7 +298,7 @@ describe('Assistant exact source-bound history ranges', () => {
     expect(output.hits[0]!.reference.itemId).toBe(source.id);
     expect(output.hits[0]!.snippet).toBe(source.text.slice(0, 4096));
     expect(() => f.history.assertCurrent()).not.toThrow();
-    f.store.updateTurn(f.turn.id, { status: 'completed', completedAt: timestamp });
+    await f.store.updateTurn(f.turn.id, { status: 'completed', completedAt: timestamp });
     expect(() =>
       assertConversationRetrievalTraceReadable({
         ...f.context,
@@ -308,9 +308,9 @@ describe('Assistant exact source-bound history ranges', () => {
   });
 
   it('binds compaction evidence to returned trace references in the trusted asking context, excluding later reads', async () => {
-    const f = fixture(['A bounded exact source.']);
+    const f = await fixture(['A bounded exact source.']);
     const first = result(await execute(f, { range: range(f) }));
-    const run = f.store.createTurn(
+    const run = await f.store.createTurn(
       f.workspace.id,
       f.source.id,
       'Knowledge query run.',
@@ -318,7 +318,7 @@ describe('Assistant exact source-bound history ranges', () => {
       null,
       { agentId: 'knowledge-manager', executorKind: 'assistant' }
     );
-    const item = f.store.createItem({
+    const item = await f.store.createItem({
       id: allocateEntityId('it'),
       owner: { kind: 'workspace', workspaceId: f.workspace.id },
       threadId: run.threadId,
@@ -367,8 +367,8 @@ describe('Assistant exact source-bound history ranges', () => {
   });
 
   it('returns failed Tool evidence as inert canonical JSON without changing its source Item', async () => {
-    const f = fixture([]);
-    const item = f.store.createItem({
+    const f = await fixture([]);
+    const item = await f.store.createItem({
       id: allocateEntityId('it'),
       owner: { kind: 'workspace', workspaceId: f.workspace.id },
       threadId: f.source.id,
@@ -399,7 +399,7 @@ describe('Assistant exact source-bound history ranges', () => {
       unicode,
       ...Array.from({ length: 20 }, (_, index) => `Exact entry ${index}: ${'x'.repeat(4_050)}`),
     ];
-    const f = fixture(bodies);
+    const f = await fixture(bodies);
     const requestedRange = range(f);
     const chunks = new Map(f.items.map((item) => [item.id, [] as Buffer[]]));
     const offsets = new Map(f.items.map((item) => [item.id, 0]));
@@ -497,19 +497,20 @@ describe('Assistant exact source-bound history ranges', () => {
     'cursor inside Unicode',
     'negative cursor',
   ] as const)('refuses %s without source bytes or a new trace', async (fault) => {
-    const f = fixture();
+    const f = await fixture();
     let requestedRange = range(f);
     let cursor: Cursor | undefined;
     if (fault === 'foreign private' || fault === 'cross Workspace') {
-      const workspace =
-        fault === 'cross Workspace' ? f.store.createWorkspace('Other Workspace') : f.workspace;
+      const workspace = await (fault === 'cross Workspace'
+        ? f.store.createWorkspace('Other Workspace')
+        : f.workspace);
       if (fault === 'cross Workspace')
         recordWorkspaceOwnerMembership({
           coreDb: f.coreDb,
           workspaceId: workspace.id,
           ownerUserId: LOCAL_USER_ID,
         });
-      const source = f.store.createThread(
+      const source = await f.store.createThread(
         workspace.id,
         'Inaccessible source',
         undefined,
@@ -519,7 +520,7 @@ describe('Assistant exact source-bound history ranges', () => {
           privateOwnerUserId: fault === 'foreign private' ? allocateEntityId('usr') : LOCAL_USER_ID,
         }
       );
-      const turn = f.store.createTurn(workspace.id, source.id, 'Private source.', {
+      const turn = await f.store.createTurn(workspace.id, source.id, 'Private source.', {
         kind: 'user',
         id: LOCAL_USER_ID,
       });
@@ -555,7 +556,7 @@ describe('Assistant exact source-bound history ranges', () => {
       );
       requestedRange = range(f, [hidden]);
     } else if (fault === 'incomplete message') {
-      const item = f.store.updateItem(f.items[0]!.id, { status: 'in_progress' });
+      const item = await f.store.updateItem(f.items[0]!.id, { status: 'in_progress' });
       requestedRange = range(f, [item]);
     } else {
       cursor = {
@@ -580,7 +581,7 @@ describe('Assistant exact source-bound history ranges', () => {
     'unread range revision',
     'membership removal',
   ] as const)('denies publication and retained trace reads after %s while preserving trace bytes', async (fault) => {
-    const f = fixture();
+    const f = await fixture();
     const output = result(await execute(f, { range: range(f), limit: 1 }));
     expect(output.hits).toHaveLength(1);
     expect(output.hits[0]!.reference.itemId).toBe(f.items[0]!.id);
@@ -599,7 +600,7 @@ describe('Assistant exact source-bound history ranges', () => {
         )
         .run(timestamp, f.workspace.id, LOCAL_USER_ID);
     } else
-      f.store.updateItem(f.items[fault === 'selected source revision' ? 0 : 1]!.id, {
+      await f.store.updateItem(f.items[fault === 'selected source revision' ? 0 : 1]!.id, {
         text: 'Source revision changed after observation.',
       });
     expect(() => f.history.assertCurrent()).toThrow(

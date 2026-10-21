@@ -50,7 +50,7 @@ const model = {
 };
 
 /** Creates independent real deployment identities, canonical owners and in-process public routes. */
-function deployment() {
+async function deployment() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'assistant-context-portability-'));
   const coreDb = openCoreDb(dataRoot);
   onTestFinished(() => {
@@ -60,15 +60,19 @@ function deployment() {
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Portable context');
+  const workspace = await store.createWorkspace('Portable context');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: LOCAL_USER_ID });
   const app = createApp({ dataRoot, coreDb, store });
   return { dataRoot, coreDb, store, workspace, app };
 }
 
 /** Admits sequential internal Turns with stable source order across portable identity remints. */
-function admit(f: ReturnType<typeof deployment>, workspaceId: string, threadId: string): Turn {
-  return f.store.createTurn(
+async function admit(
+  f: Awaited<ReturnType<typeof deployment>>,
+  workspaceId: string,
+  threadId: string
+): Promise<Turn> {
+  return await f.store.createTurn(
     workspaceId,
     threadId,
     currentText,
@@ -85,13 +89,13 @@ function admit(f: ReturnType<typeof deployment>, workspaceId: string, threadId: 
 }
 
 /** Retains accepted user and Assistant messages through the canonical Item writer. */
-function message(
-  f: ReturnType<typeof deployment>,
+async function message(
+  f: Awaited<ReturnType<typeof deployment>>,
   turn: Turn,
   type: 'user-message' | 'assistant-message',
   text: string
 ) {
-  return f.store.createItem({
+  return await f.store.createItem({
     id: allocateEntityId('it'),
     owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
     threadId: turn.threadId,
@@ -106,7 +110,7 @@ function message(
 }
 
 /** Supplies the same role environment with real current source and trace verification. */
-function context(f: ReturnType<typeof deployment>, turn: Turn, capacity: number) {
+function context(f: Awaited<ReturnType<typeof deployment>>, turn: Turn, capacity: number) {
   const actor: Actor = { kind: 'local', userId: LOCAL_USER_ID };
   const owner = {
     store: f.store,
@@ -142,8 +146,8 @@ function context(f: ReturnType<typeof deployment>, turn: Turn, capacity: number)
 
 /** Seeds a real summary chain with nonempty dependent range traces, including a byte cursor. */
 async function seed() {
-  const f = deployment();
-  const thread = f.store.createThread(
+  const f = await deployment();
+  const thread = await f.store.createThread(
     f.workspace.id,
     'Retained Assistant history',
     undefined,
@@ -154,15 +158,15 @@ async function seed() {
   let traceTurn: Turn | undefined;
   // Keep the same history Items under pressure with the local bytes/3 estimate.
   for (let index = 0; index < 8; index += 1) {
-    const turn = admit(f, f.workspace.id, thread.id);
+    const turn = await admit(f, f.workspace.id, thread.id);
     originals.push(
-      message(
+      await message(
         f,
         turn,
         'user-message',
         index === 0
           ? `Exact Unicode source: ${'😀漢'.repeat(800)}`
-          : `Question ${index}: ${'q'.repeat(3_600)}`
+          : `Question ${index}: ${'q'.repeat(3600)}`
       )
     );
     if (index === 1) {
@@ -198,12 +202,12 @@ async function seed() {
       expect(next.isError).not.toBe(true);
     }
     originals.push(
-      message(f, turn, 'assistant-message', `Decision ${index}: ${'a'.repeat(3_600)}`)
+      await message(f, turn, 'assistant-message', `Decision ${index}: ${'a'.repeat(3600)}`)
     );
-    f.store.updateTurn(turn.id, { status: 'completed', completedAt: turn.startedAt });
+    await f.store.updateTurn(turn.id, { status: 'completed', completedAt: turn.startedAt });
   }
-  const producer = admit(f, f.workspace.id, thread.id);
-  originals.push(message(f, producer, 'user-message', currentText));
+  const producer = await admit(f, f.workspace.id, thread.id);
+  originals.push(await message(f, producer, 'user-message', currentText));
   const request = context(f, producer, 14_000);
   await prepareInternalAgentContext(request);
   const summaries = f.store
@@ -214,8 +218,8 @@ async function seed() {
   expect(summaries.at(-1)!.sourceRange.evidenceDigest).not.toBe(
     sha(JSON.stringify({ version: 1, entries: [] }))
   );
-  originals.push(message(f, producer, 'assistant-message', 'The decision remains pending.'));
-  f.store.updateTurn(producer.id, { status: 'completed', completedAt: producer.startedAt });
+  originals.push(await message(f, producer, 'assistant-message', 'The decision remains pending.'));
+  await f.store.updateTurn(producer.id, { status: 'completed', completedAt: producer.startedAt });
   const traces = readTurnRetrievalTraces(
     join(f.dataRoot, 'workspaces', f.workspace.id),
     f.workspace.id,
@@ -245,7 +249,7 @@ async function seed() {
 }
 
 /** Exports canonical history through the real producer and verifies its consumed bytes. */
-async function exportHistory(f: ReturnType<typeof deployment>) {
+async function exportHistory(f: Awaited<ReturnType<typeof deployment>>) {
   const exported = await f.app.request(
     ...operationRequest('workspace.export', { workspaceId: f.workspace.id })
   );
@@ -259,8 +263,8 @@ async function exportHistory(f: ReturnType<typeof deployment>) {
 
 /** Creates valid original proofs whose tied Turn order changes under reminted identities. */
 async function seedTiedOrderSummaryChain() {
-  const f = deployment();
-  const thread = f.store.createThread(
+  const f = await deployment();
+  const thread = await f.store.createThread(
     f.workspace.id,
     'Tied source order',
     undefined,
@@ -273,7 +277,7 @@ async function seedTiedOrderSummaryChain() {
   const originals: Item[] = [];
   const summaries: Summary[] = [];
   for (let index = 1; index <= 12; index += 1) {
-    const turn = f.store.createTurn(
+    const turn = await f.store.createTurn(
       f.workspace.id,
       thread.id,
       currentText,
@@ -287,11 +291,11 @@ async function seedTiedOrderSummaryChain() {
       }
     );
     if (index <= 10) {
-      originals.push(message(f, turn, 'user-message', `Tied source ${index}`));
+      originals.push(await message(f, turn, 'user-message', `Tied source ${index}`));
     } else {
       const covered = originals.slice(0, index === 11 ? 4 : 10);
       const previous = summaries.at(-1);
-      const summary = f.store.createItem({
+      const summary = await f.store.createItem({
         id: allocateEntityId('it'),
         owner: { kind: 'workspace', workspaceId: f.workspace.id },
         threadId: thread.id,
@@ -318,7 +322,7 @@ async function seedTiedOrderSummaryChain() {
       if (summary.type !== 'context-summary') throw new Error('Missing source summary.');
       summaries.push(summary);
     }
-    f.store.updateTurn(turn.id, { status: 'completed', completedAt: timestamp });
+    await f.store.updateTurn(turn.id, { status: 'completed', completedAt: timestamp });
   }
   return { ...f, thread, originals, summaries, ...(await exportHistory(f)) };
 }
@@ -330,18 +334,18 @@ function sha(value: string) {
 
 describe('Assistant conversation context portability', () => {
   it('remints a current-run compaction summary and its later exact-history trace without resuming the run', async () => {
-    const source = deployment();
-    const thread = source.store.createThread(
+    const source = await deployment();
+    const thread = await source.store.createThread(
       source.workspace.id,
       'Bounded Knowledge run',
       undefined,
       'conversation',
       { visibility: 'private', privateOwnerUserId: LOCAL_USER_ID }
     );
-    const past = admit(source, source.workspace.id, thread.id);
-    const pastItem = message(source, past, 'user-message', 'The prior decision is pending.');
-    source.store.updateTurn(past.id, { status: 'completed', completedAt: timestamp });
-    const turn = source.store.createTurn(
+    const past = await admit(source, source.workspace.id, thread.id);
+    const pastItem = await message(source, past, 'user-message', 'The prior decision is pending.');
+    await source.store.updateTurn(past.id, { status: 'completed', completedAt: timestamp });
+    const turn = await source.store.createTurn(
       source.workspace.id,
       thread.id,
       'Maintain the notebook.',
@@ -350,7 +354,7 @@ describe('Assistant conversation context portability', () => {
       { agentId: 'knowledge-manager', executorKind: 'assistant', startedAt: timestamp }
     );
     // Preserve real compaction pressure under the local bytes/3 estimate.
-    const original = message(
+    const original = await message(
       source,
       turn,
       'user-message',
@@ -377,7 +381,7 @@ describe('Assistant conversation context portability', () => {
       { callId: randomUUID(), signal: new AbortController().signal }
     );
     expect(priorRead.isError).not.toBe(true);
-    const tool = source.store.createItem({
+    const tool = await source.store.createItem({
       id: allocateEntityId('it'),
       owner: { kind: 'workspace', workspaceId: source.workspace.id },
       threadId: thread.id,
@@ -438,10 +442,10 @@ describe('Assistant conversation context portability', () => {
       { callId: randomUUID(), signal: new AbortController().signal }
     );
     expect(read.isError).not.toBe(true);
-    source.store.updateTurn(turn.id, { status: 'completed', completedAt: timestamp });
+    await source.store.updateTurn(turn.id, { status: 'completed', completedAt: timestamp });
     const { verified } = await exportHistory(source);
-    const target = deployment();
-    const imported = importVerifiedWorkspace({
+    const target = await deployment();
+    const imported = await importVerifiedWorkspace({
       authorityUserId: LOCAL_USER_ID,
       coreDb: target.coreDb,
       dataRoot: target.dataRoot,
@@ -526,7 +530,7 @@ describe('Assistant conversation context portability', () => {
   // This fixture creates three real deployments and imports durable history twice.
   it('rejects a corrupt original predecessor before publication when tied source order changes on import', async () => {
     const source = await seedTiedOrderSummaryChain();
-    const control = deployment();
+    const control = await deployment();
     // Control only clock and entropy; import validation and canonical publication stay real.
     const importReordered = (input: Parameters<typeof importVerifiedWorkspace>[0]) => {
       vi.useFakeTimers({ toFake: ['Date'] });
@@ -556,7 +560,7 @@ describe('Assistant conversation context portability', () => {
         vi.useRealTimers();
       }
     };
-    const imported = importReordered({
+    const imported = await importReordered({
       authorityUserId: LOCAL_USER_ID,
       coreDb: control.coreDb,
       dataRoot: control.dataRoot,
@@ -597,7 +601,7 @@ describe('Assistant conversation context portability', () => {
       sha(JSON.stringify(source.summaries[0]))
     );
 
-    const target = deployment();
+    const target = await deployment();
     const inventory = readdirSync(join(target.dataRoot, 'workspaces')).sort();
     const registry = target.coreDb.sqlite
       .prepare('SELECT * FROM workspace_registry ORDER BY workspace_id')
@@ -653,9 +657,9 @@ describe('Assistant conversation context portability', () => {
   // Real archive export, import and restart retain all canonical writes in this fixture budget.
   it('exports and imports real archive bytes, remints source evidence, and reuses the summary chain after target restart', async () => {
     const source = await seed();
-    const target = deployment();
+    const target = await deployment();
     // P14 uses independent Workspace identities; explicitly occupy the exported id to test reminting.
-    target.store.importWorkspaceSnapshot({
+    await target.store.importWorkspaceSnapshot({
       ...notebookImportFixture({ workspaceId: source.workspace.id, knowledge: [] }),
       workspace: source.workspace,
       threads: [],
@@ -821,8 +825,8 @@ describe('Assistant conversation context portability', () => {
           )
         );
     }
-    const turn = admit(target, importedWorkspaceId, thread.id);
-    message(target, turn, 'user-message', currentText);
+    const turn = await admit(target, importedWorkspaceId, thread.id);
+    await message(target, turn, 'user-message', currentText);
     const request = context(target, turn, 16_000);
     const prepared = await prepareInternalAgentContext(request);
     expect(request.callProvider).not.toHaveBeenCalled();
@@ -837,7 +841,7 @@ describe('Assistant conversation context portability', () => {
 
   it('rejects contradictory selected bytes, exact ranges and summary proof at the verified-byte import seam before publication', async () => {
     const source = await seed();
-    const target = deployment();
+    const target = await deployment();
     const inventory = readdirSync(join(target.dataRoot, 'workspaces')).sort();
     const registry = target.coreDb.sqlite
       .prepare('SELECT * FROM workspace_registry ORDER BY workspace_id')

@@ -27,13 +27,13 @@ import { publishCapturedSource } from './source-publication.js';
 import { readManagedSourceText } from './source-reading.js';
 
 /** A fresh real Workspace with current human membership and the existing command engine. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'workspace-source-cutover-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Canonical Workspace Sources');
+  const workspace = await store.createWorkspace('Canonical Workspace Sources');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
   applyScopedMigrations(workspaceDb);
@@ -84,7 +84,7 @@ function fixture() {
 }
 
 /** Inspect exact native Git bytes and confine the published logical locator before reading raw. */
-function retained(f: ReturnType<typeof fixture>, sourceId: string, bytes: Uint8Array) {
+function retained(f: Awaited<ReturnType<typeof fixture>>, sourceId: string, bytes: Uint8Array) {
   const revision = f.notebook.publishedRevision();
   const content = f.notebook.readSourcePointers(revision)[sourceId]!;
   const parsed = parseOkfDocument({ path: `sources/${sourceId}.md`, content });
@@ -111,8 +111,8 @@ function retained(f: ReturnType<typeof fixture>, sourceId: string, bytes: Uint8A
 
 describe('Workspace native Source cutover', () => {
   it('publishes the public capture once in the current Notebook and retains private origin admission', async () => {
-    const f = fixture();
-    const origin = f.store.createThread(
+    const f = await fixture();
+    const origin = await f.store.createThread(
       f.workspace.id,
       'Private captured origin',
       undefined,
@@ -250,7 +250,7 @@ describe('Workspace native Source cutover', () => {
   });
 
   it('publishes non-UTF8 binary originals through the common native publisher and reads exact ranges', async () => {
-    const f = fixture();
+    const f = await fixture();
     const bytes = Uint8Array.from(
       Buffer.from(
         'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9l8AAAAASUVORK5CYII=',

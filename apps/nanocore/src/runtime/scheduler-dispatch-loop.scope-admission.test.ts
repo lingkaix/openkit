@@ -37,8 +37,8 @@ it('dispatches a healthy FIFO sibling while retaining quarantined admissions and
     applyMigrations(coreDb);
     const userId = ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
-    const bad = store.createWorkspace('Quarantined queue');
-    const good = store.createWorkspace('Healthy queue');
+    const bad = await store.createWorkspace('Quarantined queue');
+    const good = await store.createWorkspace('Healthy queue');
     for (const workspace of [bad, good])
       recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
     const manifest = createTestAgentSetup().manifest;
@@ -46,8 +46,8 @@ it('dispatches a healthy FIFO sibling while retaining quarantined admissions and
     recordTestNativeRuntimeTarget(coreDb);
     const executor = new SimulatedTurnExecutor({ coreDb });
     const starts = vi.spyOn(executor, 'startTurn');
-    const publish = (workspaceId: string, name: string) => {
-      const thread = store.createThread(workspaceId, name);
+    const publish = async (workspaceId: string, name: string) => {
+      const thread = await store.createThread(workspaceId, name);
       const entry = createSchedulerAdmissionEntry(coreDb, {
         backendId: executor.id,
         queueEntryId: randomUUID(),
@@ -60,7 +60,7 @@ it('dispatches a healthy FIFO sibling while retaining quarantined admissions and
         turnInput: 'Local scope dispatch proof',
         requestedAgentId: manifest.id,
       });
-      store.createTurn(
+      await store.createTurn(
         entry.workspaceId,
         entry.threadId,
         entry.turnInput,
@@ -83,7 +83,7 @@ it('dispatches a healthy FIFO sibling while retaining quarantined admissions and
       });
       return entry;
     };
-    const first = publish(bad.id, 'Oldest queued work');
+    const first = await publish(bad.id, 'Oldest queued work');
     const held = publish(bad.id, 'Unresolved predecessor binding');
     const heldAttempt = recordTestExecutionAttempt(coreDb, {
       entry: held,
@@ -95,7 +95,7 @@ it('dispatches a healthy FIFO sibling while retaining quarantined admissions and
       operationId: 'scope-held-operation',
       now: () => new Date().toISOString(),
     });
-    const healthy = publish(good.id, 'Runnable sibling');
+    const healthy = await publish(good.id, 'Runnable sibling');
     expect(findNextDispatchableSchedulerAdmissionEntry(coreDb)?.queueEntryId).toBe(
       first.queueEntryId
     );

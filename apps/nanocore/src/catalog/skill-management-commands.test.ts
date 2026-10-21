@@ -45,7 +45,7 @@ function tree(body: string): CatalogTreeFile[] {
 }
 
 /** Real records and native HTTP dispatch; direct setup imports only arrange two retained versions. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-skill-management-'));
   cleanup.push(() => rmSync(dataRoot, { recursive: true, force: true }));
   const coreDb = openCoreDb(dataRoot);
@@ -55,7 +55,7 @@ function fixture() {
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Skill management');
+  const workspace = await store.createWorkspace('Skill management');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
   cleanup.push(() => {
@@ -109,7 +109,7 @@ function fixture() {
 
 describe('native Skill management command evidence', () => {
   it('retains the exact winning pin command across identical pins, replay and clear', async () => {
-    const f = fixture();
+    const f = await fixture();
     const pinInput = {
       requestId: randomUUID(),
       expectedRevision: 2,
@@ -182,7 +182,7 @@ describe('native Skill management command evidence', () => {
   });
 
   it('keeps unexpired evidence bytes and purges after its existing retention owner expires them', async () => {
-    const f = fixture();
+    const f = await fixture();
     recordWorkspaceEvidenceBundle(f.workspaceDb, {
       id: 'skill-evidence',
       workspaceId: f.workspace.id,
@@ -231,9 +231,9 @@ describe('native Skill management command evidence', () => {
   });
 
   it('retains a supplied version named by a real AEP after its default moves', async () => {
-    const f = fixture();
-    const thread = f.store.createThread(f.workspace.id, 'Retained Skill input');
-    const turn = f.store.createTurn(f.workspace.id, thread.id, 'Use retained Skill', {
+    const f = await fixture();
+    const thread = await f.store.createThread(f.workspace.id, 'Retained Skill input');
+    const turn = await f.store.createTurn(f.workspace.id, thread.id, 'Use retained Skill', {
       kind: 'user',
       id: f.userId,
     });
@@ -277,7 +277,7 @@ describe('native Skill management command evidence', () => {
   });
 
   it('imports unchanged ecosystem bytes and checks updates without moving selection or contacting an unavailable source on replay', async () => {
-    const f = fixture();
+    const f = await fixture();
     let content =
       '---\nname: Ecosystem Example\ndescription: Original unmodified package.\n---\nVersion A\n';
     let unavailable = false;
@@ -343,7 +343,7 @@ describe('native Skill management command evidence', () => {
   });
 
   it('refuses a remote local-path source without publishing a catalog version', async () => {
-    const f = fixture();
+    const f = await fixture();
     const before = loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id);
     const result = await f.call('catalog.skill-import', {
       requestId: randomUUID(),
@@ -363,7 +363,7 @@ describe('native Skill management command evidence', () => {
     'pin',
     'remove',
   ] as const)('audits %s and replays its receipt without repeating the catalog effect', async (kind) => {
-    const f = fixture();
+    const f = await fixture();
     const requestId = randomUUID();
     const operation = `catalog.skill-${kind}` as const;
     const common = { requestId, expectedRevision: 2 };

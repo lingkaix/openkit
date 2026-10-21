@@ -87,7 +87,7 @@ async function tool(run: KnowledgeManagerAgentRun, name: string, value: unknown)
 }
 
 /** Native creation/import, public admission, Source capture and fixed-base publication share real owners. */
-function fixture(initial: 'empty' | 'authored-index' | 'authored-page' = 'empty') {
+async function fixture(initial: 'empty' | 'authored-index' | 'authored-page' = 'empty') {
   const dataRoot = mkdtempSync(join(tmpdir(), 'tell-intake-framing-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -99,7 +99,7 @@ function fixture(initial: 'empty' | 'authored-index' | 'authored-page' = 'empty'
     producer: actor,
     instructionReference: 'fixture:human-workspace-creation',
   };
-  const imported = new FsStore().createWorkspace('Authored initial notebook');
+  const imported = await new FsStore().createWorkspace('Authored initial notebook');
   const initialFiles: Record<string, string> =
     initial === 'authored-index'
       ? { 'index.md': authoredIndex }
@@ -109,8 +109,8 @@ function fixture(initial: 'empty' | 'authored-index' | 'authored-page' = 'empty'
         };
   const workspace =
     initial === 'empty'
-      ? store.createWorkspace('Fresh public tell', initialization)
-      : store.importWorkspaceSnapshot({
+      ? await store.createWorkspace('Fresh public tell', initialization)
+      : await store.importWorkspaceSnapshot({
           workspace: imported,
           threads: [],
           turns: [],
@@ -133,11 +133,14 @@ function fixture(initial: 'empty' | 'authored-index' | 'authored-page' = 'empty'
     initialSnapshot: createInMemoryRuntimeConfigSnapshot({ dataRoot }),
   });
   const workspaceMutationAdmission = new WorkspaceMutationAdmission();
-  const finish = (run: KnowledgeManagerAgentRun) => {
+  const finish = async (run: KnowledgeManagerAgentRun) => {
     expect(
       run.validateResult('{"summary":"Finished the native notebook operation."}')
     ).toBeUndefined();
-    store.updateTurn(run.turn.id, { status: 'completed', completedAt: new Date().toISOString() });
+    await store.updateTurn(run.turn.id, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+    });
     return { turnId: run.turn.id, text: '{"summary":"Finished the native notebook operation."}' };
   };
   const run = vi.fn(async (input: KnowledgeManagerAgentRun) => {
@@ -152,8 +155,8 @@ function fixture(initial: 'empty' | 'authored-index' | 'authored-page' = 'empty'
     openWorkspace: (id) => openWorkspaceDb(dataRoot, id),
     inflightCommands: new WeakMap(),
     run,
-    pin: (input) => {
-      store.updateTurn(input.turn.id, {
+    pin: async (input) => {
+      await store.updateTurn(input.turn.id, {
         internalExecution: {
           roleId: 'knowledge-manager',
           logicalModelId: 'fixture-role-model',
@@ -187,7 +190,7 @@ function fixture(initial: 'empty' | 'authored-index' | 'authored-page' = 'empty'
 
 describe('public Workspace tell intake framing', () => {
   it('delivers novel multi-file text intact and keeps the generated empty seed out of human edits', async () => {
-    const f = fixture();
+    const f = await fixture();
     const initialRevision = f.notebook.publishedRevision();
     const initial = f.notebook.readRevision(initialRevision);
     expect(initial.parentRevision).toBeNull();
@@ -332,7 +335,7 @@ describe('public Workspace tell intake framing', () => {
     'authored-index',
     'authored-page',
   ] as const)('retains %s root content and genuine later human edits as inputs', async (initial) => {
-    const f = fixture(initial);
+    const f = await fixture(initial);
     const root = f.notebook.readRevision(f.notebook.publishedRevision());
     const later = page(f.workspace.id, 'Later human note', 'Preserve this later human correction.');
     await f.invoke(

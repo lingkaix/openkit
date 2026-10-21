@@ -53,8 +53,8 @@ async function request(
 }
 
 /** Retains ordinary user and Assistant Items without invoking an unrelated inference provider. */
-function retainExchange(store: FsStore, workspaceId: string, threadId: string) {
-  const turn = store.createTurn(workspaceId, threadId, 'Keep this request.', {
+async function retainExchange(store: FsStore, workspaceId: string, threadId: string) {
+  const turn = await store.createTurn(workspaceId, threadId, 'Keep this request.', {
     kind: 'user',
     id: 'usr_00000000-0000-7000-8000-000000000001',
   });
@@ -67,7 +67,7 @@ function retainExchange(store: FsStore, workspaceId: string, threadId: string) {
     ],
     ['assistant-message', 'Keep this response.', { kind: 'agent', id: 'assistant' }],
   ] as const) {
-    store.createItem({
+    await store.createItem({
       id: allocateEntityId('it'),
       owner: { kind: 'workspace', workspaceId: workspaceId },
       threadId,
@@ -80,7 +80,7 @@ function retainExchange(store: FsStore, workspaceId: string, threadId: string) {
       completedAt: createdAt,
     });
   }
-  store.updateTurn(turn.id, { status: 'completed', completedAt: createdAt });
+  await store.updateTurn(turn.id, { status: 'completed', completedAt: createdAt });
   return store.listThreadItems(workspaceId, threadId);
 }
 
@@ -105,8 +105,8 @@ function insertUser(coreDb: ReturnType<typeof openCoreDb>, userId: string) {
 describe('Personal Assistant Timeline admission', () => {
   it('keeps Timeline identity separate for each authenticated User and Workspace', async () => {
     const current = fixture();
-    const workspace = current.store.createWorkspace('Shared project');
-    const otherWorkspace = current.store.createWorkspace('Other project');
+    const workspace = await current.store.createWorkspace('Shared project');
+    const otherWorkspace = await current.store.createWorkspace('Other project');
     for (const entry of [workspace, otherWorkspace]) {
       recordWorkspaceOwnerMembership({
         coreDb: current.coreDb,
@@ -151,7 +151,7 @@ describe('Personal Assistant Timeline admission', () => {
 
   it('admits no second ordinary private conversation across distinct commands, concurrent delivery and restart', async () => {
     const current = fixture();
-    const workspace = current.store.createWorkspace('Project Timeline');
+    const workspace = await current.store.createWorkspace('Project Timeline');
     recordWorkspaceOwnerMembership({
       coreDb: current.coreDb,
       workspaceId: workspace.id,
@@ -166,7 +166,7 @@ describe('Personal Assistant Timeline admission', () => {
       privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       entryPath: 'conversation',
     });
-    const history = retainExchange(current.store, workspace.id, timeline.id);
+    const history = await retainExchange(current.store, workspace.id, timeline.id);
     const duplicateCommands = [
       { ...input, name: 'Another request', requestId: randomUUID() },
       { ...input, name: 'Concurrent request', requestId: randomUUID() },
@@ -222,15 +222,19 @@ describe('Personal Assistant Timeline admission', () => {
     const created = await request(current.app, 'thread.create', input);
     expect(created.status).toBe(200);
     const thread = ThreadSchema.parse(created.body);
-    const history = retainExchange(current.store, workspace.id, thread.id);
-    const administration = current.store.createThread(
+    const history = await retainExchange(current.store, workspace.id, thread.id);
+    const administration = await current.store.createThread(
       workspace.id,
       'Retained administration',
       undefined,
       'administration',
       { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001' }
     );
-    const administrationHistory = retainExchange(current.store, workspace.id, administration.id);
+    const administrationHistory = await retainExchange(
+      current.store,
+      workspace.id,
+      administration.id
+    );
     current.coreDb.sqlite.close();
 
     const restarted = current.reopen();
@@ -266,7 +270,7 @@ describe('Personal Assistant Timeline admission', () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date('2026-10-15T00:00:00.000Z'));
     onTestFinished(() => vi.useRealTimers());
-    const timeline = current.store.createThread(
+    const timeline = await current.store.createThread(
       workspace.id,
       'Timeline',
       undefined,
@@ -277,7 +281,7 @@ describe('Personal Assistant Timeline admission', () => {
       }
     );
     vi.advanceTimersByTime(1);
-    const retained = current.store.createThread(
+    const retained = await current.store.createThread(
       workspace.id,
       'Retained history',
       undefined,
@@ -288,7 +292,7 @@ describe('Personal Assistant Timeline admission', () => {
       }
     );
     vi.useRealTimers();
-    const history = retainExchange(current.store, workspace.id, retained.id);
+    const history = await retainExchange(current.store, workspace.id, retained.id);
     const before = current.store.listThreadTurns(workspace.id, retained.id);
     const submitted = await request(current.app, 'conversation.submit', {
       workspaceId: workspace.id,

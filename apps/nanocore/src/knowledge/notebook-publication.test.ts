@@ -359,7 +359,7 @@ Exact Agent body.\r\n\t  `;
     const dataRoot = mkdtempSync(join(tmpdir(), 'notebook-multi-proposal-'));
     onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
     let store = createTestStore({ dataRoot });
-    const workspace = store.createWorkspace('Exact candidate', {
+    const workspace = await store.createWorkspace('Exact candidate', {
       requestId: randomUUID(),
       producer,
       instructionReference: 'fixture-create',

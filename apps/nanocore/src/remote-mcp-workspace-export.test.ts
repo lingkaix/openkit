@@ -26,7 +26,7 @@ describe('Remote MCP Workspace export retained snapshot refusal', () => {
       applyMigrations(coreDb);
       ensureLocalUser(coreDb);
       const store = new FsStore({ dataRoot });
-      const workspace = store.createWorkspace('Corrupt snapshot export');
+      const workspace = await store.createWorkspace('Corrupt snapshot export');
       recordWorkspaceOwnerMembership({
         coreDb,
         workspaceId: workspace.id,

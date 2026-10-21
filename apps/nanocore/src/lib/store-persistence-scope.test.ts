@@ -46,10 +46,10 @@ function artifactDigest(content: string): string {
 }
 
 describe('FsStore workspace persistence scope', () => {
-  it('persists one owner-independent workspace tree without a user storage scope', () => {
+  it('persists one owner-independent workspace tree without a user storage scope', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-owner-independent-'));
     const firstStore = createTestStore({ dataRoot });
-    const workspace = firstStore.createWorkspace('Owner-independent workspace');
+    const workspace = await firstStore.createWorkspace('Owner-independent workspace');
     const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
     const canonicalRecordPath = join(workspaceRoot, 'workspace-record.json');
     const canonicalConfigPath = join(workspaceRoot, 'config', 'workspace.jsonc');
@@ -80,13 +80,13 @@ describe('FsStore workspace persistence scope', () => {
     expect(() => secondStore.getWorkspace(workspace.id)).not.toThrow();
   });
 
-  it('rejects the retired workspace.json layout instead of skipping it', () => {
+  it('rejects the retired workspace.json layout instead of skipping it', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-retired-workspace-layout-'));
     const store = createTestStore({ dataRoot });
-    const workspace = store.createWorkspace('Retired layout workspace');
+    const workspace = await store.createWorkspace('Retired layout workspace');
     const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
-    const healthy = store.createWorkspace('Healthy layout sibling');
-    const retainedThread = store.createThread(healthy.id, 'Retained sibling history');
+    const healthy = await store.createWorkspace('Healthy layout sibling');
+    const retainedThread = await store.createThread(healthy.id, 'Retained sibling history');
 
     renameSync(join(workspaceRoot, 'workspace-record.json'), join(workspaceRoot, 'workspace.json'));
     const bytes = readFileSync(join(workspaceRoot, 'workspace.json'));
@@ -98,7 +98,7 @@ describe('FsStore workspace persistence scope', () => {
     expect(() => reopened.createThread(workspace.id, 'Must not recreate')).toThrow(refusal);
     expect(reopened.listWorkspaces().map(({ id }) => id)).not.toContain(workspace.id);
     expect(reopened.getThread(healthy.id, retainedThread.id)).toEqual(retainedThread);
-    const added = reopened.createThread(healthy.id, 'New sibling history');
+    const added = await reopened.createThread(healthy.id, 'New sibling history');
     expect(new FsStore({ dataRoot }).getThread(healthy.id, added.id)).toEqual(added);
     expect(readFileSync(join(workspaceRoot, 'workspace.json'))).toEqual(bytes);
     expect(readFileSync(join(workspaceRoot, 'db', 'workspace.sqlite'))).toEqual(database);
@@ -106,18 +106,18 @@ describe('FsStore workspace persistence scope', () => {
     expect(existsSync(join(workspaceRoot, 'workspace-record.json'))).toBe(false);
   });
 
-  it('persists one workspace when another workspace canonical tree is blocked', () => {
+  it('persists one workspace when another workspace canonical tree is blocked', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-workspace-scope-'));
     const store = createTestStore({ dataRoot });
-    const blockedWorkspace = store.createWorkspace('Blocked workspace');
-    const targetWorkspace = store.createWorkspace('Target workspace');
+    const blockedWorkspace = await store.createWorkspace('Blocked workspace');
+    const targetWorkspace = await store.createWorkspace('Target workspace');
     const blockedArtifactsRoot = join(dataRoot, 'workspaces', blockedWorkspace.id, 'artifacts');
 
     rmSync(blockedArtifactsRoot, { recursive: true });
     writeFileSync(blockedArtifactsRoot, 'not a directory');
     let updateError: unknown;
     try {
-      store.updateWorkspace(targetWorkspace.id, { name: 'Updated target workspace' });
+      await store.updateWorkspace(targetWorkspace.id, { name: 'Updated target workspace' });
     } catch (error) {
       updateError = error;
     } finally {
@@ -130,10 +130,10 @@ describe('FsStore workspace persistence scope', () => {
     expect(restarted.getWorkspace(targetWorkspace.id).name).toBe('Updated target workspace');
   });
 
-  it('does not overwrite an authored Workspace name during unrelated persistence', () => {
+  it('does not overwrite an authored Workspace name during unrelated persistence', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-authored-workspace-name-'));
     const store = createTestStore({ dataRoot });
-    const workspace = store.createWorkspace('Initial workspace name');
+    const workspace = await store.createWorkspace('Initial workspace name');
     const configPath = join(dataRoot, 'workspaces', workspace.id, 'config', 'workspace.jsonc');
     const authored = `{
       // Authored outside the record store.
@@ -142,20 +142,25 @@ describe('FsStore workspace persistence scope', () => {
     }`;
 
     writeFileSync(configPath, authored);
-    store.createThread(workspace.id, 'Unrelated thread');
+    await store.createThread(workspace.id, 'Unrelated thread');
 
     expect(readFileSync(configPath, 'utf8')).toBe(authored);
   });
 
-  it('retains Artifact authority when its reference append has an ambiguous outcome', () => {
+  it('retains Artifact authority when its reference append has an ambiguous outcome', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-artifact-lineage-failure-'));
     const store = createTestStore({ dataRoot });
-    const workspace = store.createWorkspace('Artifact lineage failure workspace');
-    const thread = store.createThread(workspace.id, 'Artifact lineage failure thread');
-    const turn = store.createTurn(workspace.id, thread.id, 'Reject partial Artifact lineage', {
-      kind: 'user',
-      id: 'usr_00000000-0000-7000-8000-000000000001',
-    });
+    const workspace = await store.createWorkspace('Artifact lineage failure workspace');
+    const thread = await store.createThread(workspace.id, 'Artifact lineage failure thread');
+    const turn = await store.createTurn(
+      workspace.id,
+      thread.id,
+      'Reject partial Artifact lineage',
+      {
+        kind: 'user',
+        id: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     const timestamp = turn.startedAt ?? new Date().toISOString();
     const artifactId = 'ar_00000000-0000-70b9-8815-cc8754a1bfdb';
     const requestId = 'artifact-create-reference-append-failure';
@@ -183,8 +188,8 @@ describe('FsStore workspace persistence scope', () => {
       updatedAt: timestamp,
     } as const;
     const createItem = store.createItem.bind(store);
-    store.createItem = (item) => {
-      createItem(item);
+    store.createItem = async (item) => {
+      await createItem(item);
       throw new Error('Injected ambiguous Artifact reference append failure.');
     };
 
@@ -215,18 +220,18 @@ describe('FsStore workspace persistence scope', () => {
       .toHaveLength(1);
     let retryError: unknown;
     try {
-      store.createArtifact(artifactInput);
+      await store.createArtifact(artifactInput);
     } catch (error) {
       retryError = error;
     }
     expect(retryError).toMatchObject({ code: 'recovery_required', status: 409 });
   });
 
-  it('restores the prior canonical state when Artifact introduction persistence fails', () => {
+  it('restores the prior canonical state when Artifact introduction persistence fails', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-artifact-introduction-failure-'));
     const store = createTestStore({ dataRoot });
-    const workspace = store.createWorkspace('Artifact introduction failure workspace');
-    const thread = store.createThread(workspace.id, 'Artifact introduction failure thread');
+    const workspace = await store.createWorkspace('Artifact introduction failure workspace');
+    const thread = await store.createThread(workspace.id, 'Artifact introduction failure thread');
     const acceptedAt = '2026-07-18T00:04:00.000Z';
     const requestId = 'artifact-import-before-introduction-failure';
     const body = 'Preserve this workspace-only Artifact.';
@@ -299,8 +304,8 @@ describe('FsStore workspace persistence scope', () => {
   it('does not resurrect deleted knowledge after a later projection write fails', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-store-knowledge-delete-failure-'));
     const store = createTestStore({ dataRoot });
-    const workspace = store.createWorkspace('Knowledge deletion workspace');
-    const thread = store.createThread(workspace.id, 'Knowledge deletion thread');
+    const workspace = await store.createWorkspace('Knowledge deletion workspace');
+    const thread = await store.createThread(workspace.id, 'Knowledge deletion thread');
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
@@ -562,10 +567,10 @@ function freshWorkspaceDatabaseFixture(kind: 'general' | 'personal') {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-fresh-workspace-db-'));
   roots.push(dataRoot);
   const store = createTestStore({ dataRoot });
-  const create = () =>
+  const create = async () =>
     kind === 'general'
-      ? store.createWorkspace('Ready for maintenance')
-      : store.ensureQuickChatWorkspace('usr_00000000-0000-7000-8000-000000000001');
+      ? await store.createWorkspace('Ready for maintenance')
+      : await store.ensureQuickChatWorkspace('usr_00000000-0000-7000-8000-000000000001');
   return { dataRoot, store, create };
 }
 
@@ -585,9 +590,9 @@ describe('fresh Workspace database publication', () => {
   it.each([
     'general',
     'personal',
-  ] as const)('publishes %s with a migrated database ready for existing-only maintenance and reopen', (kind) => {
+  ] as const)('publishes %s with a migrated database ready for existing-only maintenance and reopen', async (kind) => {
     const f = freshWorkspaceDatabaseFixture(kind);
-    const workspace = f.create();
+    const workspace = await f.create();
     expect(workspace.kind).toBe(kind);
     expect(listExistingWorkspaceDatabaseScopes(f.dataRoot)).toEqual([
       { workspaceId: workspace.id },
@@ -612,7 +617,7 @@ describe('fresh Workspace database publication', () => {
   it.each([
     'general',
     'personal',
-  ] as const)('completes the %s database in staging before the canonical rename', (kind) => {
+  ] as const)('completes the %s database in staging before the canonical rename', async (kind) => {
     const f = freshWorkspaceDatabaseFixture(kind);
     let inspected = 0;
     trace.beforeRename = (from, to) => {
@@ -636,7 +641,7 @@ describe('fresh Workspace database publication', () => {
         sqlite.close();
       }
     };
-    const workspace = f.create();
+    const workspace = await f.create();
     expect(inspected).toBe(1);
     expect(listExistingWorkspaceDatabaseScopes(f.dataRoot)).toEqual([
       { workspaceId: workspace.id },
@@ -690,15 +695,15 @@ describe('fresh Workspace database publication', () => {
 });
 
 /** Creates multiple Threads and settles existing canonical formatting before measuring writes. */
-function threadPublicationFixture(count = 3) {
+async function threadPublicationFixture(count = 3) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-thread-publication-count-'));
   roots.push(dataRoot);
   const store = createTestStore({ dataRoot });
-  const workspace = store.createWorkspace('Thread publication');
+  const workspace = await store.createWorkspace('Thread publication');
   const threads = Array.from({ length: count }, (_, index) =>
     store.createThread(workspace.id, `Thread ${index}`)
   );
-  store.updateWorkspace(workspace.id, { name: 'Settled Thread publication' });
+  await store.updateWorkspace(workspace.id, { name: 'Settled Thread publication' });
   const paths = threads.map((thread) =>
     join(dataRoot, 'workspaces', workspace.id, 'threads', thread.id, 'thread.json')
   );
@@ -714,10 +719,10 @@ function threadReplacements(): string[] {
 }
 
 describe('unchanged canonical Thread publication', () => {
-  it('performs no Thread file writes or file fsyncs for an unrelated mutation across eight Threads', () => {
-    const f = threadPublicationFixture(8);
+  it('performs no Thread file writes or file fsyncs for an unrelated mutation across eight Threads', async () => {
+    const f = await threadPublicationFixture(8);
     const before = f.paths.map((path) => readFileSync(path));
-    f.store.updateWorkspace(f.workspace.id, { name: 'Workspace-only change' });
+    await f.store.updateWorkspace(f.workspace.id, { name: 'Workspace-only change' });
     expect(threadReplacements()).toEqual([]);
     const threadFileOperations = trace.events.filter(
       (event) =>
@@ -733,9 +738,9 @@ describe('unchanged canonical Thread publication', () => {
     );
   });
 
-  it('publishes only the changed Thread and preserves descriptive envelope content through reopen', () => {
-    const f = threadPublicationFixture(4);
-    const target = f.threads[1];
+  it('publishes only the changed Thread and preserves descriptive envelope content through reopen', async () => {
+    const f = await threadPublicationFixture(4);
+    const target = await f.threads[1];
     const path = f.paths[1];
     const envelope = JSON.parse(readFileSync(path, 'utf8'));
     envelope.futureNote = 'retained annotation';
@@ -743,7 +748,7 @@ describe('unchanged canonical Thread publication', () => {
     writeFileSync(path, `${JSON.stringify(envelope, null, 2)}\n`);
     const otherBytes = f.paths.map((candidate) => readFileSync(candidate));
     trace.events.length = 0;
-    f.store.updateThread(f.workspace.id, target.id, { name: 'Changed Thread' });
+    await f.store.updateThread(f.workspace.id, target.id, { name: 'Changed Thread' });
     expect(threadReplacements()).toEqual([path]);
     const renameAt = trace.events.findIndex(
       (event) => event.op === 'rename' && event.path === path
@@ -775,21 +780,21 @@ describe('unchanged canonical Thread publication', () => {
     );
   });
 
-  it('publishes differing canonical bytes even when the known Thread core is unchanged', () => {
-    const f = threadPublicationFixture();
+  it('publishes differing canonical bytes even when the known Thread core is unchanged', async () => {
+    const f = await threadPublicationFixture();
     const path = f.paths[1];
     const canonical = readFileSync(path, 'utf8');
     const compact = `${JSON.stringify(JSON.parse(canonical))}\n`;
     expect(compact).not.toBe(canonical);
     writeFileSync(path, compact);
     trace.events.length = 0;
-    f.store.updateWorkspace(f.workspace.id, { name: 'Normalize retained bytes' });
+    await f.store.updateWorkspace(f.workspace.id, { name: 'Normalize retained bytes' });
     expect(threadReplacements()).toEqual([path]);
     expect(readFileSync(path, 'utf8')).toBe(canonical);
   });
 
-  it('keeps prior readable Thread authority when changed file synchronization fails', () => {
-    const f = threadPublicationFixture();
+  it('keeps prior readable Thread authority when changed file synchronization fails', async () => {
+    const f = await threadPublicationFixture();
     const path = f.paths[1];
     const before = readFileSync(path);
     trace.fail = (candidate, directory) =>
@@ -806,8 +811,8 @@ describe('unchanged canonical Thread publication', () => {
     ).toBe('Thread 1');
   });
 
-  it('rejects a symlinked Thread file even when its target contains byte-equivalent canonical content', () => {
-    const f = threadPublicationFixture();
+  it('rejects a symlinked Thread file even when its target contains byte-equivalent canonical content', async () => {
+    const f = await threadPublicationFixture();
     const path = f.paths[1];
     const before = readFileSync(path);
     const outside = join(f.dataRoot, 'outside-thread.json');
@@ -821,8 +826,8 @@ describe('unchanged canonical Thread publication', () => {
     expect(lstatSync(path).isSymbolicLink()).toBe(true);
   });
 
-  it('does not skip unsupported required semantics on an otherwise unchanged Thread', () => {
-    const f = threadPublicationFixture();
+  it('does not skip unsupported required semantics on an otherwise unchanged Thread', async () => {
+    const f = await threadPublicationFixture();
     const path = f.paths[1];
     const envelope = JSON.parse(readFileSync(path, 'utf8'));
     envelope.requiredFeatures.push('example.unsupported-thread-feature');
@@ -834,11 +839,11 @@ describe('unchanged canonical Thread publication', () => {
     expect(readFileSync(path, 'utf8')).toBe(bytes);
   });
 
-  it('refuses the affected Workspace until ordinary reopen after a failed Thread parent commit', () => {
-    const f = threadPublicationFixture();
+  it('refuses the affected Workspace until ordinary reopen after a failed Thread parent commit', async () => {
+    const f = await threadPublicationFixture();
     const path = f.paths[1];
     const threadRoot = dirname(path);
-    const other = f.store.createWorkspace('Unaffected Workspace');
+    const other = await f.store.createWorkspace('Unaffected Workspace');
     trace.events.length = 0;
     trace.fail = (candidate, directory) =>
       directory &&
@@ -865,14 +870,14 @@ describe('unchanged canonical Thread publication', () => {
     ).toThrow('Ordinary Store reopen is required');
     expect(trace.events).toEqual([]);
     expect(readFileSync(path)).toEqual(visibleBytes);
-    f.store.updateWorkspace(other.id, { name: 'Still available' });
+    await f.store.updateWorkspace(other.id, { name: 'Still available' });
     expect(f.store.getWorkspace(other.id).name).toBe('Still available');
     expect(() => f.store.getThread(f.workspace.id, f.threads[1].id)).toThrow(
       'Ordinary Store reopen is required'
     );
     trace.events.length = 0;
     const reopened = new FsStore({ dataRoot: f.dataRoot });
-    reopened.updateWorkspace(f.workspace.id, { name: 'Accepted unchanged Thread commit' });
+    await reopened.updateWorkspace(f.workspace.id, { name: 'Accepted unchanged Thread commit' });
     expect(threadReplacements()).toEqual([]);
     expect(
       trace.events.some(
@@ -887,13 +892,13 @@ describe('unchanged canonical Thread publication', () => {
 });
 
 describe('canonical Thread byte comparison', () => {
-  it('normalizes raw bytes that decode to unchanged canonical Thread text', () => {
-    const f = threadPublicationFixture();
+  it('normalizes raw bytes that decode to unchanged canonical Thread text', async () => {
+    const f = await threadPublicationFixture();
     const path = f.paths[1];
     const envelope = JSON.parse(readFileSync(path, 'utf8'));
     envelope.futureNote = 'Retained \uFFFD annotation';
     writeFileSync(path, `${JSON.stringify(envelope, null, 2)}\n`);
-    f.store.updateWorkspace(f.workspace.id, { name: 'Settled annotation bytes' });
+    await f.store.updateWorkspace(f.workspace.id, { name: 'Settled annotation bytes' });
     const canonical = readFileSync(path);
     const replacementCharacter = Buffer.from('\uFFFD', 'utf8');
     const offset = canonical.indexOf(replacementCharacter);
@@ -908,7 +913,7 @@ describe('canonical Thread byte comparison', () => {
     writeFileSync(path, noncanonical);
     const siblings = f.paths.map((candidate) => readFileSync(candidate));
     trace.events.length = 0;
-    f.store.updateWorkspace(f.workspace.id, { name: 'Normalize exact canonical bytes' });
+    await f.store.updateWorkspace(f.workspace.id, { name: 'Normalize exact canonical bytes' });
     expect(threadReplacements()).toEqual([path]);
     expect(readFileSync(path)).toEqual(canonical);
     for (const [index, candidate] of f.paths.entries())

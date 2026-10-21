@@ -37,14 +37,14 @@ describe('managed Thread native admission', () => {
     applyMigrations(db);
     ensureLocalUser(db);
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Managed admission');
+    const workspace = await store.createWorkspace('Managed admission');
     recordWorkspaceOwnerMembership({
       coreDb: db,
       workspaceId: workspace.id,
       ownerUserId: FIXTURE_LOCAL_USER_ID,
     });
-    const thread = store.createThread(workspace.id, 'Managed');
-    const ordinary = store.createThread(workspace.id, 'Ordinary');
+    const thread = await store.createThread(workspace.id, 'Managed');
+    const ordinary = await store.createThread(workspace.id, 'Ordinary');
     const config = WorkspaceConfigSchema.parse({
       schemaVersion: 1,
       requiredFeatures: [WORKSPACE_RESOURCE_POLICY_FEATURE],
@@ -144,22 +144,22 @@ describe('managed Thread native admission', () => {
   });
 });
 
-it('uses one concrete Kernel decision for an exact admitted Worker Agent', () => {
+it('uses one concrete Kernel decision for an exact admitted Worker Agent', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'resource-worker-admission-'));
   const db = openCoreDb(dataRoot);
   applyMigrations(db);
   ensureLocalUser(db);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Worker policy');
+  const workspace = await store.createWorkspace('Worker policy');
   recordWorkspaceOwnerMembership({
     coreDb: db,
     workspaceId: workspace.id,
     ownerUserId: FIXTURE_LOCAL_USER_ID,
   });
-  const thread = store.createThread(workspace.id, 'Worker resource');
+  const thread = await store.createThread(workspace.id, 'Worker resource');
   const actor = { kind: 'user' as const, id: FIXTURE_LOCAL_USER_ID };
   const agentSessionId = allocateEntityId('as');
-  const turn = store.createTurn(workspace.id, thread.id, 'Request access', actor, null, {
+  const turn = await store.createTurn(workspace.id, thread.id, 'Request access', actor, null, {
     agentId: 'researcher',
     agentSessionId,
   });
@@ -196,7 +196,7 @@ it('uses one concrete Kernel decision for an exact admitted Worker Agent', () =>
   const requestId = randomUUID();
   const kernel = vi.spyOn(policyKernel, 'evaluateAccess');
   try {
-    const admitted = admitOperation(
+    const admitted = await admitOperation(
       RESOURCE_POLICY_OPERATION_DEFINITIONS['workspace.resource-access-request'],
       {
         workspaceId: workspace.id,
@@ -253,7 +253,7 @@ it('uses one concrete Kernel decision for an exact admitted Worker Agent', () =>
       })
     );
     kernel.mockClear();
-    const lightApp = admitOperation(
+    const lightApp = await admitOperation(
       KERNEL_REMAINING_OPERATION_DEFINITIONS['kernel.records.get'],
       lightAppInput,
       worker,

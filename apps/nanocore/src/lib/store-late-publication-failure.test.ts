@@ -77,15 +77,15 @@ afterEach(() => {
 });
 
 describe('record publication before a later aggregate failure', () => {
-  it('preserves an already committed Thread when a later sibling preparation fails', () => {
+  it('preserves an already committed Thread when a later sibling preparation fails', async () => {
     dataRoot = mkdtempSync(join(tmpdir(), 'store-late-publication-'));
     const store = createTestStore({ dataRoot });
-    const workspace = store.createWorkspace('Publication boundaries');
-    const first = store.createThread(workspace.id, 'Original first Thread');
-    const second = store.createThread(workspace.id, 'Second Thread');
+    const workspace = await store.createWorkspace('Publication boundaries');
+    const first = await store.createThread(workspace.id, 'Original first Thread');
+    const second = await store.createThread(workspace.id, 'Second Thread');
     const actor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
-    store.createTurn(workspace.id, first.id, 'First request', actor);
-    store.createTurn(workspace.id, second.id, 'Second request', actor);
+    await store.createTurn(workspace.id, first.id, 'First request', actor);
+    await store.createTurn(workspace.id, second.id, 'Second request', actor);
     const threadsRoot = join(dataRoot, 'workspaces', workspace.id, 'threads');
     fault.targetPath = join(threadsRoot, first.id, 'thread.json');
     fault.targetDirectory = dirname(fault.targetPath);
@@ -126,7 +126,7 @@ describe('record publication before a later aggregate failure', () => {
     else expect(readError).toBeInstanceOf(Error);
 
     try {
-      store.updateWorkspace(workspace.id, { name: 'Unrelated Workspace update' });
+      await store.updateWorkspace(workspace.id, { name: 'Unrelated Workspace update' });
     } catch {
       // Availability is not this oracle's decision. Refusal must preserve the committed target too.
     }

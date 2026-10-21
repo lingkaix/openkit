@@ -18,8 +18,8 @@ it('projects the same durable lifecycle through HTTP and the derived Core Client
   applyMigrations(coreDb);
   const localUserId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot: root });
-  const workspace = store.createWorkspace('Recurring');
-  const thread = store.createThread(workspace.id, 'Target');
+  const workspace = await store.createWorkspace('Recurring');
+  const thread = await store.createThread(workspace.id, 'Target');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: localUserId });
   const automationStore = new AutomationStore(coreDb, new WorkspaceMutationAdmission());
   const app = createApp({ store, coreDb, dataRoot: root, automationStore });

@@ -23,11 +23,11 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 /** Domain admission is explicit; capture, canonical bytes, command concurrency and receipts are real. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'artifact-file-command-'));
   roots.push(dataRoot);
   const store = createTestStore({ dataRoot }),
-    workspace = store.createWorkspace('File authority');
+    workspace = await store.createWorkspace('File authority');
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
   databases.push(workspaceDb);
   applyScopedMigrations(workspaceDb);
@@ -65,7 +65,7 @@ function fixture() {
 }
 
 it('namespaces the same request by actor, including concurrent callers with equal input', async () => {
-  const f = fixture(),
+  const f = await fixture(),
     alice = allocateEntityId('usr'),
     bob = allocateEntityId('usr');
   const [a, b] = await Promise.all([f.submit(alice), f.submit(bob)]);
@@ -81,7 +81,7 @@ it('namespaces the same request by actor, including concurrent callers with equa
   expect(f.store.listCommandRequests()).toHaveLength(2);
 });
 it('does not read changed retry bytes after an exact actor-owned receipt', async () => {
-  const f = fixture(),
+  const f = await fixture(),
     actor = allocateEntityId('usr'),
     accepted = await f.submit(actor);
   const read = vi.fn();
@@ -97,7 +97,7 @@ it('does not read changed retry bytes after an exact actor-owned receipt', async
   expect(f.read(accepted.artifactId)).toEqual(f.bytes);
 });
 it('rechecks revocation after streamed staging and permits an explicit corrected request', async () => {
-  const f = fixture(),
+  const f = await fixture(),
     actor = allocateEntityId('usr');
   let authorized = true;
   const source = Readable.from(
@@ -121,7 +121,7 @@ it('rechecks revocation after streamed staging and permits an explicit corrected
   );
 });
 it('retains an unacknowledged canonical tuple after receipt failure and refuses recapture as recovery_required', async () => {
-  const f = fixture(),
+  const f = await fixture(),
     actor = allocateEntityId('usr');
   const failure = vi.spyOn(f.store, 'recordCommandRequest').mockImplementation(() => {
     throw new Error('Synthetic receipt failure.');

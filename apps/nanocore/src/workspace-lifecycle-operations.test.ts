@@ -32,7 +32,7 @@ import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 const REQUEST_ID = '00000000-0000-4000-8000-000000000023';
 
 it('sends unexpected lifecycle admission-read failures to the HTTP error handler without a mutation or receipt', async () => {
-  const f = fixture();
+  const f = await fixture();
   const app = new Hono<{ Variables: AuthVariables }>();
   const failure = new Error('injected authorization storage failure');
   const onError = vi.fn(() => Response.json({ code: 'framework_failure' }, { status: 500 }));
@@ -87,7 +87,7 @@ it('sends unexpected lifecycle admission-read failures to the HTTP error handler
 });
 
 it('allows the administrator recovery-state read through a closed mutation gate while refusing recovery without state change', async () => {
-  const f = fixture(undefined, 'server');
+  const f = await fixture(undefined, 'server');
   try {
     const admin = createOpenKitAccessTokenRecord(f.coreDb, {
       ownerUserId: testEntityId('usr', 'target'),
@@ -157,7 +157,7 @@ it('allows the administrator recovery-state read through a closed mutation gate 
 });
 
 /** Creates real owner, member, invitation and Workspace records, without fixture-supplied admission defaults. */
-function fixture(
+async function fixture(
   getBootReadiness?: () => BootReadinessSnapshot,
   mode: 'local' | 'server' = 'local'
 ) {
@@ -173,7 +173,7 @@ function fixture(
       )
       .run(testEntityId('usr', id), id, `${id}@example.com`, now, now);
   const store = new FsStore({ dataRoot });
-  const workspaceId = store.createWorkspace('Lifecycle cutover').id;
+  const workspaceId = (await store.createWorkspace('Lifecycle cutover')).id;
   recordWorkspaceOwnerMembership({
     coreDb,
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -307,7 +307,7 @@ const cases = [
 it.each(
   cases
 )('retires the authorized former binding and preserves %s owned outcome', async (id, method, path, body, status) => {
-  const state = fixture();
+  const state = await fixture();
   try {
     if (id === 'workspace.deleted-recover')
       state.coreDb.sqlite
@@ -357,7 +357,7 @@ it.each([
   'session',
   'token',
 ] as const)('uses current administrator %s authority on foreign members without impersonation', async (kind) => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const admin = createOpenKitAccessTokenRecord(f.coreDb, {
       ownerUserId: testEntityId('usr', 'target'),
@@ -483,7 +483,7 @@ it.each([
   'workspace.leave',
   'workspace.access-recover',
 ] as const)('fences %s through its mutation target before any row or receipt changes', async (id) => {
-  const f = fixture();
+  const f = await fixture();
   try {
     await f.admission.close(f.workspaceId);
     const requestId = randomUUID();
@@ -546,7 +546,7 @@ it('refuses HTTP user.disable during closed product admission without disabling 
       },
     },
   });
-  const f = fixture(() => readiness);
+  const f = await fixture(() => readiness);
   try {
     const requestId = randomUUID();
     const before = f.coreDb.sqlite
@@ -583,7 +583,7 @@ it('refuses HTTP user.disable during closed product admission without disabling 
 });
 
 it('preserves administrator actor, original deletion owner, exact retry and recovery ownership', async () => {
-  const f = fixture(undefined, 'server');
+  const f = await fixture(undefined, 'server');
   try {
     const admin = createOpenKitAccessTokenRecord(f.coreDb, {
       ownerUserId: testEntityId('usr', 'target'),
@@ -728,7 +728,7 @@ it('preserves administrator actor, original deletion owner, exact retry and reco
 });
 
 it('keeps a readonly Workspace credential from changing members or creating a command receipt', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const token = createOpenKitAccessTokenRecord(f.coreDb, {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -778,12 +778,18 @@ it('keeps a readonly Workspace credential from changing members or creating a co
 });
 
 it('retains private ownership in the narrow administrator deletion recovery export', async () => {
-  const f = fixture(undefined, 'server');
+  const f = await fixture(undefined, 'server');
   try {
-    f.store.createThread(f.workspaceId, 'Retained private history', undefined, 'conversation', {
-      visibility: 'private',
-      privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-    });
+    await f.store.createThread(
+      f.workspaceId,
+      'Retained private history',
+      undefined,
+      'conversation',
+      {
+        visibility: 'private',
+        privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      }
+    );
     const admin = createOpenKitAccessTokenRecord(f.coreDb, {
       ownerUserId: testEntityId('usr', 'target'),
       scope: 'server-admin',
@@ -853,7 +859,7 @@ it('retains private ownership in the narrow administrator deletion recovery expo
 });
 
 it('lets a non-owner member transfer ownership and replay after another member transfers it back', async () => {
-  const f = fixture();
+  const f = await fixture();
   try {
     const first = {
       workspaceId: f.workspaceId,

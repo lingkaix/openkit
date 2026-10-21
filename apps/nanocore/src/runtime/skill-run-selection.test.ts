@@ -33,7 +33,7 @@ afterEach(() => {
 });
 
 /** Real catalog snapshots and command storage meet the existing modeled Worker boundary. */
-function fixture(explicitSetupVersion = true) {
+async function fixture(explicitSetupVersion = true) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-skill-run-'));
   cleanup.push(() => rmSync(dataRoot, { recursive: true, force: true }));
   const coreDb = openCoreDb(dataRoot);
@@ -41,7 +41,7 @@ function fixture(explicitSetupVersion = true) {
   applyMigrations(coreDb);
   const localUserId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Exact Skill selection');
+  const workspace = await store.createWorkspace('Exact Skill selection');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: localUserId });
   const version = (body: string, expectedRevision: number, id = 'run-skill') =>
     importWorkspaceSkill({
@@ -112,11 +112,13 @@ function fixture(explicitSetupVersion = true) {
   });
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
   cleanup.push(() => workspaceDb.sqlite.close());
-  const request = (digest: string, skillId = 'run-skill') => ({
+  const request = async (digest: string, skillId = 'run-skill') => ({
     workspaceId: workspace.id,
-    threadId: store.createThread(workspace.id, 'Exact Skill run', undefined, 'conversation', {
-      visibility: 'workspace',
-    }).id,
+    threadId: (
+      await store.createThread(workspace.id, 'Exact Skill run', undefined, 'conversation', {
+        visibility: 'workspace',
+      })
+    ).id,
     requestId: randomUUID(),
     agentId: manifest.id,
     input: 'Check supplied Skill.',
@@ -142,7 +144,7 @@ function fixture(explicitSetupVersion = true) {
 }
 
 it('retains two exact run choices and their AEP explanation without changing setup, default or pin', async () => {
-  const f = fixture();
+  const f = await fixture();
   const catalogBefore = readFileSync(catalogDocumentPath(f.dataRoot, f.workspace.id));
   const inputs = [f.request(f.first.version.digest), f.request(f.second.version.digest)];
   for (const input of inputs) {
@@ -203,8 +205,8 @@ it('retains two exact run choices and their AEP explanation without changing set
 }, 30_000);
 
 it('refuses an available Skill outside composed setup before Worker preparation or submission', async () => {
-  const f = fixture();
-  const input = f.request(f.outside.version.digest, 'outside-skill');
+  const f = await fixture();
+  const input = await f.request(f.outside.version.digest, 'outside-skill');
   const response = await f.call(input);
   expect(response.status, await response.clone().text()).toBe(409);
   expect(await response.json()).toMatchObject({ code: 'invalid_skill_selection' });
@@ -214,7 +216,7 @@ it('refuses an available Skill outside composed setup before Worker preparation 
 });
 
 it('retains the winning pin Audit only for pin-selected supply, without copying procedure bodies', async () => {
-  const f = fixture(false);
+  const f = await fixture(false);
   const pin = async (digest: string | null) => {
     const catalog = loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id);
     const requestId = randomUUID();

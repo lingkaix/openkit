@@ -13,16 +13,16 @@ import { createApp } from './test-support/app.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
-const fixtures: Array<ReturnType<typeof fixture>> = [];
+const fixtures: Array<Awaited<ReturnType<typeof fixture>>> = [];
 
 /** Real current identity, configuration, SQLite receipts and Git content share one isolated scope. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-notebook-page-admission-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Notebook admission', {
+  const workspace = await store.createWorkspace('Notebook admission', {
     requestId: randomUUID(),
     producer: { kind: 'user', id: userId },
     instructionReference: 'Create an isolated Notebook admission fixture',
@@ -50,7 +50,7 @@ function fixture() {
 }
 
 /** Observe immutable publication independently of the API projection. */
-function git(f: ReturnType<typeof fixture>, ...args: string[]): string {
+function git(f: Awaited<ReturnType<typeof fixture>>, ...args: string[]): string {
   return execFileSync('git', ['--git-dir', f.repositoryPath, ...args], { encoding: 'utf8' });
 }
 
@@ -61,7 +61,7 @@ function digest(content: string): string {
 
 /** Submit public native commands with the actual local actor and request identity. */
 async function call(
-  f: ReturnType<typeof fixture>,
+  f: Awaited<ReturnType<typeof fixture>>,
   operation: string,
   input: Record<string, unknown> = {}
 ) {
@@ -84,7 +84,7 @@ async function call(
 }
 
 /** Full authored OKF bytes retain the exact registered Source when selected. */
-function page(f: ReturnType<typeof fixture>, sourceReferences: string[] = []): string {
+function page(f: Awaited<ReturnType<typeof fixture>>, sourceReferences: string[] = []): string {
   return [
     '---',
     'type: KnowledgePage',
@@ -107,7 +107,7 @@ function page(f: ReturnType<typeof fixture>, sourceReferences: string[] = []): s
 }
 
 /** Establish successful native publication and a matching full-page read before injecting a failure. */
-async function createPage(f: ReturnType<typeof fixture>, sourceReferences: string[] = []) {
+async function createPage(f: Awaited<ReturnType<typeof fixture>>, sourceReferences: string[] = []) {
   const request = {
     requestId: randomUUID(),
     baseRevision: git(f, 'rev-parse', 'refs/heads/published').trim(),
@@ -157,8 +157,8 @@ describe('Notebook page commands retain current Source and request identity admi
     'new deletion',
     'completed deletion replay',
   ] as const)('rechecks the current originating Source audience for %s', async (stage) => {
-    const f = fixture();
-    const origin = f.store.createThread(f.workspaceId, 'Initially shared Source');
+    const f = await fixture();
+    const origin = await f.store.createThread(f.workspaceId, 'Initially shared Source');
     expect(origin.visibility).toBe('workspace');
     const registered = await call(f, 'knowledge.source.register', {
       requestId: randomUUID(),
@@ -206,7 +206,7 @@ describe('Notebook page commands retain current Source and request identity admi
   });
 
   it('returns the request identity conflict when a completed create collides with its now-existing path', async () => {
-    const f = fixture();
+    const f = await fixture();
     const created = await createPage(f);
     expect(await call(f, 'knowledge.notebook.create', created.request)).toEqual(created.result);
     const collision = await call(f, 'knowledge.notebook.create', {
@@ -220,7 +220,7 @@ describe('Notebook page commands retain current Source and request identity admi
   });
 
   it('returns the request identity conflict before changed digest checks on a completed delete', async () => {
-    const f = fixture();
+    const f = await fixture();
     const created = await createPage(f);
     const request = removal(created);
     const removed = await call(f, 'knowledge.notebook.delete', request);

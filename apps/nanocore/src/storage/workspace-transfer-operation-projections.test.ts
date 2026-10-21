@@ -41,14 +41,14 @@ afterEach(() => {
 });
 
 /** Owns explicit local identity, membership and portable data for the projection proof. */
-function fixture(getBootReadiness?: () => BootReadinessSnapshot) {
+async function fixture(getBootReadiness?: () => BootReadinessSnapshot) {
   const root = mkdtempSync(join(tmpdir(), 'openkit-b14-'));
   const db = openCoreDb(root);
   applyMigrations(db);
   ensureLocalUser(db);
   const store = new FsStore({ dataRoot: root });
   const demo = createDemoWorkspaceForUser(FIXTURE_LOCAL_USER_ID);
-  store.importWorkspaceSnapshot({
+  await store.importWorkspaceSnapshot({
     ...notebookImportFixture({ workspaceId: demo.workspace.id, knowledge: [] }),
     workspace: demo.workspace,
     threads: [demo.thread],
@@ -101,13 +101,13 @@ function exportUsage(root: string) {
 
 describe('Workspace JSON transfer cutover', () => {
   it('exports complete canonical Item history after an unacknowledged append and later update', async () => {
-    const { root, store, app } = fixture();
+    const { root, store, app } = await fixture();
     const thread = store.listThreads(DEMO_WORKSPACE_ID)[0]!;
-    const turn = store.createTurn(DEMO_WORKSPACE_ID, thread.id, 'Retain history', {
+    const turn = await store.createTurn(DEMO_WORKSPACE_ID, thread.id, 'Retain history', {
       kind: 'user',
       id: FIXTURE_LOCAL_USER_ID,
     });
-    const item = store.createItem({
+    const item = await store.createItem({
       id: testEntityId('it', 'it_export_history'),
       type: 'assistant-message',
       owner: { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID },
@@ -134,7 +134,7 @@ describe('Workspace JSON transfer cutover', () => {
       syncBuiltinESMExports();
     }
     expect(faults).toBe(1);
-    store.updateItem(item.id, { text: 'C' });
+    await store.updateItem(item.id, { text: 'C' });
     const cachedTexts = () =>
       store
         .listWorkspaceItemRevisions(DEMO_WORKSPACE_ID)
@@ -192,7 +192,7 @@ describe('Workspace JSON transfer cutover', () => {
   });
 
   it('exports canonical recurring Turn data after an actual update persistence failure', async () => {
-    const { root, db, store, app } = fixture();
+    const { root, db, store, app } = await fixture();
     const thread = store.listThreads(DEMO_WORKSPACE_ID)[0]!;
     const instant = '2026-10-16T00:00:00.000Z';
     const schedules = new AutomationStore(db, new WorkspaceMutationAdmission(), () => instant);
@@ -224,7 +224,7 @@ describe('Workspace JSON transfer cutover', () => {
       db,
       schedules.getOccurrence(occurrence.id).queueEntryId!
     );
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       entry.workspaceId,
       entry.threadId,
       entry.turnInput,
@@ -347,10 +347,10 @@ describe('Workspace JSON transfer cutover', () => {
   });
 
   it('round-trips actual archive bytes and Knowledge through the Web session streaming bindings', async () => {
-    const source = fixture();
-    const target = fixture();
+    const source = await fixture();
+    const target = await fixture();
     // The test controls only session admission; export, streams, staging, import and reads use real owners.
-    const sessionApp = (f: ReturnType<typeof fixture>) =>
+    const sessionApp = (f: Awaited<ReturnType<typeof fixture>>) =>
       createApp({
         dataRoot: f.root,
         coreDb: f.db,
@@ -449,7 +449,7 @@ describe('Workspace JSON transfer cutover', () => {
     'workspace.import-dry-run',
     'workspace.import',
   ] as const)('%s preserves canonical-user HTTP admission with a valid creator handle', async (operation) => {
-    const { app, db, root, store } = fixture();
+    const { app, db, root, store } = await fixture();
     const exported = await app.request(
       ...request('/api/app/operations/workspace.export', { workspaceId: DEMO_WORKSPACE_ID })
     );
@@ -508,17 +508,23 @@ describe('Workspace JSON transfer cutover', () => {
   });
 
   it('refuses private export consumption after its source-owner creator loses administrator eligibility', async () => {
-    const { db, root, store } = fixture();
+    const { db, root, store } = await fixture();
     const now = Date.now();
     db.sqlite
       .prepare(
         `INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind) VALUES ('${testEntityId('usr', 'user_private')}', 'Private owner', 'private@example.test', 0, ?, ?, 'human')`
       )
       .run(now, now);
-    store.createThread(DEMO_WORKSPACE_ID, 'Another user private history', undefined, undefined, {
-      visibility: 'private',
-      privateOwnerUserId: testEntityId('usr', 'user_private'),
-    });
+    await store.createThread(
+      DEMO_WORKSPACE_ID,
+      'Another user private history',
+      undefined,
+      undefined,
+      {
+        visibility: 'private',
+        privateOwnerUserId: testEntityId('usr', 'user_private'),
+      }
+    );
     const token = createOpenKitAccessTokenRecord(db, {
       ownerUserId: FIXTURE_LOCAL_USER_ID,
       scope: 'server-admin',
@@ -612,7 +618,7 @@ describe('Workspace JSON transfer cutover', () => {
   });
 
   it('retires the authorized former bindings without an alias', async () => {
-    const { app, store, root } = fixture();
+    const { app, store, root } = await fixture();
     const usage = exportUsage(root);
     const before = store.listWorkspaces().map(({ id }) => id);
     for (const path of [
@@ -630,7 +636,7 @@ describe('Workspace JSON transfer cutover', () => {
   });
 
   it('canonical export, dry-run and import reach their existing owners', async () => {
-    const { app, store, db } = fixture();
+    const { app, store, db } = await fixture();
     const exported = await app.request(
       ...request('/api/app/operations/workspace.export', { workspaceId: DEMO_WORKSPACE_ID })
     );
@@ -666,7 +672,7 @@ describe('Workspace JSON transfer cutover', () => {
 
   it('HTTP and MCP readiness refuse export and import without tree or registry writes', async () => {
     let readiness = computeBootReadinessSnapshot({ bootId: 'b14-readiness' });
-    const { app, db, root } = fixture(() => readiness);
+    const { app, db, root } = await fixture(() => readiness);
     const exportedResponse = await app.request(
       ...request('/api/app/operations/workspace.export', { workspaceId: DEMO_WORKSPACE_ID })
     );
@@ -736,7 +742,7 @@ describe('Workspace JSON transfer cutover', () => {
   });
 
   it('refuses read-only and revoked export credentials before export usage or tree writes', async () => {
-    const { db, root, store } = fixture();
+    const { db, root, store } = await fixture();
     const app = createApp({ dataRoot: root, coreDb: db, store, mode: 'server' });
     const readonly = createOpenKitAccessTokenRecord(db, {
       ownerUserId: FIXTURE_LOCAL_USER_ID,
@@ -777,7 +783,7 @@ describe('Workspace JSON transfer cutover', () => {
   });
 
   it('rejects caller-selected administrator eligibility without creating an export', async () => {
-    const { app, root } = fixture();
+    const { app, root } = await fixture();
     const before = exportUsage(root);
     const trees = readdirSync(join(root, 'server', 'exports'));
     const response = await app.request(
@@ -792,20 +798,20 @@ describe('Workspace JSON transfer cutover', () => {
   });
 
   it('keeps an administrator private export inaccessible to the non-creating source owner', async () => {
-    const { app, store, db, root } = fixture();
+    const { app, store, db, root } = await fixture();
     const now = Date.now();
     db.sqlite
       .prepare(
         `INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind) VALUES ('${testEntityId('usr', 'user_source')}', 'Source', 'source@example.test', 0, ?, ?, 'human')`
       )
       .run(now, now);
-    const workspace = store.createWorkspace('Source-owned private data');
+    const workspace = await store.createWorkspace('Source-owned private data');
     recordWorkspaceOwnerMembership({
       coreDb: db,
       ownerUserId: testEntityId('usr', 'user_source'),
       workspaceId: workspace.id,
     });
-    store.createThread(workspace.id, 'Private project', undefined, undefined, {
+    await store.createThread(workspace.id, 'Private project', undefined, undefined, {
       visibility: 'private',
       privateOwnerUserId: FIXTURE_LOCAL_USER_ID,
     });
@@ -852,7 +858,7 @@ describe('Workspace JSON transfer cutover', () => {
       `UPDATE usage_records SET responsible_user_id = '${testEntityId('usr', 'user_other')}' WHERE capability_call_id = ? AND unit = 'bytes'`,
     ],
   ])('fails closed on %s without publishing an imported Workspace', async (_case, mutation) => {
-    const { app, db, root } = fixture();
+    const { app, db, root } = await fixture();
     const exported = await app.request(
       ...request('/api/app/operations/workspace.export', { workspaceId: DEMO_WORKSPACE_ID })
     );

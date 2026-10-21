@@ -32,13 +32,13 @@ const NOW = '2026-10-19T00:00:00.000Z';
 const digest = (content: string) => `sha256:${createHash('sha256').update(content).digest('hex')}`;
 
 /** Real app storage, authenticated operation admission and published meaning owners share one scope. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-meaning-discovery-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Meaning discovery');
+  const workspace = await store.createWorkspace('Meaning discovery');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const ownerScope = { kind: 'workspace' as const, workspaceId: workspace.id };
   const actor = { kind: 'user' as const, id: userId };
@@ -84,7 +84,7 @@ function fixture() {
 }
 
 /** Publish genuine governed page bytes; exact content pins come from the external owner. */
-function publish(f: ReturnType<typeof fixture>, content: string) {
+function publish(f: Awaited<ReturnType<typeof fixture>>, content: string) {
   const baseRevision = f.notebook.publishedRevision();
   const candidateRevision = f.notebook.prepare({
     baseRevision,
@@ -106,7 +106,7 @@ function publish(f: ReturnType<typeof fixture>, content: string) {
 }
 
 /** Native authored serialization preserves exact page bytes and optional Source lineage. */
-function page(f: ReturnType<typeof fixture>, sourceReferences: string[] = []) {
+function page(f: Awaited<ReturnType<typeof fixture>>, sourceReferences: string[] = []) {
   return serializeKnowledgePageFixture(
     {
       id: 'domain',
@@ -122,7 +122,7 @@ function page(f: ReturnType<typeof fixture>, sourceReferences: string[] = []) {
 }
 
 /** Use the existing native definition writer; no resolver or receiver is replaced. */
-function createApp(f: ReturnType<typeof fixture>, references: string[]) {
+function createApp(f: Awaited<ReturnType<typeof fixture>>, references: string[]) {
   const schema: LightAppSchemaInput = {
     format: 'openkit.light-app',
     schemaVersion: 1,
@@ -146,7 +146,7 @@ const unavailable = (reference: string) => ({ reference, status: 'unavailable' }
 
 describe('native Light App meaning discovery', () => {
   it('returns exact published page and Skill versions after both current targets advance', async () => {
-    const f = fixture();
+    const f = await fixture();
     const content = page(f);
     const pageReference = publish(f, content);
     const skillContent =
@@ -204,7 +204,7 @@ describe('native Light App meaning discovery', () => {
   });
 
   it('reports current denial, wrong scope and unsupported targets without blocking retained app records', async () => {
-    const f = fixture();
+    const f = await fixture();
     const content = page(f);
     const pageReference = publish(f, content);
     const references = [
@@ -254,15 +254,15 @@ describe('native Light App meaning discovery', () => {
   });
 
   it('uses trusted output lineage to prevent private Source content from reaching a shared Thread', async () => {
-    const f = fixture();
-    const sourceThread = f.store.createThread(
+    const f = await fixture();
+    const sourceThread = await f.store.createThread(
       f.workspace.id,
       'Private source',
       undefined,
       'conversation',
       { visibility: 'private', privateOwnerUserId: f.userId }
     );
-    const destination = f.store.createThread(
+    const destination = await f.store.createThread(
       f.workspace.id,
       'Shared consumer',
       undefined,
@@ -311,12 +311,17 @@ describe('native Light App meaning discovery', () => {
   });
 
   it('keeps Worker Source reads under the exact Agent grant rather than its responsible User grant', async () => {
-    const f = fixture();
-    const thread = f.store.createThread(f.workspace.id, 'Managed Worker Source');
-    const turn = f.store.createTurn(f.workspace.id, thread.id, 'Interpret case state', f.actor);
+    const f = await fixture();
+    const thread = await f.store.createThread(f.workspace.id, 'Managed Worker Source');
+    const turn = await f.store.createTurn(
+      f.workspace.id,
+      thread.id,
+      'Interpret case state',
+      f.actor
+    );
     const agentId = 'domain-reader';
     const agentSessionId = allocateEntityId('as');
-    f.store.createAgentSession({
+    await f.store.createAgentSession({
       id: agentSessionId,
       agentId,
       workspaceId: f.workspace.id,
@@ -326,7 +331,7 @@ describe('native Light App meaning discovery', () => {
       createdAt: NOW,
       updatedAt: NOW,
     });
-    f.store.updateTurn(turn.id, { agentId, agentSessionId });
+    await f.store.updateTurn(turn.id, { agentId, agentSessionId });
     const environmentPackage = resolveAgentEnvironmentPackage({
       captureCoverage: { scope: 'server', value: 'off' },
       agentSessionId,
@@ -460,7 +465,7 @@ describe('native Light App meaning discovery', () => {
     count,
     characters,
   }) => {
-    const f = fixture();
+    const f = await fixture();
     // The accepted read ceiling counts encoded bytes; each non-ASCII character uses three UTF-8 bytes.
     const maximum = 2 * 1024 * 1024;
     let revision = 0;

@@ -15,7 +15,7 @@ import { readPendingRequest } from './pending-requests.js';
 it('captures the exact typed Goal domain and Plan in one human approval preview', async () => {
   const root = mkdtempSync(join(tmpdir(), 'goal-domain-approval-'));
   const store = createTestStore({ dataRoot: root });
-  const workspace = store.createWorkspace('Goal domain');
+  const workspace = await store.createWorkspace('Goal domain');
   const db = openWorkspaceDb(root, workspace.id);
   applyScopedMigrations(db);
   const context = {

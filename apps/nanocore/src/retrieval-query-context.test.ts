@@ -69,9 +69,9 @@ afterEach(async () => {
 
 describe('retrieval query context, references, and query-owned traces', () => {
   it('enforces the fixed scope grammar through current kind owners', async () => {
-    const fixture = createFixture('scope-grammar');
-    const thread = fixture.store.createThread(fixture.workspaceId, 'Query thread');
-    const turn = fixture.store.createTurn(fixture.workspaceId, thread.id, 'Query', ACTOR);
+    const fixture = await createFixture('scope-grammar');
+    const thread = await fixture.store.createThread(fixture.workspaceId, 'Query thread');
+    const turn = await fixture.store.createTurn(fixture.workspaceId, thread.id, 'Query', ACTOR);
     const page = { scopeId: pageScope(fixture), objectId: 'release/plan' };
     const turnTrace = {
       scopeId: `retrieval-trace/turn/${fixture.workspaceId}/${thread.id}/${turn.id}`,
@@ -133,8 +133,8 @@ describe('retrieval query context, references, and query-owned traces', () => {
     ).toBe(false);
   });
 
-  it('accepts only narrowing sourceScope and scope-qualified pins in the public request', () => {
-    const fixture = createFixture('request-schema');
+  it('accepts only narrowing sourceScope and scope-qualified pins in the public request', async () => {
+    const fixture = await createFixture('request-schema');
     const pin = { scopeId: pageScope(fixture), objectId: 'release/plan' };
 
     expect(
@@ -186,7 +186,7 @@ describe('retrieval query context, references, and query-owned traces', () => {
   });
 
   it('returns qualified selection without publishing evidence for a threadless App query', async () => {
-    const fixture = createFixture('threadless');
+    const fixture = await createFixture('threadless');
     const page = createEntry(fixture, 'Threadless marker', 'threadless-marker body-private-marker');
     const result = await retrieveWorkspaceKnowledge(fixture.input('threadless-marker'));
 
@@ -220,7 +220,7 @@ describe('retrieval query context, references, and query-owned traces', () => {
   });
 
   it('refuses another Knowledge Base for the same owner and page before disclosure', async () => {
-    const fixture = createFixture('wrong-knowledge-base');
+    const fixture = await createFixture('wrong-knowledge-base');
     const page = createEntry(fixture, 'Exact base', 'exact-base-private-marker');
     const selected = await retrieveWorkspaceKnowledge(fixture.input('exact-base-private-marker'));
     expect(selected.selected[0]).not.toHaveProperty('contentRef');
@@ -293,7 +293,7 @@ describe('retrieval query context, references, and query-owned traces', () => {
   });
 
   it('normalizes qualified pins and refuses source widening before a trace effect', async () => {
-    const fixture = createFixture('pins');
+    const fixture = await createFixture('pins');
     const higher = createEntry(
       fixture,
       'Release cadence release cadence',
@@ -352,7 +352,7 @@ describe('retrieval query context, references, and query-owned traces', () => {
   });
 
   it('validates trusted lineage and publishes one content-free immutable trace per query act', async () => {
-    const fixture = createFixture('trace-placement');
+    const fixture = await createFixture('trace-placement');
     const page = createEntry(
       fixture,
       'Trace title private marker',
@@ -363,8 +363,13 @@ describe('retrieval query context, references, and query-owned traces', () => {
       'Other trace page',
       'trace-placement-marker overflow-private-marker'
     );
-    const thread = fixture.store.createThread(fixture.workspaceId, 'Retrieval thread');
-    const turn = fixture.store.createTurn(fixture.workspaceId, thread.id, 'Trace request', ACTOR);
+    const thread = await fixture.store.createThread(fixture.workspaceId, 'Retrieval thread');
+    const turn = await fixture.store.createTurn(
+      fixture.workspaceId,
+      thread.id,
+      'Trace request',
+      ACTOR
+    );
     const threadTraceId = traceId(10);
     const turnTraceId = traceId(11);
     const threadSelection = await retrieveWorkspaceKnowledge({
@@ -467,7 +472,7 @@ describe('retrieval query context, references, and query-owned traces', () => {
     }
     expect(findTraceFiles(fixture.workspaceRoot).sort()).toEqual([threadPath, turnPath].sort());
 
-    const otherThread = fixture.store.createThread(fixture.workspaceId, 'Other thread');
+    const otherThread = await fixture.store.createThread(fixture.workspaceId, 'Other thread');
     await expect(
       retrieveWorkspaceKnowledge({
         ...fixture.input('trace-placement-marker'),
@@ -495,15 +500,15 @@ describe('retrieval query context, references, and query-owned traces', () => {
   });
 
   it('rechecks source access when resolving a persisted trace reference', async () => {
-    const fixture = createFixture('revocation');
-    const destination = fixture.store.createThread(
+    const fixture = await createFixture('revocation');
+    const destination = await fixture.store.createThread(
       fixture.workspaceId,
       'Private destination',
       undefined,
       'conversation',
       { visibility: 'private', privateOwnerUserId: ACTOR.id }
     );
-    const sourceThread = fixture.store.createThread(
+    const sourceThread = await fixture.store.createThread(
       fixture.workspaceId,
       'Private source',
       undefined,
@@ -558,13 +563,13 @@ describe('retrieval query context, references, and query-owned traces', () => {
   });
 
   it('denies a trace when its selected page is currently restricted', async () => {
-    const fixture = createFixture('restricted-metadata');
+    const fixture = await createFixture('restricted-metadata');
     const page = createEntry(
       fixture,
       'Restricted metadata page',
       'restricted-metadata-marker private-page-content'
     );
-    const thread = fixture.store.createThread(fixture.workspaceId, 'Restricted trace owner');
+    const thread = await fixture.store.createThread(fixture.workspaceId, 'Restricted trace owner');
     const id = traceId(25);
     const selection = await retrieveWorkspaceKnowledge({
       ...fixture.input('restricted-metadata-marker'),
@@ -626,13 +631,13 @@ describe('retrieval query context, references, and query-owned traces', () => {
   });
 
   it('rejects contradictory source metadata and every wrong-scope projected reference', async () => {
-    const fixture = createFixture('trace-source-projection');
+    const fixture = await createFixture('trace-source-projection');
     const page = createEntry(
       fixture,
       'Projection scope page',
       'trace-source-projection-marker private-projection-content'
     );
-    const thread = fixture.store.createThread(fixture.workspaceId, 'Projection trace owner');
+    const thread = await fixture.store.createThread(fixture.workspaceId, 'Projection trace owner');
     const id = traceId(27);
     const selection = await retrieveWorkspaceKnowledge({
       ...fixture.input('trace-source-projection-marker'),
@@ -741,15 +746,15 @@ describe('retrieval query context, references, and query-owned traces', () => {
   });
 
   it('withholds a stale private source reference after the page removes it', async () => {
-    const fixture = createFixture('stale-source-reference');
-    const destination = fixture.store.createThread(
+    const fixture = await createFixture('stale-source-reference');
+    const destination = await fixture.store.createThread(
       fixture.workspaceId,
       'Private destination',
       undefined,
       'conversation',
       { visibility: 'private', privateOwnerUserId: ACTOR.id }
     );
-    const sourceThread = fixture.store.createThread(
+    const sourceThread = await fixture.store.createThread(
       fixture.workspaceId,
       'Private source',
       undefined,
@@ -837,7 +842,7 @@ describe('retrieval query context, references, and query-owned traces', () => {
   });
 
   it('withholds restricted and closed-core-invalid Knowledge source pages', async () => {
-    const fixture = createFixture('nested-knowledge-sensitivity');
+    const fixture = await createFixture('nested-knowledge-sensitivity');
     const provenance = createEntry(
       fixture,
       'Origin evidence page',
@@ -853,7 +858,10 @@ describe('retrieval query context, references, and query-owned traces', () => {
       'recursive-target-needle-xyq selected-current-content',
       [sourceReference]
     );
-    const thread = fixture.store.createThread(fixture.workspaceId, 'Nested source trace owner');
+    const thread = await fixture.store.createThread(
+      fixture.workspaceId,
+      'Nested source trace owner'
+    );
     const id = traceId(29);
     const selection = await retrieveWorkspaceKnowledge({
       ...fixture.input('recursive-target-needle-xyq'),
@@ -922,7 +930,7 @@ describe('retrieval query context, references, and query-owned traces', () => {
   });
 
   it('keeps an imported Server reference unavailable under target-local context', async () => {
-    const fixture = createFixture('imported-server', {
+    const fixture = await createFixture('imported-server', {
       sourceDeploymentId: 'dep_00000000-0000-7737-8fe7-61ca07c79d45',
       sourceWorkspaceId: 'ws_00000000-0000-71b1-9af2-985861a05396',
       exportCreatedAt: NOW,
@@ -933,7 +941,7 @@ describe('retrieval query context, references, and query-owned traces', () => {
       'Target-only page title',
       'imported-server-marker target-private-content'
     );
-    const thread = fixture.store.createThread(fixture.workspaceId, 'Imported trace owner');
+    const thread = await fixture.store.createThread(fixture.workspaceId, 'Imported trace owner');
     const id = traceId(30);
     const selection = await retrieveWorkspaceKnowledge({
       ...fixture.input('imported-server-marker'),
@@ -1048,7 +1056,7 @@ interface Fixture {
   input(query: string): RetrieveWorkspaceKnowledgeInput;
 }
 
-function createFixture(
+async function createFixture(
   label: string,
   importedFrom?: {
     sourceDeploymentId: string;
@@ -1056,11 +1064,11 @@ function createFixture(
     exportCreatedAt: string;
     manifestDigest: string;
   }
-): Fixture {
+): Promise<Fixture> {
   const dataRoot = mkdtempSync(join(tmpdir(), `openkit-retrieval-context-${label}-`));
   testRoots.push(dataRoot);
   const store = createTestStore({ dataRoot });
-  const workspace = importedFrom
+  const workspace = await (importedFrom
     ? store.importWorkspaceSnapshot({
         ...notebookImportFixture({
           workspaceId: testEntityId('ws', `imported-${label}`),
@@ -1088,7 +1096,7 @@ function createFixture(
         requestId: randomUUID(),
         producer: ACTOR,
         instructionReference: 'test-fixture:retrieval-query-context',
-      });
+      }));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);

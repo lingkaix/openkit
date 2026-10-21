@@ -19,14 +19,14 @@ import {
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
-it('verifies extended descriptive closure bytes after reopen while inventory and requirements stay exact', () => {
+it('verifies extended descriptive closure bytes after reopen while inventory and requirements stay exact', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-closure-extensions-'));
   const coreDb = openCoreDb(dataRoot);
   try {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Closure annotations');
+    const workspace = await store.createWorkspace('Closure annotations');
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -90,17 +90,17 @@ it('verifies extended descriptive closure bytes after reopen while inventory and
   }
 });
 
-it('retains the immutable external admission join in deletion evidence before its Core rows are purged', () => {
+it('retains the immutable external admission join in deletion evidence before its Core rows are purged', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-external-event-closure-'));
   const coreDb = openCoreDb(dataRoot);
   try {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('External event closure');
+    const workspace = await store.createWorkspace('External event closure');
     const actorId = 'usr_00000000-0000-7000-8000-000000000001';
     recordWorkspaceOwnerMembership({ coreDb, ownerUserId: actorId, workspaceId: workspace.id });
-    const pollThread = store.createThread(workspace.id, 'Poll');
+    const pollThread = await store.createThread(workspace.id, 'Poll');
     const instant = '2026-10-18T00:00:00.000Z';
     const schedules = new AutomationStore(coreDb, new WorkspaceMutationAdmission(), () => instant);
     const schedule = schedules.createAutomation(actorId, {
@@ -127,7 +127,7 @@ it('retains the immutable external admission join in deletion evidence before it
         workspaceCwd: null,
       },
     })!;
-    const target = store.createThread(workspace.id, 'Case', undefined, 'conversation', {
+    const target = await store.createThread(workspace.id, 'Case', undefined, 'conversation', {
       visibility: 'workspace',
       threadSource: 'worker',
       parentThreadId: pollThread.id,

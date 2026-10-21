@@ -613,7 +613,7 @@ describe('FsStore persistence', () => {
     await store.createTurn(workspace.id, busyThread.id, 'Keep this Thread active', LOCAL_ACTOR);
     let error: unknown;
     try {
-      store.introduceArtifact({
+      await store.introduceArtifact({
         ...firstInput,
         threadId: busyThread.id,
         turnId: 'tu_00000000-0000-7f26-95e2-15f88faae1af',
@@ -624,8 +624,8 @@ describe('FsStore persistence', () => {
     expect(error).toMatchObject({ code: 'thread_busy', status: 409 });
     expect(store.listThreadTurns(workspace.id, busyThread.id)).toHaveLength(1);
 
-    const firstIntroduction = store.introduceArtifact(firstInput);
-    const secondIntroduction = store.introduceArtifact(secondInput);
+    const firstIntroduction = await store.introduceArtifact(firstInput);
+    const secondIntroduction = await store.introduceArtifact(secondInput);
 
     expect(firstIntroduction).toEqual({
       artifactId: artifact.id,
@@ -642,7 +642,7 @@ describe('FsStore persistence', () => {
     expect(firstIntroduction.itemId).not.toBe(secondIntroduction.itemId);
     error = undefined;
     try {
-      store.introduceArtifact(firstInput);
+      await store.introduceArtifact(firstInput);
     } catch (caught) {
       error = caught;
     }

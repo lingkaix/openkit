@@ -14,15 +14,15 @@ it.each([
   'column',
   'table',
   'database',
-] as const)('contains missing approval %s authority without losing a healthy sibling projection', (fault) => {
+] as const)('contains missing approval %s authority without losing a healthy sibling projection', async (fault) => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'pending-scope-'));
   try {
     const initial = createTestStore({ dataRoot });
-    const bad = initial.createWorkspace('Unreadable approval authority');
-    const good = initial.createWorkspace('Healthy approval authority');
+    const bad = await initial.createWorkspace('Unreadable approval authority');
+    const good = await initial.createWorkspace('Healthy approval authority');
     const userId = 'usr_00000000-0000-7000-8000-000000000001';
-    const thread = initial.createThread(good.id, 'Approval source');
-    const turn = initial.createTurn(
+    const thread = await initial.createThread(good.id, 'Approval source');
+    const turn = await initial.createTurn(
       good.id,
       thread.id,
       'Ask for permission',
@@ -32,7 +32,7 @@ it.each([
     const requestId = 'ap_scope_healthy';
     const requestItemId = allocateEntityId('it');
     const now = new Date().toISOString();
-    initial.createItem({
+    await initial.createItem({
       id: requestItemId,
       owner: turn.owner,
       threadId: thread.id,

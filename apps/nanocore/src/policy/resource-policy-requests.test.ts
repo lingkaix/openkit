@@ -31,19 +31,19 @@ import * as workspaceResourcePolicy from './workspace-resource-access.js';
 import { evaluateWorkspaceResourceAccess } from './workspace-resource-access.js';
 
 /** Creates real configuration and Pending Request storage; no model, provider or external effect is used. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'resource-policy-request-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Resource policy');
+  const workspace = await store.createWorkspace('Resource policy');
   recordWorkspaceOwnerMembership({
     coreDb,
     workspaceId: workspace.id,
     ownerUserId: FIXTURE_LOCAL_USER_ID,
   });
-  const thread = store.createThread(workspace.id, 'Access request');
+  const thread = await store.createThread(workspace.id, 'Access request');
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
   applyScopedMigrations(workspaceDb);
   const actor = { kind: 'local' as const, userId: FIXTURE_LOCAL_USER_ID };
@@ -84,14 +84,14 @@ function fixture() {
     lifetime: { anchor: { owner, kind: 'workspace', id: workspace.id } },
   };
   const replacement: PolicyDocumentV1 = { schemaVersion: 1, statements: [boundary] };
-  const raise = (
+  const raise = async (
     change = {
       resource: resource,
       replacement,
       expectedRevision: files.readFile(`workspaces/${workspace.id}/workspace.jsonc`).file.revision!,
     }
   ) => {
-    const turn = store.createTurn(workspace.id, thread.id, 'Request access', {
+    const turn = await store.createTurn(workspace.id, thread.id, 'Request access', {
       kind: 'user',
       id: actor.userId,
     });
@@ -130,13 +130,18 @@ function fixture() {
 }
 
 describe('resource Policy Pending Request commands', () => {
-  it('keeps missing request lineage inspect-only after a first Item publication failure', () => {
-    const f = fixture();
+  it('keeps missing request lineage inspect-only after a first Item publication failure', async () => {
+    const f = await fixture();
     try {
-      const turn = f.store.createTurn(f.workspace.id, f.thread.id, 'Request resource Policy', {
-        kind: 'user',
-        id: f.actor.userId,
-      });
+      const turn = await f.store.createTurn(
+        f.workspace.id,
+        f.thread.id,
+        'Request resource Policy',
+        {
+          kind: 'user',
+          id: f.actor.userId,
+        }
+      );
       const input = {
         requestId: randomUUID(),
         workspaceId: f.workspace.id,
@@ -169,11 +174,11 @@ describe('resource Policy Pending Request commands', () => {
     }
   });
 
-  it('captures unavailable caller-selected targets without resolving or disclosing their metadata', () => {
-    const f = fixture();
+  it('captures unavailable caller-selected targets without resolving or disclosing their metadata', async () => {
+    const f = await fixture();
     try {
       const missing = { family: 'thread' as const, id: allocateEntityId('th') };
-      const record = f.raise({
+      const record = await f.raise({
         resource: missing,
         replacement: {
           ...f.replacement,
@@ -229,13 +234,13 @@ describe('resource Policy Pending Request commands', () => {
     }
   });
 
-  it('requires confirmed apply and preserves the empty boundary when its author loses authority', () => {
-    const f = fixture();
+  it('requires confirmed apply and preserves the empty boundary when its author loses authority', async () => {
+    const f = await fixture();
     try {
       expect(
         WorkspaceConfigSchema.safeParse(parse(readFileSync(f.configPath, 'utf8'))).success
       ).toBe(true);
-      const record = f.raise();
+      const record = await f.raise();
       const input = {
         requestId: record.requestId,
         workspaceId: f.workspace.id,
@@ -255,7 +260,7 @@ describe('resource Policy Pending Request commands', () => {
       expect(() => applyResourcePolicyRequest(f, { ...input, confirmation: '' })).toThrow(
         'unused approval'
       );
-      const result = applyResourcePolicyRequest(f, input);
+      const result = await applyResourcePolicyRequest(f, input);
       expect(result.saved.file.revision).not.toBeNull();
       const saved = readFileSync(f.configPath, 'utf8');
       expect(saved).toContain('// Preserve this authored sibling.');
@@ -297,11 +302,11 @@ describe('resource Policy Pending Request commands', () => {
     }
   });
 
-  it('joins confirmed apply and loaded Kernel authority through the final grant revocation', () => {
-    const f = fixture();
+  it('joins confirmed apply and loaded Kernel authority through the final grant revocation', async () => {
+    const f = await fixture();
     try {
       // The control Thread keeps its write rights while the separate target becomes read-only.
-      const controlThread = f.store.createThread(f.workspace.id, 'Policy control');
+      const controlThread = await f.store.createThread(f.workspace.id, 'Policy control');
       const handlers = createResourcePolicyOperationImplementations({
         coreDb: f.coreDb,
         store: f.store,
@@ -360,7 +365,7 @@ describe('resource Policy Pending Request commands', () => {
         requestId: randomUUID(),
         change: { resource: f.resource, replacement: proposed },
       };
-      const request = handlers['workspace.resource-access-request'](input, context);
+      const request = await handlers['workspace.resource-access-request'](input, context);
       expect(
         RESOURCE_POLICY_OPERATION_DEFINITIONS[
           'workspace.resource-access-request'
@@ -380,7 +385,7 @@ describe('resource Policy Pending Request commands', () => {
         context.actor
       );
       const applyStartedAt = Date.now();
-      const result = handlers['workspace.resource-access-apply'](
+      const result = await handlers['workspace.resource-access-apply'](
         {
           workspaceId: f.workspace.id,
           threadId: controlThread.id,
@@ -409,7 +414,7 @@ describe('resource Policy Pending Request commands', () => {
         expect(statement.lifetime).toEqual(f.boundary.lifetime);
       }
       expect(decide().effect).toBe('allow');
-      const revoke = handlers['workspace.resource-access-request'](
+      const revoke = await handlers['workspace.resource-access-request'](
         {
           ...input,
           requestId: randomUUID(),
@@ -434,7 +439,7 @@ describe('resource Policy Pending Request commands', () => {
         new Date().toISOString(),
         context.actor
       );
-      const revoked = handlers['workspace.resource-access-apply'](
+      const revoked = await handlers['workspace.resource-access-apply'](
         {
           workspaceId: f.workspace.id,
           threadId: controlThread.id,
@@ -456,8 +461,8 @@ describe('resource Policy Pending Request commands', () => {
     }
   });
 
-  it('refuses requester revocation activated after capture without changing the saved file revision', () => {
-    const f = fixture();
+  it('refuses requester revocation activated after capture without changing the saved file revision', async () => {
+    const f = await fixture();
     try {
       const restrictive: PolicyDocumentV1 = f.replacement;
       writeFileSync(
@@ -470,7 +475,7 @@ describe('resource Policy Pending Request commands', () => {
       );
       let effective: PolicyDocumentV1 = { schemaVersion: 1, statements: [] };
       f.store.setWorkspaceResourcePolicyProjection(() => effective);
-      const record = f.raise();
+      const record = await f.raise();
       grantCommandIntentRequest(
         f.workspaceDb.sqlite,
         record.requestId,
@@ -500,10 +505,10 @@ describe('resource Policy Pending Request commands', () => {
     }
   });
 
-  it('refuses stale configuration before writing', () => {
-    const f = fixture();
+  it('refuses stale configuration before writing', async () => {
+    const f = await fixture();
     try {
-      const record = f.raise();
+      const record = await f.raise();
       writeFileSync(f.configPath, '{"schemaVersion":1,"workspace":{"name":"Changed elsewhere"}}');
       expect(() => checkResourcePolicyCommandIntent(f, record, f.actor)).toThrow(
         'configuration changed'

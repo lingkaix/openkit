@@ -139,7 +139,7 @@ describe('explicit administrator MCP discovery preview', () => {
   });
   it('uses exact Workspace scope and refuses a registry-deleted Workspace before resolution or contact', async () => {
     const f = fixture();
-    const workspace = f.store.createWorkspace('Workspace preview');
+    const workspace = await f.store.createWorkspace('Workspace preview');
     recordWorkspaceOwnerMembership({
       coreDb: f.coreDb,
       workspaceId: workspace.id,

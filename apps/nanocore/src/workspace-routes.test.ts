@@ -34,7 +34,7 @@ describe('workspace routes', () => {
     const store = createTestStore({
       dataRoot: mkdtempSync(join(tmpdir(), 'openkit-workspace-routes-authorized-')),
     });
-    const allowedWorkspace = store.createWorkspace('Allowed Workspace');
+    const allowedWorkspace = await store.createWorkspace('Allowed Workspace');
     // The canonical authority and Notebook content must belong to the same deployment root.
     const coreDb = openCoreDb(store.getDataRoot()!);
     ownedDatabases.push(coreDb);
@@ -46,7 +46,7 @@ describe('workspace routes', () => {
       workspaceId: allowedWorkspace.id,
     });
     const app = createApp({ coreDb, store });
-    store.createWorkspace('Denied Workspace');
+    await store.createWorkspace('Denied Workspace');
     const listWorkspaces = vi.spyOn(store, 'listWorkspaces').mockImplementation(() => {
       throw new Error('Workspace listing must not discover physical Workspaces.');
     });
@@ -68,16 +68,16 @@ describe('workspace routes', () => {
     const store = createTestStore({
       dataRoot: mkdtempSync(join(tmpdir(), 'openkit-workspace-thread-counts-')),
     });
-    const workspace = store.createWorkspace('Counted Workspace');
-    store.createThread(workspace.id, 'own-private', undefined, 'conversation', {
+    const workspace = await store.createWorkspace('Counted Workspace');
+    await store.createThread(workspace.id, 'own-private', undefined, 'conversation', {
       visibility: 'private',
       privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     });
-    store.createThread(workspace.id, HIDDEN_PRIVATE_TITLE, undefined, 'conversation', {
+    await store.createThread(workspace.id, HIDDEN_PRIVATE_TITLE, undefined, 'conversation', {
       visibility: 'private',
       privateOwnerUserId: 'usr_00000000-0000-76a2-91eb-629d90835e80',
     });
-    store.createThread(workspace.id, 'shared-work', undefined, 'conversation', {
+    await store.createThread(workspace.id, 'shared-work', undefined, 'conversation', {
       visibility: 'workspace',
     });
     const coreDb = openCoreDb(store.getDataRoot()!);

@@ -14,14 +14,14 @@ import {
 const families = ['Server Turn', 'Server Item', 'Server transcript event'] as const;
 
 /** Publishes one native Server Turn, Item row and transcript row through FsStore. */
-function createServerRetainedFixture() {
+async function createServerRetainedFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-server-retained-formats-'));
   onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
   const store = createTestStore({ dataRoot });
-  const thread = store.createServerThread('Retained Server formats');
+  const thread = await store.createServerThread('Retained Server formats');
   const actor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
-  const turn = store.createServerTurn(thread.id, 'Retain Server work', actor);
-  const item = store.createServerItem({
+  const turn = await store.createServerTurn(thread.id, 'Retain Server work', actor);
+  const item = await store.createServerItem({
     id: allocateEntityId('it'),
     owner: { kind: 'server' },
     threadId: thread.id,
@@ -54,8 +54,8 @@ function createServerRetainedFixture() {
 }
 
 describe('native retained Server work formats', () => {
-  it.each(families)('writes %s v1 and retains descriptive additions', (family) => {
-    const fixture = createServerRetainedFixture();
+  it.each(families)('writes %s v1 and retains descriptive additions', async (family) => {
+    const fixture = await createServerRetainedFixture();
     const { dataRoot, paths, thread, turn, item } = fixture;
     const path = paths[family];
     const record = JSON.parse(readFileSync(path, 'utf8'));
@@ -86,7 +86,10 @@ describe('native retained Server work formats', () => {
     expect(readServerTurnRecord(dataRoot, thread.id, turn.id)).toMatchObject({ id: turn.id });
     expect(readServerTurnEvents(dataRoot, turn)).toHaveLength(1);
     if (family === 'Server Turn') {
-      reopened.updateServerTurn(turn.id, { status: 'completed', completedAt: turn.startedAt });
+      await reopened.updateServerTurn(turn.id, {
+        status: 'completed',
+        completedAt: turn.startedAt,
+      });
       expect(JSON.parse(readFileSync(path, 'utf8'))).toMatchObject({
         schemaVersion: 1,
         futureNote: record.futureNote,
@@ -94,7 +97,7 @@ describe('native retained Server work formats', () => {
         triggerActor: { futureNote: actor.futureNote },
       });
     } else if (family === 'Server Item') {
-      reopened.updateServerItem(item.id, { text: 'Updated retained Server work' });
+      await reopened.updateServerItem(item.id, { text: 'Updated retained Server work' });
       const rows = readFileSync(path, 'utf8').trimEnd().split('\n');
       expect(rows[0]).toBe(annotatedBytes.trimEnd());
       expect(JSON.parse(rows[1]!).schemaVersion).toBe(1);
@@ -111,8 +114,8 @@ describe('native retained Server work formats', () => {
     }
   });
 
-  it.each(families)('refuses %s with a missing or unknown retained version', (family) => {
-    const { dataRoot, paths, thread, turn } = createServerRetainedFixture();
+  it.each(families)('refuses %s with a missing or unknown retained version', async (family) => {
+    const { dataRoot, paths, thread, turn } = await createServerRetainedFixture();
     const path = paths[family];
     const originalBytes = readFileSync(path, 'utf8');
     const store = new FsStore({ dataRoot });
