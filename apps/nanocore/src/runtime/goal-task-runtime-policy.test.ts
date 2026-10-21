@@ -1,10 +1,19 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { parseWorkspaceMcpServerCatalog } from '@openkit/config-schema';
-import { allocateEntityId, deriveEntityId } from '@openkit/protocol';
+import { allocateEntityId, deriveEntityId, PROTOCOL_VERSION } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { projectAgentCatalogEntries } from '../agents/catalog-projection.js';
@@ -13,6 +22,7 @@ import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import type { Actor } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
+import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
@@ -38,8 +48,14 @@ import { closeRetrievalServices } from '../retrieval-service.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import {
+  openCoreDb,
+  openWorkspaceDb,
+  openWorkspaceDbAtRoot,
+  type WorkspaceDb,
+} from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { loadWorkspaceFileRecords } from '../storage/workspace-file-records.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -89,6 +105,7 @@ import {
 } from './pending-requests.js';
 import { startProductTurn } from './product-turn-start.js';
 import { createCoordinatorTaskTool } from './task-admission.js';
+import { recordTaskTerminalFact } from './task-terminal-fact.js';
 import {
   clearWorkerCheckpoint,
   listExportableWorkerCheckpoints,
@@ -97,6 +114,134 @@ import {
 } from './worker-checkpoints.js';
 import type { WorkerControlGateway } from './worker-control-gateway.js';
 import type { WorkerMcpGateway } from './worker-mcp-gateway.js';
+
+/** Rebuilds a stopped private fixture through native history admission, without claiming a live Worker outcome. */
+async function retainCompletedTaskFixture(
+  store: FsStore,
+  db: WorkspaceDb,
+  turnId: string,
+  closeSession = true
+): Promise<void> {
+  await shutdownControlStoreWorkerClient();
+  const dataRoot = store.getDataRoot()!;
+  const records = loadWorkspaceFileRecords(dataRoot).find(
+    (entry) => entry.workspace.id === db.workspaceId
+  )!;
+  const original = records.turns.find((turn) => turn.id === turnId)!;
+  const completedAt = new Date().toISOString();
+  const historical = {
+    ...original,
+    status: 'completed' as const,
+    completedAt,
+    durationMs: original.startedAt
+      ? Math.max(0, Date.parse(completedAt) - Date.parse(original.startedAt))
+      : original.durationMs,
+  };
+  // These are the existing Goal/Pending owners' exact retained dependencies, not execution proof.
+  const dependencies = [
+    'goals',
+    'goal_cards',
+    'goal_plan_versions',
+    'goal_card_tasks',
+    'task_turn_terminal_facts',
+    'pending_requests',
+    'worker_turn_checkpoints',
+    'idempotency_requests',
+    'audit_events',
+  ].map((table) => ({
+    table,
+    rows: db.sqlite.prepare(`SELECT * FROM ${table}`).all() as Record<
+      string,
+      string | number | bigint | Buffer | null
+    >[],
+  }));
+  const defaultKnowledgeBaseId = readDefaultKnowledgeBaseId({
+    dataRoot,
+    scope: { kind: 'workspace', workspaceId: db.workspaceId },
+  });
+  const workspaceRoot = join(dataRoot, 'workspaces', db.workspaceId);
+  const retainedRoot = join(dataRoot, `.fixture-history-${randomUUID()}`);
+  db.sqlite.close();
+  renameSync(workspaceRoot, retainedRoot);
+  try {
+    await store.importWorkspaceSnapshot({
+      ...records,
+      defaultKnowledgeBaseId,
+      turns: records.turns.map((turn) => (turn.id === turnId ? historical : turn)),
+      agentSessions: records.agentSessions.map((session) =>
+        closeSession && session.id === original.agentSessionId
+          ? { ...session, status: 'closed' as const, updatedAt: completedAt }
+          : session
+      ),
+      turnEvents: records.streamEvents.map(
+        ([id, events]) =>
+          [
+            id,
+            id === turnId
+              ? [
+                  ...events,
+                  {
+                    protocolVersion: PROTOCOL_VERSION,
+                    workspaceId: db.workspaceId,
+                    threadId: original.threadId,
+                    turnId,
+                    requestId: null,
+                    sequence: (events.at(-1)?.sequence ?? 0) + 1,
+                    timestamp: completedAt,
+                    event: 'turn.completed',
+                    data: { type: 'turn-completed', stopReason: 'completed', turn: historical },
+                  },
+                ]
+              : events,
+          ] as const
+      ),
+      initialNotebookFiles: Object.fromEntries(
+        records.knowledge.map((page) => [page.path, page.content])
+      ),
+      notebookInitialization: {
+        requestId: randomUUID(),
+        producer: original.triggerActor,
+        instructionReference: 'test:retained-goal-task-history',
+      },
+      stageWorkspace: (stage) => {
+        // Replace the initializer's private Notebook before copying retained read-only Git objects.
+        rmSync(join(stage.workspaceRoot, 'knowledge'), { recursive: true, force: true });
+        for (const name of readdirSync(retainedRoot))
+          if (name !== 'db')
+            cpSync(join(retainedRoot, name), join(stage.workspaceRoot, name), { recursive: true });
+      },
+      finalizeNativeWorkspace: (stage) => {
+        const target = openWorkspaceDbAtRoot({ dataRoot, ...stage });
+        try {
+          target.sqlite.transaction(() => {
+            for (const { table, rows } of dependencies) {
+              target.sqlite.prepare(`DELETE FROM ${table}`).run();
+              for (const row of rows) {
+                const columns = Object.keys(row);
+                target.sqlite
+                  .prepare(
+                    `INSERT INTO ${table} (${columns.join(',')}) VALUES (${columns.map(() => '?').join(',')})`
+                  )
+                  .run(...Object.values(row));
+              }
+            }
+            recordTaskTerminalFact(target, historical);
+          })();
+        } finally {
+          target.sqlite.close();
+        }
+      },
+    });
+  } catch (error) {
+    rmSync(workspaceRoot, { recursive: true, force: true });
+    renameSync(retainedRoot, workspaceRoot);
+    Object.assign(db, openWorkspaceDb(dataRoot, db.workspaceId));
+    throw error;
+  }
+  // Keep every existing fixture consumer on the newly admitted owning handle.
+  Object.assign(db, openWorkspaceDb(dataRoot, db.workspaceId));
+  rmSync(retainedRoot, { recursive: true, force: true });
+}
 
 const cleanup: (() => void | Promise<void>)[] = [];
 afterEach(async () => {
@@ -474,15 +619,8 @@ async function fixture(
           routesRevoked: true,
         },
       });
-      await store.updateTurn(turn.id, {
-        status: 'completed',
-        completedAt: new Date().toISOString(),
-      });
+      await retainCompletedTaskFixture(store, db, turn.id);
       clearWorkerCheckpoint(db, workspace.id, thread.id, turn.id);
-      await store.updateAgentSession(agentSessionId, {
-        status: 'closed',
-        updatedAt: new Date().toISOString(),
-      });
       const now = new Date().toISOString();
       const administratorId = testEntityId('usr', `${requestId}:administrator`);
       coreDb.sqlite
@@ -1344,8 +1482,8 @@ it.each([
     container.kind = 'thread';
     container.id = testEntityId('th', 'missing-domain');
   } else if (invalid === 'foreign-thread') {
-    const foreign = f.store.createWorkspace('Other Workspace');
-    const thread = f.store.createThread(foreign.id, 'Foreign source');
+    const foreign = await f.store.createWorkspace('Other Workspace');
+    const thread = await f.store.createThread(foreign.id, 'Foreign source');
     container.kind = 'thread';
     container.id = thread.id;
   } else container.kind = invalid;
@@ -1693,6 +1831,7 @@ it.each([
       const result = await startProductTurn({
         coreDb,
         store,
+        ...(input.commandReceipt ? { commandReceipt: input.commandReceipt } : {}),
         triggerActor: input.triggerActor,
         requestActor: input.requestActor,
         snapshot: runtimeConfig(),

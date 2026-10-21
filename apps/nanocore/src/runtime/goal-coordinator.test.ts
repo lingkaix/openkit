@@ -144,6 +144,16 @@ it('uses native Goal knowledge ask and tell with fixed shared lineage and separa
   });
   const db = openWorkspaceDb(dataRoot, workspace.id);
   applyScopedMigrations(db);
+  const completeTurn = store.completeTurn.bind(store);
+  let acknowledgeCoordinator!: (turnId: string) => void;
+  const coordinatorAcknowledged = new Promise<string>((resolve) => {
+    acknowledgeCoordinator = resolve;
+  });
+  const terminalObserver = vi.spyOn(store, 'completeTurn').mockImplementation(async (...args) => {
+    const completed = await completeTurn(...args);
+    if (store.getTurnExecutor(completed.id) === 'coordinator') acknowledgeCoordinator(completed.id);
+    return completed;
+  });
   try {
     const response = await app.request('/api/app/operations/goal.create', {
       method: 'POST',
@@ -152,14 +162,13 @@ it('uses native Goal knowledge ask and tell with fixed shared lineage and separa
     });
     expect(response.status, await response.clone().text()).toBe(200);
     const created = await response.json();
-    await vi.waitFor(
-      () => {
-        expect(store.listThreadTurns(workspace.id, created.goal.threadId)).toContainEqual(
-          expect.objectContaining({ status: 'completed' })
-        );
-      },
-      { timeout: 15000 }
+    const admittedTurn = store.listThreadTurns(workspace.id, created.goal.threadId)[0]!;
+    expect(admittedTurn).toBeDefined();
+    expect(await coordinatorAcknowledged).toBe(admittedTurn.id);
+    expect(store.getTurnEvents(admittedTurn.id)).toContainEqual(
+      expect.objectContaining({ event: 'turn.completed', turnId: admittedTurn.id })
     );
+    expect(store.getTurnById(admittedTurn.id).status).toBe('completed');
     expect(coordinatorCalls).toBe(4);
     expect(coordinatorInputs[1]).toContain('Goal knowledge answer');
     expect(coordinatorInputs[2]).toContain('no-change');
@@ -194,6 +203,7 @@ it('uses native Goal knowledge ask and tell with fixed shared lineage and separa
     );
     expect(store.listServerThreads()).toEqual([]);
   } finally {
+    terminalObserver.mockRestore();
     db.sqlite.close();
     coreDb.sqlite.close();
     await shutdownControlStoreWorkerClient();
