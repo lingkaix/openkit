@@ -179,7 +179,13 @@ export function readWorkspaceNotebookAdmission(
     const original = input.notebook.readSourcePointers(base.revision)[id];
     if (!source || original === undefined || content === null)
       throw new NotebookError('invalid_request');
-    assertSourcePointerEdit(original, content);
+    try {
+      assertSourcePointerEdit(original, content);
+    } catch (error) {
+      if (!(error instanceof NotebookError) || error.code !== 'invalid_request') throw error;
+      // Preserve the existing native category before ordinary candidate validation runs.
+      throw new NotebookError('invalid_request', undefined, ['notebook.invalid_source_edit']);
+    }
     if (source.originatingThreadId) permitThreadDisclosure(source.originatingThreadId);
   }
   // Deletion and its replay still require current access to the exact removed bytes and Sources.
