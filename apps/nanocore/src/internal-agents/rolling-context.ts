@@ -603,8 +603,7 @@ export function internalContextFailure(error: unknown): { code: string; message:
       'Continuation summary production failed. Its source boundary did not advance.',
     internal_agent_model_turns_exceeded:
       'The admitted model-call budget expired before a bounded answer could complete.',
-    internal_agent_context_deadline:
-      'The admitted deadline expired during continuation summary production.',
+    internal_agent_context_deadline: 'The admitted internal Agent deadline expired.',
   };
   const message = messages[error.code];
   return message ? { code: error.code, message } : null;
