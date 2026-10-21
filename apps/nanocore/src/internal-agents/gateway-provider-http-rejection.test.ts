@@ -18,6 +18,7 @@ import { OpenAICompatibleProviderError } from '../llm/openai-compatible-client.j
 import { PiAiGatewayClient } from '../llm/pi-ai-client.js';
 import { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { createTestStore } from '../test-support/store.js';
@@ -42,10 +43,11 @@ beforeEach(() => {
     })
   );
 });
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   for (const db of databases.splice(0)) db.sqlite.close();
+  await shutdownControlStoreWorkerClient();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 

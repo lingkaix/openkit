@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
 import { FsStore } from './lib/store.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
@@ -171,6 +172,7 @@ it('imports, pins, activates and restores a reusable definition through public o
     expect((await reread.json()).data.note).toBe('Keep this value in recovery.');
   } finally {
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   }
 });

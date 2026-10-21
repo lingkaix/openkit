@@ -23,6 +23,7 @@ import { ModelCaptureError, withTurnModelCapture } from '../llm/model-capture.js
 import type { OpenAICompatibleResponsesResponse } from '../llm/openai-compatible-client.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { TurnStartValidationError } from '../runtime/orchestrator.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { readWorkObservations } from '../storage/work-observations.js';
@@ -43,10 +44,11 @@ import { readInternalContextEvidence } from './internal-context-evidence.js';
 const SKILL_READER_ID = allocateEntityId('usr');
 const roots: string[] = [];
 const databases: Array<CoreDb | WorkspaceDb> = [];
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
   vi.useRealTimers();
   for (const db of databases.splice(0)) if (db.sqlite.open) db.sqlite.close();
+  await shutdownControlStoreWorkerClient();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 

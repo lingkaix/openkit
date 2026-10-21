@@ -23,6 +23,7 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb } from './db.js';
 import {
   assertKnowledgeRetrievalTraceReadable,
@@ -85,8 +86,9 @@ function candidatePage(
 async function createOwners(registerCleanup = onTestFinished) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-proposal-authority-'));
   const coreDb = openCoreDb(dataRoot);
-  registerCleanup(() => {
+  registerCleanup(async () => {
     if (coreDb.sqlite.open) coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   applyMigrations(coreDb);
@@ -694,8 +696,9 @@ describe('knowledge proposal authority', () => {
       const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-annotated-review-'));
       cpSync(baseline.dataRoot, dataRoot, { recursive: true });
       const coreDb = openCoreDb(dataRoot);
-      onTestFinished(() => {
+      onTestFinished(async () => {
         coreDb.sqlite.close();
+        await shutdownControlStoreWorkerClient();
         rmSync(dataRoot, { recursive: true, force: true });
       });
       const store = new FsStore({ dataRoot });

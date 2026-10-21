@@ -10,6 +10,7 @@ import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js
 import type { FsStore } from '../lib/store.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { createTestStore } from '../test-support/store.js';
@@ -21,7 +22,8 @@ import {
 import { internalContextDigest } from './rolling-context.js';
 
 const roots: string[] = [];
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 

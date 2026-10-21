@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { feedbackFilePath } from '../runtime/feedback.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { createTestStore } from '../test-support/store.js';
 import { FsStore } from './store.js';
 
@@ -28,10 +29,11 @@ vi.mock('node:fs', async (original) => {
 const actor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
 const sessionId = 'as_00000000-0000-7000-8000-000000000001';
 const roots: string[] = [];
-afterEach(() => {
+afterEach(async () => {
   fault.root = '';
   fault.filename = '';
   fault.injections = 0;
+  await shutdownControlStoreWorkerClient();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 

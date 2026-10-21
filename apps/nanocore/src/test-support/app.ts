@@ -6,6 +6,7 @@ import { type CreateAppOptions, createApp as createNanoCoreApp } from '../app.js
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -84,7 +85,8 @@ const workspaceAuthorityFixtures: Array<{
   dataRoot: string;
 }> = [];
 
-afterEach(() => {
+afterEach(async () => {
+  if (workspaceAuthorityFixtures.length > 0) await shutdownControlStoreWorkerClient();
   for (const fixture of workspaceAuthorityFixtures.splice(0)) {
     if (fixture.coreDb.sqlite.open) fixture.coreDb.sqlite.close();
     rmSync(fixture.dataRoot, { recursive: true, force: true });

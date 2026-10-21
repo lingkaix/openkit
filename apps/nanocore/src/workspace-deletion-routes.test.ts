@@ -36,6 +36,7 @@ import {
 } from './runtime/nanohost-harness-records.js';
 import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import { createSchedulerAdmissionEntry } from './scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { retrieveWorkspaceKnowledge } from './storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
@@ -184,6 +185,7 @@ it.each([
     await responsePromise;
     await gateway?.close();
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { force: true, recursive: true });
   }
 });
@@ -271,6 +273,7 @@ it('resumes an exact fenced request after its registry transition without ordina
     await closeRetrievalServices();
     await gateway.close();
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { force: true, recursive: true });
   }
 });
@@ -409,6 +412,7 @@ it.each(
     ).toEqual({ revision: 1, status: 'active' });
   } finally {
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { force: true, recursive: true });
   }
 });
@@ -590,6 +594,7 @@ it('durably fences an active owner deletion request before later lifecycle effec
   } finally {
     await workerMcpGateway.close();
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { force: true, recursive: true });
   }
 });
@@ -796,6 +801,7 @@ it.each([
     ).toEqual({ revision: 1, status: 'active' });
   } finally {
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { force: true, recursive: true });
   }
 });
@@ -1034,6 +1040,7 @@ it('lets deletion proceed for five closed failed attempts with exact fences and 
     ).toEqual(suffixes.map(() => ({ physicalCleanedAt, state: 'cleaned' })));
   } finally {
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { force: true, recursive: true });
   }
 });
@@ -1125,6 +1132,7 @@ it('keeps deletion fenced when one of five failed attempts remains closing witho
     );
   } finally {
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { force: true, recursive: true });
   }
 });
@@ -1286,6 +1294,7 @@ it.each([
     });
   } finally {
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { force: true, recursive: true });
   }
 });
@@ -1332,6 +1341,7 @@ it('terminates a pre-transition deletion request when its original owner is disa
     expect(mutationAdmission.isClosed(workspace.id)).toBe(false);
   } finally {
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { force: true, recursive: true });
   }
 });
@@ -1446,6 +1456,7 @@ it('terminates a pre-transition deletion request when its owner is disabled in t
     expect(mutationAdmission.isClosed(deletingWorkspace.id)).toBe(true);
   } finally {
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { force: true, recursive: true });
   }
 });
@@ -1501,6 +1512,7 @@ it('keeps the mutation fence closed without rewriting conflicting deletion reque
     expect(mutationAdmission.isClosed(workspace.id)).toBe(true);
   } finally {
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { force: true, recursive: true });
   }
 });
@@ -1575,6 +1587,7 @@ it('restores registry-owned boot fences without relying on a nonterminal request
     expect(mutationAdmission.isClosed(deletedWorkspace.id)).toBe(true);
   } finally {
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { force: true, recursive: true });
   }
 });
@@ -1729,6 +1742,7 @@ it.each([
     });
   } finally {
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { force: true, recursive: true });
   }
 });
@@ -1864,6 +1878,7 @@ it('preserves private Thread ownership only through the exact current deletion r
     ).toBe(exported.manifestDigest);
   } finally {
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   }
 });
@@ -2036,6 +2051,7 @@ it('retains a Thread-owned retrieval trace in the verified deletion recovery exp
   } finally {
     await closeRetrievalServices();
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { force: true, recursive: true });
   }
 });
@@ -2501,6 +2517,7 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
     ).toEqual([{ status: 'active', user_id: 'usr_00000000-0000-7000-8000-000000000001' }]);
   } finally {
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { force: true, recursive: true });
     rmSync(workspaceBackupParent, { force: true, recursive: true });
   }

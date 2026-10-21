@@ -21,6 +21,7 @@ import { FsStore } from '../lib/store.js';
 import { PiAiGatewayClient } from '../llm/pi-ai-client.js';
 import { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { readWorkObservations } from '../storage/work-observations.js';
@@ -30,9 +31,10 @@ import { readAdmittedPolicyDocument, recordPolicyWriteDecision } from './configu
 import { type PolicyProposal, policyDigest, preparePolicyDocument } from './statements.js';
 
 const cleanup: (() => void)[] = [];
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
-  for (const close of cleanup.splice(0)) close();
+  await shutdownControlStoreWorkerClient();
+  for (const close of cleanup.splice(0)) await close();
 });
 
 it('runs the native agent participant through the default Gateway model with real capture and agent usage attribution', async () => {

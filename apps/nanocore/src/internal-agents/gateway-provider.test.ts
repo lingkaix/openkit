@@ -21,6 +21,7 @@ import {
 } from '../capability/usage-ledger.js';
 import { readWorkObservationBody } from '../evidence-bundles.js';
 import { withTurnModelCapture } from '../llm/model-capture.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { readWorkObservations } from '../storage/work-observations.js';
@@ -29,9 +30,10 @@ import { createTestStore } from '../test-support/store.js';
 
 const databases: WorkspaceDb[] = [];
 const roots: string[] = [];
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
   for (const db of databases.splice(0)) db.sqlite.close();
+  await shutdownControlStoreWorkerClient();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 

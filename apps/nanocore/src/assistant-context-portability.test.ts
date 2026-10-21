@@ -19,6 +19,7 @@ import {
   prepareInternalAgentContext,
 } from './internal-agents/rolling-context.js';
 import { FsStore } from './lib/store.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { readDataRootLayoutMarker } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
@@ -53,8 +54,9 @@ const model = {
 async function deployment() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'assistant-context-portability-'));
   const coreDb = openCoreDb(dataRoot);
-  onTestFinished(() => {
+  onTestFinished(async () => {
     if (coreDb.sqlite.open) coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   applyMigrations(coreDb);

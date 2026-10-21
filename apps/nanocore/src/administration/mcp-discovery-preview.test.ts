@@ -15,6 +15,7 @@ import type { Actor } from '../auth/identity.js';
 import { loadResourceCatalog } from '../catalog/resource-catalog.js';
 import { FsStore } from '../lib/store.js';
 import { createOperationInvocation } from '../operation-composition.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
@@ -28,6 +29,7 @@ import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 const cleanup: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
   vi.restoreAllMocks();
+  await shutdownControlStoreWorkerClient();
   for (const close of cleanup.splice(0).reverse()) await close();
 });
 /** Real native admission and retained catalog, with no Worker or fabricated binding. */

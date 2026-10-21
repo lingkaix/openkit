@@ -7,6 +7,7 @@ import { workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
@@ -19,11 +20,12 @@ import { LLMGatewayProviderDispatcher } from './provider-dispatcher.js';
 import type { ProviderSubscriptionAccountManager } from './provider-subscription-accounts.js';
 
 const cleanup: (() => void)[] = [];
-afterEach(() => {
+afterEach(async () => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
-  for (const close of cleanup.splice(0)) close();
+  await shutdownControlStoreWorkerClient();
+  for (const close of cleanup.splice(0)) await close();
 });
 
 /** Compares canonical forwarding across native and simple faux entries, including the disabled simple form. */

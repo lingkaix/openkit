@@ -13,6 +13,7 @@ import {
   recordCommandRequestRecord,
   recordCommandRequestRecordInDb,
 } from './command-request-records.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openWorkspaceDb } from './db.js';
 import { applyScopedMigrations } from './migrate.js';
 
@@ -167,6 +168,7 @@ describe('kind-named command response pointers', () => {
       expect(rows()).toEqual(retained);
     } finally {
       db.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
@@ -223,11 +225,12 @@ describe('kind-named command response pointers', () => {
       expect(rows()).toEqual(corrupted);
     } finally {
       db.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(root, { recursive: true, force: true });
     }
   });
 
-  it('validates a Core response pointer before creating its database or directories', () => {
+  it('validates a Core response pointer before creating its database or directories', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-receipt-before-owner-'));
     const memory = new FsStore();
     const userId = testEntityId('usr', 'receipt-disabled-user');
@@ -252,6 +255,7 @@ describe('kind-named command response pointers', () => {
         expect(existsSync(invalidRoot)).toBe(false);
       }
     } finally {
+      await shutdownControlStoreWorkerClient();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -272,8 +276,9 @@ function retainedReceiptFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-receipt-format-'));
   const workspaceId = testEntityId('ws', 'receipt-format');
   const db = openWorkspaceDb(dataRoot, workspaceId);
-  onTestFinished(() => {
+  onTestFinished(async () => {
     db.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   applyScopedMigrations(db);

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
@@ -34,8 +35,9 @@ function fixture(initialFiles: Readonly<Record<string, string>> = {}) {
       sourceReferences: [],
     },
   });
-  onTestFinished(() => {
+  onTestFinished(async () => {
     workspaceDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   const revalidate = vi.fn(() => ({
@@ -357,7 +359,10 @@ Exact Agent body.\r\n\t  `;
 
   it('retains an exact multi-page pending Proposal through restart and records Review against its full candidate', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'notebook-multi-proposal-'));
-    onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      return rmSync(dataRoot, { recursive: true, force: true });
+    });
     let store = createTestStore({ dataRoot });
     const workspace = await store.createWorkspace('Exact candidate', {
       requestId: randomUUID(),

@@ -21,6 +21,7 @@ import { FsStore } from '../lib/store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
 import {
@@ -44,8 +45,9 @@ function deployment() {
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  onTestFinished(() => {
+  onTestFinished(async () => {
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   return { dataRoot, coreDb, userId, store };

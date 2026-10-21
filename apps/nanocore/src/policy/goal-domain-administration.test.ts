@@ -25,6 +25,7 @@ import {
   createSchedulerAdmissionEntry,
   type SchedulerExecutionLineage,
 } from '../scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
@@ -41,9 +42,10 @@ import { EMPTY_POLICY_DOCUMENT, policyDigest } from './statements.js';
 import { evaluateWorkspaceMemberAccess } from './workspace-access.js';
 
 const cleanups: (() => void)[] = [];
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
-  for (const close of cleanups.splice(0)) close();
+  await shutdownControlStoreWorkerClient();
+  for (const close of cleanups.splice(0)) await close();
 });
 
 type Permission = ReturnType<typeof PolicyPermissionV1Schema.parse>;

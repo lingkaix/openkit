@@ -1,3 +1,4 @@
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 // openkit-test-platform: posix
 
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -418,6 +419,7 @@ describe('interrupted worker list Thread audience', () => {
       }
     } finally {
       coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
@@ -492,6 +494,7 @@ describe('interrupted worker list Thread audience', () => {
     } finally {
       db.sqlite.close();
       coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });

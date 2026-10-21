@@ -96,8 +96,9 @@ async function fixture(enableMaintenance = false) {
     },
     []
   );
-  onTestFinished(() => {
+  onTestFinished(async () => {
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   return { ...result, store, coreDb, dataRoot, userId };

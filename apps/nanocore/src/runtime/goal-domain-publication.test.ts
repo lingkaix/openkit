@@ -10,6 +10,7 @@ import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import { FsStore } from '../lib/store.js';
 import { createGoalDomainPolicyService } from '../policy/goal-domains.js';
 import { EMPTY_POLICY_DOCUMENT, policyDigest } from '../policy/statements.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -18,8 +19,9 @@ import { projectApprovalEffect } from './pending-request-disclosure.js';
 import { readPendingRequest } from './pending-requests.js';
 
 const cleanup: (() => void)[] = [];
-afterEach(() => {
-  for (const close of cleanup.splice(0)) close();
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
+  for (const close of cleanup.splice(0)) await close();
 });
 
 /** Real capture, human decision, Goal commit and config writer; no seeded approval or Policy. */

@@ -6,6 +6,7 @@ import { OPERATION_DEFINITIONS, type OperationId } from '@openkit/app-api-schema
 import { allocateEntityId, ThreadSchema } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { FsStore } from './lib/store.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -17,10 +18,11 @@ import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'personal-assistant-timeline-'));
   const databases: ReturnType<typeof openCoreDb>[] = [];
-  onTestFinished(() => {
+  onTestFinished(async () => {
     for (const database of databases) {
       if (database.sqlite.open) database.sqlite.close();
     }
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   const open = () => {

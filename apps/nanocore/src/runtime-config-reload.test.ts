@@ -284,6 +284,7 @@ describe('NanoHost restart-required reload fencing', () => {
         for (const session of sessions) session.destroy();
         if (server?.listening) await new Promise<void>((resolve) => server!.close(() => resolve()));
         coreDb.sqlite.close();
+        await shutdownControlStoreWorkerClient();
         rmSync(dataRoot, { recursive: true, force: true });
       }
     });

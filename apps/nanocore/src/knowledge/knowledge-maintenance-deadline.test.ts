@@ -22,6 +22,7 @@ import { FsStore } from '../lib/store.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
@@ -69,6 +70,7 @@ async function fixture(scope: Scope, deadlineMs = 300_000) {
     await closeRetrievalServices();
     userDb.sqlite.close();
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   const repositoryPath =

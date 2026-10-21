@@ -19,6 +19,7 @@ import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js
 import { ProviderRegistry } from '../providers/registry.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { IdempotencyKeyConflictError } from '../runtime/idempotent-command.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
@@ -55,6 +56,7 @@ async function fixture(reviewRequired = false, failAfterPublication = false) {
     await closeRetrievalServices();
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   const notebook = new KnowledgeNotebook({

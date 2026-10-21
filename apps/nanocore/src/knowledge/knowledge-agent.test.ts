@@ -31,6 +31,7 @@ import {
 } from '../retrieval-knowledge-adapter.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { dispatchOpenkitWorkTool } from '../runtime/openkit-work-mcp.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { readTurnRetrievalTraces } from '../storage/retrieval-traces.js';
@@ -75,6 +76,7 @@ async function fixture(withServerKnowledge = false, emptyOverview = false) {
     await closeRetrievalServices();
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   const sourceThread = await store.createThread(

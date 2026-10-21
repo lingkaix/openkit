@@ -1,4 +1,5 @@
 import { createTestStore } from '../test-support/store.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 // openkit-test-platform: posix
 
 import { execFileSync } from 'node:child_process';
@@ -807,7 +808,7 @@ describe('workspace import route handles', () => {
   it.each([
     'auditEvents',
     'permissionDecisions',
-  ] as const)('checks the portable %s marker before decoding invalid family bytes', (family) => {
+  ] as const)('checks the portable %s marker before decoding invalid family bytes', async (family) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-portable-policy-version-'));
     try {
       const exportRoot = join(dataRoot, 'export');
@@ -838,6 +839,7 @@ describe('workspace import route handles', () => {
         })
       ).toThrow('Unsupported retained record format.');
     } finally {
+      await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
@@ -913,6 +915,7 @@ describe('workspace import route handles', () => {
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
@@ -1810,6 +1813,7 @@ describe('Workspace resource Policy portability', () => {
         existsSync(join(root, 'principal-export', 'workspace-files', 'config', 'workspace.jsonc'))
       ).toBe(true);
     } finally {
+      await shutdownControlStoreWorkerClient();
       rmSync(root, { recursive: true, force: true });
     }
   });

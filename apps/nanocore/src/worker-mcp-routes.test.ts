@@ -807,6 +807,7 @@ describe('worker MCP routes', () => {
       vaultUnlockState.lock();
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
@@ -1723,6 +1724,7 @@ describe('worker MCP routes', () => {
       await statelessClient.close().catch(() => undefined);
       await workerMcpGateway.close();
       coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
@@ -2349,6 +2351,7 @@ describe('worker MCP routes', () => {
       await workerMcpGateway.close();
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
@@ -2626,6 +2629,7 @@ describe('worker MCP routes', () => {
     } finally {
       await workerMcpGateway.close();
       coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
@@ -4324,6 +4328,7 @@ describe('worker MCP routes', () => {
     } finally {
       await workerMcpGateway.close();
       coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(exportRoot, { force: true, recursive: true });
       rmSync(dataRoot, { force: true, recursive: true });
     }
@@ -5296,6 +5301,7 @@ describe('worker MCP routes', () => {
       if (unavailableDirectory) chmodSync(snapshotsRoot, 0o700);
       inspection?.mockRestore();
       publish.mockRestore();
+      await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });
@@ -5825,6 +5831,7 @@ describe('worker MCP routes', () => {
       await upstream.close();
       vaultUnlockState.lock();
       coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });

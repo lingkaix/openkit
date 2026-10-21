@@ -18,6 +18,7 @@ import type {
 import { FsStore } from '../lib/store.js';
 import { createOperationInvocation } from '../operation-composition.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
@@ -253,6 +254,7 @@ async function fixture(scope: Scope, enabled = false) {
     workspaceDb.sqlite.close();
     userDb.sqlite.close();
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   return {

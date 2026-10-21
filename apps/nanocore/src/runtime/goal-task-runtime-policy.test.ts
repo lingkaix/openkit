@@ -37,6 +37,7 @@ import { ProviderRegistry } from '../providers/registry.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import {
@@ -100,6 +101,7 @@ import type { WorkerMcpGateway } from './worker-mcp-gateway.js';
 const cleanup: (() => void | Promise<void>)[] = [];
 afterEach(async () => {
   await closeRetrievalServices();
+  await shutdownControlStoreWorkerClient();
   for (const close of cleanup.splice(0).reverse()) await close();
 });
 

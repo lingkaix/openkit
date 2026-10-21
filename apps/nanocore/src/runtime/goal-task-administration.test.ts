@@ -20,6 +20,7 @@ import { listServerPermissionDecisions } from '../policy/permission-decisions.js
 import { EMPTY_POLICY_DOCUMENT, policyDigest } from '../policy/statements.js';
 import { evaluateWorkspaceMemberAccess } from '../policy/workspace-access.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
@@ -34,9 +35,10 @@ import { listThreadPendingRequests, readPendingRequest } from './pending-request
 import { upsertWorkerCheckpoint } from './worker-checkpoints.js';
 
 const cleanups: (() => void)[] = [];
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
-  for (const close of cleanups.splice(0).reverse()) close();
+  await shutdownControlStoreWorkerClient();
+  for (const close of cleanups.splice(0).reverse()) await close();
 });
 
 /** Real owners below the Worker dispatcher; no backend execution or MCP routing is claimed. */

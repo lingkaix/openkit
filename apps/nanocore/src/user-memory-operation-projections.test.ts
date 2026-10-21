@@ -9,6 +9,7 @@ import { openAssistantTimeline } from './internal-agents/assistant-timeline.js';
 import { initializeScopedNotebook } from './knowledge/scoped-notebook-owner.js';
 import { FsStore } from './lib/store.js';
 import { createOperationInvocation } from './operation-composition.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { ensureLocalUser } from './test-support/local-user.js';
@@ -72,10 +73,11 @@ async function fixture() {
     delivery: 'model' as const,
     queryContext: { threadId: timeline.id, turnId: turn.id },
   };
-  onTestFinished(() => {
+  onTestFinished(async () => {
     workspaceDb.sqlite.close();
     userDb.sqlite.close();
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   return {

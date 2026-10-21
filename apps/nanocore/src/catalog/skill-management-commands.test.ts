@@ -13,6 +13,7 @@ import {
 } from '../evidence-bundles.js';
 import { FsStore } from '../lib/store.js';
 import { recordAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -27,8 +28,9 @@ import {
 } from './resource-catalog.js';
 
 const cleanup: Array<() => void> = [];
-afterEach(() => {
-  for (const close of cleanup.splice(0).reverse()) close();
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
+  for (const close of cleanup.splice(0).reverse()) await close();
 });
 
 /** These exact uploaded bytes exercise ordinary native catalog management without a Worker. */

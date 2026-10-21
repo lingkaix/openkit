@@ -1,3 +1,4 @@
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
@@ -195,7 +196,8 @@ function retainedTree(root: string): Record<string, Buffer | string> {
 async function expectScopedReloadRefusal(dataRoot: string, workspaceIds: string[]): Promise<void> {
   const restartRoot = mkdtempSync(join(tmpdir(), 'openkit-scoped-reload-'));
   const healthyRoot = mkdtempSync(join(tmpdir(), 'openkit-reload-control-'));
-  onTestFinished(() => {
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
     rmSync(restartRoot, { recursive: true, force: true });
     rmSync(healthyRoot, { recursive: true, force: true });
   });

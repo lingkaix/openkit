@@ -20,6 +20,7 @@ import type {
   ProviderSubscriptionPairHandle,
 } from '../llm/provider-subscription-accounts.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import {
@@ -195,6 +196,7 @@ it('uses native Goal knowledge ask and tell with fixed shared lineage and separa
   } finally {
     db.sqlite.close();
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   }
 }, 30000);
@@ -588,6 +590,7 @@ it('completes the real Coordinator request through stock Codex with unchanged To
     fetchMock.mockRestore();
     db.sqlite.close();
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   }
 });

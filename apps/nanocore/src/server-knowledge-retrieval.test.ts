@@ -21,6 +21,7 @@ import {
 } from './retrieval-knowledge-adapter.js';
 import { closeRetrievalServices } from './retrieval-service.js';
 import { commandInputHash } from './runtime/idempotent-command.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import {
   assertKnowledgeRetrievalTraceReadable,
@@ -81,6 +82,7 @@ async function fixture(imported = false) {
   onTestFinished(async () => {
     await closeRetrievalServices();
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   const access = {

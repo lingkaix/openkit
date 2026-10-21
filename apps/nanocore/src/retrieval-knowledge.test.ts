@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { closeRetrievalServices } from './retrieval-service.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { retrieveWorkspaceKnowledge } from './storage/index-rebuild.js';
 import { applyMigrations } from './storage/migrate.js';
@@ -20,6 +21,7 @@ const databases: ReturnType<typeof openCoreDb>[] = [];
 afterEach(async () => {
   await closeRetrievalServices();
   for (const db of databases.splice(0)) db.sqlite.close();
+  await shutdownControlStoreWorkerClient();
   for (const root of testRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 

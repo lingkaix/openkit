@@ -14,6 +14,7 @@ import { disableCanonicalUser } from './auth/user-lifecycle.js';
 import { FsStore } from './lib/store.js';
 import { createOperationInvocation } from './operation-composition.js';
 import { OperationError } from './operation-error.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -26,8 +27,9 @@ const fixtures: Array<{ coreDb: ReturnType<typeof openCoreDb>; dataRoot: string 
 const timestamp = '2026-10-15T00:00:00.000Z';
 const operationId = 'caller.read' as JsonOperationId;
 
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
+  await shutdownControlStoreWorkerClient();
   for (const f of fixtures.splice(0)) {
     f.coreDb.sqlite.close();
     rmSync(f.dataRoot, { recursive: true, force: true });

@@ -16,6 +16,7 @@ import { describe, expect, it, onTestFinished } from 'vitest';
 import { scopeAdmissionFailures } from '../bootstrap/readiness.js';
 import { FsStore } from '../lib/store.js';
 import { createTestStore } from '../test-support/store.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { appendWorkspaceTurnEvent, loadWorkspaceFileRecords } from './workspace-file-records.js';
 
 const families = ['Workspace', 'Turn', 'Artifact', 'AgentSession', 'Item', 'stream event'] as const;
@@ -23,7 +24,10 @@ const families = ['Workspace', 'Turn', 'Artifact', 'AgentSession', 'Item', 'stre
 /** Publishes minimal native records, with exactly one row in each JSONL file. */
 async function createRetainedFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-retained-file-formats-'));
-  onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
+    return rmSync(dataRoot, { recursive: true, force: true });
+  });
   const store = createTestStore({ dataRoot });
   const workspace = await store.createWorkspace('Retained formats');
   const thread = await store.createThread(workspace.id, 'Retained formats');
@@ -138,7 +142,10 @@ async function createRetainedFixture() {
  */
 async function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
   const restartRoot = mkdtempSync(join(tmpdir(), 'openkit-local-refusal-'));
-  onTestFinished(() => rmSync(restartRoot, { recursive: true, force: true }));
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
+    return rmSync(restartRoot, { recursive: true, force: true });
+  });
   const seed = new FsStore({ dataRoot: restartRoot });
   const sibling = await seed.createWorkspace('Healthy refusal control');
   const siblingThread = await seed.createThread(sibling.id, 'Retained sibling thread');

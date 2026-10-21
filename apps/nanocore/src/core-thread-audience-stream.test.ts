@@ -7,6 +7,7 @@ import {
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
 import { FsStore } from './lib/store.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -110,8 +111,9 @@ async function createSharedStreamFixture() {
   return {
     app,
     authorization: `Bearer ${issued.secret}`,
-    close: () => {
+    close: async () => {
       coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { force: true, recursive: true });
     },
     coreDb,
@@ -213,7 +215,7 @@ describe('core Thread audience streams', () => {
       expect(text).not.toContain(REVOKED_DELTA);
     } finally {
       listenerSpy.mockRestore();
-      fixture.close();
+      await fixture.close();
     }
   });
 });

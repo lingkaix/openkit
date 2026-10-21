@@ -12,6 +12,7 @@ import {
   createSchedulerAdmissionEntry,
   findNextDispatchableSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
@@ -154,6 +155,7 @@ it('dispatches a healthy FIFO sibling while retaining quarantined admissions and
   } finally {
     await Promise.allSettled([...getSchedulerPreparationClaims(coreDb).values()]);
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   }
 });

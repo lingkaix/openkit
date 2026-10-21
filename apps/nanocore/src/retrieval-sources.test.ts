@@ -1,3 +1,4 @@
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { createTestStore } from './test-support/store.js';
 // openkit-test-platform: posix
 
@@ -25,6 +26,7 @@ const hash = (text: string) => `sha256:${createHash('sha256').update(text).diges
 const testRoots: string[] = [];
 afterEach(async () => {
   await closeRetrievalServices();
+  await shutdownControlStoreWorkerClient();
   for (const root of testRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 

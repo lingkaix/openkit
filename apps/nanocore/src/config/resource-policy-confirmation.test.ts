@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { WorkspaceConfigSchema } from '@openkit/config-schema';
 import { describe, expect, it } from 'vitest';
 import { FsStore } from '../lib/store.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
@@ -87,6 +88,7 @@ describe('raw Workspace configuration Policy edits', () => {
       });
     } finally {
       coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });

@@ -12,6 +12,7 @@ import { updateOkfFrontmatter } from './knowledge/okf.js';
 import { FsStore } from './lib/store.js';
 import { admitKnowledgeRetrieval, knowledgePageDelegated } from './retrieval-knowledge-adapter.js';
 import { closeRetrievalServices, getRetrievalService } from './retrieval-service.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from './storage/db.js';
 import {
   type KnowledgeRetrievalAccess,
@@ -36,6 +37,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
   await closeRetrievalServices();
   for (const db of testDbs.splice(0)) db.sqlite.close();
+  await shutdownControlStoreWorkerClient();
   for (const root of testRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 

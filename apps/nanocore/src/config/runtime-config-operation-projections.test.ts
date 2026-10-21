@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { computeBootReadinessSnapshot } from '../bootstrap/readiness.js';
 import { ProviderSubscriptionAccountManager } from '../llm/provider-subscription-accounts.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
@@ -18,8 +19,9 @@ import { initializeTestCore } from '../test-support/store.js';
 import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
 
 const roots: string[] = [];
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
+  await shutdownControlStoreWorkerClient();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 

@@ -13,6 +13,7 @@ import type { KnowledgeManagerAgentRun } from '../internal-agents/knowledge-mana
 import { FsStore } from '../lib/store.js';
 import { createOperationInvocation } from '../operation-composition.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
@@ -183,6 +184,7 @@ async function fixture(initial: 'empty' | 'authored-index' | 'authored-page' = '
     await closeRetrievalServices();
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   return { dataRoot, store, workspace, notebook, run, finish, invoke, context };

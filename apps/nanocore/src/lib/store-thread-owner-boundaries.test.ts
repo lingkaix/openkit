@@ -23,6 +23,7 @@ import {
   listWorkspaceCapabilityCalls,
   startCapabilityCall,
 } from '../capability/usage-ledger.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createVerifiedWorkspaceExport } from '../storage/workspace-transfer-routes.js';
@@ -35,8 +36,10 @@ const actor = { kind: 'user', id: FIXTURE_LOCAL_USER_ID } as const;
 const roots: string[] = [];
 const databases: Array<{ sqlite: { open: boolean; close(): void } }> = [];
 
-afterEach(() => {
-  for (const database of databases.splice(0)) if (database.sqlite.open) database.sqlite.close();
+afterEach(async () => {
+  for (const database of databases.splice(0))
+    if (database.sqlite.open) await database.sqlite.close();
+  await shutdownControlStoreWorkerClient();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 

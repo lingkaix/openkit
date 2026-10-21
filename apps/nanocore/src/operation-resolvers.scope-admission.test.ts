@@ -7,6 +7,7 @@ import { refuseScope } from './bootstrap/readiness.js';
 import { FsStore } from './lib/store.js';
 import { projectOperationError } from './operation-error.js';
 import { admitOperation } from './operation-resolvers.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { ensureLocalUser } from './test-support/local-user.js';
@@ -65,6 +66,7 @@ describe('quarantined Workspace native admission', () => {
       reads.mockRestore();
     } finally {
       coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });

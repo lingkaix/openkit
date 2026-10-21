@@ -17,6 +17,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createDefaultVaultUnlockState } from '../app.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import type { BetterAuthServer } from '../auth/middleware.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
@@ -251,6 +252,7 @@ describe('vault admin app API', () => {
       vaultUnlockState.lock();
       masterKey.fill(0);
       coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });

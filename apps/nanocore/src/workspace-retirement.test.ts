@@ -32,6 +32,7 @@ import {
   reserveWorkerStorageAttachment,
 } from './runtime/worker-storage-bindings.js';
 import { createSchedulerAdmissionEntry } from './scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import * as databases from './storage/db.js';
 import { workspaceDbPath } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
@@ -48,6 +49,7 @@ const NOW = '2026-10-20T00:00:00.000Z';
 const disposals: Array<() => Promise<void>> = [];
 afterEach(async () => {
   vi.restoreAllMocks();
+  await shutdownControlStoreWorkerClient();
   for (const dispose of disposals.splice(0).reverse()) await dispose();
 });
 

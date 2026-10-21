@@ -5,6 +5,7 @@ import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { discardAbandonedWorkspaceStaging } from '../storage/workspace-file-records.js';
 import { initializeTestCore } from '../test-support/store.js';
 
@@ -17,7 +18,8 @@ const localActor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001
 const timestamp = '2026-07-06T00:00:00.000Z';
 const temporaryRoots: string[] = [];
 
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const root of temporaryRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 

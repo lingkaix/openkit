@@ -6,6 +6,7 @@ import { expect, it } from 'vitest';
 import { ensureLocalUser } from './auth/identity.js';
 import { AutomationStore } from './lib/automation-store.js';
 import { FsStore } from './lib/store.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -59,6 +60,7 @@ it('projects the same durable lifecycle through HTTP and the derived Core Client
     expect(automationStore.getAutomation(record.id).status).toBe('deleted');
   } finally {
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(root, { recursive: true, force: true });
   }
 });

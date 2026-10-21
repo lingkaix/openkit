@@ -12,6 +12,7 @@ import {
 } from '../internal-agents/delegation.js';
 import { FsStore } from '../lib/store.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { testEntityId } from '../test-support/entity-ids.js';
@@ -42,8 +43,9 @@ import {
 import { clearWorkerCheckpoint, upsertWorkerCheckpoint } from './worker-checkpoints.js';
 
 const cleanups: (() => void)[] = [];
-afterEach(() => {
-  for (const cleanup of cleanups.splice(0)) cleanup();
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
+  for (const cleanup of cleanups.splice(0)) await cleanup();
 });
 
 /** Retains a real Goal grant, Task link and scheduler package lineage without Worker effects. */

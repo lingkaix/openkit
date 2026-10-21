@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { createTestStore } from '../test-support/store.js';
 import { FsStore } from './store.js';
 
@@ -62,7 +63,7 @@ vi.mock('node:fs', async (original) => {
 });
 
 let dataRoot: string | undefined;
-afterEach(() => {
+afterEach(async () => {
   fault.armed = false;
   fault.targetPath = '';
   fault.targetDirectory = '';
@@ -72,6 +73,7 @@ afterEach(() => {
   fault.committed = false;
   fault.siblingRenames = 0;
   fault.injections = 0;
+  await shutdownControlStoreWorkerClient();
   if (dataRoot) rmSync(dataRoot, { recursive: true, force: true });
   dataRoot = undefined;
 });

@@ -12,6 +12,7 @@ import { parseJsoncObject } from '../config/jsonc.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { FsStore } from '../lib/store.js';
 import type { KnowledgeRetrievalAccess } from '../retrieval-knowledge-adapter.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
@@ -37,6 +38,7 @@ function fixture() {
       await storage?.close();
     } finally {
       coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });

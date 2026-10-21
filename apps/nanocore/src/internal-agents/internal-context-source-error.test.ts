@@ -13,6 +13,7 @@ import {
 import { initializeScopedNotebook } from '../knowledge/scoped-notebook-owner.js';
 import { FsStore } from '../lib/store.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb } from '../storage/db.js';
 import {
   assertKnowledgeRetrievalTraceReadable,
@@ -47,6 +48,7 @@ async function fixture(selected = false) {
     await closeRetrievalServices();
     userDb.sqlite.close();
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   const actor = { kind: 'local' as const, userId };

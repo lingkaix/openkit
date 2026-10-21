@@ -9,6 +9,7 @@ import type { BetterAuthServer } from './auth/middleware.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { FsStore } from './lib/store.js';
 import { closeRetrievalServices } from './retrieval-service.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { verifyWorkspaceExportTree } from './storage/workspace-export.js';
@@ -39,7 +40,7 @@ function insertUser(coreDb: ReturnType<typeof openCoreDb>, id: string, label: st
     .run(id, label, `${label}@example.test`, Date.now(), Date.now());
 }
 
-it('requires the actual initiating user in the current deletion request', () => {
+it('requires the actual initiating user in the current deletion request', async () => {
   const root = mkdtempSync(join(tmpdir(), 'openkit-deletion-required-initiator-'));
   try {
     const requestId = randomUUID();
@@ -69,6 +70,7 @@ it('requires the actual initiating user in the current deletion request', () => 
     );
     expect(() => readWorkspaceDeletionRequest(root, workspaceId, requestId)).toThrow();
   } finally {
+    await shutdownControlStoreWorkerClient();
     rmSync(root, { recursive: true, force: true });
   }
 });
@@ -314,6 +316,7 @@ it('admits member management and exact member deletion replay while preserving p
   } finally {
     await closeRetrievalServices();
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(root, { recursive: true, force: true });
   }
 });

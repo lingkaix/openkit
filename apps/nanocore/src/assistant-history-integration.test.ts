@@ -18,6 +18,7 @@ import {
   getRetrievalService,
   RetrievalService,
 } from './retrieval-service.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -93,6 +94,7 @@ async function fixture(queries: HistoryQuery[], privateSourceTurnOpen = false) {
   onTestFinished(async () => {
     await closeRetrievalServices();
     if (coreDb.sqlite.open) coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   applyMigrations(coreDb);

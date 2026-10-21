@@ -1,3 +1,4 @@
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 // openkit-test-platform: posix
 
 import { randomUUID } from 'node:crypto';
@@ -128,6 +129,7 @@ async function fixture() {
   onTestFinished(async () => {
     await closeRetrievalServices();
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   return {

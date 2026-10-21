@@ -9,6 +9,7 @@ import { createRuntimeConfigManager } from './config/runtime-config.js';
 import { parseOkfDocument } from './knowledge/okf.js';
 import { FsStore } from './lib/store.js';
 import { readAuthorizedWorkspaceNotebookPages } from './retrieval-knowledge-adapter.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -175,7 +176,8 @@ function publication(
   return result.body.notebookRevision as string;
 }
 
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const f of fixtures.splice(0)) {
     if (f.workspaceDb.sqlite.open) f.workspaceDb.sqlite.close();
     if (f.coreDb.sqlite.open) f.coreDb.sqlite.close();

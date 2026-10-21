@@ -15,6 +15,7 @@ import { createOperationInvocation } from '../operation-composition.js';
 import type { OperationInvocationContext } from '../operation-contract.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -64,8 +65,9 @@ async function fixture() {
   const notebook = new KnowledgeNotebook({
     repositoryPath: join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'notebook.git'),
   });
-  onTestFinished(() => {
+  onTestFinished(async () => {
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   return {

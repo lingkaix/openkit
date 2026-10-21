@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { computeBootReadinessSnapshot } from '../bootstrap/readiness.js';
 import { FsStore, StoreRecordNotFoundError } from '../lib/store.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -238,6 +239,7 @@ describe('B5 catalog operation projections', () => {
       expect(retained.mcp.bindings[0]?.enabled).toBe(true);
     } finally {
       f.coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(f.dataRoot, { force: true, recursive: true });
     }
   });
@@ -379,6 +381,7 @@ describe('B5 catalog operation projections', () => {
       expect(await lineage.json()).toEqual({ version: original.version });
     } finally {
       f.coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(f.dataRoot, { force: true, recursive: true });
     }
   });
@@ -444,6 +447,7 @@ describe('B5 catalog operation projections', () => {
       expect(await workers.json()).toEqual({ items: [], workspaceId: f.workspace.id });
     } finally {
       f.coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(f.dataRoot, { force: true, recursive: true });
     }
   });
@@ -486,6 +490,7 @@ it('retires all seventeen formerly authorized bindings without changing canonica
     expect(loadWorkspaceResourceCatalog(f.dataRoot, f.workspace.id)).toEqual(before);
   } finally {
     f.coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(f.dataRoot, { force: true, recursive: true });
   }
 });
@@ -663,6 +668,7 @@ it.each([
   } finally {
     vi.restoreAllMocks();
     f.coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(f.dataRoot, { force: true, recursive: true });
   }
 });
@@ -715,6 +721,7 @@ it('preserves missing-record classifications and lets unexpected family failures
   } finally {
     vi.restoreAllMocks();
     f.coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(f.dataRoot, { force: true, recursive: true });
   }
 });
@@ -811,6 +818,7 @@ it('keeps real catalog conflict, missing-version and host-execution refusals exa
     }
   } finally {
     f.coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(f.dataRoot, { force: true, recursive: true });
   }
 });

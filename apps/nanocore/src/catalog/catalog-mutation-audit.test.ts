@@ -6,6 +6,7 @@ import type { OperationId } from '@openkit/app-api-schemas';
 import { describe, expect, it } from 'vitest';
 import { listWorkspaceAuditEvents } from '../audit-events.js';
 import { FsStore } from '../lib/store.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
@@ -122,6 +123,7 @@ describe('Catalog mutation Audit', () => {
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });

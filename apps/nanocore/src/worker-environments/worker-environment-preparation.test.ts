@@ -20,6 +20,7 @@ import type { Actor } from '../auth/identity.js';
 import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { commandInputHash, IdempotencyKeyConflictError } from '../runtime/idempotent-command.js';
 import type { WorkerEnvironmentRuntimeEffects } from '../runtime/worker-environment-runtime-effects.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { createTestStore } from '../test-support/store.js';
 import { createWorkerEnvironmentOperationImplementations } from './worker-environment-operation-implementations.js';
@@ -42,7 +43,8 @@ const imageDigest = `sha256:${'b'.repeat(64)}`;
 const layoutDigest = `sha256:${'c'.repeat(64)}`;
 const dataRoots: string[] = [];
 
-afterEach(() => {
+afterEach(async () => {
+  await shutdownControlStoreWorkerClient();
   for (const dataRoot of dataRoots.splice(0)) rmSync(dataRoot, { force: true, recursive: true });
 });
 

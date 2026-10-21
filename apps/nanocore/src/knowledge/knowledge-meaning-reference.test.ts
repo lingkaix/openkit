@@ -8,6 +8,7 @@ import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { FsStore } from '../lib/store.js';
 import type { KnowledgeRetrievalAccess } from '../retrieval-knowledge-adapter.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
@@ -41,8 +42,9 @@ async function fixture() {
   const notebook = new KnowledgeNotebook({
     repositoryPath: join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'notebook.git'),
   });
-  onTestFinished(() => {
+  onTestFinished(async () => {
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   return { dataRoot, coreDb, userId, store, access, workspace, ownerScope, notebook };

@@ -17,6 +17,7 @@ import {
   admitKnowledgeRetrieval,
   type KnowledgeRetrievalAccess,
 } from '../retrieval-knowledge-adapter.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
@@ -118,9 +119,10 @@ async function fixture() {
       source,
       Buffer.from(original)
     );
-  onTestFinished(() => {
+  onTestFinished(async () => {
     workspaceDb.sqlite.close();
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   return {

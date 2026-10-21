@@ -16,6 +16,7 @@ import { expect, it, vi } from 'vitest';
 import { AutomationStore } from '../lib/automation-store.js';
 import { FsStore } from '../lib/store.js';
 import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { readPublishedTurnFileRecords } from '../storage/workspace-file-records.js';
@@ -65,6 +66,7 @@ it.each([
     }
     expect(readFileSync(path, 'utf8')).toBe(bytes);
   } finally {
+    await shutdownControlStoreWorkerClient();
     rmSync(root, { recursive: true, force: true });
   }
 });
@@ -99,6 +101,7 @@ it.each([
       /symbolic link/
     );
   } finally {
+    await shutdownControlStoreWorkerClient();
     rmSync(root, { recursive: true, force: true });
     rmSync(outside, { recursive: true, force: true });
   }
@@ -223,6 +226,7 @@ it.each([
     vi.restoreAllMocks();
     recovered?.sqlite.close();
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(root, { recursive: true, force: true });
     rmSync(frozenRoot, { recursive: true, force: true });
   }
@@ -279,6 +283,7 @@ it('keeps failed initial Turn files and permits later unrelated Workspace writes
     expect(reloaded.getThread(workspace.id, thread.id)).toEqual(thread);
   } finally {
     vi.restoreAllMocks();
+    await shutdownControlStoreWorkerClient();
     rmSync(root, { recursive: true, force: true });
   }
 });

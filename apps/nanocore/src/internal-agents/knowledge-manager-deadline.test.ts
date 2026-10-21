@@ -7,6 +7,7 @@ import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { createTestStore } from '../test-support/store.js';
@@ -33,10 +34,11 @@ async function fixture(profile: 'omitted-limits' | 'no-profile' | 'explicit-limi
   });
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
   applyScopedMigrations(workspaceDb);
-  onTestFinished(() => {
+  onTestFinished(async () => {
     vi.restoreAllMocks();
     vi.useRealTimers();
     workspaceDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   const providerRegistry = new ProviderRegistry([

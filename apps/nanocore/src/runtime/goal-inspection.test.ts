@@ -12,6 +12,7 @@ import {
   createSchedulerAdmissionEntry,
   requireSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { testEntityId } from '../test-support/entity-ids.js';
@@ -577,6 +578,7 @@ it.each([
   } finally {
     db.sqlite.close();
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(root, { recursive: true, force: true });
   }
 });

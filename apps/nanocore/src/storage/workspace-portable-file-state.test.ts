@@ -41,6 +41,7 @@ import {
 } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb } from './db.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
 import { retrieveWorkspaceKnowledge } from './index-rebuild.js';
@@ -83,8 +84,9 @@ function initializeNotebook(workspaceRoot: string): KnowledgeNotebook {
 async function workspaceFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-portable-files-'));
   const coreDb = openCoreDb(dataRoot);
-  onTestFinished(() => {
+  onTestFinished(async () => {
     if (coreDb.sqlite.open) coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   applyMigrations(coreDb);
@@ -128,7 +130,10 @@ function publishFixturePages(
 describe('workspace portable file state', () => {
   it('completes staged configuration only for the initialized Knowledge Base binding', () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-import-staged-config-'));
-    onTestFinished(() => rmSync(root, { recursive: true, force: true }));
+    onTestFinished(async () => {
+      await shutdownControlStoreWorkerClient();
+      return rmSync(root, { recursive: true, force: true });
+    });
     const knowledgeBaseId = testEntityId('kb', 'portable-config-target');
     const configPath = join(root, 'config', 'workspace.jsonc');
     mkdirSync(join(root, 'config'));
@@ -171,7 +176,7 @@ describe('workspace portable file state', () => {
     expect(readFileSync(configPath, 'utf8')).toBe(importedConfig);
   });
 
-  it('rejects a publisher-temp-shaped directory in a retrieval trace directory', () => {
+  it('rejects a publisher-temp-shaped directory in a retrieval trace directory', async () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-retrieval-trace-temp-entry-'));
     try {
       initializeNotebook(workspaceRoot);
@@ -192,11 +197,12 @@ describe('workspace portable file state', () => {
         })
       ).toThrow(/invalid entry/i);
     } finally {
+      await shutdownControlStoreWorkerClient();
       rmSync(workspaceRoot, { force: true, recursive: true });
     }
   });
 
-  it('ignores a regular publisher temporary file in a retrieval trace directory', () => {
+  it('ignores a regular publisher temporary file in a retrieval trace directory', async () => {
     const workspaceRoot = mkdtempSync(join(tmpdir(), 'openkit-retrieval-trace-temp-file-'));
     try {
       initializeNotebook(workspaceRoot);
@@ -219,6 +225,7 @@ describe('workspace portable file state', () => {
         }).retrievalTraceFiles.size
       ).toBe(0);
     } finally {
+      await shutdownControlStoreWorkerClient();
       rmSync(workspaceRoot, { force: true, recursive: true });
     }
   });

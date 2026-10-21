@@ -4,13 +4,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
-
 import { openAssistantTimeline } from './internal-agents/assistant-timeline.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { updateOkfFrontmatter } from './knowledge/okf.js';
 import { initializeScopedNotebook } from './knowledge/scoped-notebook-owner.js';
 import { FsStore } from './lib/store.js';
 import { closeRetrievalServices } from './retrieval-service.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb } from './storage/db.js';
 import { userDbPath, userMemoryRoot } from './storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
@@ -30,6 +30,7 @@ function fixture() {
   onTestFinished(async () => {
     await closeRetrievalServices();
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   const call = async (operation: string, input: Record<string, unknown> = {}) => {
