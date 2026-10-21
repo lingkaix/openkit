@@ -107,7 +107,8 @@ function openOwnedSqlite(
   path: string,
   options: { fileMustExist?: boolean } = {}
 ): Database.Database {
-  const sqlite = new Database(path, options);
+  // Mixed-writer Main handles must bound synchronous lock waiting; the native worker keeps its own policy.
+  const sqlite = new Database(path, { ...options, timeout: 5 });
   try {
     configureOwnedSqlite(sqlite);
     return sqlite;
