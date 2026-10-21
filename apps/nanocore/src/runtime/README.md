@@ -1,5 +1,7 @@
 # Runtime
 
+The default worker-control gateway commits final status synchronously in Core and forwards its committed observer without an optimistic Workspace handle write. Accepted final status does not prove collection or physical release. The existing teardown owner publishes handle cleanup after the corresponding backend result.
+
 Goal Coordinator retains admitted background execution, wake and boot work through the existing native client lifetime. Shutdown refuses unrelated new producers, drains accepted producers and their still-active nested publication, then closes the worker before listener teardown under the existing deadline. Capturing an unused lifetime starts no worker. A closed Core database leaves truthful retained nonterminal work for ordinary restart recovery; it supplies no terminal or release proof.
 
 NanoHost materialization awaits the existing `beforeMaterialization` callback after both no-effect capacity refusal routes and before any incoming reservation or effect. The callback acknowledges the original durable execution lineage; it supplies no execution, evidence or physical-release proof.

@@ -12,7 +12,10 @@ import type {
   WorkerCanonicalEventRecord,
   WorkerCapabilityCallSummary,
 } from '@openkit/worker-protocol';
-import { WorkerObservationDataSchema } from '@openkit/worker-protocol';
+import {
+  WorkerCanonicalEventRecordSchema,
+  WorkerObservationDataSchema,
+} from '@openkit/worker-protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type {
   WorkerAdapterResult,
@@ -333,7 +336,7 @@ describe('WorkerControlGateway', () => {
       lineage: fixture.lineage,
       sessionDir,
       appendEvent: async (record) => {
-        gateway.appendEvent({
+        await gateway.appendEvent({
           authorization: `Bearer ${WORKER_CONTROL_TOKEN}`,
           lineage: fixture.lineage,
           record,
@@ -718,6 +721,7 @@ describe('WorkerControlGateway', () => {
       } finally {
         if (workspaceDb.sqlite.open) workspaceDb.sqlite.close();
         if (coreDb.sqlite.open) coreDb.sqlite.close();
+        await shutdownControlStoreWorkerClient();
         rmSync(root, { recursive: true, force: true });
         vi.unstubAllEnvs();
       }
@@ -740,7 +744,7 @@ describe('WorkerControlGateway', () => {
       lineage: fixture.lineage,
       sessionDir: join(root, 'worker-session'),
       appendEvent: async (record) => {
-        gateway.appendEvent({
+        await gateway.appendEvent({
           authorization: `Bearer ${WORKER_CONTROL_TOKEN}`,
           lineage: fixture.lineage,
           record,
@@ -801,6 +805,7 @@ describe('WorkerControlGateway', () => {
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -844,7 +849,7 @@ describe('WorkerControlGateway', () => {
         fact,
         content: { state: 'not-applicable' },
       });
-      expect(send(0, progress).accepted).toBe(true);
+      expect((await send(0, progress)).accepted).toBe(true);
       const before = readWorkObservations(workspaceDb, fixture.lineage);
       expect(before).toHaveLength(1);
       const invalid = WorkerObservationDataSchema.parse({
@@ -859,11 +864,12 @@ describe('WorkerControlGateway', () => {
           expectedObservationId: progress.observationId,
         },
       });
-      expect(() => send(1, invalid)).toThrow();
+      await expect(send(1, invalid)).rejects.toThrow();
       expect(readWorkObservations(workspaceDb, fixture.lineage)).toEqual(before);
     } finally {
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -900,7 +906,7 @@ describe('WorkerControlGateway', () => {
           gapAppendAttempted = true;
           if (gapRejected) throw new Error('injected required gap append rejection');
         }
-        gateway.appendEvent({
+        await gateway.appendEvent({
           authorization: `Bearer ${WORKER_CONTROL_TOKEN}`,
           lineage: fixture.lineage,
           record,
@@ -986,6 +992,7 @@ describe('WorkerControlGateway', () => {
       if (gapRejected) await writer.writeTerminalOutcome({ status: 'failed', stopReason: 'error' });
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -1030,7 +1037,7 @@ describe('WorkerControlGateway', () => {
             coreDb.sqlite.exec(
               "CREATE TRIGGER fail_receipt BEFORE INSERT ON worker_control_records BEGIN SELECT RAISE(ABORT, 'injected receipt failure'); END"
             );
-            expect(() => send(record)).toThrow('injected receipt failure');
+            await expect(send(record)).rejects.toThrow('injected receipt failure');
             coreDb.sqlite.exec('DROP TRIGGER fail_receipt');
             coreDb.sqlite.close();
             coreDb = openCoreDb(root);
@@ -1038,7 +1045,7 @@ describe('WorkerControlGateway', () => {
             retriedPublication = true;
           }
         }
-        send(record);
+        await send(record);
         if (record.event.type === 'observation.content.chunk' && !restartedAfterStaging) {
           expect(
             readWorkObservations(workspaceDb, fixture.lineage).some(
@@ -1048,7 +1055,7 @@ describe('WorkerControlGateway', () => {
           coreDb.sqlite.close();
           coreDb = openCoreDb(root);
           gateway = makeGateway();
-          expect(send(record).accepted).toBe(true);
+          expect((await send(record)).accepted).toBe(true);
           restartedAfterStaging = true;
         }
       },
@@ -1185,7 +1192,7 @@ describe('WorkerControlGateway', () => {
           sha256: ref.digest!,
         })
       ).toEqual(bytes);
-      expect(send(replayFrames[0]!).accepted).toBe(true);
+      expect((await send(replayFrames[0]!)).accepted).toBe(true);
       expect(readWorkObservations(workspaceDb, fixture.lineage)).toEqual(rows);
       const activity = readThreadRuntimeActivity(workspaceDb, {
         threadId: fixture.lineage.threadId,
@@ -1223,17 +1230,45 @@ describe('WorkerControlGateway', () => {
       expect(readFileSync(join(sessionDir, 'events.jsonl'), 'utf8')).not.toContain(
         'observation.content.chunk'
       );
+      const replayState = () =>
+        JSON.stringify({
+          rows: readWorkObservations(workspaceDb, fixture.lineage),
+          receipts: coreDb.sqlite.prepare('SELECT * FROM worker_control_records').all(),
+          fingerprints: coreDb.sqlite
+            .prepare('SELECT * FROM worker_control_sequence_fingerprints')
+            .all(),
+          session: gateway.getSessionSnapshot(fixture.lineage.packageSnapshotId),
+          bodies: rows
+            .filter((row) => row.type === 'content.published')
+            .flatMap((row) =>
+              row.refs!.map((bodyRef) =>
+                readWorkObservationBody(workspaceDb, {
+                  ...fixture.lineage,
+                  bundleId: bodyRef.locator,
+                  createdAt: rows.find((parent) => parent.id === row.parent)!.ts,
+                  sha256: bodyRef.digest!,
+                })!.toString('base64')
+              )
+            ),
+        });
+      const beforeChangedReplay = replayState();
       const changed = structuredClone(replayFrames[0]!);
       if (changed.event.type !== 'observation.content.chunk')
         throw new Error('Missing codec content frame');
-      changed.event.data.data = Buffer.from('different').toString('base64');
-      expect(() => send(changed)).toThrow(/different content/);
+      const changedBytes = Buffer.from(changed.event.data.data, 'base64');
+      changedBytes[0] = changedBytes[0]! ^ 1;
+      changed.event.data.data = changedBytes.toString('base64');
+      expect(WorkerCanonicalEventRecordSchema.safeParse(changed).success).toBe(true);
+      await expect(async () => send(changed)).rejects.toThrow(Error);
+      expect(replayState()).toBe(beforeChangedReplay);
+      expect((await send(replayFrames[0]!)).accepted).toBe(true);
+      expect(replayState()).toBe(beforeChangedReplay);
       compactWorkspaceEvidenceBundles({
         workspaceDb,
         workspaceId: fixture.lineage.workspaceId,
         olderThan: '9999-01-01T00:00:00.000Z',
       });
-      expect(send(replayFrames[0]!).accepted).toBe(true);
+      expect((await send(replayFrames[0]!)).accepted).toBe(true);
       expect(
         readWorkObservationBody(workspaceDb, {
           ...fixture.lineage,
@@ -1246,6 +1281,7 @@ describe('WorkerControlGateway', () => {
       await capture.invalidate();
       workspaceDb.sqlite.close();
       coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
       rmSync(root, { recursive: true, force: true });
     }
   });

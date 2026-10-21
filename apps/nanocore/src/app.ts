@@ -240,7 +240,6 @@ import {
   WorkerRawOutputPendingError,
 } from './runtime/worker-raw-output.js';
 import { getWorkerStorageBinding } from './runtime/worker-storage-bindings.js';
-import { updateBackendWorkspaceHandleCleanupStatus } from './runtime/workspace-sync-records.js';
 import {
   listSchedulerAdmissionEntriesForWorkspace,
   type SchedulerWorkerStorageChoice,
@@ -601,22 +600,7 @@ export function createDefaultWorkerControlGateway(
         cause: 'worker-final-status',
       });
     },
-    onFinalStatusCommitted: (input) => {
-      const workspaceDb = openWorkspaceDb(coreDb.dataRoot, input.lineage.workspaceId);
-      try {
-        applyScopedMigrations(workspaceDb);
-        updateBackendWorkspaceHandleCleanupStatus(
-          workspaceDb,
-          input.lineage.workspaceId,
-          input.lineage.packageSnapshotId,
-          'retained',
-          new Date().toISOString()
-        );
-      } finally {
-        workspaceDb.sqlite.close();
-      }
-      onFinalStatusCommitted?.(input);
-    },
+    ...(onFinalStatusCommitted ? { onFinalStatusCommitted } : {}),
     resolveFinalStatusTokenBinding: (input) =>
       resolveWorkerControlFinalStatusTokenBinding(coreDb, input),
     resolveTokenBinding: (input) => {
