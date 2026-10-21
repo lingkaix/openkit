@@ -7,6 +7,7 @@ import { expect, it, onTestFinished, vi } from 'vitest';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import type { KnowledgeManagerAgentRun } from '../internal-agents/knowledge-manager-agent.js';
 import { FsStore } from '../lib/store.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
@@ -25,9 +26,10 @@ it('reports native no-change through the recorded result and replay despite a mi
   const userDb = openUserDb(dataRoot, userId);
   applyScopedMigrations(userDb);
   const store = new FsStore({ dataRoot });
-  onTestFinished(() => {
+  onTestFinished(async () => {
     userDb.sqlite.close();
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   const misleadingSummary = 'Saved your preference to Memory: use green labels.';
@@ -65,7 +67,10 @@ it('reports native no-change through the recorded result and replay despite a mi
     expect.soft(edit.description).toMatch(/script/i);
     expect.soft(submit.description).toMatch(/submit/i);
     expect.soft(submit.description).toMatch(/summary.*(?:not|never).*content/i);
-    store.updateTurn(input.turn.id, { status: 'completed', completedAt: new Date().toISOString() });
+    await store.updateTurn(input.turn.id, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+    });
     return { turnId: input.turn.id, text: JSON.stringify({ summary: misleadingSummary }) };
   });
   const dependencies = {
@@ -85,8 +90,8 @@ it('reports native no-change through the recorded result and replay despite a mi
     openWorkspace: (id: string) => openWorkspaceDb(dataRoot, id),
     inflightCommands: new WeakMap(),
     run,
-    pin: (input: Pick<KnowledgeManagerAgentRun, 'turn' | 'inputs'>) => {
-      store.updateTurn(input.turn.id, {
+    pin: async (input: Pick<KnowledgeManagerAgentRun, 'turn' | 'inputs'>) => {
+      await store.updateTurn(input.turn.id, {
         internalExecution: {
           roleId: 'knowledge-manager',
           logicalModelId: 'fixture-model',

@@ -11,6 +11,7 @@ import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { WorkerControlGateway } from '../runtime/worker-control-gateway.js';
 import { WorkerRawOutputBudgetExceededError } from '../runtime/worker-raw-output.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -32,15 +33,16 @@ vi.mock('../auth/operation-authorizer.js', async (importOriginal) => ({
 
 const roots: string[] = [];
 const databases: CoreDb[] = [];
-afterEach(() => {
+afterEach(async () => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+  await shutdownControlStoreWorkerClient();
   for (const db of databases.splice(0)) db.sqlite.close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
 /** Runs the real worker route with a controlled Provider boundary and real capability storage. */
-function fixture(
+async function fixture(
   configured = true,
   requestKind?: 'turn' | 'prewarm' | 'compaction',
   nativeStop = true
@@ -51,9 +53,9 @@ function fixture(
   databases.push(coreDb);
   applyMigrations(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Diagnostics');
-  const thread = store.createThread(workspace.id, 'Diagnostics');
-  const turn = store.createTurn(workspace.id, thread.id, 'Request', {
+  const workspace = await store.createWorkspace('Diagnostics');
+  const thread = await store.createThread(workspace.id, 'Diagnostics');
+  const turn = await store.createTurn(workspace.id, thread.id, 'Request', {
     kind: 'user',
     id: 'usr_00000000-0000-7000-8000-000000000001',
   });
@@ -212,7 +214,7 @@ it.each([
   'responses',
   'chat/completions',
 ])('logs one safe committed %s failure and preserves closeout', async (endpoint) => {
-  const f = fixture();
+  const f = await fixture();
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   f.dispatch.mockResolvedValue(
     failedStream(
@@ -267,7 +269,7 @@ it.each([
   'dispatch',
   'stream-prepare',
 ] as const)('logs a pre-output %s failure without inventing status', async (phase) => {
-  const f = fixture();
+  const f = await fixture();
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   const error = Object.assign(new Error('exception-canary'), {
     failure: { kind: 'unknown', settled: false },
@@ -299,7 +301,7 @@ it.each([
 });
 
 it('retains bounded provider rejection details without changing the public failure', async () => {
-  const f = fixture();
+  const f = await fixture();
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   const error = Object.assign(new Error('exception-canary'), {
     failure: { kind: 'unknown', settled: false },
@@ -348,7 +350,7 @@ it('retains bounded provider rejection details without changing the public failu
 });
 
 it('keeps terminal SSE and durable failure when logging throws', async () => {
-  const f = fixture();
+  const f = await fixture();
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {
     throw new Error('sink unavailable');
   });
@@ -367,7 +369,7 @@ it('keeps terminal SSE and durable failure when logging throws', async () => {
 });
 
 it('clears observed rejection before a retry with no HTTP evidence', async () => {
-  const f = fixture();
+  const f = await fixture();
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.useFakeTimers();
   f.dispatch
@@ -400,7 +402,7 @@ it('clears observed rejection before a retry with no HTTP evidence', async () =>
 });
 
 it('logs selection failure without inventing an attempt or upstream status', async () => {
-  const f = fixture(false);
+  const f = await fixture(false);
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   const response = await f.post(false);
   expect(response.status).toBe(503);
@@ -421,7 +423,7 @@ it('logs selection failure without inventing an attempt or upstream status', asy
 });
 
 it('logs only the final exhausted attempt with its observed upstream status', async () => {
-  const f = fixture();
+  const f = await fixture();
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.useFakeTimers();
   f.dispatch.mockRejectedValue(
@@ -451,7 +453,7 @@ it('logs only the final exhausted attempt with its observed upstream status', as
 });
 
 it('omits local envelope status and unclassified error details', async () => {
-  const f = fixture();
+  const f = await fixture();
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   f.dispatch.mockRejectedValue(
     Object.assign(new Error('exception-canary'), {
@@ -477,7 +479,7 @@ it.each([
   'failed-frame',
   'iterator-end',
 ])('logs pre-output %s without inferring a cause', async (ending) => {
-  const f = fixture();
+  const f = await fixture();
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   f.dispatch.mockResolvedValue(
     new ReadableStream({
@@ -509,7 +511,7 @@ it.each([
 });
 
 it('retains a final local authentication failure kind without an upstream status', async () => {
-  const f = fixture();
+  const f = await fixture();
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   f.resolveGatewayProvider.mockImplementation(() => {
     throw new OpenAICompatibleProviderError({
@@ -544,7 +546,7 @@ it.each([
 ])('logs one safe committed %s failure frame', async (endpoint) => {
   for (const ending of ['close', 'read-error', 'cancel'] as const) {
     for (const code of ['gateway_provider_unavailable', 'private-code-canary']) {
-      const f = fixture();
+      const f = await fixture();
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const encoder = new TextEncoder();
       const output = `data: ${JSON.stringify(
@@ -616,7 +618,7 @@ it.each([
   'responses',
   'chat/completions',
 ])('does not log successful %s streams', async (endpoint) => {
-  const f = fixture();
+  const f = await fixture();
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   f.dispatch.mockResolvedValue(
     new ReadableStream<Uint8Array>({
@@ -639,13 +641,13 @@ it.each([
 });
 
 it('blocks Provider access before execution when native stop coverage is absent', async () => {
-  const f = fixture(true, undefined, false);
+  const f = await fixture(true, undefined, false);
   expect((await f.post(false)).status).toBe(503);
   expect(f.dispatch).not.toHaveBeenCalled();
 });
 
 it('preserves raw-output exhaustion before native compaction commits', async () => {
-  const f = fixture(true, 'compaction');
+  const f = await fixture(true, 'compaction');
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   f.dispatch.mockImplementation(async (_provider, _request, context: LLMGatewayDispatchContext) => {
     context.transport!.rawOutput!.fail(new WorkerRawOutputBudgetExceededError());
@@ -662,7 +664,7 @@ it('preserves raw-output exhaustion before native compaction commits', async () 
 });
 
 it('maps a confirmed pre-output native compaction failure to the owned envelope', async () => {
-  const f = fixture(true, 'compaction');
+  const f = await fixture(true, 'compaction');
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   f.dispatch.mockRejectedValue(
     Object.assign(new Error('private-provider-canary'), {
@@ -682,7 +684,7 @@ it('maps a confirmed pre-output native compaction failure to the owned envelope'
 });
 
 it('maps unavailable routes for confirmed compaction without inventing a Provider attempt', async () => {
-  const f = fixture(false, 'compaction');
+  const f = await fixture(false, 'compaction');
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   const response = await f.post(false);
   expect(response.status).toBe(503);
@@ -697,7 +699,7 @@ it('maps unavailable routes for confirmed compaction without inventing a Provide
 });
 
 it('keeps an indistinguishable ordinary native failure in its existing category', async () => {
-  const f = fixture(true, 'turn');
+  const f = await fixture(true, 'turn');
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   f.dispatch.mockRejectedValue(
     Object.assign(new Error('private-provider-canary'), {
@@ -717,7 +719,7 @@ it('keeps an indistinguishable ordinary native failure in its existing category'
 });
 
 it('returns one actionable redacted context overflow after output begins', async () => {
-  const f = fixture();
+  const f = await fixture();
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   f.dispatch.mockResolvedValue(
     failedStream(

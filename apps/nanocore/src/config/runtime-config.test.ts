@@ -1001,7 +1001,11 @@ describe('runtime config loading and reload planning', () => {
 
   it('applies server.jsonc workDataCapture to later Turns without interrupting a running Turn', async () => {
     const dataRoot = createDataRoot();
-    writeConfiguredServer(dataRoot, 'openai/gpt-5.1');
+    writeConfiguredServer(
+      dataRoot,
+      'openai/gpt-5.1',
+      ', "policy": { "workDataCapture": { "value": "off" } }'
+    );
     const store = await createDemoStore({ dataRoot });
     const manager = createRuntimeConfigManager({ captureCoverage: store, dataRoot });
     const thread = await store.createThread(
@@ -1017,6 +1021,7 @@ describe('runtime config loading and reload planning', () => {
         id: 'usr_00000000-0000-7000-8000-000000000001',
       }
     );
+    const admittedRunning = structuredClone(running);
     expect(store.getTurnCaptureCoverage(running.id)).toEqual({ scope: 'server', value: 'off' });
     expect(captureCoverageBindingFromOpenKitConfig(manager.current().openKitConfig)).toEqual({
       scope: 'server',
@@ -1034,12 +1039,17 @@ describe('runtime config loading and reload planning', () => {
       expect.objectContaining({ path: 'policy.workDataCapture', action: 'applied' }),
     ]);
     expect(reloaded.plan.requiresRestart).toEqual([]);
+    expect(store.getTurnById(running.id)).toEqual(admittedRunning);
     expect(store.getTurnById(running.id).status).toBe('running');
     expect(store.getTurnCaptureCoverage(running.id)).toEqual({ scope: 'server', value: 'off' });
 
+    const nextThread = await store.createThread(
+      'ws_00000000-0000-7000-8000-000000000001',
+      'Capture after reload'
+    );
     const next = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
-      thread.id,
+      nextThread.id,
       'Next turn sees on',
       {
         kind: 'user',
@@ -1047,6 +1057,8 @@ describe('runtime config loading and reload planning', () => {
       }
     );
     expect(store.getTurnCaptureCoverage(next.id)).toEqual({ scope: 'server', value: 'on' });
+    expect(store.getTurnById(running.id)).toEqual(admittedRunning);
+    expect(store.getTurnCaptureCoverage(running.id)).toEqual({ scope: 'server', value: 'off' });
   });
 });
 
@@ -1106,6 +1118,7 @@ it('RET-2 reload selects a checked log bound without changing a running Turn cap
     expect(manager.reload({ dryRun: false, mode: 'safe' }).status).not.toBe('applied');
     expect(manager.current()).toBe(accepted);
   } finally {
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   }
 });

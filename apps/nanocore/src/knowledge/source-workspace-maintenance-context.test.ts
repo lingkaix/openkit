@@ -160,7 +160,7 @@ it('captures native Workspace tell during execution and publishes from the exact
       baseRevision
     );
     // Re-admission uses the actual pinned-input rule, rather than a fixture that rewrites the pin.
-    pinKnowledgeManagerExecution(roleDependencies, input);
+    await pinKnowledgeManagerExecution(roleDependencies, input);
     const execute = (name: string, value: unknown) =>
       input.tools
         .find((tool) => tool.name === name)!
@@ -211,9 +211,7 @@ it('captures native Workspace tell during execution and publishes from the exact
     workspaceMutationAdmission,
     openWorkspace: (id) => openWorkspaceDb(dataRoot, id),
     inflightCommands: new WeakMap(),
-    pin: (input) => {
-      pinKnowledgeManagerExecution(roleDependencies, input);
-    },
+    pin: (input) => pinKnowledgeManagerExecution(roleDependencies, input),
     run,
   };
   expect(currentWorkspaceAuthority(coreDb, workspace.id, actor, 'knowledge.read', true)).toBe(

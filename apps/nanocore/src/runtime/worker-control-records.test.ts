@@ -675,12 +675,13 @@ async function nativeReceiver(captureValue: 'on' | 'off' = 'on', bound: number |
     return gateway;
   };
   let gateway = makeGateway();
-  onTestFinished(() => {
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
     db.sqlite.close();
     coreDb.sqlite.close();
     rmSync(root, { recursive: true, force: true });
   });
-  const send = (
+  const send = async (
     sequence: number,
     type: string,
     data: unknown,
@@ -689,17 +690,19 @@ async function nativeReceiver(captureValue: 'on' | 'off' = 'on', bound: number |
     const recordLineage = options.lineage ?? selectedLineage;
     try {
       return {
-        accepted: gateway.appendEvent({
-          authorization: options.authorization ?? `Bearer ${activeTokens.workerControlToken}`,
-          lineage: selectedLineage,
-          record: {
-            schemaVersion: 1,
-            kind: 'event',
-            lineage: recordLineage,
-            sequence,
-            event: { type, data },
-          },
-        }).accepted,
+        accepted: (
+          await gateway.appendEvent({
+            authorization: options.authorization ?? `Bearer ${activeTokens.workerControlToken}`,
+            lineage: selectedLineage,
+            record: {
+              schemaVersion: 1,
+              kind: 'event',
+              lineage: recordLineage,
+              sequence,
+              event: { type, data },
+            },
+          })
+        ).accepted,
         error: null,
       };
     } catch (error) {
@@ -707,7 +710,7 @@ async function nativeReceiver(captureValue: 'on' | 'off' = 'on', bound: number |
     }
   };
   // This accepted control proves registration, database, binding and transport setup on the RED base.
-  expect(send(0, 'worker.heartbeat', { status: 'running' }).accepted).toBe(true);
+  expect((await send(0, 'worker.heartbeat', { status: 'running' })).accepted).toBe(true);
   return {
     get coreDb() {
       return coreDb;
@@ -729,7 +732,7 @@ async function nativeReceiver(captureValue: 'on' | 'off' = 'on', bound: number |
       coreDb = openCoreDb(root);
       gateway = makeGateway();
     },
-    secondPackage: () => {
+    secondPackage: async () => {
       const second = { ...pkg, snapshotId: `${pkg.snapshotId}_second` };
       recordAgentEnvironmentPackageSnapshot(db, {
         environmentPackage: second,
@@ -744,7 +747,7 @@ async function nativeReceiver(captureValue: 'on' | 'off' = 'on', bound: number |
       };
       gateway.registerSession(activePackage, activeTokens);
       // Authenticate the second package before a quota refusal can count as evidence.
-      expect(send(0, 'worker.heartbeat', { status: 'running' }).accepted).toBe(true);
+      expect((await send(0, 'worker.heartbeat', { status: 'running' })).accepted).toBe(true);
     },
   };
 }
@@ -911,20 +914,22 @@ function nativeImageBinding(
 // WCP §Authentication: each registered package must prove its own token and exact lineage.
 it('RET-2 authenticates the second package with its own token before and after reopen', async () => {
   const f = await nativeReceiver();
-  f.secondPackage();
+  await f.secondPackage();
   expect(
-    f.send(
-      1,
-      'worker.heartbeat',
-      { status: 'running' },
-      {
-        authorization: `Bearer ${'A'.repeat(43)}`,
-      }
+    (
+      await f.send(
+        1,
+        'worker.heartbeat',
+        { status: 'running' },
+        {
+          authorization: `Bearer ${'A'.repeat(43)}`,
+        }
+      )
     ).accepted
   ).toBe(false);
-  expect(f.send(1, 'worker.heartbeat', { status: 'running' }).accepted).toBe(true);
+  expect((await f.send(1, 'worker.heartbeat', { status: 'running' })).accepted).toBe(true);
   f.restart();
-  expect(f.send(1, 'worker.heartbeat', { status: 'running' }).accepted).toBe(true);
+  expect((await f.send(1, 'worker.heartbeat', { status: 'running' })).accepted).toBe(true);
 });
 
 // RET §Native Transcripts And Runtime Logs: admitted image identity belongs to the backend owner.
@@ -933,7 +938,7 @@ it('RET-2 retains the exact trusted backend image binding independently of nativ
   const binding = nativeImageBinding(f, `registry.test/worker@sha256:${'a'.repeat(64)}`);
   f.restart();
   expect(getWorkerBackendSession(f.coreDb, binding.attemptId)).toEqual(binding);
-  expect(f.send(1, 'worker.heartbeat', { status: 'running' }).accepted).toBe(true);
+  expect((await f.send(1, 'worker.heartbeat', { status: 'running' })).accepted).toBe(true);
 });
 
 // RET §Native Transcripts And Runtime Logs: only the exact trusted binding can verify an image claim.
@@ -946,24 +951,26 @@ it('RET-2 accepts a trusted image match and unknown identity but refuses a fresh
     ...match,
     fact: { ...match.fact, native: { ...match.fact.native, imageDigest: trustedDigest } },
   };
-  expect(f.send(1, 'observation.recorded', matched).accepted).toBe(true);
+  expect((await f.send(1, 'observation.recorded', matched)).accepted).toBe(true);
   expect(f.rows()[0]!.payload).toEqual(matched);
   const before = f.receipts();
   // Both source identity and event sequence are fresh: no earlier source claim can reject this.
   const wrong = nativeMetadata(f, 'wrong-image-fresh-source', Buffer.from('y'));
   expect(
-    f.send(2, 'observation.recorded', {
-      ...wrong,
-      fact: {
-        ...wrong.fact,
-        native: { ...wrong.fact.native, imageDigest: `sha256:${'b'.repeat(64)}` },
-      },
-    }).accepted
+    (
+      await f.send(2, 'observation.recorded', {
+        ...wrong,
+        fact: {
+          ...wrong.fact,
+          native: { ...wrong.fact.native, imageDigest: `sha256:${'b'.repeat(64)}` },
+        },
+      })
+    ).accepted
   ).toBe(false);
   expect(f.receipts()).toEqual(before);
   expect(f.rows()).toHaveLength(1);
   const unknown = nativeMetadata(f, 'unknown-image', Buffer.from('z'));
-  expect(f.send(3, 'observation.recorded', unknown).accepted).toBe(true);
+  expect((await f.send(3, 'observation.recorded', unknown)).accepted).toBe(true);
   expect(f.rows()[1]!.payload).toEqual(unknown);
 });
 
@@ -998,7 +1005,7 @@ it.each([
       native: { ...first.fact.native, imageDigest: `sha256:${'b'.repeat(64)}` },
     },
   };
-  expect(f.send(1, 'observation.recorded', claimed).accepted).toBe(true);
+  expect((await f.send(1, 'observation.recorded', claimed)).accepted).toBe(true);
   expect(f.rows()[0]!.payload).toEqual(claimed);
   expect(f.rows()[0]!.obs).toBe('worker-shim');
   // An earlier unverified claim cannot become authority for the next native source range.
@@ -1014,18 +1021,20 @@ it.each([
       native: { ...next.fact.native, imageDigest: `sha256:${'c'.repeat(64)}` },
     },
   };
-  expect(f.send(2, 'observation.recorded', changedClaim).accepted).toBe(true);
+  expect((await f.send(2, 'observation.recorded', changedClaim)).accepted).toBe(true);
   expect(f.rows()[1]!.payload).toEqual(changedClaim);
   const before = f.receipts();
   const overCap = nativeMetadata(f, 'image-cannot-grant-budget', Buffer.alloc(9));
   expect(
-    f.send(3, 'observation.recorded', {
-      ...overCap,
-      fact: {
-        ...overCap.fact,
-        native: { ...overCap.fact.native, imageDigest: claimed.fact.native.imageDigest },
-      },
-    }).accepted
+    (
+      await f.send(3, 'observation.recorded', {
+        ...overCap,
+        fact: {
+          ...overCap.fact,
+          native: { ...overCap.fact.native, imageDigest: claimed.fact.native.imageDigest },
+        },
+      })
+    ).accepted
   ).toBe(false);
   expect(f.receipts()).toEqual(before);
   expect(f.rows()).toHaveLength(2);
@@ -1048,7 +1057,7 @@ it.each([
     },
     content: state === 'off' ? { state: 'off' } : { state: 'unavailable', reason: 'unsupported' },
   };
-  expect(f.send(1, 'observation.recorded', observation).accepted).toBe(true);
+  expect((await f.send(1, 'observation.recorded', observation)).accepted).toBe(true);
   expect(f.rows()).toHaveLength(1);
   expect(f.rows()[0]!.payload).toEqual(observation);
   const activity = readThreadRuntimeActivity(f.db, {
@@ -1084,10 +1093,10 @@ it('RET-2 projects an unavailable native source with a published truncated prefi
     },
   };
   expect(observation.content.bytes).toBe(3);
-  expect(f.send(1, 'observation.recorded', observation).accepted).toBe(true);
+  expect((await f.send(1, 'observation.recorded', observation)).accepted).toBe(true);
   expect(nativeBodies(f)).toEqual([]);
   expect(
-    f.send(2, 'observation.content.chunk', nativeChunk('published-truncated-prefix', bytes))
+    (await f.send(2, 'observation.content.chunk', nativeChunk('published-truncated-prefix', bytes)))
       .accepted
   ).toBe(true);
   expect(f.rows().find((row) => row.type === 'runtime.observed')!.payload).toEqual(observation);
@@ -1127,9 +1136,10 @@ it.each([
           },
           content: { ...native.content, mediaType: 'text/plain', boundary: 'assistant.text' },
         };
-  expect(f.send(1, 'observation.recorded', metadata).accepted).toBe(true);
+  expect((await f.send(1, 'observation.recorded', metadata)).accepted).toBe(true);
   expect(
-    f.send(2, 'observation.content.chunk', nativeChunk('binary', bytes.subarray(0, 3))).accepted
+    (await f.send(2, 'observation.content.chunk', nativeChunk('binary', bytes.subarray(0, 3))))
+      .accepted
   ).toBe(true);
   expect(nativeBodies(f)).toEqual([]);
   f.restart();
@@ -1150,13 +1160,15 @@ it.each([
   mkdirSync(publicationPath);
   const priorReceipts = f.receipts();
   expect(
-    f.send(3, 'observation.content.chunk', nativeChunk('binary', bytes.subarray(3), 1, 3)).accepted
+    (await f.send(3, 'observation.content.chunk', nativeChunk('binary', bytes.subarray(3), 1, 3)))
+      .accepted
   ).toBe(false);
   expect(f.receipts()).toEqual(priorReceipts);
   expect(nativeBodies(f)).toEqual([]);
   rmSync(publicationPath, { recursive: true });
   expect(
-    f.send(3, 'observation.content.chunk', nativeChunk('binary', bytes.subarray(3), 1, 3)).accepted
+    (await f.send(3, 'observation.content.chunk', nativeChunk('binary', bytes.subarray(3), 1, 3)))
+      .accepted
   ).toBe(true);
   const [body] = nativeBodies(f);
   expect(body!.bytes).toEqual(bytes);
@@ -1187,31 +1199,39 @@ it('RET-2 shares the cap across concurrent stderr/stdout sources and packages; r
   const f = await nativeReceiver();
   const stderr = nativeMetadata(f, 'stderr', Buffer.from('abcd'));
   const stdout = nativeMetadata(f, 'stdout', Buffer.from('efgh'), { sourceKind: 'stdout-log' });
-  expect(f.send(1, 'observation.recorded', stderr).accepted).toBe(true);
+  expect((await f.send(1, 'observation.recorded', stderr)).accepted).toBe(true);
   // Reserve both units before either publishes: loss cannot free the potential bytes.
-  expect(f.send(2, 'observation.recorded', stdout).accepted).toBe(true);
+  expect((await f.send(2, 'observation.recorded', stdout)).accepted).toBe(true);
   expect(
-    f.send(3, 'observation.recorded', nativeMetadata(f, 'unpublished-overflow', Buffer.from('i')))
-      .accepted
+    (
+      await f.send(
+        3,
+        'observation.recorded',
+        nativeMetadata(f, 'unpublished-overflow', Buffer.from('i'))
+      )
+    ).accepted
   ).toBe(false);
   expect(
-    f.send(4, 'observation.content.chunk', nativeChunk('stderr', Buffer.from('abcd'))).accepted
+    (await f.send(4, 'observation.content.chunk', nativeChunk('stderr', Buffer.from('abcd'))))
+      .accepted
   ).toBe(true);
   f.restart();
-  expect(f.send(1, 'observation.recorded', stderr).accepted).toBe(true);
+  expect((await f.send(1, 'observation.recorded', stderr)).accepted).toBe(true);
   expect(
-    f.send(4, 'observation.content.chunk', nativeChunk('stderr', Buffer.from('abcd'))).accepted
+    (await f.send(4, 'observation.content.chunk', nativeChunk('stderr', Buffer.from('abcd'))))
+      .accepted
   ).toBe(true);
   expect(
-    f.send(5, 'observation.content.chunk', nativeChunk('stdout', Buffer.from('efgh'))).accepted
+    (await f.send(5, 'observation.content.chunk', nativeChunk('stdout', Buffer.from('efgh'))))
+      .accepted
   ).toBe(true);
   expect(nativeBodies(f).map((body) => body.bytes)).toEqual([
     Buffer.from('abcd'),
     Buffer.from('efgh'),
   ]);
-  f.secondPackage();
+  await f.secondPackage();
   const excess = nativeMetadata(f, 'excess', Buffer.from('i'));
-  expect(f.send(1, 'observation.recorded', excess).accepted).toBe(false);
+  expect((await f.send(1, 'observation.recorded', excess)).accepted).toBe(false);
   const truncation = {
     ...excess,
     fact: {
@@ -1228,7 +1248,7 @@ it('RET-2 shares the cap across concurrent stderr/stdout sources and packages; r
     },
     content: { state: 'unavailable', reason: 'truncated' },
   };
-  expect(f.send(2, 'observation.recorded', truncation).accepted).toBe(true);
+  expect((await f.send(2, 'observation.recorded', truncation)).accepted).toBe(true);
   expect(f.rows().find((row) => row.payload.observationId === 'excess')!.payload).toEqual(
     truncation
   );
@@ -1238,12 +1258,14 @@ it('RET-2 shares the cap across concurrent stderr/stdout sources and packages; r
     Buffer.from('native transcript exceeds the log cap'),
     { kind: 'native-transcript' }
   );
-  expect(f.send(3, 'observation.recorded', transcript).accepted).toBe(true);
+  expect((await f.send(3, 'observation.recorded', transcript)).accepted).toBe(true);
   expect(
-    f.send(
-      4,
-      'observation.content.chunk',
-      nativeChunk('transcript', Buffer.from('native transcript exceeds the log cap'))
+    (
+      await f.send(
+        4,
+        'observation.content.chunk',
+        nativeChunk('transcript', Buffer.from('native transcript exceeds the log cap'))
+      )
     ).accepted
   ).toBe(true);
   expect(nativeBodies(f)).toHaveLength(3);
@@ -1260,60 +1282,72 @@ it('RET-2 rejects foreign scope/package/source, forged publication and divergent
   const f = await nativeReceiver();
   const bytes = Buffer.from('safe');
   const metadata = nativeMetadata(f, 'authorized', bytes);
-  expect(f.send(1, 'observation.recorded', metadata).accepted).toBe(true);
+  expect((await f.send(1, 'observation.recorded', metadata)).accepted).toBe(true);
   const before = f.receipts();
   // A rejected durable event can retain its fingerprint; later events use fresh sequence numbers.
   let sequence = 2;
   for (const change of [{ harness: 'other-harness' }, { authoredVersion: 'other-version' }]) {
     expect(
-      f.send(sequence++, 'observation.recorded', {
-        ...metadata,
-        observationId: 'foreign-native',
-        fact: { ...metadata.fact, native: { ...metadata.fact.native, ...change } },
-      }).accepted
+      (
+        await f.send(sequence++, 'observation.recorded', {
+          ...metadata,
+          observationId: 'foreign-native',
+          fact: { ...metadata.fact, native: { ...metadata.fact.native, ...change } },
+        })
+      ).accepted
     ).toBe(false);
   }
   expect(
-    f.send(sequence++, 'observation.content.chunk', nativeChunk('authorized', bytes), {
-      authorization: `Bearer ${'D'.repeat(43)}`,
-    }).accepted
+    (
+      await f.send(sequence++, 'observation.content.chunk', nativeChunk('authorized', bytes), {
+        authorization: `Bearer ${'D'.repeat(43)}`,
+      })
+    ).accepted
   ).toBe(false);
   for (const lineage of [
     { ...f.lineage, workspaceId: testEntityId('ws', 'foreign') },
     { ...f.lineage, packageSnapshotId: 'aep_foreign' },
   ]) {
     expect(
-      f.send(sequence++, 'observation.content.chunk', nativeChunk('authorized', bytes), { lineage })
-        .accepted
+      (
+        await f.send(sequence++, 'observation.content.chunk', nativeChunk('authorized', bytes), {
+          lineage,
+        })
+      ).accepted
     ).toBe(false);
   }
   expect(
-    f.send(sequence++, 'observation.recorded', { ...metadata, sourceRef: 'foreign-source' })
+    (await f.send(sequence++, 'observation.recorded', { ...metadata, sourceRef: 'foreign-source' }))
       .accepted
   ).toBe(false);
   expect(
-    f.send(sequence++, 'observation.content.chunk', nativeChunk('unannounced', bytes)).accepted
+    (await f.send(sequence++, 'observation.content.chunk', nativeChunk('unannounced', bytes)))
+      .accepted
   ).toBe(false);
   expect(
-    f.send(sequence++, 'observation.recorded', {
-      ...metadata,
-      observationId: 'forged',
-      content: { state: 'published', ref: 'forged' },
-      refs: [{ edge: 'publication', locator: 'forged' }],
-    }).accepted
+    (
+      await f.send(sequence++, 'observation.recorded', {
+        ...metadata,
+        observationId: 'forged',
+        content: { state: 'published', ref: 'forged' },
+        refs: [{ edge: 'publication', locator: 'forged' }],
+      })
+    ).accepted
   ).toBe(false);
   expect(f.receipts()).toEqual(before);
   const publishedSequence = sequence++;
   expect(
-    f.send(publishedSequence, 'observation.content.chunk', nativeChunk('authorized', bytes))
+    (await f.send(publishedSequence, 'observation.content.chunk', nativeChunk('authorized', bytes)))
       .accepted
   ).toBe(true);
   const committed = f.receipts();
   expect(
-    f.send(
-      publishedSequence,
-      'observation.content.chunk',
-      nativeChunk('authorized', Buffer.from('evil'))
+    (
+      await f.send(
+        publishedSequence,
+        'observation.content.chunk',
+        nativeChunk('authorized', Buffer.from('evil'))
+      )
     ).accepted
   ).toBe(false);
   expect(f.receipts()).toEqual(committed);
@@ -1324,9 +1358,10 @@ it('RET-2 rejects foreign scope/package/source, forged publication and divergent
 it('RET-2 retains an interrupted prefix and explicit failure; missing chunks and digest mismatch never publish', async () => {
   const f = await nativeReceiver();
   const first = nativeMetadata(f, 'prefix', Buffer.from('ok'));
-  expect(f.send(1, 'observation.recorded', first).accepted).toBe(true);
+  expect((await f.send(1, 'observation.recorded', first)).accepted).toBe(true);
   expect(
-    f.send(2, 'observation.content.chunk', nativeChunk('prefix', Buffer.from('ok'))).accepted
+    (await f.send(2, 'observation.content.chunk', nativeChunk('prefix', Buffer.from('ok'))))
+      .accepted
   ).toBe(true);
   const next = nativeMetadata(f, 'incomplete', Buffer.from('abcd'), {
     chunkCount: 2,
@@ -1334,16 +1369,22 @@ it('RET-2 retains an interrupted prefix and explicit failure; missing chunks and
     sourceSequence: 1,
     start: 34,
   });
-  expect(f.send(3, 'observation.recorded', next).accepted).toBe(true);
+  expect((await f.send(3, 'observation.recorded', next)).accepted).toBe(true);
   expect(
-    f.send(4, 'observation.content.chunk', nativeChunk('incomplete', Buffer.from('ab'))).accepted
+    (await f.send(4, 'observation.content.chunk', nativeChunk('incomplete', Buffer.from('ab'))))
+      .accepted
   ).toBe(true);
   f.restart();
   expect(nativeBodies(f).map((body) => body.bytes)).toEqual([Buffer.from('ok')]);
   const receipts = f.receipts();
   expect(
-    f.send(5, 'observation.content.chunk', nativeChunk('incomplete', Buffer.from('xx'), 1, 2))
-      .accepted
+    (
+      await f.send(
+        5,
+        'observation.content.chunk',
+        nativeChunk('incomplete', Buffer.from('xx'), 1, 2)
+      )
+    ).accepted
   ).toBe(false);
   expect(f.receipts()).toEqual(receipts);
   const failure = {
@@ -1362,7 +1403,7 @@ it('RET-2 retains an interrupted prefix and explicit failure; missing chunks and
       expectedObservationId: 'incomplete',
     },
   };
-  expect(f.send(6, 'observation.recorded', failure).accepted).toBe(true);
+  expect((await f.send(6, 'observation.recorded', failure)).accepted).toBe(true);
   expect(f.rows().find((row) => row.payload.observationId === 'interrupted')!.payload).toEqual(
     failure
   );
@@ -1386,9 +1427,10 @@ it('RET-2 retains OFF/missing/failure/truncation distinctions and refuses conten
     },
     content: { state: 'off' },
   };
-  expect(f.send(1, 'observation.recorded', off).accepted).toBe(true);
+  expect((await f.send(1, 'observation.recorded', off)).accepted).toBe(true);
   expect(
-    f.send(2, 'observation.recorded', nativeMetadata(f, 'forbidden', Buffer.from('x'))).accepted
+    (await f.send(2, 'observation.recorded', nativeMetadata(f, 'forbidden', Buffer.from('x'))))
+      .accepted
   ).toBe(false);
   const reasons = ['source-missing', 'collector-failed', 'limit-exceeded'] as const;
   for (const [index, reason] of reasons.entries()) {
@@ -1407,7 +1449,7 @@ it('RET-2 retains OFF/missing/failure/truncation distinctions and refuses conten
         reason: ['unsupported', 'capture-failed', 'truncated'][index],
       },
     };
-    expect(f.send(index + 3, 'observation.recorded', unavailable).accepted).toBe(true);
+    expect((await f.send(index + 3, 'observation.recorded', unavailable)).accepted).toBe(true);
     expect(
       f.rows().find((row) => row.payload.observationId === unavailable.observationId)!.payload
     ).toEqual(unavailable);
@@ -1419,10 +1461,12 @@ it('RET-2 retains OFF/missing/failure/truncation distinctions and refuses conten
   ).toBe('off');
   const historical = await nativeReceiver('on', null);
   expect(
-    historical.send(
-      1,
-      'observation.recorded',
-      nativeMetadata(historical, 'no-authority', Buffer.from('x'))
+    (
+      await historical.send(
+        1,
+        'observation.recorded',
+        nativeMetadata(historical, 'no-authority', Buffer.from('x'))
+      )
     ).accepted
   ).toBe(false);
   expect(historical.rows()).toEqual([]);

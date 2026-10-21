@@ -16,6 +16,7 @@ import {
 import { FsStore } from '../lib/store.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { readWorkObservations } from '../storage/work-observations.js';
@@ -34,8 +35,9 @@ it('executes a Server request on the configured role model with its own captured
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
-  onTestFinished(() => {
+  onTestFinished(async () => {
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   const store = new FsStore({ dataRoot });
@@ -145,9 +147,7 @@ it('executes a Server request on the configured role model with its own captured
     coreDb,
     runtimeConfigManager,
     inflightCommands: new WeakMap(),
-    pin: (input) => {
-      pinKnowledgeManagerExecution(role, input);
-    },
+    pin: (input) => pinKnowledgeManagerExecution(role, input),
     run: (input) => runServerKnowledgeManagerAgent(role, input),
   };
   const input = {
@@ -231,11 +231,17 @@ it('executes a Server request on the configured role model with its own captured
   );
   expect(replay.status, await replay.clone().text()).toBe(200);
   expect(await replay.json()).toEqual(result);
-  const next = store.createServerTurn(turn.threadId, 'Interrupted future run', input.actor, null, {
-    agentId: 'knowledge-manager',
-  });
+  const next = await store.createServerTurn(
+    turn.threadId,
+    'Interrupted future run',
+    input.actor,
+    null,
+    {
+      agentId: 'knowledge-manager',
+    }
+  );
   const reopened = new FsStore({ dataRoot });
-  recoverServerKnowledgeManagerTurns(reopened);
+  await recoverServerKnowledgeManagerTurns(reopened);
   expect(reopened.getServerTurnById(next.id)).toMatchObject({
     status: 'failed',
     error: { code: 'recovery_required' },
