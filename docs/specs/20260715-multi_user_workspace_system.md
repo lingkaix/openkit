@@ -39,7 +39,7 @@ updated: "2026-10-06"
 - `docs/core/storage.md`
 - `docs/core/identity.md`
 - `docs/core/policy.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 - `docs/core/vault.md`
 - `docs/core/agent-session.md`
 - `docs/core/contract-evolution.md`

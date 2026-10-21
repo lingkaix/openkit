@@ -13,6 +13,8 @@ const TERMINAL_DIRECTORY_STATUS = new Map([
 ]);
 const HISTORICAL_CORE_RENAMES = new Map([
   ['docs/core/agent-capability.md', 'docs/core/mediation.md'],
+  ['docs/core/audit.md', 'docs/core/evidence.md'],
+  ['docs/core/metering.md', 'docs/core/evidence.md'],
   ['docs/core/permissions.md', 'docs/core/policy.md'],
 ]);
 const SPEC_FILE_PATTERN = /^20\d{6}-[a-z0-9_]+\.md$/;

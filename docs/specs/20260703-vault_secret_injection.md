@@ -37,7 +37,7 @@ The clean target is simple: normal config, manifests, item logs, knowledge, arti
 - `docs/core/mediation.md`
 - `docs/core/agent-session.md`
 - `docs/core/storage.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 
 ## Goals
 

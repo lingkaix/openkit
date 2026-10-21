@@ -27,7 +27,7 @@ updated: 2026-09-09
 - `docs/core/storage.md`
 - `docs/core/policy.md`
 - `docs/core/vault.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 
 ## Summary
 

@@ -26,8 +26,7 @@ kind: mechanism
 ## Core References
 
 - `docs/core/mediation.md`
-- `docs/core/audit.md`
-- `docs/core/metering.md`
+- `docs/core/evidence.md`
 - `docs/core/storage.md`
 - `docs/core/vault.md`
 
@@ -380,5 +379,4 @@ Previously open questions are resolved by accepted V1 defaults: worker execution
 - `docs/specs/20260704-nanocore_bootstrap_readiness.md`
 - `docs/specs/20260711-worker_runtime_subagent_provenance.md`
 - `docs/core/mediation.md`
-- `docs/core/audit.md`
-- `docs/core/metering.md`
+- `docs/core/evidence.md`

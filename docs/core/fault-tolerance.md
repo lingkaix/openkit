@@ -61,7 +61,7 @@ Durable signals and timers preserve waiting and wake conditions through restart.
 
 Global dispatch may index Workspace-owned work, but that index is rebuildable and cannot become a second durable queue. Server-owned capacity and physical bindings are separate effect authority. Their reservation and release must be idempotent under exact work identity; a missing acknowledgement never permits duplicate allocation or unproved capacity release. Necessary Host, Worker and attachment fences remain until an owner-proved replacement protects their failure boundary.
 
-Execution history retains lifecycle timing, outcomes and failed checks through the existing work-data owners. Operational spans are projections of those facts. Journal correlation identifiers grant no execution, access or cleanup authority, and telemetry loss cannot erase work history or determine retry.
+Execution history retains lifecycle timing, outcomes and failed checks through the existing work-data owners. Operational spans are projections of those facts ([Evidence](evidence.md#telemetry)). Journal correlation identifiers grant no execution, access or cleanup authority, and telemetry loss cannot erase work history or determine retry.
 
 ## Fault Model
 
@@ -149,7 +149,7 @@ Before `v0.1.0`, release resets are explicit operator actions under [Contract Ev
 - [Runtime Model](runtime-model.md) owns scheduling, placement, collection, interruption and execution-domain cleanup, and projects durable execution, safe points and danger windows onto the execution lifecycle.
 - [Mediation](mediation.md#enforcement-points) owns enforcement points and [Policy](policy.md) owns current authorization at each governed effect boundary.
 - [AgentSession](agent-session.md) owns native continuity and its failure.
-- [Mediation](mediation.md) and [Vault](vault.md) own external call outcomes and secret injection receipts.
+- [Mediation](mediation.md), [Evidence](evidence.md), and [Vault](vault.md) own external call outcomes, evidence and telemetry boundaries, and secret injection receipts.
 - [Knowledge](knowledge.md) owns notebook publication and its recovery-required outcome.
 - [Contract Evolution](contract-evolution.md) owns format compatibility, backup integrity and pre-stable resets.
 

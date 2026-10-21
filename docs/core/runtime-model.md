@@ -148,7 +148,7 @@ Observable conformance requires one runtime inventory to distinguish all four pr
 
 `core-concepts.md` owns the `Turn` definition, and `protocol.md` owns its lifecycle and trigger vocabulary. Runtime owns assignment: a Turn run by a schedulable Agent is assigned to one AgentSession before dispatch; a pending queued worker may remain sessionless until then, and one current AgentSession may execute multiple sequential Turns from its bound Thread. A Core-local service Turn uses `agentSessionId=null` only under the protocol exception and MUST NOT be presented as worker execution or runtime continuity.
 
-Execution metadata belongs on the turn, AgentSession, item payloads, artifact records, approval records, or implementation telemetry.
+Execution metadata belongs on the turn, AgentSession, item payloads, artifact records, approval records, or implementation telemetry ([Evidence](evidence.md#telemetry)).
 
 ## Item
 

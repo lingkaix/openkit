@@ -176,4 +176,4 @@ The canonical owner must also have active membership. Ownership is stored once a
 - `docs/core/core-concepts.md`
 - `docs/core/policy.md`
 - `docs/core/protocol.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`

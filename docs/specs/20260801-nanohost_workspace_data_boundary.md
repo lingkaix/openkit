@@ -43,7 +43,7 @@ Runtime lifecycle and communication are owned by `docs/specs/20260802-nanohost_r
 - `docs/core/policy.md`
 - `docs/core/mediation.md`
 - `docs/core/vault.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 - `docs/core/communication.md`
 
 ## Related Specifications

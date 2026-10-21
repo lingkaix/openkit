@@ -19,7 +19,7 @@ It does not create a test service, evaluation database, Agent runtime, scheduler
 
 - `docs/core/architecture.md`
 - `docs/core/work-model.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 - `docs/core/policy.md`
 - `docs/core/storage.md`
 

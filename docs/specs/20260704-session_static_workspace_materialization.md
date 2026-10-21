@@ -46,7 +46,7 @@ Existing current-runtime/session records continue to own active bindings. Stable
 - `docs/core/agent-supply.md`
 - `docs/core/vault.md`
 - `docs/core/policy.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 - `docs/core/contract-evolution.md`
 
 ## Summary

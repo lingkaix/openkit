@@ -41,7 +41,7 @@ This spec owns the policy-kernel model and package boundary. `docs/core/policy.m
 ## Core References
 
 - `docs/core/policy.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 - `docs/core/vault.md`
 - `docs/core/knowledge.md`
 - `docs/core/mediation.md`

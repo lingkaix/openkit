@@ -26,7 +26,7 @@ This specification owns the bundled administrator CLI's process, runtime, discov
 - `docs/core/architecture.md`
 - `docs/core/mediation.md`
 - `docs/core/policy.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 - `docs/core/vault.md`
 
 ## Summary And Decision

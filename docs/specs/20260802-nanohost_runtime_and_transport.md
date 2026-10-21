@@ -93,7 +93,7 @@ Retained-volume mounting and environment preparation/activation are implemented 
 - `docs/core/identity.md`
 - `docs/core/vault.md`
 - `docs/core/mediation.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 
 ## Related Specifications
 
@@ -1455,7 +1455,7 @@ Sustained violation reopens the epoch-granularity decision in this specification
 
 Bounded private runtime evidence dies with the epoch, and epoch invalidation is exactly the event being counted, so the premise cannot be measured from epoch-local state alone. Durable accumulation therefore requires the existing audit owners to record two boundaries: epoch invalidation and fence-to-ready completion, each carrying only the classification, the elapsed time, and non-secret lineage.
 
-Producer obligations and record shape at those boundaries are owned by `docs/core/audit.md` and `docs/specs/20260703-audit_usage_evidence_records.md`, and both owners have accepted them: the Core audit model lists execution-substrate epoch invalidation and capacity-restoring readiness as producer boundaries, and the record specification carries them as `AuditEvent` records at diagnostics-only visibility with no new record family. This specification MUST NOT restate their fields, visibility, or retention.
+Producer obligations and record shape at those boundaries are owned by `docs/core/evidence.md` and `docs/specs/20260703-audit_usage_evidence_records.md`, and both owners have accepted them: the Core audit model lists execution-substrate epoch invalidation and capacity-restoring readiness as producer boundaries, and the record specification carries them as `AuditEvent` records at diagnostics-only visibility with no new record family. This specification MUST NOT restate their fields, visibility, or retention.
 
 Those audit boundaries plus completed-AgentSession counts from existing owners are the complete measurement substrate. This premise creates no durable NanoHost record, no product metric surface, and no scheduling input.
 

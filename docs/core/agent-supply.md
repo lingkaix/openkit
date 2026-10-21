@@ -280,7 +280,7 @@ The current manifest schema is validated strictly. Unknown or unsupported author
 - `docs/core/runtime-model.md` owns execution semantics.
 - `docs/core/agent-session.md` owns runtime continuity.
 - `docs/core/mediation.md` owns operation invocation, mediation points, runtime capability access, gateway projection, routing, capability-call `UsageRecord` production, and audit metadata.
-- `docs/core/metering.md` owns system-wide measurement policy, cross-producer aggregation, and cost projection.
+- `docs/core/evidence.md` owns system-wide measurement policy, cross-producer aggregation, and cost projection.
 - `docs/core/policy.md` owns authorization.
 - `docs/core/sandbox.md` owns execution isolation.
 - `docs/core/knowledge.md` owns reusable knowledge and context injection.

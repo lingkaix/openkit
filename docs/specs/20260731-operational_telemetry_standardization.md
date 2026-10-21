@@ -29,8 +29,7 @@ date: "2026-07-31"
 - `docs/core/foundation.md`
 - `docs/core/architecture.md`
 - `docs/core/protocol.md`
-- `docs/core/audit.md`
-- `docs/core/metering.md`
+- `docs/core/evidence.md`
 - `docs/core/storage.md`
 - `docs/core/vault.md`
 - `docs/core/contract-evolution.md`

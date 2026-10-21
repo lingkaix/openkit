@@ -20,7 +20,7 @@ The Model Context Protocol tool-call rule stays in [Worker MCP Tool Supply](2026
 - [Foundation](../core/foundation.md)
 - [Contract Evolution](../core/contract-evolution.md)
 - [Permissions](../core/policy.md)
-- [Audit](../core/audit.md)
+- [Evidence](../core/evidence.md)
 - [Agent Capability](../core/mediation.md)
 - [Storage](../core/storage.md)
 

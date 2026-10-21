@@ -7,9 +7,9 @@ This document defines OpenKit mediation semantics for operation definition and i
 
 Mediation is the single interception base across OpenKit: operations and governed runtime capability paths are invoked across `<operation>@<stage>` mediation points, supplied to worker agents during execution, or projected as exact Tools to NanoCore-internal roles.
 
-This document owns the semantic definition and invocation procedure of an `Operation`, mediation points (`<operation>@<stage>`), the Capability Mediation Boundary, runtime capability access, `CapabilityCall`, gateway projection, internal-role Tool identity and admission, transformer selection, credential injection contracts, context access paths, gateway-mediated usage metering, routing, gateway audit metadata, rate limits, quotas, and provider/tool error normalization.
+This document owns the semantic definition and invocation procedure of an `Operation`, mediation points (`<operation>@<stage>`), the Capability Mediation Boundary, runtime capability access, `CapabilityCall`, gateway projection, internal-role Tool identity and admission, transformer selection, credential injection contracts, context access paths, gateway-mediated usage production for a `CapabilityCall`, routing, gateway audit metadata, rate limits, quotas, and provider/tool error normalization.
 
-This document does not own agent supply declarations, reusable knowledge semantics, task-time context package semantics, global audit projection, permission policy, sandbox containment, or system-wide non-gateway metering.
+This document does not own agent supply declarations, reusable knowledge semantics, task-time context package semantics, global audit projection, permission policy, sandbox containment, or `UsageRecord`, usage units, usage attribution, and system-wide metering (`docs/core/evidence.md`).
 
 ## Purpose
 
@@ -266,56 +266,11 @@ Early implementations may omit some controls, but the capability call model must
 
 ## Usage Metering
 
-Agent-capability-mediated calls are the current owner boundary for OpenKit usage records.
+Agent-capability-mediated calls are the current owner boundary for producing OpenKit usage records on a `CapabilityCall`.
 
 The gateway projection should be able to explain what resources were consumed by a capability call and which workspace, thread, turn, item, agent, and AgentSession caused that consumption.
 
-`UsageRecord` is the conceptual record for measured consumption.
-
-Typical ownership areas include:
-
-- workspace ID
-- thread ID
-- turn ID
-- item ID
-- capability call ID
-- agent ID
-- AgentSession ID
-
-Concrete usage schema fields belong in protocol specs and audit or usage specs, not in this core concept document.
-
-Agent capability usage units should be explicit.
-
-Common agent capability units include:
-
-- tokens
-- requests
-- bytes
-- tool calls
-- capability calls
-- network requests
-- provider-native billable units
-
-Provider-native units may be preserved under extension namespaces, but normalized units should be available for product surfaces.
-
-## Usage Attribution
-
-Usage should be attributable to the smallest stable scope available.
-
-Preferred attribution order:
-
-1. capability call
-2. item
-3. turn
-4. AgentSession
-5. thread
-6. workspace
-
-Records may carry multiple IDs so usage can be aggregated at different levels.
-
-Capability usage is not the same thing as audit.
-
-Usage measures resource consumption. Audit explains who caused an action, which policy or gateway path applied, which resource was affected, and what outcome resulted. The agent capability path may emit both usage and audit metadata, but `audit.md` owns the durable governance projection across Core.
+[Evidence](evidence.md#usage-and-metering) owns `UsageRecord`, capability usage units, usage attribution, system-wide measurement, and `AuditEvent` governance projections across Core. The agent capability path may emit both usage and audit metadata, while [Evidence](evidence.md#audit) owns the durable governance projection.
 
 ## Invariants
 
@@ -325,7 +280,7 @@ Usage measures resource consumption. Audit explains who caused an action, which 
 - Secret values MUST NOT appear in prompts, item payloads, context packages, audit records, usage records, or normal workspace files through the capability path.
 - Product-visible capability calls MUST produce or be referenced by item-backed events.
 - A disabled capability plane MUST expose no routes and MUST fail closed rather than infer access from worker supply, network reachability, or control connectivity.
-- Non-gateway runtime, sandbox, storage, and workspace-sync measurement MUST follow the current Metering boundary and MUST NOT be represented as an agent-capability-mediated call unless it is one.
+- Non-gateway runtime, sandbox, storage, and workspace-sync measurement MUST follow the [Evidence](evidence.md#usage-and-metering) boundary and MUST NOT be represented as an agent-capability-mediated call unless it is one.
 
 ## Agent Capability vs Feature Discovery
 
@@ -336,11 +291,10 @@ Feature discovery may report which server or client features are available. Desp
 - `docs/core/core-concepts.md`
 - `docs/core/communication.md`
 - `docs/core/vault.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 - `docs/core/policy.md`
 - `docs/core/sandbox.md`
 - `docs/core/agent-supply.md`
 - `docs/core/agent-session.md`
-- `docs/core/metering.md`
 - `docs/decisions/20261002-operation_definition_rulings.md`
 - `docs/decisions/20261018-unified_mediation_and_policy.md`

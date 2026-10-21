@@ -37,7 +37,7 @@ updated: 2026-10-13
 - `docs/core/agent-supply.md`
 - `docs/core/mediation.md`
 - `docs/core/vault.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 
 ## Related Docs
 

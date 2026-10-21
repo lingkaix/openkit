@@ -43,7 +43,7 @@ The private administration entry may prepare and apply an exact Worker environme
 - `docs/core/protocol.md`
 - `docs/core/mediation.md`
 - `docs/core/knowledge.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 - `docs/core/policy.md`
 
 ## Summary

@@ -48,7 +48,7 @@ The clean target is one policy truth and many enforcement points. `@openkit/poli
 
 - `docs/core/policy.md`
 - `docs/core/identity.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 - `docs/core/sandbox.md`
 - `docs/core/mediation.md`
 - `docs/core/vault.md`
@@ -673,7 +673,7 @@ Routing all remaining producers, impact simulation, adaptive or cached review, e
 
 - `docs/core/policy.md`
 - `docs/specs/20261002-operation_definition.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 - `docs/core/sandbox.md`
 - `docs/core/mediation.md`
 - `docs/core/vault.md`

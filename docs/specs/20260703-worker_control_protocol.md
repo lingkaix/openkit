@@ -42,8 +42,7 @@ V2 serves the one-process, one-configured-NanoHost shared-runtime profile with m
 - `docs/core/agent-session.md`
 - `docs/core/agent-workflow.md`
 - `docs/core/mediation.md`
-- `docs/core/audit.md`
-- `docs/core/metering.md`
+- `docs/core/evidence.md`
 
 ## Goals
 

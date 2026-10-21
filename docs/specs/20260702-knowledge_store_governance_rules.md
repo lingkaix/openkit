@@ -46,7 +46,7 @@ Generated learning uses the unified notebook publisher under current maintenance
 
 - `docs/core/knowledge.md`
 - `docs/core/policy.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 - `docs/core/storage.md`
 
 ## Goals / Non-goals

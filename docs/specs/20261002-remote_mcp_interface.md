@@ -34,7 +34,7 @@ Where a rule below names another owner, that owner keeps the rule. This specific
 
 - `docs/core/identity.md`
 - `docs/core/policy.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 - `docs/core/communication.md`
 
 ## Summary
@@ -95,7 +95,7 @@ A usable Token is not given a new audience check on this path. Audience binding 
 
 The request actor is the human User who owns the presented Token. An external agent holding that Token acts as that User. The endpoint creates no second actor for the agent.
 
-After successful verification, the Token's last-used summary records the channel `remote-mcp`. It may record the MCP client name supplied at initialization as the coarse source summary. It records no authorization header, no Token secret, and no full request. Audit of the request records the same User, the Token id, and the channel `remote-mcp`. `docs/core/audit.md` owns the audit record. The summary fields stay with [Remote Auth Credential Bootstrap](20260704-remote_auth_credential_bootstrap.md).
+After successful verification, the Token's last-used summary records the channel `remote-mcp`. It may record the MCP client name supplied at initialization as the coarse source summary. It records no authorization header, no Token secret, and no full request. Audit of the request records the same User, the Token id, and the channel `remote-mcp`. `docs/core/evidence.md` owns the audit record. The summary fields stay with [Remote Auth Credential Bootstrap](20260704-remote_auth_credential_bootstrap.md).
 
 ### Operation reach
 

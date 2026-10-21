@@ -32,7 +32,7 @@ updated: 2026-09-30
 - `docs/core/mediation.md`
 - `docs/core/sandbox.md`
 - `docs/core/policy.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 - `docs/core/agent-session.md`
 
 ## Summary

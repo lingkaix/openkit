@@ -25,7 +25,7 @@ Generative UI presentation and interaction belong to [Generative UI Interaction]
 - `docs/core/identity.md`
 - `docs/core/mediation.md`
 - `docs/core/vault.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 - `docs/core/contract-evolution.md`
 
 ## Summary And Intent

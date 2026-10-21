@@ -352,7 +352,7 @@ Audit records should preserve:
 
 Audit records must not leak secret values.
 
-Detailed audit semantics belong to `docs/core/audit.md`.
+Detailed audit semantics belong to `docs/core/evidence.md`.
 
 ## Invariants
 

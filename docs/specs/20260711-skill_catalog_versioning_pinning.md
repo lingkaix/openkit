@@ -26,7 +26,7 @@ updated: 2026-10-17
 - `docs/core/agent-supply.md`
 - `docs/core/storage.md`
 - `docs/core/policy.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 
 ## Summary
 

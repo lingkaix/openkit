@@ -26,7 +26,7 @@ kind: concept
 - `docs/core/knowledge.md`
 - `docs/core/agent-workflow.md`
 - `docs/core/protocol.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 
 ## Related Specifications
 
