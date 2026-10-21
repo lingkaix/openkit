@@ -911,7 +911,187 @@ describe.each(['server', 'workspace'] as const)('native %s immutable products', 
     }
   });
 
-  it('keeps the complete tuple unchanged on stale revision, active Thread conflict, archive and partial terminal attempts', async () => {
+  it('refuses new work on an archived Thread without changing the complete tuple', async () => {
+    const f = await nativeFixture(kind);
+    const create = nativeInput(
+      f,
+      f.products.filter((product) => product.kind !== 'turn')
+    );
+    create.receipt.command = 'thread.create';
+    create.receipt.key = commandRequestKey('thread.create', create.receipt.requestId, f.scope);
+    create.receipt.response = { kind: 'thread', id: f.threadId };
+    create.audit.action = 'thread.create';
+    create.audit.turnId = null;
+    await expect(client!.transition('native', create)).resolves.toEqual({
+      replayed: false,
+      response: create.receipt.response,
+    });
+    const archive = nativeInput(f, [
+      { kind: 'thread', expectedRevision: 1, record: { ...f.thread, status: 'archived' } },
+    ]);
+    archive.receipt.command = 'thread.archive';
+    archive.receipt.key = commandRequestKey('thread.archive', archive.receipt.requestId, f.scope);
+    archive.receipt.response = { kind: 'thread', id: f.threadId };
+    archive.audit.action = 'thread.archive';
+    archive.audit.turnId = null;
+    await expect(client!.transition('native', archive)).resolves.toEqual({
+      replayed: false,
+      response: archive.receipt.response,
+    });
+    const reader = openControlStoreProductReadHandle(f.path, f.owner);
+    try {
+      expect(reader.get('thread', f.threadId)).toMatchObject({
+        revision: 2,
+        record: { status: 'archived' },
+      });
+      // No active Turn can mask the archived-Thread admission predicate.
+      expect(reader.get('turn', f.turnId)).toBeUndefined();
+      const before = committedRows(reader, f.owner);
+      const candidate = nativeInput(
+        f,
+        [
+          {
+            kind: 'thread',
+            expectedRevision: 2,
+            record: { ...f.thread, status: 'archived', preview: 'Refused new work' },
+          },
+          { kind: 'turn', expectedRevision: 0, record: f.turn },
+        ],
+        [
+          {
+            kind: 'item',
+            turnId: f.turnId,
+            sequence: 1,
+            expectedRevision: 0,
+            content: await publish(f, item(f)),
+          },
+          {
+            kind: 'event',
+            turnId: f.turnId,
+            sequence: 1,
+            expectedRevision: 0,
+            content: await publish(f, event(f, 1)),
+          },
+        ]
+      );
+      await expect(client!.transition('native', candidate)).rejects.toMatchObject({
+        commit: 'not-committed',
+      });
+      expect(committedRows(reader, f.owner)).toEqual(before);
+    } finally {
+      reader.close();
+    }
+  });
+
+  it('allows an existing running Turn to publish progress after archive when no outcome needs closeout', async () => {
+    const f = await nativeFixture(kind);
+    const first = await initialEntries(f);
+    const runningTurn = { ...f.turn, status: 'running', startedAt: timestamp };
+    const start = nativeInput(f, [{ kind: 'turn', expectedRevision: 1, record: runningTurn }]);
+    await expect(client!.transition('native', start)).resolves.toEqual({
+      replayed: false,
+      response: start.receipt.response,
+    });
+    const reader = openControlStoreProductReadHandle(f.path, f.owner);
+    try {
+      const priorTurn = reader.get('turn', f.turnId);
+      const priorItems = reader.entries(f.turnId, 'item');
+      const priorEvents = reader.entries(f.turnId, 'event');
+      // This fresh fixture has no pending requests or granted executing calls to close out.
+      const archive = nativeInput(f, [
+        { kind: 'thread', expectedRevision: 1, record: { ...f.thread, status: 'archived' } },
+      ]);
+      await expect(client!.transition('native', archive)).resolves.toEqual({
+        replayed: false,
+        response: archive.receipt.response,
+      });
+      const archivedThread = reader.get('thread', f.threadId);
+      expect(archivedThread).toMatchObject({
+        revision: 2,
+        record: { status: 'archived' },
+      });
+      expect(reader.get('turn', f.turnId)).toEqual(priorTurn);
+      expect(reader.entries(f.turnId, 'item')).toEqual(priorItems);
+      expect(reader.entries(f.turnId, 'event')).toEqual(priorEvents);
+
+      const progressItem = item(f, first.body.id, 'Progress from work admitted before archive');
+      const progressEvent = {
+        ...event(f, 2),
+        event: 'turn.updated',
+        data: { type: 'turn-updated', turn: { ...runningTurn, items: [progressItem] } },
+      };
+      const itemContent = await publish(f, progressItem);
+      const eventContent = await publish(f, progressEvent);
+      const progress = nativeInput(
+        f,
+        [{ kind: 'turn', expectedRevision: 2, record: runningTurn }],
+        [
+          {
+            kind: 'item',
+            turnId: f.turnId,
+            sequence: 2,
+            expectedRevision: 1,
+            content: itemContent,
+          },
+          {
+            kind: 'event',
+            turnId: f.turnId,
+            sequence: 2,
+            expectedRevision: 0,
+            content: eventContent,
+          },
+        ]
+      );
+      await expect(client!.transition('native', progress)).resolves.toEqual({
+        replayed: false,
+        response: progress.receipt.response,
+      });
+      expect(reader.get('thread', f.threadId)).toEqual(archivedThread);
+      expect(reader.get('turn', f.turnId)).toMatchObject({
+        revision: 3,
+        record: { status: 'running', completedAt: null },
+      });
+      expect(
+        reader.entries(f.turnId, 'item').map((row) => [row.sequence, row.id, row.revision])
+      ).toEqual([
+        [1, first.body.id, 1],
+        [2, first.body.id, 2],
+      ]);
+      expect(reader.entries(f.turnId, 'event').map((row) => row.sequence)).toEqual([1, 2]);
+      for (const [content, expected] of [
+        [itemContent, progressItem],
+        [eventContent, progressEvent],
+      ] as const) {
+        expect(
+          JSON.parse(readFileSync(join(f.contentRoot, content.reference.locator.path), 'utf8'))
+        ).toEqual(expected);
+      }
+      expect(
+        reader.sqlite
+          .prepare('SELECT request_key FROM idempotency_requests ORDER BY request_key')
+          .all()
+      ).toEqual(
+        [first.input, start, archive, progress]
+          .map((input) => input.receipt.key)
+          .sort()
+          .map((request_key) => ({ request_key }))
+      );
+      expect(
+        reader.sqlite
+          .prepare('SELECT audit_event_id AS id FROM audit_events ORDER BY audit_event_id')
+          .all()
+      ).toEqual(
+        [first.input, start, archive, progress]
+          .map((input) => input.audit.id)
+          .sort()
+          .map((id) => ({ id }))
+      );
+    } finally {
+      reader.close();
+    }
+  });
+
+  it('keeps the complete tuple unchanged on stale revision, active Thread conflict and partial terminal attempts', async () => {
     const f = await nativeFixture(kind);
     await initialEntries(f);
     const reader = openControlStoreProductReadHandle(f.path, f.owner);
@@ -926,7 +1106,6 @@ describe.each(['server', 'workspace'] as const)('native %s immutable products', 
           },
         ],
         [{ kind: 'turn', expectedRevision: 0, record: { ...f.turn, id: allocateEntityId('tu') } }],
-        [{ kind: 'thread', expectedRevision: 1, record: { ...f.thread, status: 'archived' } }],
         [
           {
             kind: 'turn',

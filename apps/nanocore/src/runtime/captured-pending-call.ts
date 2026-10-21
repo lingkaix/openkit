@@ -160,18 +160,14 @@ export function admitCapturedPendingCall(
   commandRequestId: string,
   prepared?: PreparedCapturedPendingCall,
   failure?: string
-): StartedCapabilityCall {
+): StartedCapabilityCall & { readonly refusal?: string } {
   const source = readCapturedMediationSource(record, workspaceDb.sqlite);
   const reviewed =
     source && !failure && !prepared?.failed && workspaceDb.workspaceId === record.workspaceId
       ? readCapturedMediationAllow(record, workspaceDb.sqlite, source, prepared?.mediation)
       : null;
-  if (source && !reviewed && !failure)
-    throw new PendingRequestCommandError(
-      'policy-changed',
-      'Captured Policy approval is no longer current.',
-      409
-    );
+  // A current submission refusal still owns the already-acknowledged reservation's truthful finish.
+  if (source && !reviewed && !failure) failure = 'policy-changed';
   const call = startCapabilityCall({
     workspaceDb,
     callId: executionCallIdForRequest(record.requestId),
@@ -229,7 +225,7 @@ export function admitCapturedPendingCall(
     result: failure ? 'deny' : 'allow',
   });
   if (failure) recordCapturedExecution(call, workspaceDb, 'failed', failure, false);
-  return call;
+  return { ...call, ...(failure ? { refusal: failure } : {}) };
 }
 
 /**

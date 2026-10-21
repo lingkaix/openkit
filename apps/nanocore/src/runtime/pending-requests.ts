@@ -22,6 +22,7 @@ import type { Actor } from '../auth/identity.js';
 import { refuseScope } from '../bootstrap/readiness.js';
 import { uuidv5 } from '../generative-kernel/uuid.js';
 import type { CommandRequestRecord } from '../lib/store.js';
+import { readCommandRequestRecordsFromSqlite } from '../storage/command-request-records.js';
 import { commandInputHash } from './idempotent-command.js';
 import { mcpToolArgumentsContentDigest } from './mcp-tool-schema-snapshots.js';
 
@@ -2640,6 +2641,58 @@ export interface PreparedControlPendingCommand {
   }[];
 }
 
+/** Selects exactly the existing archive closeout work; malformed records are filtered separately. */
+export function archiveSelects(record: PendingRequestRecord): boolean {
+  if (record.state === 'pending') return true;
+  if (record.delivery === 'frozen') return true;
+  if (record.delivery === 'undelivered' && isFinalOutcome(record)) return true;
+  return (
+    isCommandIntentApproval(record) &&
+    record.resolution === 'granted' &&
+    record.claim === 'unclaimed' &&
+    (record.disposition === null ||
+      (record.disposition === 'denied-not-executed' && record.invalidationTurnId === null))
+  );
+}
+
+/** Rechecks canonical Pending authority inside the standalone archive savepoint using prepared immutable proof only. */
+export function assertControlPendingArchive(
+  db: WorkspaceDb,
+  threadId: string,
+  prepared: PreparedControlPendingCommand
+): void {
+  assertControlProductWriter(db.sqlite);
+  const owner = { kind: 'workspace' as const, workspaceId: db.workspaceId };
+  const items = prepared.dependencies.map(({ entry }) => pendingPreparedItem(db, entry));
+  const rows = db.sqlite.prepare('SELECT id FROM control_turns').all() as { id: string }[];
+  const turns = rows.map(({ id }) => {
+    const metadata = readProduct(db.sqlite, owner, 'turn', id);
+    if (!metadata) pendingNativeConflict('The archive canonical Turn proof is missing.');
+    return {
+      ...metadata.record,
+      items: items.filter((item) => item.turnId === id),
+    } as unknown as Turn;
+  });
+  const receipts = readCommandRequestRecordsFromSqlite(db.sqlite);
+  const records = listThreadPendingRequests(db.sqlite, db.workspaceId, threadId).filter(
+    (record) => validateCanonicalLoad(record, turns, receipts) === null
+  );
+  if (records.some((record) => record.claim === 'claimed' && record.disposition === null))
+    throw new PendingRequestCommandError(
+      'request_executing',
+      'A pending request execution is still claimed.',
+      409
+    );
+  if (!records.some(archiveSelects)) return;
+  if (turns.some((turn) => turn.threadId === threadId && !isSealedTurnTerminal(turn.status)))
+    throw new PendingRequestCommandError(
+      'thread_busy',
+      'Archive waits until the active Turn ends.',
+      409
+    );
+  pendingNativeConflict('Archive requires preparation of the current Pending closeout.');
+}
+
 /** Checks the latest actual SQL descriptor without reading immutable files inside the transaction. */
 function pendingPreparedItem(db: WorkspaceDb, entry: PreparedControlEntry): Item {
   const row = db.sqlite
@@ -2815,8 +2868,21 @@ export function applyControlPendingCommand(
       pendingNativeConflict('The Pending source list has duplicate identities.');
     expectedIds.add(expected.requestId);
     const current = readPendingRequest(db.sqlite, expected.requestId);
-    if (!current || commandInputHash(scoped(current)) !== expected.sourceHash)
+    if (!current || commandInputHash(scoped(current)) !== expected.sourceHash) {
+      if (
+        current?.kind === 'approval' &&
+        'requestId' in command &&
+        command.requestId === current.requestId &&
+        ((command.action === 'deny' && current.resolution === 'granted') ||
+          (command.action === 'grant-command' && current.resolution === 'denied'))
+      )
+        throw new PendingRequestCommandError(
+          'idempotency_key_conflict',
+          'The approval already has a different decision.',
+          409
+        );
       pendingNativeConflict('The Pending request changed after preparation.');
+    }
   }
   const selection = () => {
     if (command.expected === undefined)

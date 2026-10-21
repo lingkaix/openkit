@@ -500,7 +500,9 @@ function applyProducts(
       const thread = readProduct(sqlite, owner, 'thread', record.threadId as string);
       if (
         !thread ||
-        ((record.id !== terminalTurnId || !terminalWasSealed) && thread.record.status !== 'active')
+        (input.expectedRevision === 0 &&
+          (record.id !== terminalTurnId || !terminalWasSealed) &&
+          thread.record.status !== 'active')
       )
         throw new ControlProductPreconditionError();
       if (record.agentSessionId != null) {
@@ -519,16 +521,6 @@ function applyProducts(
           throw new ControlProductPreconditionError();
       }
     }
-    if (
-      input.kind === 'thread' &&
-      record.status === 'archived' &&
-      sqlite
-        .prepare(
-          "SELECT 1 FROM control_turns WHERE thread_id=? AND status IN ('pending','running')"
-        )
-        .get(record.id)
-    )
-      throw new ControlProductPreconditionError();
     if (
       input.kind === 'agent-session' &&
       (record.status === 'closed' || record.status === 'failed') &&

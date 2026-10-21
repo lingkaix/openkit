@@ -47,6 +47,10 @@ import {
 import { OperationError, projectOperationError } from '../operation-error.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import type { ProviderCredentialConfigured } from '../providers/registry.js';
+import {
+  ControlStoreWorkerShutdownError,
+  getControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { listSchedulerExecutionAttemptsForTurn } from './execution-attempt-records.js';
@@ -585,8 +589,13 @@ export function createGoalTools(input: {
 }
 /** Runs ordinary internal-agent Turns and owns their terminal closeout and wake opportunities. */
 export function createGoalCoordinator(options: GoalCoordinatorOptions) {
+  const client = getControlStoreWorkerClient();
   const active = new Set<string>();
-  async function startTurn(store: FsStore, turnId: string): Promise<void> {
+  /** Binds detached execution and its terminal publication to the existing writer shutdown owner. */
+  function startTurn(store: FsStore, turnId: string): Promise<void> {
+    return client.runOperation(() => executeTurn(store, turnId));
+  }
+  async function executeTurn(store: FsStore, turnId: string): Promise<void> {
     if (active.has(turnId)) return;
     active.add(turnId);
     const turn = store.getTurnById(turnId);
@@ -873,7 +882,14 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
         completedAt: new Date().toISOString(),
       });
     } catch (error) {
-      if (!isSealedTurnTerminal(store.getTurnById(turnId).status))
+      if (!isSealedTurnTerminal(store.getTurnById(turnId).status)) {
+        if (options.coreDb && !options.coreDb.sqlite.open) {
+          console.error(
+            'Goal Coordinator closeout unavailable: Core database is closed; retained Turn requires restart recovery.',
+            { turnId, error }
+          );
+          return;
+        }
         await store.updateTurn(turnId, {
           status: 'failed',
           completedAt: new Date().toISOString(),
@@ -882,6 +898,7 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
             message: error instanceof Error ? error.message : 'Coordinator failed.',
           },
         });
+      }
     } finally {
       active.delete(turnId);
       db.sqlite.close();
@@ -899,7 +916,7 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
             })
         )
       );
-      if (turn) void startTurn(options.store, turn.id);
+      if (turn) void startTurn(options.store, turn.id).catch(reportBackgroundFailure);
     } finally {
       db.sqlite.close();
     }
@@ -950,5 +967,21 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
       }
     }
   }
-  return { wake, terminal, boot, startTurn };
+  /** Shutdown refusal leaves retained nonterminal work for ordinary boot recovery, never invented proof. */
+  function reportBackgroundFailure(error: unknown): void {
+    if (error instanceof ControlStoreWorkerShutdownError)
+      console.warn(
+        'Goal Coordinator work refused during shutdown; inspect retained Turn on restart.'
+      );
+    else
+      console.error('Goal Coordinator background execution failed; inspect retained Turn.', error);
+  }
+  return {
+    wake: (workspaceId: string, goalId: string) =>
+      client.runOperation(() => wake(workspaceId, goalId)),
+    terminal: (turn: ReturnType<FsStore['getTurnById']>) =>
+      client.runOperation(() => terminal(turn)).catch(reportBackgroundFailure),
+    boot: () => client.runOperation(boot).catch(reportBackgroundFailure),
+    startTurn,
+  };
 }

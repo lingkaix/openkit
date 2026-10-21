@@ -178,13 +178,15 @@ export function createPendingRequestOperationImplementations({
                   responseId: current.requestId,
                 },
                 admitExecution: (failure?: string) => {
-                  executionCall = admitCapturedPendingCall(
+                  const admitted = admitCapturedPendingCall(
                     current,
                     workspaceDb,
                     input.requestId,
                     prepared,
                     failure
                   );
+                  executionCall = admitted;
+                  return admitted.refusal;
                 },
                 ...(prepareCapturedCall
                   ? {

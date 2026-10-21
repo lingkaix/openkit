@@ -251,7 +251,7 @@ async function fixture(
       mediation: sourceMediation,
       contextSummary: { threadId: turn.threadId, turnId: turn.id },
     });
-  const record = raiseRecordedPendingRequest(store, db.sqlite, {
+  const record = await raiseRecordedPendingRequest(store, db.sqlite, {
     requestId: 'ap_captured',
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -370,13 +370,16 @@ async function fixture(
           sqlite: db.sqlite,
           prepared,
         }),
-      admitExecution: () => {
-        executionCall = admitCapturedPendingCall(
+      admitExecution: (failure) => {
+        const admitted = admitCapturedPendingCall(
           record,
           db,
           '00000000-0000-4000-8000-000000000117',
-          prepared
+          prepared,
+          failure
         );
+        executionCall = admitted;
+        return admitted.refusal;
       },
       execute: (claimed) =>
         executeCapturedPendingCall({
@@ -430,6 +433,29 @@ function expectNoExecution(f: ReturnType<typeof fixture>) {
   expect(f.db.sqlite.prepare('SELECT count(*) AS count FROM capability_calls').get()).toEqual({
     count: 0,
   });
+  expect(f.db.sqlite.prepare('SELECT count(*) AS count FROM usage_records').get()).toEqual({
+    count: 0,
+  });
+}
+
+/** A native reservation grants no contact authority; Main refusal records the exact failed call and no usage. */
+function expectNoContactAfterClaim(f: ReturnType<typeof fixture>) {
+  expect(f.callTool).not.toHaveBeenCalled();
+  expect(readPendingRequest(f.db.sqlite, f.record.requestId)).toMatchObject({
+    claim: 'finished',
+    executionCallId: executionCallIdForRequest(f.record.requestId),
+    disposition: 'execution-error',
+  });
+  expect(f.db.sqlite.prepare('SELECT call_id,status FROM capability_calls').all()).toEqual([
+    { call_id: executionCallIdForRequest(f.record.requestId), status: 'failed' },
+  ]);
+  expect(listExportableWorkspacePermissionDecisions(f.db, f.record.workspaceId)).toContainEqual(
+    expect.objectContaining({
+      decisionId: deriveEntityId('pd', ['pending_execution', f.record.requestId]),
+      result: 'deny',
+      contextSummary: expect.objectContaining({ upstreamContacted: false }),
+    })
+  );
   expect(f.db.sqlite.prepare('SELECT count(*) AS count FROM usage_records').get()).toEqual({
     count: 0,
   });
@@ -715,13 +741,16 @@ describe('captured pending MCP schema identity at grant', () => {
             sqlite: f.db.sqlite,
             prepared,
           }),
-        admitExecution: () => {
-          executionCall = admitCapturedPendingCall(
+        admitExecution: (failure) => {
+          const admitted = admitCapturedPendingCall(
             record,
             f.db,
             '00000000-0000-4000-8000-000000000118',
-            prepared
+            prepared,
+            failure
           );
+          executionCall = admitted;
+          return admitted.refusal;
         },
         execute: (claimed) =>
           executeCapturedPendingCall({
@@ -735,20 +764,20 @@ describe('captured pending MCP schema identity at grant', () => {
           }),
       });
       expect(result).toMatchObject({
-        disposition: 'denied-not-executed',
+        disposition: 'execution-error',
         dispositionReason: 'policy-changed',
       });
       expect(credentials).toHaveBeenCalledTimes(1);
       expect(f.callTool).not.toHaveBeenCalled();
       expect(readPendingRequest(f.db.sqlite, record.requestId)).toMatchObject({
-        claim: 'unclaimed',
-        executionCallId: null,
+        claim: 'finished',
+        executionCallId: executionCallIdForRequest(record.requestId),
       });
       expect(
         f.db.sqlite
           .prepare('SELECT call_id FROM capability_calls WHERE call_id = ?')
           .get(executionCallIdForRequest(record.requestId))
-      ).toBeUndefined();
+      ).toEqual({ call_id: executionCallIdForRequest(record.requestId) });
       expect(f.db.sqlite.prepare('SELECT COUNT(*) AS count FROM usage_records').get()).toEqual({
         count: 0,
       });
@@ -761,22 +790,22 @@ describe('captured pending MCP schema identity at grant', () => {
     const f = await fixture('tracking', true, true);
     const credentials = vi.spyOn(workerMcpRoutes, 'resolveWorkerMcpCredentials');
     expect(await f.grant()).toMatchObject({
-      disposition: 'denied-not-executed',
+      disposition: 'execution-error',
       dispositionReason: 'policy-changed',
     });
     expect(credentials).not.toHaveBeenCalled();
-    expectNoExecution(f);
+    expectNoContactAfterClaim(f);
   });
 
   it('requires exact mediated review for a catalog approval and keeps its once-only claim', async () => {
     const refused = await fixture('tracking', true, true, 'require_approval');
     const credentials = vi.spyOn(workerMcpRoutes, 'resolveWorkerMcpCredentials');
     expect(await refused.grant()).toMatchObject({
-      disposition: 'denied-not-executed',
+      disposition: 'execution-error',
       dispositionReason: 'policy-changed',
     });
     expect(credentials).not.toHaveBeenCalled();
-    expectNoExecution(refused);
+    expectNoContactAfterClaim(refused);
 
     const admitted = await fixture('tracking', false, true, 'require_approval');
     const source = listExportableWorkspacePermissionDecisions(
@@ -824,9 +853,9 @@ describe('captured pending MCP schema identity at grant', () => {
         undefined,
         f.reviewPolicy(() => true, { proposalDigest: `sha256:${'b'.repeat(64)}` })
       )
-    ).toMatchObject({ disposition: 'denied-not-executed', dispositionReason: 'policy-changed' });
+    ).toMatchObject({ disposition: 'execution-error', dispositionReason: 'policy-changed' });
     expect(credentials).not.toHaveBeenCalled();
-    expectNoExecution(f);
+    expectNoContactAfterClaim(f);
   });
 
   it('checks the source marker before decoded mediation and reviewer contact', async () => {
@@ -842,18 +871,20 @@ describe('captured pending MCP schema identity at grant', () => {
     expectNoExecution(f);
   });
 
-  it('rechecks current mediation inside the claim before starting a CapabilityCall', async () => {
+  it('records no-contact refusal when current mediation changes at Main submission', async () => {
     const f = await fixture('tracking', false, true);
     const current = vi
       .fn()
       .mockReturnValueOnce(true)
       .mockReturnValueOnce(true)
       .mockReturnValue(false);
-    await expect(f.grant(undefined, f.reviewPolicy(current))).rejects.toMatchObject({
-      code: 'policy-changed',
+    await expect(f.grant(undefined, f.reviewPolicy(current))).resolves.toMatchObject({
+      disposition: 'execution-error',
+      dispositionReason: 'policy-changed',
+      claim: 'finished',
     });
     expect(current).toHaveBeenCalledTimes(3);
-    expectNoExecution(f);
+    expectNoContactAfterClaim(f);
   });
 
   it('preserves a settled Tool success when completed Policy observation fails', async () => {
@@ -972,7 +1003,7 @@ describe('captured pending MCP schema identity at grant', () => {
     'array-order',
     'renamed',
     'removed',
-  ])('tracking refuses a requested-tool %s change before claim', async (change) => {
+  ])('tracking refuses a requested-tool %s change without upstream contact', async (change) => {
     const f = await fixture();
     const current = tools();
     const property = (current[0]!.inputSchema.properties as Record<string, Record<string, unknown>>)
@@ -984,8 +1015,8 @@ describe('captured pending MCP schema identity at grant', () => {
     if (change === 'renamed') current[0]!.name = 'renamed-echo';
     if (change === 'removed') current.shift();
     f.retain(current);
-    expect(await f.grant()).toMatchObject({ disposition: 'denied-not-executed' });
-    expectNoExecution(f);
+    expect(await f.grant()).toMatchObject({ disposition: 'execution-error' });
+    expectNoContactAfterClaim(f);
   });
 
   it('refuses missing captured evidence even when the current requested schema is unchanged', async () => {
@@ -994,8 +1025,8 @@ describe('captured pending MCP schema identity at grant', () => {
       .prepare('DELETE FROM mcp_tool_schema_snapshots WHERE snapshot_id = ?')
       .run(f.record.schemaSnapshotId);
     f.retain(tools());
-    expect(await f.grant()).toMatchObject({ disposition: 'denied-not-executed' });
-    expectNoExecution(f);
+    expect(await f.grant()).toMatchObject({ disposition: 'execution-error' });
+    expectNoContactAfterClaim(f);
   });
 
   it('uses imported retained captured evidence without making it current live authority', async () => {
@@ -1021,8 +1052,8 @@ describe('captured pending MCP schema identity at grant', () => {
     );
     f.db.sqlite.prepare('DELETE FROM mcp_tool_schema_snapshots').run();
     importMcpToolSchemaSnapshots(f.db, captured);
-    expect(await f.grant()).toMatchObject({ disposition: 'denied-not-executed' });
-    expectNoExecution(f);
+    expect(await f.grant()).toMatchObject({ disposition: 'execution-error' });
+    expectNoContactAfterClaim(f);
   });
 
   it('pinned executes an unchanged captured call exactly once', async () => {
@@ -1052,13 +1083,13 @@ describe('captured pending MCP schema identity at grant', () => {
   it.each([
     'allowed-other',
     'excluded-other',
-  ])('pinned refuses whole-snapshot drift in %s before claim', async (name) => {
+  ])('pinned refuses whole-snapshot drift in %s without upstream contact', async (name) => {
     const f = await fixture('pinned');
     const current = tools();
     current.find((tool) => tool.name === name)!.inputSchema.description = 'Unrelated drift.';
     f.retain(current);
-    expect(await f.grant()).toMatchObject({ disposition: 'denied-not-executed' });
-    expectNoExecution(f);
+    expect(await f.grant()).toMatchObject({ disposition: 'execution-error' });
+    expectNoContactAfterClaim(f);
   });
 
   it.each([
@@ -1094,8 +1125,8 @@ describe('captured pending MCP schema identity at grant', () => {
       }
     });
     if (guard === 'agent' || guard === 'user-authority')
-      expect(result).toMatchObject({ state: 'ended', ending: 'invalidated' });
-    else expect(result).toMatchObject({ disposition: 'denied-not-executed' });
-    expectNoExecution(f);
+      expect(result).toMatchObject({ state: 'resolved', disposition: 'execution-error' });
+    else expect(result).toMatchObject({ disposition: 'execution-error' });
+    expectNoContactAfterClaim(f);
   });
 });

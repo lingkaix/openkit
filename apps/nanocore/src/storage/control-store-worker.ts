@@ -22,6 +22,7 @@ import { IdempotencyKeyConflictError } from '../runtime/idempotent-command.js';
 import type { PreparedControlPendingCommand } from '../runtime/pending-requests.js';
 import {
   applyControlPendingCommand,
+  assertControlPendingArchive,
   PendingRequestCommandError,
 } from '../runtime/pending-requests.js';
 import {
@@ -38,6 +39,7 @@ import { ControlStoreBusyError, controlStoreFor } from './control-store.js';
 import { applyControlAdmission } from './control-store-admission.js';
 import {
   applyControlPendingTransition,
+  prepareControlPendingArchive,
   prepareControlPendingCommands,
 } from './control-store-pending.js';
 import {
@@ -155,10 +157,18 @@ function failure(
 function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRefusal | undefined {
   let domain: ControlWorkerDomainRefusal | undefined;
   if (
-    operation === 'pending' &&
+    (operation === 'pending' ||
+      (['products', 'transition'].includes(operation) &&
+        error instanceof PendingRequestCommandError &&
+        ['request_executing', 'thread_busy', 'conflict'].includes(error.code))) &&
     (error instanceof PendingRequestCommandError || error instanceof IdempotencyKeyConflictError)
   )
-    return { operation, code: error.code, message: error.message, status: error.status };
+    return {
+      operation: operation as 'pending' | 'products' | 'transition',
+      code: error.code,
+      message: error.message,
+      status: error.status,
+    };
   // Retained format refusal is a fixed owner message, not an arbitrary TypeError diagnostic.
   if (
     operation === 'goal' &&
@@ -264,6 +274,15 @@ function unschedule(owner: OwnedDatabase): void {
   owner.immediate = null;
 }
 
+/** Identifies existing standalone metadata tuples; complete closeout uses the terminal/Pending owner. */
+function archivedThreads(request: WriteRequest): string[] {
+  return request.operation === 'products' || request.operation === 'transition'
+    ? request.transition.products
+        .filter((input) => input.kind === 'thread' && input.record.status === 'archived')
+        .map((input) => String(input.record.id))
+    : [];
+}
+
 /**
  * Commits at most 32 transitions, with a savepoint per transition.
  *
@@ -271,7 +290,46 @@ function unschedule(owner: OwnedDatabase): void {
  */
 function flush(owner: OwnedDatabase): void {
   unschedule(owner);
-  const batch = owner.pending.splice(0, CONTROL_WORKER_LIMITS.batchTransitions);
+  // Archive starts a batch so its immutable canonical proof includes every earlier committed writer.
+  const archiveIndex = owner.pending.findIndex((request) => archivedThreads(request).length > 0);
+  const nextArchive =
+    archiveIndex === 0
+      ? owner.pending.findIndex(
+          (request, index) => index > 0 && archivedThreads(request).length > 0
+        )
+      : archiveIndex;
+  const count =
+    nextArchive > 0
+      ? Math.min(nextArchive, CONTROL_WORKER_LIMITS.batchTransitions)
+      : CONTROL_WORKER_LIMITS.batchTransitions;
+  if (archiveIndex === 0 && owner.scopeDb?.scope === 'workspace') {
+    const first = owner.pending[0]!;
+    try {
+      // Receipt inspection precedes any new immutable dependency; the admission owner still validates exact replay.
+      const retainedReceipt =
+        first.operation === 'transition' &&
+        owner.sqlite
+          .prepare('SELECT 1 FROM idempotency_requests WHERE request_key=? AND expires_at>?')
+          .get(first.transition.receipt.key, first.transition.receipt.createdAt);
+      owner.pending[0] = {
+        ...first,
+        preparedPending: retainedReceipt
+          ? undefined
+          : prepareControlPendingArchive(owner.scopeDb, owner.contentMount),
+      };
+    } catch (error) {
+      owner.pending.shift();
+      const domain = domainRefusal(first.operation, error);
+      reply(
+        domain
+          ? { ...failure(first.id, 'precondition'), domain }
+          : failure(first.id, failureCode(error))
+      );
+      if (owner.pending.length) owner.immediate = setImmediate(() => flush(owner));
+      return;
+    }
+  }
+  const batch = owner.pending.splice(0, count);
   if (batch.length === 0) return;
   let bodyFinished = false;
   let replies: ControlWorkerReply[];
@@ -290,6 +348,11 @@ function flush(owner: OwnedDatabase): void {
               request.transition,
               request.preparedEntries ?? []
             );
+            if (!result.replayed && owner.scopeDb?.scope === 'workspace')
+              for (const threadId of archivedThreads(request)) {
+                if (!request.preparedPending) throw new ControlProductPreconditionError();
+                assertControlPendingArchive(owner.scopeDb, threadId, request.preparedPending);
+              }
             if (!result.replayed)
               for (const command of request.transition.pending ?? []) {
                 if (owner.scopeDb?.scope !== 'workspace')
@@ -315,6 +378,11 @@ function flush(owner: OwnedDatabase): void {
               request.transition.products,
               request.preparedEntries ?? []
             );
+            if (owner.scopeDb?.scope === 'workspace')
+              for (const threadId of archivedThreads(request)) {
+                if (!request.preparedPending) throw new ControlProductPreconditionError();
+                assertControlPendingArchive(owner.scopeDb, threadId, request.preparedPending);
+              }
             for (const command of request.transition.pending ?? []) {
               if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
               applyControlPendingCommand(

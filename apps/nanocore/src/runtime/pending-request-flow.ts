@@ -24,6 +24,7 @@ import { TurnStartValidationError } from './orchestrator.js';
 import { projectApprovalEffect } from './pending-request-disclosure.js';
 import type { ControlPendingCommandInput } from './pending-requests.js';
 import {
+  archiveSelects,
   ControlPendingCommandInputSchema,
   compareReadiness,
   executorKindForTurn,
@@ -645,7 +646,8 @@ export async function respondRecordedApproval(input: {
   readonly requestActor: Actor | undefined;
   readonly dependencies: PendingAdmissionDependencies;
   readonly prepare?: () => Promise<void>;
-  readonly admitExecution?: (failure?: string) => void;
+  /** Records Main submission and returns any final local refusal for the existing native finish. */
+  readonly admitExecution?: (failure?: string) => string | undefined;
   readonly receipt?: ControlPendingTransition['receipt'];
   readonly execute?: (record: PendingRequestRecord) => Promise<{
     readonly disposition: 'approved-executed' | 'execution-error' | 'outcome-unknown';
@@ -831,7 +833,8 @@ export async function respondRecordedApproval(input: {
         failure = 'approval_preview_unavailable';
       }
     }
-    input.admitExecution?.(failure);
+    const submissionRefusal = input.admitExecution?.(failure);
+    if (typeof submissionRefusal === 'string') failure = submissionRefusal;
   })();
   let disposition: 'approved-executed' | 'execution-error' | 'outcome-unknown' = failure
     ? 'execution-error'
@@ -1503,19 +1506,6 @@ function conflictOrNotPending(
     'request_not_pending',
     `The request is already ${record.state}.`,
     409
-  );
-}
-
-function archiveSelects(record: PendingRequestRecord): boolean {
-  if (record.state === 'pending') return true;
-  if (record.delivery === 'frozen') return true;
-  if (record.delivery === 'undelivered' && isFinalOutcome(record)) return true;
-  return (
-    isCommandIntentApproval(record) &&
-    record.resolution === 'granted' &&
-    record.claim === 'unclaimed' &&
-    (record.disposition === null ||
-      (record.disposition === 'denied-not-executed' && record.invalidationTurnId === null))
   );
 }
 

@@ -184,7 +184,14 @@ export type ControlWorkerFailureCode = (typeof CONTROL_WORKER_FAILURE_CODES)[num
 
 /** Trusted domain refusals preserve the existing public contract; native SQL diagnostics never enter this projection. */
 export interface ControlWorkerDomainRefusal {
-  readonly operation: 'goal' | 'maintenance' | 'material' | 'review' | 'pending';
+  readonly operation:
+    | 'goal'
+    | 'maintenance'
+    | 'material'
+    | 'review'
+    | 'pending'
+    | 'products'
+    | 'transition';
   readonly code: string;
   readonly message: string;
   readonly status: number;
@@ -322,6 +329,9 @@ function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
         value.status === 409)) &&
     (value.operation === 'goal' ||
       value.operation === 'pending' ||
+      ((value.operation === 'products' || value.operation === 'transition') &&
+        ['request_executing', 'thread_busy', 'conflict'].includes(String(value.code)) &&
+        value.status === 409) ||
       ((value.operation === 'material' || value.operation === 'review') &&
         ((['stale', 'conflict', 'recovery_required', 'idempotency_key_conflict'].includes(
           String(value.code)

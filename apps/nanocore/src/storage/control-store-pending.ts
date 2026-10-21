@@ -149,6 +149,34 @@ export function prepareControlPendingCommands(
     ] as const)
       ids.add(pendingRequestItemId(requestId, role));
   }
+  return prepareRetainedPendingItems(db, mount, prepared, ids);
+}
+
+/** Prepares the current canonical Item context after earlier queued transitions commit, before archive SQL. */
+export function prepareControlPendingArchive(
+  db: WorkspaceDb,
+  mount: ControlProductContentMount | undefined
+): PreparedControlPendingCommand {
+  if (db.sqlite.inTransaction) throw new Error('Archive immutable preparation must precede SQL.');
+  const rows = db.sqlite
+    .prepare("SELECT DISTINCT id FROM control_product_entries WHERE kind='item'")
+    .all() as { id: string }[];
+  return prepareRetainedPendingItems(
+    db,
+    mount,
+    [],
+    rows.map((row) => row.id)
+  );
+}
+
+/** Reuses exact retained descriptors as proof, never as new product writes. */
+function prepareRetainedPendingItems(
+  db: WorkspaceDb,
+  mount: ControlProductContentMount | undefined,
+  prepared: readonly PreparedControlEntry[],
+  ids: Iterable<string>
+): PreparedControlPendingCommand {
+  const owner = { kind: 'workspace' as const, workspaceId: db.workspaceId };
   const supplied = new Set(
     prepared.filter((entry) => entry.input.kind === 'item').map((entry) => entry.id)
   );
