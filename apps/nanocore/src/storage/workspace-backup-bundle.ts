@@ -15,7 +15,23 @@ import { type EntityKind, isEntityId } from '@openkit/protocol';
 import { type Node as JsonNode, type ParseError, parseTree, visit } from 'jsonc-parser';
 import { z } from 'zod';
 import type { FileStorageAdmission, FileStorageReservation } from './artifacts/file-admission.js';
+import { FileAdmissionError } from './artifacts/file-admission.js';
 import { assertWorkspaceArchiveFilePath } from './workspace-archive.js';
+
+/** Safe refusal category for offline callers; no source exception or content escapes. */
+export class WorkspaceBackupBundleError extends Error {
+  constructor(
+    readonly code:
+      | 'invalid-bundle'
+      | 'unsafe-path'
+      | 'release-mismatch'
+      | 'unsupported-format'
+      | 'capacity-exceeded'
+  ) {
+    super('Workspace backup bundle verification failed.');
+    this.name = 'WorkspaceBackupBundleError';
+  }
+}
 
 /** Root manifest of the operational bundle, distinct from analytical export V3. */
 export const WORKSPACE_BACKUP_MANIFEST_FILE = 'manifest.json';
@@ -198,6 +214,17 @@ function freezeProjection<T>(value: T): T {
 
 /** Parses the known manifest core and ignores, but never forwards, descriptive additions. */
 export function parseWorkspaceBackupManifest(value: unknown): WorkspaceBackupManifest {
+  if (
+    value &&
+    typeof value === 'object' &&
+    'inventory' in value &&
+    Array.isArray(value.inventory)
+  ) {
+    for (const entry of value.inventory) {
+      if (entry && typeof entry.path === 'string' && !isBundlePath(entry.path))
+        throw new WorkspaceBackupBundleError('unsafe-path');
+    }
+  }
   const parsed = manifestSchema.safeParse(value);
   if (!parsed.success) throw new Error('Workspace backup manifest is invalid.');
   const manifest = parsed.data;
@@ -312,7 +339,7 @@ function assertRequiredFeatures(value: unknown, supported: ReadonlySet<string>):
       !Array.isArray(features) ||
       features.some((feature) => typeof feature !== 'string' || !supported.has(feature))
     ) {
-      throw new Error('Workspace backup requires unsupported features.');
+      throw new WorkspaceBackupBundleError('unsupported-format');
     }
   }
   for (const child of Object.values(value)) assertRequiredFeatures(child, supported);
@@ -328,7 +355,7 @@ interface SourceTree {
 async function existingRoot(path: string): Promise<string> {
   const root = resolve(path);
   if ((await realpath(root)) !== root || !(await lstat(root)).isDirectory()) {
-    throw new Error('Workspace backup root is unsafe.');
+    throw new WorkspaceBackupBundleError('unsafe-path');
   }
   return root;
 }
@@ -376,12 +403,12 @@ async function inspectTree(root: FileHandle): Promise<SourceTree> {
     const children = await opendir(sourceDirectoryPath(directory), { bufferSize: 1 });
     for await (const { name } of children) {
       const path = prefix ? `${prefix}/${name}` : name;
-      if (!isBundlePath(path) || ++count > MAX_ENTRIES)
-        throw new Error('Workspace backup tree is invalid.');
+      if (!isBundlePath(path)) throw new WorkspaceBackupBundleError('unsafe-path');
+      if (++count > MAX_ENTRIES) throw new Error('Workspace backup tree is invalid.');
       const childPath = join(sourceDirectoryPath(directory), name);
       const stat = await lstat(childPath, { bigint: true });
       if (stat.dev !== device || stat.isSymbolicLink()) {
-        throw new Error('Workspace backup contains a linked entry.');
+        throw new WorkspaceBackupBundleError('unsafe-path');
       }
       if (stat.isDirectory()) {
         const child = await openSourceDirectory(childPath, stat);
@@ -607,7 +634,7 @@ export async function withVerifiedWorkspaceBackupBundle<T>(
           manifest.release.version !== input.expectedRelease.version ||
           manifest.release.buildId !== input.expectedRelease.buildId
         ) {
-          throw new Error('Workspace backup requires the same exact release.');
+          throw new WorkspaceBackupBundleError('release-mismatch');
         }
         for (const database of manifest.databaseFormats) {
           for (const [marker, version] of Object.entries(database.markers)) {
@@ -615,7 +642,7 @@ export async function withVerifiedWorkspaceBackupBundle<T>(
               !Object.hasOwn(input.supportedDatabaseFormats, marker) ||
               input.supportedDatabaseFormats[marker] !== version
             ) {
-              throw new Error('Workspace backup database format is unsupported.');
+              throw new WorkspaceBackupBundleError('unsupported-format');
             }
           }
         }
@@ -675,9 +702,12 @@ export async function withVerifiedWorkspaceBackupBundle<T>(
       } finally {
         await source.close();
       }
-    } catch {
-      // Neither a malformed metadata value nor an OS error may disclose content or paths.
-      throw new Error('Workspace backup bundle verification failed.');
+    } catch (error) {
+      // Only bounded categories cross this boundary, never paths or packaged content.
+      if (error instanceof WorkspaceBackupBundleError) throw error;
+      throw new WorkspaceBackupBundleError(
+        error instanceof FileAdmissionError ? 'capacity-exceeded' : 'invalid-bundle'
+      );
     }
     active = true;
     result = await consume(bundle);
