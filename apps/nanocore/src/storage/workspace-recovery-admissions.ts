@@ -124,14 +124,36 @@ export function prepareRecoveryAdmission(
 export function endRecoveryAdmission(
   core: CoreDb,
   id: string,
-  state: 'finished' | 'abandoned'
+  state: 'finished' | 'abandoned',
+  result?: WorkspaceRecoveryCliReport
 ): void {
   const row = readRecoveryAdmission(core, id);
   if (!row || (row.state !== 'prepared' && row.state !== state)) refuseRecovery('request-conflict');
+  if (result)
+    core.sqlite
+      .prepare('UPDATE workspace_recovery_admissions SET proof_json=? WHERE admission_id=?')
+      .run(JSON.stringify({ ...row.proof, result }), id);
   if (row.state !== state)
     core.sqlite
       .prepare(
         "UPDATE workspace_recovery_admissions SET state=?, revision=revision+1, updated_at=? WHERE admission_id=? AND state='prepared'"
       )
       .run(state, new Date().toISOString(), id);
+}
+
+/** Constructs the common path-free report without introducing another retained result shape. */
+export function recoveryReport(
+  command: WorkspaceRecoveryCliArgs['command'],
+  disposition: WorkspaceRecoveryCliReport['disposition'],
+  capture: WorkspaceBackupReport
+): WorkspaceRecoveryCliReport {
+  return {
+    command,
+    disposition,
+    workspaceId: capture.workspaceId,
+    capture,
+    droppedSourceMemberIds: [],
+    restrictedRecovery: false,
+    nextAction: disposition === 'prepared' ? 'finish' : 'none',
+  };
 }
