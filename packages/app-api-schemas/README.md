@@ -265,5 +265,3 @@ MCP binding requests, catalog entries and Worker projections expose only allowed
 Native `policy.write` retains the human Policy proposal/outcome and adds a separate closed Coordinator Task-grant input/output. `GoalTaskPolicyWriteInputSchema` names only the Task Thread, expected Policy revision and existing permission fields; native consumers restore authority and lineage. `NativeOperationDefinition.inputSchema` permits an object union for these native variants; public operation inputs remain objects and no HTTP/CLI route is added.
 
 Direct Material revision save validates the exact content against a 16,777,216 UTF-8-byte limit before effects. Multibyte characters count by encoded bytes. Retained revision readers remain unchanged.
-
-Goal proposal inputs expose registered product operations and native Goal, Workspace, Thread, and Turn resource containers; retained and read Policy shapes remain open. NanoCore validates exact current references before it raises approval.

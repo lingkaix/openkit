@@ -96,66 +96,6 @@ const CapturedDomain = z
   })
   .strict();
 
-/** Returns a safe repair instruction for unsupported native proposal semantics; grants no authority. */
-export function goalDomainSupportError(input: {
-  readonly statement: Pick<GoalDomainStatement, 'scope' | 'lifetime'>;
-  readonly workspaceId: string;
-  readonly goalId: string;
-  readonly store: FsStore;
-  readonly actor: Actor;
-  readonly administratorEligible: boolean;
-}): string | null {
-  const { statement, workspaceId, goalId, store, actor, administratorEligible } = input;
-  const anchor = statement.lifetime.anchor;
-  if (
-    anchor.owner.kind !== 'workspace' ||
-    anchor.owner.workspaceId !== workspaceId ||
-    anchor.kind !== 'goal' ||
-    anchor.id !== goalId
-  )
-    return 'goalDomain.lifetime.anchor must reference this exact Workspace and Goal.';
-  if (
-    statement.scope.actions.some(
-      (action) => !Object.hasOwn(PRODUCT_OPERATION_ACCESS_RIGHTS, action)
-    )
-  )
-    return 'goalDomain.scope.actions must use registered product operations, such as knowledge.read.';
-  for (const resource of statement.scope.resources) {
-    if (resource.kind === 'mcp-tool') {
-      if (resource.workspaceId !== workspaceId)
-        return 'goalDomain.scope.resources must reference this exact Workspace.';
-      continue;
-    }
-    const container = resource.container;
-    if (container.owner.kind !== 'workspace' || container.owner.workspaceId !== workspaceId)
-      return 'goalDomain.scope.resources.container.owner must reference this exact Workspace.';
-    let valid =
-      (container.kind === 'goal' && container.id === goalId) ||
-      (container.kind === 'workspace' && container.id === workspaceId);
-    if (container.kind === 'thread')
-      valid = isThreadIdVisible(
-        store,
-        workspaceId,
-        container.id,
-        actor.userId,
-        administratorEligible
-      );
-    if (container.kind === 'turn') {
-      try {
-        const turn = store.getTurnById(container.id);
-        valid =
-          workspaceIdForOwner(turn.owner) === workspaceId &&
-          isThreadIdVisible(store, workspaceId, turn.threadId, actor.userId, administratorEligible);
-      } catch {
-        valid = false;
-      }
-    }
-    if (!valid)
-      return 'goalDomain.scope.resources.container must reference this Goal, Workspace, or a currently visible Thread or Turn.';
-  }
-  return null;
-}
-
 /** Publishes only a committed, jointly approved Plan/domain through the sole config CAS writer. */
 export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies) {
   function saved() {
@@ -264,23 +204,59 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
       })
     )
       throw new GoalDomainUnavailable('Goal-domain deciding credential is no longer authorized.');
-    const supportError = goalDomainSupportError({
-      statement: active,
-      workspaceId,
-      goalId: source.goalId,
-      store: deps.store,
-      actor,
-      administratorEligible: isCurrentDeploymentAdministrator(deps.coreDb, actor),
-    });
-    if (supportError) throw new GoalDomainUnavailable(supportError);
-    for (const action of active.scope.actions) {
-      if (
-        !authorizeWorkspace(deps.coreDb, actor, workspaceId, {
-          policyOperation: action as keyof typeof PRODUCT_OPERATION_ACCESS_RIGHTS,
-          mutating: true,
-        })
-      )
-        throw new GoalDomainUnavailable('Goal-domain scope exceeds the deciding human authority.');
+    for (const resource of active.scope.resources) {
+      const resourceWorkspaceId =
+        resource.kind === 'mcp-tool'
+          ? resource.workspaceId
+          : resource.container.owner.kind === 'workspace'
+            ? resource.container.owner.workspaceId
+            : null;
+      if (resourceWorkspaceId !== workspaceId)
+        throw new GoalDomainUnavailable(
+          'Goal-domain resources must remain in their approved Workspace.'
+        );
+      if (resource.kind === 'container') {
+        const container = resource.container;
+        const valid =
+          (container.kind === 'goal' && container.id === source.goalId) ||
+          (container.kind === 'workspace' && container.id === workspaceId) ||
+          (container.kind === 'thread' &&
+            isThreadIdVisible(
+              deps.store,
+              workspaceId,
+              container.id,
+              actor.userId,
+              isCurrentDeploymentAdministrator(deps.coreDb, actor)
+            )) ||
+          (container.kind === 'turn' &&
+            (() => {
+              const turn = deps.store.getTurnById(container.id);
+              return (
+                workspaceIdForOwner(turn.owner) === workspaceId &&
+                isThreadIdVisible(
+                  deps.store,
+                  workspaceId,
+                  turn.threadId,
+                  actor.userId,
+                  isCurrentDeploymentAdministrator(deps.coreDb, actor)
+                )
+              );
+            })());
+        if (!valid)
+          throw new GoalDomainUnavailable('Goal-domain resource container is unavailable.');
+      }
+      for (const action of active.scope.actions) {
+        if (
+          !Object.hasOwn(PRODUCT_OPERATION_ACCESS_RIGHTS, action) ||
+          !authorizeWorkspace(deps.coreDb, actor, workspaceId, {
+            policyOperation: action as keyof typeof PRODUCT_OPERATION_ACCESS_RIGHTS,
+            mutating: true,
+          })
+        )
+          throw new GoalDomainUnavailable(
+            'Goal-domain scope exceeds the deciding human authority.'
+          );
+      }
     }
     return { statement: active, actor, goal: view.goal, request };
   }

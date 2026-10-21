@@ -45,7 +45,7 @@ import {
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
 import { commandRequestKey, type FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
-import { type GoalDomainPolicyService, goalDomainSupportError } from '../policy/goal-domains.js';
+import type { GoalDomainPolicyService } from '../policy/goal-domains.js';
 import { EMPTY_POLICY_DOCUMENT, policyDigest } from '../policy/statements.js';
 import { evaluateWorkspaceResourceAccess } from '../policy/workspace-resource-access.js';
 import {
@@ -1366,45 +1366,6 @@ function applyNativeGoalMutation(
         pendingRequestId: `ap_${commandInput.requestId}`,
         createdAt: now(),
       };
-      // Main validates domain semantics at submission; native-owned references must still be current in this transaction.
-      for (const resource of input.goalDomain.scope.resources) {
-        if (resource.kind === 'mcp-tool') {
-          if (resource.workspaceId !== goal.workspaceId)
-            throw new GoalCommandError(
-              'invalid_request',
-              'Goal domain belongs to another Workspace.',
-              400
-            );
-          continue;
-        }
-        const container = resource.container;
-        let valid =
-          container.owner.kind === 'workspace' && container.owner.workspaceId === goal.workspaceId;
-        if (valid) {
-          if (container.kind === 'goal') valid = container.id === goal.goalId;
-          else if (container.kind === 'workspace') valid = container.id === goal.workspaceId;
-          else if (container.kind === 'thread')
-            valid = nativeThreadVisible(db, nativeInput, container.id, context.actor);
-          else if (container.kind === 'turn') {
-            try {
-              valid = nativeThreadVisible(
-                db,
-                nativeInput,
-                nativeTurn(db, container.id).threadId,
-                context.actor
-              );
-            } catch {
-              valid = false;
-            }
-          } else valid = false;
-        }
-        if (!valid)
-          throw new GoalCommandError(
-            'invalid_request',
-            'goalDomain.scope.resources.container must reference this Goal, Workspace, or a currently visible Thread or Turn.',
-            400
-          );
-      }
       const goalDomain = captureGoalDomain(input.goalDomain, goal, version, context);
       invalidateGoalPendingRequests(
         db.sqlite,
@@ -1723,16 +1684,7 @@ export async function executeGoalOperation<K extends GoalOperationId>(
   db: WorkspaceDb,
   services: GoalOwnerServices = {}
 ): Promise<GoalView> {
-  const parsed = GOAL_OPERATION_DEFINITIONS[id].inputSchema.safeParse(value);
-  if (!parsed.success)
-    throw new GoalCommandError(
-      'invalid_request',
-      id === 'goal.plan.propose'
-        ? `Invalid ${parsed.error.issues[0]?.path.join('.') || 'input'}. Use registered product actions and exact native Goal, Workspace, Thread or Turn references.`
-        : 'Invalid Goal operation input.',
-      400
-    );
-  const input = parsed.data as GoalArguments;
+  const input = GOAL_OPERATION_DEFINITIONS[id].inputSchema.parse(value) as GoalArguments;
   const goalId =
     typeof input.goalId === 'string'
       ? input.goalId
@@ -1921,17 +1873,6 @@ export async function executeGoalOperation<K extends GoalOperationId>(
         sourceHash: commandInputHash(request),
         failure,
       };
-    }
-    if (id === 'goal.plan.propose' && goal) {
-      const supportError = goalDomainSupportError({
-        statement: input.goalDomain,
-        store,
-        actor: context.actor,
-        workspaceId: goal.workspaceId,
-        goalId: goal.goalId,
-        administratorEligible: administrator?.userId === context.actor.userId,
-      });
-      if (supportError) throw new GoalCommandError('invalid_request', supportError, 400);
     }
     const nativeInput = ControlGoalCommandInputSchema.parse({
       command: { operation: id, arguments: input },

@@ -12,11 +12,10 @@ import type { AgentTool } from '../internal-agents/internal-agent-loop.js';
 import { createTaskKnowledgePreparation } from '../knowledge-operations.js';
 import type { FsStore } from '../lib/store.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from '../mode-entry-routes.js';
-import { OperationError } from '../operation-error.js';
 import type { GoalTaskPolicyService } from '../policy/goal-task-policy.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
-import { GoalCommandError, goalActor, readGoalView } from './goal-owner.js';
+import { goalActor, readGoalView } from './goal-owner.js';
 import { reserveGoalTask } from './goal-task-admission.js';
 import {
   commandInputHash,
@@ -108,10 +107,7 @@ export function createCoordinatorTaskTool(options: {
             policyOperation: 'workspace.write',
           })
         )
-          throw new TurnStartValidationError(
-            'task_admission_failed',
-            'Current Task write authority is unavailable.'
-          );
+          throw new Error('Current Task write authority is unavailable.');
         const assertGoalTaskAdmission = () => {
           const current: { kernel?: PolicyDecision } = {};
           const human = currentWorkspaceAuthority(
@@ -129,10 +125,7 @@ export function createCoordinatorTaskTool(options: {
             }
           );
           if (!human || !current.kernel || !options.goalTaskPolicy)
-            throw new TurnStartValidationError(
-              'task_admission_failed',
-              'Current Goal Task Policy admission is unavailable.'
-            );
+            throw new Error('Current Goal Task Policy admission is unavailable.');
           const admission = options.goalTaskPolicy(db, goal.responsibleUserId).evaluateAdmission({
             workspaceDb: db,
             goalId: goal.goalId,
@@ -145,8 +138,7 @@ export function createCoordinatorTaskTool(options: {
             humanKernel: current.kernel,
           });
           if (admission.kernel.effect !== 'allow')
-            throw new TurnStartValidationError(
-              'task_admission_failed',
+            throw new Error(
               'The selected Task Worker or resources are outside the current Goal domain.'
             );
         };
@@ -328,15 +320,8 @@ export function createCoordinatorTaskTool(options: {
               type: 'text',
               text: JSON.stringify({
                 ...(receivingThreadId ? { threadId: receivingThreadId } : {}),
-                ...(error instanceof TurnStartValidationError ||
-                error instanceof GoalCommandError ||
-                error instanceof OperationError
-                  ? { code: error.code, message: error.message }
-                  : {
-                      code: 'task_admission_failed',
-                      message:
-                        'Task admission failed without a safe result. Inspect current Task records before a new request.',
-                    }),
+                ...(error instanceof TurnStartValidationError ? { code: error.code } : {}),
+                message: error instanceof Error ? error.message : 'Task admission failed.',
               }),
             },
           ],
