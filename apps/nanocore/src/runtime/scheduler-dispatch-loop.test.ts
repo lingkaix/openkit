@@ -268,17 +268,19 @@ class FailingTurnExecutor extends RecordingTurnExecutor {
 /**
  * Creates an isolated migrated Core database for scheduler dispatch loop tests.
  *
+ * @param registerDemoMembership False for native fixtures; SQL-only fixtures retain early membership.
  * @returns Open Core database handle.
  */
-function createMigratedCoreDb() {
+function createMigratedCoreDb(registerDemoMembership = true) {
   const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-scheduler-loop-')));
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  recordWorkspaceOwnerMembership({
-    coreDb,
-    ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-  });
+  if (registerDemoMembership)
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
   return coreDb;
 }
 
@@ -422,8 +424,13 @@ async function admitTestProductTurn(
 
 describe('route B durable intent before effects', () => {
   it('prepares the accepted immutable admission once without imposing static helper order', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = createMigratedCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const executor = new RecordingTurnExecutor(coreDb);
     const snapshot = createInMemoryRuntimeConfigSnapshot({
       agentManifests: [agentManifest()],
@@ -470,8 +477,13 @@ describe('route B durable intent before effects', () => {
   });
 
   it('retains unknown operation ownership after a lost native response instead of releasing a possibly accepted execution', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = createMigratedCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const executor = new RecordingTurnExecutor(coreDb);
     executor.submit = async () => {
       throw new Error('Response lost after the native boundary was entered.');
@@ -527,9 +539,14 @@ describe('route B durable intent before effects', () => {
 
 describe('scheduler dispatch loop', () => {
   it('dispatches one monthly UTC occurrence in its existing Thread through the ordinary modeled Worker port', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = createMigratedCoreDb(false);
     const root = coreDb.dataRoot;
     const store = await createDemoStore({ dataRoot: root });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const manifest = agentManifest();
     const executor = new RecordingTurnExecutor(coreDb);
     const thread = await store.createThread(DEMO_WORKSPACE_ID, 'Monthly existing target');
@@ -621,9 +638,14 @@ describe('scheduler dispatch loop', () => {
     'dispatch-then-cancel',
     'cancel-only',
   ] as const)('refuses a same-Store cached recurring Turn contradiction after failed persistence: %s', async (consumer) => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = createMigratedCoreDb(false);
     const root = coreDb.dataRoot;
     const store = await createDemoStore({ dataRoot: root });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const manifest = agentManifest();
     const executor = new RecordingTurnExecutor(coreDb);
     const thread = await store.createThread(DEMO_WORKSPACE_ID, 'Retain canonical recurring Turn');
@@ -753,8 +775,13 @@ describe('scheduler dispatch loop', () => {
     'missing',
     'stale-cache',
   ] as const)('dispatches event-linked work without a receipt and preserves faulty publication: %s', async (fault) => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = createMigratedCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const executor = new RecordingTurnExecutor(coreDb);
     const manifest = agentManifest();
     const pollThread = await store.createThread(DEMO_WORKSPACE_ID, 'Scheduled source poll');
@@ -936,9 +963,14 @@ describe('scheduler dispatch loop', () => {
     'cached-only',
     'contradictory',
   ] as const)('inspects initial recurring publication without repairing it after restart: %s', async (fault) => {
-    let coreDb = createMigratedCoreDb();
+    let coreDb = createMigratedCoreDb(false);
     const root = coreDb.dataRoot;
     const store = await createDemoStore({ dataRoot: root });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const manifest = agentManifest();
     const initialExecutor = new RecordingTurnExecutor(coreDb);
     const thread = await store.createThread(DEMO_WORKSPACE_ID, 'Recurring worker');
@@ -1147,8 +1179,13 @@ describe('scheduler dispatch loop', () => {
     separateHandle,
     outcome,
   }) => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = createMigratedCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const executor = new RecordingTurnExecutor(coreDb, separateHandle);
     const manifest = agentManifest();
     const gate = Promise.withResolvers<void>();
@@ -1374,8 +1411,13 @@ describe('scheduler dispatch loop', () => {
     true,
     false,
   ])('does not wait for or disclose a foreign claimed admission, separate Core handle %s', async (separateHandle) => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = createMigratedCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const manifest = agentManifest();
     const executor = new RecordingTurnExecutor(coreDb, separateHandle);
     const gate = Promise.withResolvers<void>();
@@ -1493,8 +1535,13 @@ describe('scheduler dispatch loop', () => {
   });
 
   it('excludes a second FIFO preparation after image operation intent until submission', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = createMigratedCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const executor = new NativeCompletingTurnExecutor(coreDb);
     const manifest = agentManifest();
     const gate = Promise.withResolvers<void>();
@@ -1596,8 +1643,13 @@ describe('scheduler dispatch loop', () => {
   });
 
   it('ends overlapping background passes and later dispatches queued admissions in FIFO order', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = createMigratedCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const executor = new NativeCompletingTurnExecutor(coreDb);
     const manifest = agentManifest();
     const gate = Promise.withResolvers<void>();
@@ -1705,8 +1757,13 @@ describe('scheduler dispatch loop', () => {
     separateHandle,
     failureStage,
   }) => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = createMigratedCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const workspace = await store.createWorkspace('Foreign Workspace');
     const thread = await store.createThread(workspace.id, 'Foreign Thread');
     const turnExecutor = new RecordingTurnExecutor(coreDb, separateHandle);
@@ -1825,8 +1882,13 @@ describe('scheduler dispatch loop', () => {
     true,
     false,
   ])('preserves original acceptance when cancellation after acquisition refuses and later work is queued, separate Core handle %s', async (separateHandle) => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = createMigratedCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turnExecutor = new RecordingTurnExecutor(coreDb, separateHandle);
     const manifest = agentManifest();
     const thread = await store.createThread(
@@ -1919,8 +1981,13 @@ describe('scheduler dispatch loop', () => {
     separateHandle,
     failureStage,
   }) => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = createMigratedCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const workspace = await store.createWorkspace('Other User Workspace');
     const thread = await store.createThread(workspace.id, 'Other User Thread');
     const turnExecutor = new RecordingTurnExecutor(coreDb, separateHandle);
@@ -2030,8 +2097,13 @@ describe('scheduler dispatch loop', () => {
     true,
     false,
   ])('keeps its accepted work after a later foreign row is corrupted, separate Core handle %s', async (separateHandle) => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = createMigratedCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turnExecutor = new RecordingTurnExecutor(coreDb, separateHandle);
     const manifest = agentManifest();
     const workspace = await store.createWorkspace('Later Foreign Workspace');
@@ -2139,8 +2211,13 @@ describe('scheduler dispatch loop', () => {
     true,
     false,
   ])('preserves an exact own commit failure after acquisition re-attribution, separate Core handle %s', async (separateHandle) => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = createMigratedCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turnExecutor = new RecordingTurnExecutor(coreDb, separateHandle);
     const manifest = agentManifest();
     const failure = new TurnStartValidationError('recovery_required', 'Own commit failed', 503);
@@ -2199,8 +2276,13 @@ describe('scheduler dispatch loop', () => {
     separateHandle,
     failureStage,
   }) => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = createMigratedCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turnExecutor = new RecordingTurnExecutor(coreDb, separateHandle);
     const manifest = agentManifest();
     const cancel = vi.spyOn(schedulerRecords, 'cancelSchedulerAdmissionEntry');
@@ -2266,8 +2348,13 @@ describe('scheduler dispatch loop', () => {
   ])('keeps valid admin work accepted behind another denial: $earlierDeniedQueue', async ({
     earlierDeniedQueue,
   }) => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = createMigratedCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const manifest = agentManifest();
     const requestId = earlierDeniedQueue
       ? '00000000-0000-4000-8000-00000000f112'
@@ -2365,8 +2452,13 @@ describe('scheduler dispatch loop', () => {
     true,
     false,
   ])('terminalizes its own transient preparation failure without later dispatch, separate Core handle %s', async (separateHandle) => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = createMigratedCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turnExecutor = new RecordingTurnExecutor(coreDb, separateHandle);
     const manifest = agentManifest();
     const requestId = separateHandle
@@ -2454,8 +2546,13 @@ describe('scheduler dispatch loop', () => {
   )('preserves accepted work after its own authority revocation, separate Core handle $separateHandle', async ({
     separateHandle,
   }) => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = createMigratedCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turnExecutor = new RecordingTurnExecutor(coreDb, separateHandle);
     const manifest = agentManifest();
     const prepare = turnExecutor.prepareAgentSessionForTurn.bind(turnExecutor);
@@ -2513,8 +2610,13 @@ describe('scheduler dispatch loop', () => {
   });
 
   it('preserves its own transient failure when admission cancellation races', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = createMigratedCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turnExecutor = new RecordingTurnExecutor(coreDb);
     const manifest = agentManifest();
     const failure = new Error('Own transient preparation failure');
@@ -2559,8 +2661,13 @@ describe('scheduler dispatch loop', () => {
   });
 
   it('selects the dequeued Workspace context instead of the initiating request context', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = createMigratedCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const queuedWorkspace = await store.createWorkspace('Queued Workspace');
     const queuedThread = await store.createThread(queuedWorkspace.id, 'Queued Thread');
     const turnExecutor = new RecordingTurnExecutor(coreDb);
@@ -2686,8 +2793,13 @@ describe('scheduler dispatch loop', () => {
     'membership',
     'server-admin-token',
   ] as const)('denies a queued admission after its %s authority is revoked', async (authorityKind) => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = createMigratedCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turnExecutor = new RecordingTurnExecutor(coreDb);
     const timestamp = '2026-07-19T00:00:00.000Z';
     const now = Date.parse(timestamp);
@@ -2798,8 +2910,13 @@ describe('scheduler dispatch loop', () => {
     'prepare',
     'commit',
   ] as const)('rechecks a recorded admin token after asynchronous %s before Worker launch', async (revocationStage) => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = createMigratedCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turnExecutor = new RecordingTurnExecutor(coreDb);
     const now = Date.now();
     coreDb.sqlite
@@ -2924,8 +3041,13 @@ describe('scheduler dispatch loop', () => {
     expected,
     setup,
   }) => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = createMigratedCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turnExecutor = new RecordingTurnExecutor(coreDb);
     let replacementCloseEffects = 0;
     const prepareAgentSessionForTurn = turnExecutor.prepareAgentSessionForTurn.bind(turnExecutor);
@@ -3017,8 +3139,13 @@ describe('scheduler dispatch loop', () => {
   });
 
   it('starts one dispatched queued turn with scheduler-owned lineage', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = createMigratedCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turnExecutor = new RecordingTurnExecutor(coreDb);
 
     try {
@@ -3111,8 +3238,13 @@ describe('scheduler dispatch loop', () => {
   });
 
   it('prepares and starts a later dispatchable queued entry when the first queued Thread is busy', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = createMigratedCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turnExecutor = new RecordingTurnExecutor(coreDb);
     const laterThread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
@@ -3245,8 +3377,13 @@ describe('scheduler dispatch loop', () => {
   });
 
   it('closes or revokes the acquired attempt when post-dispatch AgentSession commit rejects', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = createMigratedCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turnExecutor = new RecordingTurnExecutor(coreDb);
     turnExecutor.commitPreparedAgentSessionForTurn = async () => {
       throw new Error('prepared AgentSession changed');
@@ -3303,8 +3440,13 @@ describe('scheduler dispatch loop', () => {
   });
 
   it('reuses the exact compatible current AgentSession selected by the runtime seam', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = createMigratedCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turnExecutor = new RecordingTurnExecutor(coreDb);
 
     try {
@@ -3401,8 +3543,13 @@ describe('scheduler dispatch loop', () => {
   });
 
   it('reuses the current compatible AgentSession across sequential product admissions', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = createMigratedCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turnExecutor = new RecordingTurnExecutor(coreDb);
     const providerRegistry = localProviderRegistry();
     const snapshot = createInMemoryRuntimeConfigSnapshot({
@@ -3508,8 +3655,13 @@ describe('scheduler dispatch loop', () => {
   });
 
   it('records resolved setup lineage for scheduler-dispatched authored agents', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = createMigratedCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turnExecutor = new RecordingTurnExecutor(coreDb);
 
     try {
@@ -3580,8 +3732,13 @@ describe('scheduler dispatch loop', () => {
   });
 
   it('does not report backend-busy queued work after the Turn has failed', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = createMigratedCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const refusal = new WorkerGovernanceCapacityUnavailableError();
     /** Models the conflicting terminal publication at the executor boundary without replacing scheduler decisions. */
     class TerminalBusyExecutor extends RecordingTurnExecutor {
@@ -3659,8 +3816,13 @@ describe('scheduler dispatch loop', () => {
   });
 
   it('closes or revokes the acquired attempt when turn startup fails', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = createMigratedCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turnExecutor = new FailingTurnExecutor(coreDb);
 
     try {
@@ -3724,8 +3886,13 @@ describe('scheduler dispatch loop', () => {
   });
 
   it('preserves the worker failure while anchored backend cleanup remains pending', async () => {
-    const coreDb = createMigratedCoreDb();
+    const coreDb = createMigratedCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
     const turnExecutor = new RecordingTurnExecutor(coreDb);
     turnExecutor.startTurn = async (ownerStore, turnId, _input, context) => {
       const lease = attemptRecords.recordSchedulerExecutionOperation(coreDb, {
