@@ -1613,7 +1613,7 @@ export function createTaskKnowledgePreparation(
       readonly turnId?: string;
     }
   ): Promise<import('./knowledge-manager.js').PreparedTaskKnowledgeContext> => {
-    const admitted = admitOperation(
+    const admitted = await admitOperation(
       KNOWLEDGE_OPERATION_DEFINITIONS['knowledge.context.prepare'],
       value,
       { kind: 'public', actor: context.actor, delivery: 'model' },
