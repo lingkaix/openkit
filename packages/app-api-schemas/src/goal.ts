@@ -1,4 +1,3 @@
-import { ProductOperationSchema } from '@openkit/config-schema';
 import {
   AccessTokenIdSchema,
   PolicyDelegationV1Schema,
@@ -21,7 +20,41 @@ export const GoalDomainProposalSchema = z
   .object({
     id: PolicyDelegationV1Schema.shape.id,
     scope: PolicyDelegationV1Schema.shape.scope.extend({
-      actions: z.array(ProductOperationSchema).min(1),
+      // Keep browser imports neutral; NanoCore checks exact parity with the native Policy registry.
+      actions: z
+        .array(
+          z.enum([
+            'api.call',
+            'administration.configuration.apply',
+            'approval.respond',
+            'artifact.read',
+            'artifact.write',
+            'audit.read',
+            'deployment.recover',
+            'invitation.respond',
+            'knowledge.propose',
+            'knowledge.read',
+            'knowledge.write',
+            'llm.gateway.use',
+            'membership.manage',
+            'network.egress',
+            'review.apply',
+            'runtime.launch',
+            'thread.read',
+            'tool.grant',
+            'tool.use',
+            'turn.run',
+            'vault.admin',
+            'vault.use',
+            'workspace.configure',
+            'workspace.export',
+            'workspace.leave',
+            'workspace.lifecycle',
+            'workspace.read',
+            'workspace.write',
+          ])
+        )
+        .min(1),
       resources: z
         .array(
           z.union([
