@@ -141,6 +141,125 @@ describe('OpenCode resident adapter', () => {
     return { adapter, child, client, layout, creds, environment: () => environment };
   }
 
+  // RET Native Transcripts And Runtime Logs: retain native rows before projection and share the pipe bound.
+  it('RET E5 preserves original native row fields and order before assistant selection', async () => {
+    const part = { type: 'reasoning', text: 'E5 native-only α', extra: { ordered: [3, null, 1] } };
+    const f = timelineFixture('new', [part]);
+    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+    sessions.push(session);
+    const received: Array<{ record: RuntimeObservation; body?: Buffer }> = [];
+    const input = turnInput(f.layout, f.creds, 'native-rows', 'prompt-model');
+    const active = await session.startTurn({
+      ...input,
+      runtimeCapture: {
+        ...input.runtimeCapture,
+        captureCoverage: { scope: 'task', value: 'on' },
+        ...{ nativeLogMaxBytes: 7, authoredVersion: '2.0.22' },
+        emit: async (record, body) => {
+          received.push({ record, ...(body ? { body: Buffer.from(body) } : {}) });
+        },
+      },
+    });
+    expect((await active.settled).assistantText).toBe('answer');
+    const expected = Buffer.from(
+      JSON.stringify({
+        id: 'answer-1',
+        type: 'assistant',
+        finish: 'stop',
+        content: [{ type: 'text', text: 'answer' }, part],
+      })
+    );
+    const native = received.filter(
+      ({ record, body }) => record.fact.kind === 'native-transcript' && body
+    );
+    const retained = Buffer.concat(native.map(({ body }) => body!));
+    expect(retained.includes(expected)).toBe(true);
+    const positions = [
+      Buffer.from('{"id":"user-1","type":"user"}'),
+      expected,
+      Buffer.from('{"id":"idle-1","type":"idle","outcome":"succeeded"}'),
+    ].map((bytes) => retained.indexOf(bytes));
+    expect(positions.every((position) => position >= 0)).toBe(true);
+    expect(positions).toEqual([...positions].sort((a, b) => a - b));
+    expect(
+      native.every(
+        ({ record }) =>
+          record.content.state === 'expected' && record.content.boundary === 'native-content-v1'
+      )
+    ).toBe(true);
+    expect(
+      native.every(
+        ({ record }) =>
+          record.fact.native?.harness === 'opencode' && record.fact.native.measuredVersion === null
+      )
+    ).toBe(true);
+    expect(
+      received.some(
+        ({ record }) =>
+          record.fact.family === 'child-content' &&
+          ['unavailable', 'unsupported'].includes(record.fact.coverage ?? '')
+      )
+    ).toBe(true);
+  });
+
+  it('RET E5 bounds stderr and stdout logs together while exempting native transcripts', async () => {
+    const f = timelineFixture('new');
+    const original = f.client.session.prompt;
+    f.client.session.prompt = async (...args) => {
+      f.child.stderr?.emit('data', Buffer.from([0x61, 0, 0x62]));
+      f.child.stdout?.emit('data', Buffer.from([0xe2, 0x82]));
+      f.child.stdout?.emit('data', Buffer.from([0xac, 0x63, 0x64, 0x65]));
+      return original(...args);
+    };
+    const session = await f.adapter.openSession(openInput(f.layout, f.creds));
+    sessions.push(session);
+    const received: Array<{ record: RuntimeObservation; body?: Buffer }> = [];
+    const input = turnInput(f.layout, f.creds, 'native-pipes', 'prompt-model');
+    const active = await session.startTurn({
+      ...input,
+      runtimeCapture: {
+        ...input.runtimeCapture,
+        captureCoverage: { scope: 'task', value: 'on' },
+        ...{ nativeLogMaxBytes: 7, authoredVersion: '2.0.22' },
+        emit: async (record, body) => {
+          received.push({ record, ...(body ? { body: Buffer.from(body) } : {}) });
+        },
+      },
+    });
+    expect((await active.settled).status).toBe('completed');
+    const logs = received.filter(({ record, body }) => record.fact.kind === 'runtime-log' && body);
+    expect(Buffer.concat(logs.map(({ body }) => body!))).toEqual(
+      Buffer.from([0x61, 0, 0x62, 0xe2, 0x82, 0xac, 0x63])
+    );
+    expect(
+      Buffer.concat(
+        logs
+          .filter(({ record }) => record.fact.native?.logSource === 'stderr')
+          .map(({ body }) => body!)
+      )
+    ).toEqual(Buffer.from([0x61, 0, 0x62]));
+    expect(
+      Buffer.concat(
+        logs
+          .filter(({ record }) => record.fact.native?.logSource === 'stdout-log')
+          .map(({ body }) => body!)
+      )
+    ).toEqual(Buffer.from([0xe2, 0x82, 0xac, 0x63]));
+    expect(
+      received.some(
+        ({ record }) =>
+          record.fact.kind === 'runtime-log' &&
+          record.fact.reason === 'limit-exceeded' &&
+          record.fact.native?.omittedBytes === 2
+      )
+    ).toBe(true);
+    expect(
+      received.some(
+        ({ record, body }) => record.fact.kind === 'native-transcript' && body && body.length > 7
+      )
+    ).toBe(true);
+  });
+
   it.each([
     { exit: 'owned stop', diagnostic: 'OpenCode assistant finish is unknown.' },
     { exit: 'unexpected exit', diagnostic: 'Resident host ended during the Turn.' },

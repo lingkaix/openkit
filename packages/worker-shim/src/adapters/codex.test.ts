@@ -4594,3 +4594,75 @@ it.each([
   expect(inference.bodies).toHaveLength(0);
   expect(await session.nativeHandle()).toEqual({ state: 'pending' });
 }, 180000);
+
+// RET Native Transcripts And Runtime Logs: stderr is restricted content; App Server stdout is RPC only.
+it.each([
+  'drain',
+  'crash',
+] as const)('RET E3 keeps exact bounded stderr through %s without RPC stdout', async (ending) => {
+  const roots = await tempRoots();
+  closers.push(() => rm(roots.base, { recursive: true, force: true }));
+  const child = controlledPeer();
+  const stop = () => {
+    child.exitCode = ending === 'crash' ? 17 : 0;
+    child.emit('exit', child.exitCode, null);
+    child.stdout.end();
+    child.stderr.end();
+    child.emit('close', child.exitCode, null);
+  };
+  child.kill = (() => {
+    stop();
+    return true;
+  }) as typeof child.kill;
+  child.stdin.on('finish', stop);
+  const session = await openCodexResidentSession(openInput(roots), { spawnProcess: () => child });
+  sessions.push(session);
+  const received: Array<{
+    record: import('../runtime-capture.js').RuntimeObservation;
+    body?: Buffer;
+  }> = [];
+  const input = turnInput(roots, []);
+  const active = await session.startTurn({
+    ...input,
+    runtimeCapture: {
+      ...input.runtimeCapture,
+      captureCoverage: { scope: 'task', value: 'on' },
+      ...{ nativeLogMaxBytes: 7, authoredVersion: '0.160.0' },
+      emit: async (record, body) => {
+        received.push({ record, ...(body ? { body: Buffer.from(body) } : {}) });
+      },
+    },
+  });
+  const settled = active.settled.catch(() => null);
+  child.stderr.write(Buffer.from([0x61, 0, 0xe2]));
+  child.stderr.write(Buffer.from([0x82, 0xac, 0x62, 0x63, 0x64]));
+  // A valid additive RPC notification is not a native log or a native transcript source.
+  child.stdout.write(
+    '{"method":"future/native","params":{"canary":"RPC-STDOUT-MUST-NOT-PUBLISH"}}\n'
+  );
+  if (ending === 'crash') stop();
+  else child.stdout.write(terminalFrame());
+  await settled;
+  const logs = received.filter(({ record, body }) => record.fact.kind === 'runtime-log' && body);
+  expect(Buffer.concat(logs.map(({ body }) => body!))).toEqual(
+    Buffer.from([0x61, 0, 0xe2, 0x82, 0xac, 0x62, 0x63])
+  );
+  expect(logs.every(({ record }) => record.fact.native?.logSource === 'stderr')).toBe(true);
+  expect(
+    logs.every(
+      ({ record }) =>
+        record.content.state === 'expected' && record.content.boundary === 'native-content-v1'
+    )
+  ).toBe(true);
+  expect(
+    received.some(
+      ({ record }) => record.fact.kind === 'runtime-log' && record.fact.reason === 'limit-exceeded'
+    )
+  ).toBe(true);
+  expect(
+    Buffer.concat(received.flatMap(({ body }) => (body ? [body] : []))).includes(
+      Buffer.from('RPC-STDOUT-MUST-NOT-PUBLISH')
+    )
+  ).toBe(false);
+  expect(received.some(({ record }) => record.fact.native?.logSource === 'stdout-log')).toBe(false);
+}, 15_000);

@@ -428,3 +428,138 @@ it('carries expected-only metadata through the real transcript writer before a u
     await rm(sessionDir, { recursive: true, force: true });
   }
 });
+
+/** Native facts use the existing wire envelope; source bytes are not semantic JSON. */
+function e1LogFact(start: number, bytes: number, logSource: 'stderr' | 'stdout-log') {
+  return {
+    kind: 'runtime-log' as const,
+    runtimeOriginRef: null,
+    coverage: 'collecting' as const,
+    native: {
+      harness: 'pi',
+      authoredVersion: '1.0.2',
+      measuredVersion: null,
+      imageDigest: null,
+      format: 'application/octet-stream',
+      preLaunchWatermark: 0,
+      range: { start, end: start + bytes },
+      observedBytes: bytes,
+      retainedBytes: bytes,
+      omittedBytes: 0,
+      sourceEnded: false,
+      logSource,
+    },
+  };
+}
+
+// RET Native Transcripts And Runtime Logs: one selected bound covers both log sources; exact bytes survive.
+it('RET E1 shares the selected log allowance across source publications and retry coordinates', async () => {
+  const received: Array<{ record: RuntimeObservation; body?: Buffer }> = [];
+  const input = {
+    packageSnapshotId: 'e1-package',
+    captureCoverage: { scope: 'task' as const, value: 'on' as const },
+    credentialValues: ['e1-secret-value'],
+    nativeLogMaxBytes: 7,
+    authoredVersion: '1.0.2',
+    emit: async (record: RuntimeObservation, body?: Uint8Array) => {
+      received.push({ record, ...(body ? { body: Buffer.from(body) } : {}) });
+    },
+  };
+  const secretReceived: Uint8Array[] = [];
+  const secret = new RuntimeSemanticCapture({
+    ...input,
+    emit: async (_record, bytes) => {
+      if (bytes) secretReceived.push(bytes);
+    },
+  });
+  await secret.emit('split-secret', e1LogFact(0, 10, 'stderr'), {
+    bytes: Buffer.from('e1-secret-'),
+    mediaType: 'application/octet-stream',
+    boundary: 'native-content-v1',
+  } as Parameters<typeof emitRuntimeFact>[3]);
+  await secret.emit('split-secret', e1LogFact(10, 5, 'stderr'), {
+    bytes: Buffer.from('value'),
+    mediaType: 'application/octet-stream',
+    boundary: 'native-content-v1',
+  } as Parameters<typeof emitRuntimeFact>[3]);
+  await secret.interrupt();
+  expect(secretReceived).toEqual([]);
+  for (const [sourceRef, logSource, bytes] of [
+    ['stderr', 'stderr', Buffer.from([0, 0xe2, 0x82, 0xac])],
+    ['stdout', 'stdout-log', Buffer.from([0xff, 0x61, 0x62, 0x63, 0x64])],
+    ['retry-stderr', 'stderr', Buffer.from('retry must not recharge')],
+  ] as const) {
+    await emitRuntimeFact(
+      input,
+      { sourceRef, sourceSequence: 0 },
+      e1LogFact(0, bytes.length, logSource),
+      {
+        bytes,
+        mediaType: 'application/octet-stream',
+        boundary: 'native-content-v1',
+      } as Parameters<typeof emitRuntimeFact>[3]
+    );
+  }
+  expect(Buffer.concat(received.flatMap(({ body }) => (body ? [body] : [])))).toEqual(
+    Buffer.from([0, 0xe2, 0x82, 0xac, 0xff, 0x61, 0x62])
+  );
+  const stdout = received.find(({ record, body }) => record.sourceRef === 'stdout' && body);
+  expect(stdout?.record.fact.native).toMatchObject({
+    range: { start: 0, end: 3 },
+    observedBytes: 5,
+    retainedBytes: 3,
+    omittedBytes: 2,
+  });
+  expect(received.some(({ record }) => record.fact.reason === 'limit-exceeded')).toBe(true);
+  expect(
+    received.filter(({ record, body }) => record.sourceRef === 'retry-stderr' && body)
+  ).toEqual([]);
+});
+
+// RET Capture Safety / Native Transcripts: missing authority never defaults native capture to an allowance.
+it('RET E1 refuses native bytes without selected authority while preserving OFF and secret controls', async () => {
+  const received: Array<{ record: RuntimeObservation; body?: Buffer }> = [];
+  const emit = async (record: RuntimeObservation, body?: Uint8Array) => {
+    received.push({ record, ...(body ? { body: Buffer.from(body) } : {}) });
+  };
+  const input = {
+    packageSnapshotId: 'e1-missing',
+    authoredVersion: '1.0.2',
+    captureCoverage: { scope: 'task' as const, value: 'on' as const },
+    credentialValues: ['e1-secret-value'],
+    emit,
+  };
+  const body = {
+    bytes: Buffer.from('safe-native'),
+    mediaType: 'application/octet-stream',
+    boundary: 'native-content-v1',
+  } as Parameters<typeof emitRuntimeFact>[3];
+  await emitRuntimeFact(
+    input,
+    { sourceRef: 'missing-authority', sourceSequence: 0 },
+    e1LogFact(0, 11, 'stderr'),
+    body
+  );
+  expect(received.some(({ body }) => body)).toBe(false);
+  expect(received.some(({ record }) => record.content.state === 'unavailable')).toBe(true);
+  received.length = 0;
+  await emitRuntimeFact(
+    { ...input, captureCoverage: { scope: 'task', value: 'off' } },
+    { sourceRef: 'off', sourceSequence: 0 },
+    e1LogFact(0, 11, 'stderr'),
+    body
+  );
+  expect(received.map(({ record }) => record.content.state)).toEqual(['off']);
+  expect(received.some(({ body }) => body)).toBe(false);
+  const split = streamingFixture(['e1-secret-value']);
+  await split.write(['e1-secret-']);
+  await split.write(['value'], true);
+  await split.capture.finalize();
+  expect(split.received.some(({ body }) => body)).toBe(false);
+  expect(
+    split.received.some(
+      ({ record }) =>
+        record.content.state === 'unavailable' && record.content.reason === 'credential-excluded'
+    )
+  ).toBe(true);
+});

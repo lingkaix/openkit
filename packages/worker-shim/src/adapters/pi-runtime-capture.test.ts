@@ -166,3 +166,64 @@ describe('Pi capture backlog', () => {
     expect(fixture.bodies.join('')).not.toContain('must not be published');
   });
 });
+
+// RET Native Transcripts And Runtime Logs / Capture Safety: native events precede outward selection.
+it.each([
+  'completed',
+  'interrupted',
+  'failed',
+] as const)('RET E7 retains ordered native SDK units and truthful omissions after %s', async (status) => {
+  const received: Array<{ record: RuntimeObservation; body?: Buffer }> = [];
+  const capture = new PiRuntimeCapture(
+    {
+      packageSnapshotId: 'e7-package',
+      captureCoverage: { scope: 'task', value: 'on' },
+      credentialValues: ['e7-known-secret'],
+      ...{ nativeLogMaxBytes: 1, authoredVersion: '1.0.2' },
+      emit: async (record, body) => {
+        received.push({ record, ...(body ? { body: Buffer.from(body) } : {}) });
+      },
+    },
+    'e7-turn'
+  );
+  const events = [
+    {
+      type: 'message_update',
+      message: { role: 'assistant', opaque: { keep: null } },
+      assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: ' α ' },
+    },
+    {
+      type: 'message_update',
+      message: { role: 'assistant' },
+      assistantMessageEvent: { type: 'toolcall_delta', contentIndex: 1, delta: '{"unfinished":' },
+    },
+    { type: 'future_native_event', opaque: ['keep order', 7, null] },
+  ];
+  await capture.start();
+  for (const event of events) capture.observe(event);
+  capture.omitted();
+  await capture.finalize(status, null);
+  const native = received.filter(
+    ({ record, body }) => record.fact.kind === 'native-transcript' && body
+  );
+  // Compare the original SDK units as bytes before interpreting any retained JSON.
+  expect(native.map(({ body }) => body)).toEqual(
+    events.map((event) => Buffer.from(JSON.stringify(event)))
+  );
+  expect(
+    native.every(
+      ({ record }) =>
+        record.content.state === 'expected' && record.content.boundary === 'native-content-v1'
+    )
+  ).toBe(true);
+  expect(
+    received.some(
+      ({ record }) =>
+        record.fact.coverage === 'unavailable' && record.fact.reason === 'limit-exceeded'
+    )
+  ).toBe(true);
+  expect(
+    received.some(({ record }) => record.fact.kind === 'origin' && record.fact.phase === status)
+  ).toBe(true);
+  expect(native.every(({ record }) => record.fact.native?.measuredVersion === null)).toBe(true);
+});

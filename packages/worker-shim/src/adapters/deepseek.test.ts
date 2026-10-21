@@ -3857,3 +3857,142 @@ it('s4: rejects an unproved native effort acknowledgement before prompting', asy
   expect(inference.requests).toHaveLength(1);
   expect(session.childState()).toBe('absent');
 }, 180000);
+
+// RET Native Transcripts And Runtime Logs: preserve observed native update payloads before selection, never RPC stdout.
+it(
+  'RET E4 keeps unprojected native update fields and names unavailable child sources',
+  async () => {
+    const inference = await startSyntheticInference(() => ({ hang: true }));
+    closers.push(() => inference.close());
+    const roots = tempRoots();
+    const session = await open(roots, inference, null);
+    const received: Array<{ record: RuntimeObservation; body?: Buffer }> = [];
+    const input = turn(roots, inference, 'native source', [], 'e4-native');
+    const active = await session.startTurn({
+      ...input,
+      runtimeCapture: {
+        ...input.runtimeCapture,
+        captureCoverage: { scope: 'task', value: 'on' },
+        ...{ nativeLogMaxBytes: 7, authoredVersion: '0.2.0-rc.2' },
+        emit: async (record, body) => {
+          received.push({ record, ...(body ? { body: Buffer.from(body) } : {}) });
+        },
+      },
+    });
+    await waitFor(() => inference.requests.length === 1);
+    const id = await nativeSessionId(session);
+    const update = {
+      sessionUpdate: 'future_native_update',
+      opaque: { text: 'E4 α', order: [3, null, 1] },
+    };
+    deliver(
+      session,
+      JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'session/update',
+        params: { sessionId: id, update },
+      })
+    );
+    const later = {
+      sessionUpdate: 'future_native_update',
+      opaque: { text: 'second E4 unit', order: [1, null, 3] },
+    };
+    deliver(
+      session,
+      JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'session/update',
+        params: { sessionId: id, update: later },
+      })
+    );
+    await active.interrupt();
+    await active.settled;
+    const native = received.filter(
+      ({ record, body }) => record.fact.kind === 'native-transcript' && body
+    );
+    expect(
+      Buffer.concat(native.map(({ body }) => body!)).includes(Buffer.from(JSON.stringify(update)))
+    ).toBe(true);
+    const retained = Buffer.concat(native.map(({ body }) => body!));
+    expect(retained.includes(Buffer.from(JSON.stringify(later)))).toBe(true);
+    expect(retained.indexOf(Buffer.from(JSON.stringify(update)))).toBeLessThan(
+      retained.indexOf(Buffer.from(JSON.stringify(later)))
+    );
+    expect(
+      native.every(
+        ({ record }) =>
+          record.content.state === 'expected' && record.content.boundary === 'native-content-v1'
+      )
+    ).toBe(true);
+    expect(
+      received.some(
+        ({ record }) =>
+          record.fact.family === 'child-content' &&
+          ['unsupported', 'unavailable'].includes(record.fact.coverage ?? '') &&
+          record.sourceRef.length > 0
+      )
+    ).toBe(true);
+    expect(
+      native.every(
+        ({ record }) =>
+          record.fact.native?.harness === 'deepseek' && record.fact.native.measuredVersion === null
+      )
+    ).toBe(true);
+    expect(
+      Buffer.concat(native.map(({ body }) => body!)).includes(Buffer.from('"jsonrpc":"2.0"'))
+    ).toBe(false);
+  },
+  LIVE
+);
+
+it(
+  'RET E4 keeps exact bounded stderr on cancellation and excludes RPC stdout bytes',
+  async () => {
+    const inference = await startSyntheticInference(() => ({ hang: true }));
+    closers.push(() => inference.close());
+    const roots = tempRoots();
+    const session = await open(roots, inference, null);
+    const received: Array<{ record: RuntimeObservation; body?: Buffer }> = [];
+    const input = turn(roots, inference, 'native stderr', [], 'e4-log');
+    const active = await session.startTurn({
+      ...input,
+      runtimeCapture: {
+        ...input.runtimeCapture,
+        captureCoverage: { scope: 'task', value: 'on' },
+        ...{ nativeLogMaxBytes: 7, authoredVersion: '0.2.0-rc.2' },
+        emit: async (record, body) => {
+          received.push({ record, ...(body ? { body: Buffer.from(body) } : {}) });
+        },
+      },
+    });
+    await waitFor(() => inference.requests.length === 1);
+    const child = (
+      session as unknown as { child: import('node:child_process').ChildProcessWithoutNullStreams }
+    ).child;
+    child.stderr.emit('data', Buffer.from([0, 0xe2]));
+    child.stderr.emit('data', Buffer.from([0x82, 0xac, 0x61, 0x62, 0x63, 0x64]));
+    deliver(
+      session,
+      '{"jsonrpc":"2.0","method":"future/notice","params":{"canary":"E4-RPC-ONLY"}}'
+    );
+    await active.interrupt();
+    await active.settled;
+    const logs = received.filter(({ record, body }) => record.fact.kind === 'runtime-log' && body);
+    expect(Buffer.concat(logs.map(({ body }) => body!))).toEqual(
+      Buffer.from([0, 0xe2, 0x82, 0xac, 0x61, 0x62, 0x63])
+    );
+    expect(logs.every(({ record }) => record.fact.native?.logSource === 'stderr')).toBe(true);
+    expect(
+      received.some(
+        ({ record }) =>
+          record.fact.kind === 'runtime-log' && record.fact.reason === 'limit-exceeded'
+      )
+    ).toBe(true);
+    expect(
+      Buffer.concat(received.flatMap(({ body }) => (body ? [body] : []))).includes(
+        Buffer.from('E4-RPC-ONLY')
+      )
+    ).toBe(false);
+  },
+  LIVE
+);

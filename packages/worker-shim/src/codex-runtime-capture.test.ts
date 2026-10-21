@@ -719,3 +719,169 @@ it('trusts an App Server rollout only when create is given that cli_version', as
     await rm(f.home, { recursive: true, force: true });
   }
 });
+
+// RET Native Transcripts And Runtime Logs: retain original associated sources before parsing.
+describe('RET E2 native rollout bytes', () => {
+  it('keeps the exact new primary and child prefixes, excluding pre-launch history and RPC stdout', async () => {
+    const f = await fixture('on');
+    const old = Buffer.from(lines(meta('root'), { type: 'future', old: 'PRELAUNCH' }));
+    await writeFile(f.path('root'), old);
+    const input = { ...f.input, nativeLogMaxBytes: 7, authoredVersion: '0.153.4' };
+    const capture = await CodexRuntimeCapture.create(input, f.home, '0.153.4');
+    const primary = Buffer.from(
+      ' {"type":"future","opaque":{"n":9007199254740993,"text":"α"}}\r\n'
+    );
+    const child = Buffer.concat([
+      Buffer.from(lines(meta('child', 'root'))),
+      Buffer.from('{"type":"future","child":"prefix'),
+      Buffer.from([0xe2, 0x82]),
+    ]);
+    try {
+      await appendFile(f.path('root'), primary);
+      await writeFile(f.path('child'), child);
+      await capture.writeStdout(Buffer.from(lines({ type: 'thread.started', thread_id: 'root' })));
+      await capture.finalize();
+      const retained = (id: string) =>
+        f.received.filter(
+          ({ record, body }) =>
+            record.fact.kind === 'native-transcript' &&
+            record.fact.runtimeOriginRef === runtimeOriginRef('aep_live', id) &&
+            body
+        );
+      expect(Buffer.concat(retained('root').map(({ body }) => Buffer.from(body!)))).toEqual(
+        primary
+      );
+      expect(Buffer.concat(retained('child').map(({ body }) => Buffer.from(body!)))).toEqual(child);
+      expect(retained('root')[0]?.record.fact.native).toMatchObject({
+        harness: 'codex',
+        authoredVersion: '0.153.4',
+        measuredVersion: null,
+        preLaunchWatermark: old.length,
+        range: { start: old.length, end: old.length + primary.length },
+      });
+      expect(retained('child')[0]?.record.fact.native?.preLaunchWatermark).toBe(0);
+      expect(f.received.some(({ record }) => record.fact.reason === 'partial-frame')).toBe(true);
+      expect(
+        f.received.filter(({ record, body }) => record.fact.kind === 'runtime-log' && body)
+      ).toEqual([]);
+      expect(
+        Buffer.concat(f.received.flatMap(({ body }) => (body ? [Buffer.from(body)] : []))).includes(
+          Buffer.from('PRELAUNCH')
+        )
+      ).toBe(false);
+      expect(
+        retained('root').every(
+          ({ record }) =>
+            record.content.state === 'expected' && record.content.boundary === 'native-content-v1'
+        )
+      ).toBe(true);
+    } finally {
+      await capture.invalidate();
+      await rm(f.home, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps an admitted prefix while refusing replacement bytes from a changed source', async () => {
+    const f = await fixture('on');
+    const prefix = Buffer.from(
+      lines(meta('root'), { type: 'future', retained: 'before replacement' })
+    );
+    const capture = await CodexRuntimeCapture.create(
+      { ...f.input, nativeLogMaxBytes: 7, authoredVersion: '0.153.4' },
+      f.home,
+      '0.153.4'
+    );
+    try {
+      await writeFile(f.path('root'), prefix);
+      await capture.writeStdout(Buffer.from(lines({ type: 'thread.started', thread_id: 'root' })));
+      // Keep the old inode allocated so the replacement cannot accidentally reuse it.
+      const original = await import('node:fs/promises').then((fs) => fs.open(f.path('root'), 'r'));
+      try {
+        await rm(f.path('root'));
+        await writeFile(
+          f.path('root'),
+          lines(meta('root'), { type: 'future', forbidden: 'REPLACEMENT' })
+        );
+        await capture.finalize();
+      } finally {
+        await original.close();
+      }
+      const bytes = Buffer.concat(
+        f.received.flatMap(({ record, body }) =>
+          record.fact.kind === 'native-transcript' && body ? [Buffer.from(body)] : []
+        )
+      );
+      expect(bytes).toEqual(prefix);
+      expect(bytes.includes(Buffer.from('REPLACEMENT'))).toBe(false);
+      expect(f.received.some(({ record }) => record.fact.reason === 'source-changed')).toBe(true);
+    } finally {
+      await capture.invalidate();
+      await rm(f.home, { recursive: true, force: true });
+    }
+  });
+
+  it('retains a raw frame beyond the structural parser ceiling as bounded native publications', async () => {
+    const f = await fixture('on');
+    const capture = await CodexRuntimeCapture.create(
+      { ...f.input, nativeLogMaxBytes: 3, authoredVersion: '0.153.4' },
+      f.home,
+      '0.153.4'
+    );
+    const bytes = Buffer.from(
+      `${lines(meta('root'))}{"type":"future","raw":"${'x'.repeat(16 * 1024 * 1024)}"}\n`
+    );
+    try {
+      await writeFile(f.path('root'), bytes);
+      await capture.writeStdout(Buffer.from(lines({ type: 'thread.started', thread_id: 'root' })));
+      await capture.finalize();
+      const bodies = f.received.filter(
+        ({ record, body }) => record.fact.kind === 'native-transcript' && body
+      );
+      const retained = Buffer.concat(bodies.map(({ body }) => Buffer.from(body!)));
+      expect(retained.length).toBe(bytes.length);
+      expect(retained.equals(bytes)).toBe(true);
+      expect(bodies.every(({ body }) => body!.byteLength <= 16 * 1024 * 1024)).toBe(true);
+      expect(f.received.some(({ record }) => record.fact.reason === 'limit-exceeded')).toBe(true);
+    } finally {
+      await capture.invalidate();
+      await rm(f.home, { recursive: true, force: true });
+    }
+  });
+});
+
+// RET Capture Coverage: required native publication failure stays fail-closed and does not retry native work.
+it('RET E2 propagates native publication refusal and keeps it failed on drain retry', async () => {
+  const f = await fixture('on');
+  const refused = new Error('E2 native publication refused');
+  const input = {
+    ...f.input,
+    nativeLogMaxBytes: 7,
+    authoredVersion: '0.153.4',
+    emit: async (record: RuntimeObservation, body?: Uint8Array) => {
+      if (record.fact.kind === 'native-transcript' && body) throw refused;
+      await f.input.emit(record, body);
+    },
+  };
+  const capture = await CodexRuntimeCapture.create(input, f.home, '0.153.4');
+  let failure: unknown;
+  try {
+    await writeFile(
+      f.path('root'),
+      lines(meta('root'), { type: 'future', raw: 'safe native bytes' })
+    );
+    try {
+      await capture.writeStdout(Buffer.from(lines({ type: 'thread.started', thread_id: 'root' })));
+      await capture.finalize();
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBe(refused);
+    await expect(capture.finalize()).rejects.toBe(refused);
+    expect(
+      f.received.filter(({ record, body }) => record.fact.kind === 'native-transcript' && body)
+    ).toEqual([]);
+  } finally {
+    await capture.invalidate().catch(() => undefined);
+    await rm(f.home, { recursive: true, force: true });
+  }
+});
