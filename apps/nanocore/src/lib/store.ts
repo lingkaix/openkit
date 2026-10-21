@@ -148,6 +148,7 @@ import {
 import type { ControlPendingTransition } from '../storage/control-store-pending.js';
 import {
   type ControlProductEntry,
+  ControlProductEntrySchema,
   type ControlProductMutation,
   type ControlProductOwner,
   type ControlTerminalTransition,
@@ -5049,8 +5050,10 @@ export class FsStore {
     if (scope) {
       const entries: ControlProductEntry[] = [];
       const revisions = readNativeProductEntries(scope, turnId, 'item');
+      // Exact replay compares supplied Items with the decided snapshot, not a later display head.
+      const retainedItems = prior && publication.execution ? turn.items : before.items;
       for (const item of publication.items ?? []) {
-        const existing = before.items.find((candidate) => candidate.id === item.id);
+        const existing = retainedItems.find((candidate) => candidate.id === item.id);
         if (existing && alreadyDecidedPublicationBytesEqual(existing, item)) continue;
         const previous = revisions.filter((row) => row.id === item.id).at(-1);
         const content = await publishImmutableProductJson(
@@ -5095,6 +5098,55 @@ export class FsStore {
           expectedRevision: 0,
           content,
         });
+      }
+      if (prior && isSealedTurnTerminal(before.status) && publication.execution) {
+        // Replay the original journal tuple, including omitted Items and preceding events.
+        const reader = openControlStoreProductReadHandle(scope.path, owner);
+        try {
+          const step = reader.sqlite
+            .prepare(
+              "SELECT s.control_json FROM control_execution_steps s JOIN control_executions e ON e.id=s.execution_id WHERE e.id=? AND e.work_id=? AND e.phase IN ('closing','closed') AND s.step_id=? AND s.state='completed' AND json_extract(s.control_json,'$.kind')='terminal-publication'"
+            )
+            .get(publication.execution.executionId, turnId, publication.execution.terminalStepId) as
+            | { control_json: string }
+            | undefined;
+          const refs: unknown = step && JSON.parse(step.control_json).outputRefs;
+          if (
+            !Array.isArray(refs) ||
+            !refs.length ||
+            refs.some((ref) => typeof ref !== 'string' || !ref)
+          )
+            throw terminalTurnPublicationConflict(turnId);
+          // Repeated Item bytes are valid; select the newest revision matching the journal digest.
+          const descriptor = reader.sqlite.prepare(
+            "SELECT schema_version AS schemaVersion,kind,sequence,revision,content_json FROM control_product_entries WHERE kind IN ('item','event') AND turn_id=? AND json_extract(content_json,'$.reference.contentDigest')=? ORDER BY revision DESC,sequence DESC LIMIT 1"
+          );
+          const original = refs.map((digest) => {
+            const row = descriptor.get(turnId, digest) as
+              | {
+                  schemaVersion: number;
+                  kind: string;
+                  sequence: number;
+                  revision: number;
+                  content_json: string;
+                }
+              | undefined;
+            if (!row || row.schemaVersion !== 1) throw terminalTurnPublicationConflict(turnId);
+            return ControlProductEntrySchema.parse({
+              kind: row.kind,
+              turnId,
+              sequence: row.sequence,
+              expectedRevision: row.revision - 1,
+              content: JSON.parse(row.content_json),
+            });
+          });
+          for (const entry of entries)
+            if (!original.some((retained) => isDeepStrictEqual(retained, entry)))
+              throw terminalTurnPublicationConflict(turnId);
+          entries.splice(0, entries.length, ...original);
+        } finally {
+          reader.close();
+        }
       }
       const client = getControlStoreWorkerClient();
       const database = `${owner.kind === 'server' ? 'core' : 'workspace'}:${scope.path}`;

@@ -4,13 +4,17 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   allocateEntityId,
+  deriveEntityId,
   ItemSchema,
   PROTOCOL_VERSION,
   SseEventEnvelopeSchema,
   writeRetainedV1,
 } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
+import { prepareAuditEvent } from '../audit-events.js';
 import { initializeDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
+import { WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION } from '../runtime/execution-journal.js';
+import type { ExecutionJournalSpan } from '../runtime/execution-step-journal.js';
 import { openControlStoreProductReadHandle } from '../storage/control-store-products.js';
 import {
   getControlStoreWorkerClient,
@@ -24,7 +28,7 @@ import {
   readNativeTurnHistory,
 } from '../storage/workspace-file-records.js';
 import { createThread as createThreadCommand } from '../thread-routes.js';
-import { FsStore } from './store.js';
+import { commandRequestKey, DISPLAY_PROJECTION_REFRESH_ADMISSION, FsStore } from './store.js';
 
 const roots: string[] = [];
 const actor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
@@ -229,6 +233,232 @@ describe('native Store authority and immutable closure', () => {
       expect(new FsStore({ dataRoot: f.root }).getTurnById(f.turn.id)).toEqual(turn);
     } finally {
       db.sqlite.close();
+    }
+  });
+
+  it.each(['message', 'display'])('preserves %s history on terminal replay', async (kind) => {
+    const f = await workspaceFixture();
+    const session = await f.store.createAgentSession({
+      id: allocateEntityId('as'),
+      workspaceId: f.workspace.id,
+      threadId: f.thread.id,
+      agentId: 'agent_codex_host',
+      status: 'ready',
+      message: null,
+      createdAt: f.turn.startedAt!,
+      updatedAt: f.turn.startedAt!,
+    });
+    await f.store.updateTurn(f.turn.id, { agentId: session.agentId, agentSessionId: session.id });
+    const first =
+      kind === 'message'
+        ? message(f.turn, 'A')
+        : ItemSchema.parse({
+            id: deriveEntityId('it', ['worker-result', f.turn.id]),
+            owner: f.turn.owner,
+            threadId: f.thread.id,
+            turnId: f.turn.id,
+            type: 'status',
+            status: 'completed',
+            actor,
+            level: 'info',
+            title: 'Result',
+            summary: 'A',
+            createdAt: f.turn.startedAt!,
+            completedAt: f.turn.startedAt!,
+          });
+    await f.store.createItem(first);
+    await f.store.updateItem(first.id, kind === 'message' ? { text: 'B' } : { summary: 'B' });
+    const db = openWorkspaceDb(f.root, f.workspace.id);
+    const { sqlite } = db;
+    try {
+      const now = BigInt(Date.now()) * 1_000_000n;
+      const empty = { attributes: [], droppedAttributesCount: 0 };
+      const span: ExecutionJournalSpan & { endTimeUnixNano: null } = {
+        traceId: '1'.repeat(32),
+        spanId: '1'.padStart(16, '0'),
+        flags: 1,
+        name: 'Original terminal history',
+        kind: 'INTERNAL',
+        startTimeUnixNano: now,
+        endTimeUnixNano: null,
+        status: { code: 'UNSET' },
+        ...empty,
+        events: [],
+        droppedEventsCount: 0,
+        links: [],
+        droppedLinksCount: 0,
+        instrumentationScope: { ...empty, name: 'openkit.history-test' },
+        resource: empty,
+      };
+      const admission = {
+        ref: { owner: f.turn.owner, executionId: 'original-history-execution' },
+        definitionVersion: WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION,
+        workId: f.turn.id,
+        fingerprint: 'a'.repeat(64),
+        exclusionRefs: ['original:cleanup'],
+        span,
+      };
+      for (const [index, stepId] of (
+        ['terminal-publication', 'inspect-cleanup'] as const
+      ).entries()) {
+        await f.store.writeWorkspaceExecutionJournalIntent(f.workspace.id, {
+          execution: admission,
+          stepId,
+          parentStepId: null,
+          parent: null,
+          inspectedStep: null,
+          carriage: {
+            operation: stepId,
+            requestId: String(index + 2).repeat(64),
+            sequence: null,
+            bindingRef: null,
+          },
+          control: {
+            definitionVersion: admission.definitionVersion,
+            kind: stepId,
+            target: null,
+            workId: f.turn.id,
+            operationId: null,
+            attemptId: null,
+            invocationId: `original-${stepId}`,
+            actor,
+            inputRefs: ['original:input'],
+            outputRefs: [],
+            fingerprint: 'b'.repeat(64),
+            permittingDecisionRef: null,
+            authorityRefs: ['original:workspace'],
+            retryDeclarationRef: null,
+            retryPermitted: false,
+            deadlineUnixNano: now + 60_000_000_000n,
+            physicalFenceRefs: [],
+          },
+          span: {
+            ...span,
+            spanId: String(index + 2).padStart(16, '0'),
+            parentSpanId: span.spanId,
+          },
+        });
+      }
+      const requestId = randomUUID();
+      const scope = { workspaceId: f.workspace.id };
+      const createdAt = f.turn.startedAt!;
+      const receipt = {
+        key: commandRequestKey('turn.start', requestId, scope),
+        command: 'turn.start' as const,
+        requestId,
+        scope,
+        inputHash: 'sha256:78c69048486cc3ab57a442a9ee2cd89da02f7b20c609b180562977c4c3054be1',
+        response: { kind: 'turn', id: f.turn.id },
+        createdAt,
+        expiresAt: new Date(Date.parse(createdAt) + 7 * 24 * 60 * 60 * 1000).toISOString(),
+      };
+      const rev = Number(sqlite.prepare('SELECT revision FROM control_executions').pluck().get());
+      const input = {
+        items: [first],
+        requestId,
+        stopReason: 'error' as const,
+        command: {
+          receipt,
+          audit: prepareAuditEvent({
+            workspaceId: f.workspace.id,
+            threadId: f.thread.id,
+            turnId: f.turn.id,
+            requestId,
+            actor,
+            category: 'command',
+            action: 'turn.start',
+            resource: `turn:${f.turn.id}`,
+            outcome: 'succeeded',
+            summary: 'Original terminal publication.',
+            now: new Date(createdAt),
+          }),
+        },
+        execution: {
+          executionId: admission.ref.executionId,
+          terminalStepId: 'terminal-publication',
+          cleanupStepId: 'inspect-cleanup',
+          expectedRevision: rev,
+        },
+      };
+      const patch = { status: 'failed' as const, completedAt: createdAt };
+      const terminal = await f.store.completeTurn(f.turn.id, patch, input);
+      expect(terminal).toMatchObject({
+        id: f.turn.id,
+        agentSessionId: session.id,
+        status: 'failed',
+        items: [first],
+      });
+      const events = f.store.getTurnEventsForExport(f.turn.id);
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        event: 'turn.completed',
+        requestId,
+        data: { type: 'turn-completed', stopReason: 'error', turn: terminal },
+      });
+      const revisions = readNativeProductEntries(f.scope, f.turn.id, 'item');
+      expect(revisions.map(({ id }) => id)).toEqual([first.id, first.id, first.id]);
+      expect(revisions.map(({ revision }) => revision)).toEqual([1, 2, 3]);
+      expect(revisions.map(({ value }) => value)).toEqual([
+        writeRetainedV1(first),
+        writeRetainedV1({ ...first, ...(kind === 'message' ? { text: 'B' } : { summary: 'B' }) }),
+        writeRetainedV1(first),
+      ]);
+      const contents = sqlite
+        .prepare(
+          "SELECT content_json FROM control_product_entries WHERE kind='item' ORDER BY sequence"
+        )
+        .all();
+      expect(contents[0]).toEqual(contents[2]);
+      const execution = sqlite.prepare('SELECT phase FROM control_executions').get();
+      expect(execution).toEqual({ phase: 'closing' });
+      expect(
+        sqlite.prepare('SELECT step_id,state FROM control_execution_steps ORDER BY step_id').all()
+      ).toEqual([
+        { step_id: 'inspect-cleanup', state: 'intent' },
+        { step_id: 'terminal-publication', state: 'completed' },
+      ]);
+      expect(f.store.getCommandRequest('turn.start', requestId, scope)).toEqual(receipt);
+      expect(
+        sqlite
+          .prepare('SELECT request_id,turn_id,action,outcome FROM audit_events WHERE request_id=?')
+          .all(requestId)
+      ).toEqual([
+        { request_id: requestId, turn_id: f.turn.id, action: 'turn.start', outcome: 'succeeded' },
+      ]);
+      if (kind === 'display') {
+        // The accepted Conversation Worker result path permits only this display refresh.
+        await f.store.updateItem(
+          first.id,
+          { summary: 'Later display' },
+          DISPLAY_PROJECTION_REFRESH_ADMISSION
+        );
+        expect(f.store.getTurnById(f.turn.id).items[0]).toMatchObject({ summary: 'Later display' });
+        expect(f.store.listWorkspaceItemRevisions(f.workspace.id)).toHaveLength(4);
+        expect(f.store.getTurnEventsForExport(f.turn.id)).toEqual(events);
+      }
+      const tables =
+        'control_turns control_threads control_agent_sessions control_product_entries control_executions control_execution_steps control_work_observations task_turn_terminal_facts runtime_evidence idempotency_requests audit_events'.split(
+          ' '
+        );
+      const snapshot = () => ({
+        rows: tables.map((table) => sqlite.prepare(`SELECT * FROM ${table} ORDER BY 1`).all()),
+        history: readNativeProductEntries(f.scope, f.turn.id, 'item'),
+        turn: f.store.getTurnById(f.turn.id),
+        events: f.store.getTurnEventsForExport(f.turn.id),
+      });
+      const before = snapshot();
+      await expect(f.store.completeTurn(f.turn.id, patch, input)).resolves.toEqual(before.turn);
+      expect(snapshot()).toEqual(before);
+      const changed = ItemSchema.parse({
+        ...first,
+        ...(kind === 'message' ? { text: 'Changed' } : { summary: 'Changed' }),
+      });
+      await expect(
+        f.store.completeTurn(f.turn.id, patch, { ...input, items: [changed] })
+      ).rejects.toThrow(/terminal.*conflicts.*already-decided/);
+      expect(snapshot()).toEqual(before);
+    } finally {
+      sqlite.close();
     }
   });
 
