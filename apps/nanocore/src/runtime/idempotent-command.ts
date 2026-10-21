@@ -287,24 +287,31 @@ export async function runIdempotentCommand<T>(options: IdempotentCommandOptions<
    * @returns The same result after its receipt is durable.
    */
   const recordResult = (result: T): T => {
-    if (workerOwned) {
+    // User work acknowledges its personal-Workspace effect before its separate User receipt; keep that original receipt rather than rewriting it after model work.
+    if (workerOwned || ('receiptDb' in options && options.receiptDb?.scope === 'user')) {
       const committed = options.store.getCommandRequest(
         options.command,
         options.requestId,
         options.scope,
         commandDb
       );
-      if (!committed) {
+      if (!committed && workerOwned) {
         throw new Error('Native product command returned without its original committed receipt.');
       }
-      if (committed.inputHash !== inputHash) throw new IdempotencyKeyConflictError();
-      if (
-        committed.response.kind !== options.responseKind ||
-        committed.response.id !== options.responseId(result)
-      ) {
-        throw new Error('Native product result differs from its original committed receipt.');
+      if (committed) {
+        if (committed.inputHash !== inputHash) throw new IdempotencyKeyConflictError();
+        if (
+          committed.response.kind !== options.responseKind ||
+          committed.response.id !== options.responseId(result)
+        ) {
+          throw new Error(
+            workerOwned
+              ? 'Native product result differs from its original committed receipt.'
+              : 'User command result differs from its original committed receipt.'
+          );
+        }
+        return result;
       }
-      return result;
     }
     options.store.recordCommandRequest(
       {
@@ -312,6 +319,8 @@ export async function runIdempotentCommand<T>(options: IdempotentCommandOptions<
         requestId: options.requestId,
         scope: options.scope,
         inputHash,
+        createdAt: receipt.createdAt,
+        expiresAt: receipt.expiresAt,
         response: {
           kind: options.responseKind,
           id: options.responseId(result),
