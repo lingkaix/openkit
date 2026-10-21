@@ -242,3 +242,5 @@ Claim and reusable Observation/conflict analysis now use the existing Git Notebo
 Workspace import awaits complete private native initialization before its separate Core transaction for membership and portable Vault rows. Request file admission covers only synchronous staging and final file publication; no global admission scope spans immutable-content awaits.
 
 Post-terminal Item and event completion uses `prepareControlPublication` and `applyControlPublication` in the existing product owner. The closed native request carries the exact existing category, sealed Turn revision and immutable entries. It cannot change terminal metadata, Task, execution or evidence. Missing/exact decided publication, configuration marker creation and bounded status-display refresh keep separate predicates; generic products and complete terminal validation retain their original guards.
+
+Native observation import verifies the exact evidence owner for both restricted raw originals and originals under legal hold. A hold changes retention, grants no access, and survives the same staged import and cold reopen checks.

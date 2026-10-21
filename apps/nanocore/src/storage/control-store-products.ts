@@ -1761,6 +1761,20 @@ export function applyControlTerminal(
     throw new ControlProductPreconditionError();
   const turn = decode('turn', input.turn.record, input.owner);
   const previous = readProduct(db.sqlite, input.owner, 'turn', String(turn.id));
+  // Manual Artifact publication creates an already-completed Core-local Turn only on an idle Thread.
+  // Check the actual native rows in this transaction; a Main preflight cannot exclude a competing admission.
+  if (
+    !previous &&
+    preparation.entries.some(
+      (entry) =>
+        entry.input.kind === 'item' &&
+        (preparedPayloads.get(entry) as { type?: string }).type === 'artifact-reference'
+    ) &&
+    db.sqlite
+      .prepare("SELECT 1 FROM control_turns WHERE thread_id=? AND status IN ('pending','running')")
+      .get(turn.threadId)
+  )
+    throw new ControlProductPreconditionError();
   if (previous) {
     for (const field of ['startedAt', 'captureCoverage', 'fileInputs', 'internalExecution']) {
       if (

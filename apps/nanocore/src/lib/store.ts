@@ -2944,18 +2944,23 @@ export class FsStore {
           )
         )
       );
+      // Counts are a disposable projection. Metadata-only authority reads must not decode unrelated Notebook bodies.
+      // Each access still reads current committed products and validates the exact current Knowledge pages.
+      const readCounts = () => ({
+        threadCount: listNativeProducts(scope, 'thread').length,
+        artifactCount: [...this.artifacts.values()].filter(
+          (artifact) =>
+            artifact.workspaceId === workspaceId &&
+            !this.pendingArtifactSubmissions.has(artifact.id)
+        ).length,
+        knowledgeEntryCount: readWorkspaceKnowledgePages(this.workspaceRootPath(workspaceId))
+          .length,
+      });
       return {
         ...system,
         name: config.workspace.name,
-        counts: {
-          threadCount: listNativeProducts(scope, 'thread').length,
-          artifactCount: [...this.artifacts.values()].filter(
-            (artifact) =>
-              artifact.workspaceId === workspaceId &&
-              !this.pendingArtifactSubmissions.has(artifact.id)
-          ).length,
-          knowledgeEntryCount: readWorkspaceKnowledgePages(this.workspaceRootPath(workspaceId))
-            .length,
+        get counts() {
+          return readCounts();
         },
       };
     }
@@ -3356,8 +3361,8 @@ export class FsStore {
     });
   }
 
-  /** Synchronizes exact Item bytes for a complete native Pending tuple, without publishing them. */
-  private async preparePendingItems(
+  /** Synchronizes exact Item bytes for a complete native tuple, without admitting their entries. */
+  private async prepareNativeItems(
     scope: NativeProductScope,
     items: readonly Item[]
   ): Promise<ControlProductEntry[]> {
@@ -3366,7 +3371,7 @@ export class FsStore {
     for (const value of items) {
       const item = ItemSchema.parse(value);
       if (!isDeepStrictEqual(item.owner, scope.owner))
-        throw new Error('Pending Item owner conflicts.');
+        throw new Error('Native Item owner conflicts.');
       const existing = readNativeProductEntries(scope, item.turnId, 'item');
       const previous = existing.filter((row) => row.id === item.id).at(-1);
       if (previous) {
@@ -3401,7 +3406,7 @@ export class FsStore {
     executor: 'worker' | 'coordinator'
   ): Promise<{ entries: ControlProductEntry[]; pending: readonly ControlPendingCommandInput[] }> {
     const admission = await this.turnAdmissionHooks?.prepareAdmission?.(turn, executor);
-    const entries = await this.preparePendingItems(
+    const entries = await this.prepareNativeItems(
       this.nativeScope(turn.owner),
       admission?.items ?? []
     );
@@ -3415,7 +3420,7 @@ export class FsStore {
     publication: { items?: readonly Item[]; receipt?: ControlPendingTransition['receipt'] } = {}
   ): Promise<ControlPendingCommandResult> {
     const scope = this.nativeScope({ kind: 'workspace', workspaceId });
-    const entries = await this.preparePendingItems(scope, publication.items ?? []);
+    const entries = await this.prepareNativeItems(scope, publication.items ?? []);
     const client = getControlStoreWorkerClient();
     const database = `workspace:${scope.path}`;
     await client.open({
@@ -3498,7 +3503,7 @@ export class FsStore {
     });
     if (turn.agentId || turn.agentSessionId || turn.threadId !== threadId)
       throw new Error('Pending service publication requires its original Core-local Turn.');
-    const entries = await this.preparePendingItems(scope, input.items);
+    const entries = await this.prepareNativeItems(scope, input.items);
     const priorEvent = existing
       ? this.getTurnEventsForExport(turn.id).find((event) => event.data.type === 'turn-completed')
       : undefined;
@@ -4465,7 +4470,7 @@ export class FsStore {
         turn,
         options.executorKind
       );
-      const pendingEntries = await this.preparePendingItems(scope, pendingAdmission?.items ?? []);
+      const pendingEntries = await this.prepareNativeItems(scope, pendingAdmission?.items ?? []);
       let commandAdmission: Pick<ControlAdmission, 'receipt' | 'audit'> | undefined;
       if (options.commandReceipt) {
         const { responseKind, ...receipt } = options.commandReceipt;
@@ -5881,19 +5886,16 @@ export class FsStore {
    * @returns Stable Artifact, Turn, and Item identities.
    * @throws ArtifactAuthorityError when the target is stale, busy, conflicting, or incomplete.
    */
-  public introduceArtifact(input: IntroduceArtifactInput): IntroduceWorkspaceArtifactResponse {
-    if (this.dataRoot)
-      throw new ArtifactAuthorityError(
-        'recovery_required',
-        'Native born-terminal Artifact introduction requires the structured terminal product owner.'
-      );
+  public async introduceArtifact(
+    input: IntroduceArtifactInput
+  ): Promise<IntroduceWorkspaceArtifactResponse> {
     this.assertWorkspacePublicationAcknowledged(input.workspaceId);
-    const thread = this.threads.get(input.threadId);
-    if (
-      !this.workspaces.has(input.workspaceId) ||
-      !thread ||
-      workspaceIdForOwner(thread.owner) !== input.workspaceId
-    ) {
+    let thread: Thread;
+    try {
+      this.getWorkspace(input.workspaceId);
+      thread = this.getThread(input.workspaceId, input.threadId);
+    } catch (error) {
+      if (!(error instanceof StoreRecordNotFoundError)) throw error;
       throw new ArtifactAuthorityError('stale', 'The requested Workspace or Thread is absent.');
     }
     const artifact = this.artifacts.get(input.artifactId);
@@ -5927,7 +5929,7 @@ export class FsStore {
     }
 
     const itemId = artifactReferenceItemId(input.artifactId, input.turnId);
-    const matchingReference = [...this.items.values()].find(
+    const matchingReference = this.listThreadItems(input.workspaceId, input.threadId).find(
       (item) =>
         item.type === 'artifact-reference' &&
         workspaceIdForOwner(item.owner) === input.workspaceId &&
@@ -5936,8 +5938,8 @@ export class FsStore {
         (item.turnId === input.turnId || item.lastMutationRequestId === input.requestId)
     );
     if (
-      this.turns.has(input.turnId) ||
-      this.items.has(itemId) ||
+      (this.dataRoot ? this.findNativeOwner('turn', input.turnId) : this.turns.has(input.turnId)) ||
+      (this.dataRoot ? this.findNativeOwner('item', itemId) : this.items.has(itemId)) ||
       this.streams.has(input.turnId) ||
       matchingReference
     ) {
@@ -5947,11 +5949,8 @@ export class FsStore {
       );
     }
     if (
-      [...this.turns.values()].some(
-        (turn) =>
-          workspaceIdForOwner(turn.owner) === input.workspaceId &&
-          turn.threadId === input.threadId &&
-          !isSealedTurnTerminal(turn.status)
+      this.listThreadTurns(input.workspaceId, input.threadId).some(
+        (turn) => !isSealedTurnTerminal(turn.status)
       )
     ) {
       throw new ArtifactAuthorityError(
@@ -5988,6 +5987,21 @@ export class FsStore {
       completedAt: input.acceptedAt,
       durationMs: 0,
     });
+    if (this.dataRoot) {
+      const scope = this.nativeScope(thread.owner);
+      const entries = await this.prepareNativeItems(scope, [reference]);
+      try {
+        await this.createNativeTerminalTurn(scope, turn, this.liveCaptureCoverage, [], entries);
+      } catch (error) {
+        this.throwArtifactTerminalFailure(error, input.workspaceId, input.threadId);
+      }
+      return {
+        artifactId: artifact.id,
+        artifactVersion: artifact.version,
+        turnId: turn.id,
+        itemId: reference.id,
+      };
+    }
     const itemRevisionCount = this.itemRevisions.length;
 
     this.turns.set(turn.id, turn);
@@ -6151,16 +6165,18 @@ export class FsStore {
       );
   }
 
-  /** Commits one immutable next version and its completed Item-backed Core-local Turn. */
-  public commitArtifactVersion(
+  /**
+   * Commits one immutable next version and its completed Item-backed Core-local Turn.
+   *
+   * @param input Exact version, original content and command lineage.
+   * @param payload Verified staged original for arbitrary file content.
+   * @param fileAdmission Existing capacity owner for short synchronous version and head writes.
+   */
+  public async commitArtifactVersion(
     input: CommitArtifactVersionInput,
-    payload?: StagedArtifactPayload
-  ): ReadArtifactVersionResponse {
-    if (this.dataRoot)
-      throw new ArtifactAuthorityError(
-        'recovery_required',
-        'Native born-terminal Artifact version publication requires the structured terminal product owner.'
-      );
+    payload?: StagedArtifactPayload,
+    fileAdmission?: FileStorageAdmission
+  ): Promise<ReadArtifactVersionResponse> {
     this.assertArtifactVersionCommit(input);
     const current = this.getArtifact(input.workspaceId, input.artifactId);
     const command = input.command ?? 'artifact.version-commit';
@@ -6173,8 +6189,8 @@ export class FsStore {
     ]);
     const itemId = artifactReferenceItemId(current.id, turnId);
     if (
-      this.turns.has(turnId) ||
-      this.items.has(itemId) ||
+      (this.dataRoot ? this.findNativeOwner('turn', turnId) : this.turns.has(turnId)) ||
+      (this.dataRoot ? this.findNativeOwner('item', itemId) : this.items.has(itemId)) ||
       this.artifactVersions.get(current.id)?.some((record) => record.version.turnId === turnId)
     )
       throw new ArtifactAuthorityError(
@@ -6242,17 +6258,56 @@ export class FsStore {
       items: [item],
     });
     const versions = this.artifactVersions.get(current.id)!;
-    const revisionCount = this.itemRevisions.length;
-    let published = false;
-    try {
-      if (this.dataRoot) {
+    if (this.dataRoot) {
+      const workspaceRoot = this.workspaceRootPath(input.workspaceId);
+      const scope = this.nativeScope(turn.owner);
+      const entries = await this.prepareNativeItems(scope, [item]);
+      const publishVersion = () =>
         publishArtifactVersionRecord({
-          workspaceRoot: this.workspaceRootPath(input.workspaceId),
+          workspaceRoot,
           record,
           ...(payload ? { payloadPath: payload.path } : {}),
         });
-        published = true;
+      // File capacity is synchronous; no admission context spans native preparation or SQL.
+      if (fileAdmission) withCanonicalFileWriteAdmission(fileAdmission, publishVersion);
+      else publishVersion();
+      try {
+        await this.createNativeTerminalTurn(scope, turn, this.liveCaptureCoverage, [], entries);
+      } catch (error) {
+        if (error instanceof ControlStoreWorkerError && error.commit === 'not-committed') {
+          try {
+            const compensate = () =>
+              rollbackArtifactVersionRecord(workspaceRoot, current.id, artifact.version);
+            if (fileAdmission) withCanonicalFileWriteAdmission(fileAdmission, compensate);
+            else compensate();
+          } catch (cleanupError) {
+            this.unacknowledgedWorkspaces.add(input.workspaceId);
+            throw new ArtifactPayloadCleanupError([error, cleanupError]);
+          }
+        } else {
+          // An uncertain native result retains the original version for ordinary recovery.
+          this.unacknowledgedWorkspaces.add(input.workspaceId);
+        }
+        this.throwArtifactTerminalFailure(error, input.workspaceId, input.threadId);
       }
+      // A native ACK cannot be undone by a later file-head failure.
+      this.artifacts.set(current.id, artifact);
+      this.artifactVersions.set(current.id, [...versions, record]);
+      try {
+        const publishHead = () => this.persist(input.workspaceId);
+        if (fileAdmission) withCanonicalFileWriteAdmission(fileAdmission, publishHead);
+        else publishHead();
+      } catch (error) {
+        this.unacknowledgedWorkspaces.add(input.workspaceId);
+        throw error;
+      }
+      return structuredClone({
+        artifact: record.artifact,
+        version: projectArtifactVersion(record),
+      });
+    }
+    const revisionCount = this.itemRevisions.length;
+    try {
       this.artifacts.set(current.id, artifact);
       this.artifactVersions.set(current.id, [...versions, record]);
       this.turns.set(turnId, turn);
@@ -6272,16 +6327,29 @@ export class FsStore {
       this.items.delete(itemId);
       this.streams.delete(turnId);
       this.itemRevisions.length = revisionCount;
-      if (published && this.dataRoot)
-        rollbackArtifactVersionRecord(
-          this.workspaceRootPath(input.workspaceId),
-          current.id,
-          artifact.version
-        );
       this.persist(input.workspaceId);
       throw error;
     }
     return structuredClone({ artifact: record.artifact, version: projectArtifactVersion(record) });
+  }
+
+  /** Projects only a proved native refusal with a currently busy canonical Thread to its existing family error. */
+  private throwArtifactTerminalFailure(
+    error: unknown,
+    workspaceId: string,
+    threadId: string
+  ): never {
+    if (
+      error instanceof ControlStoreWorkerError &&
+      error.commit === 'not-committed' &&
+      error.code === 'precondition' &&
+      this.listThreadTurns(workspaceId, threadId).some((turn) => !isSealedTurnTerminal(turn.status))
+    )
+      throw new ArtifactAuthorityError(
+        'thread_busy',
+        'The Thread already has a non-terminal Turn.'
+      );
+    throw error;
   }
 
   /** Resolves this Workspace's existing single Git content owner. */

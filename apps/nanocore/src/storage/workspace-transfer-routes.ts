@@ -1035,7 +1035,7 @@ function finalizeImportedWorkObservations(
             bundle.turnId !== turnId ||
             bundle.sourceKind !== 'work-observation-body' ||
             bundle.createdAt !== row.ts ||
-            bundle.retentionClass !== 'restricted-raw' ||
+            !['restricted-raw', 'legal-hold'].includes(bundle.retentionClass) ||
             bundle.sensitivityClass !== 'restricted' ||
             bundle.contentDigests.length !== 1 ||
             bundle.contentDigests[0]!.replace(/^sha256:/, '') !== body.sha256 ||

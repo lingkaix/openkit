@@ -1282,23 +1282,26 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
     };
     state.requestId = context.requestId;
     const completedAt = new Date().toISOString();
-    const agentSession = await store.updateAgentSession(state.agentSessionId, {
-      status: 'failed',
+    const sessionProjection = {
+      id: state.agentSessionId,
+      status: 'failed' as const,
       message: 'The simulator turn was interrupted.',
       updatedAt: completedAt,
-    });
-    const agentSessionUpdatedEvent = await store.persistTurnEvent(
+    };
+    // Native assigned Session failure belongs to the same complete terminal tuple.
+    const composeSession = Boolean(store.getDataRoot());
+    const { id: _sessionId, ...sessionPatch } = sessionProjection;
+    const agentSession = composeSession
+      ? { ...store.getAgentSession(state.agentSessionId), ...sessionProjection }
+      : await store.updateAgentSession(state.agentSessionId, sessionPatch);
+    const sessionEvent = {
+      event: 'agent.session.updated' as const,
+      requestId: state.requestId,
+      workspaceId: state.workspaceId,
+      threadId: state.threadId,
       turnId,
-      {
-        event: 'agent.session.updated',
-        requestId: state.requestId,
-        workspaceId: state.workspaceId,
-        threadId: state.threadId,
-        turnId,
-        data: { type: 'agent-session-updated', agentSession },
-      },
-      ALREADY_DECIDED_PUBLICATION_ADMISSION
-    );
+      data: { type: 'agent-session-updated' as const, agentSession },
+    };
     const turn = await store.completeTurn(
       turnId,
       {
@@ -1306,10 +1309,27 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
         completedAt,
       },
       {
-        ...(await this.readTerminalPublication(store, state.turnId)),
+        ...(await this.readTerminalPublication(store, state.turnId, 'interrupted')),
+        ...(composeSession ? { agentSession: sessionProjection } : {}),
+        precedingEvents: [sessionEvent],
         requestId: state.requestId,
         stopReason: 'aborted',
       }
+    );
+    const retainedSessionEvent = store
+      .getTurnEvents(turnId)
+      .findLast(
+        (event) =>
+          event.data.type === 'agent-session-updated' &&
+          event.data.agentSession.id === state.agentSessionId &&
+          event.data.agentSession.updatedAt === completedAt
+      );
+    if (!retainedSessionEvent)
+      throw new Error('Simulator terminal Session event was not acknowledged.');
+    const agentSessionUpdatedEvent = await store.persistTurnEvent(
+      turnId,
+      retainedSessionEvent,
+      ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
     const turnCompletedEvent = await store.persistTurnEvent(
       turnId,
@@ -1851,16 +1871,17 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
     store.emitTurnEvent(state.turnId, turnCompletedEvent);
   }
 
-  /** Reads native execution and evidence facts; the in-memory simulator has no durable Workspace. */
+  /** Reads original native facts for the actual outcome; completed publication keeps its evidence requirement. */
   private async readTerminalPublication(
     store: FsStore,
-    turnId: string
+    turnId: string,
+    outcome: 'completed' | 'failed' | 'cancelled' | 'interrupted' = 'completed'
   ): Promise<TerminalTurnPublication> {
     if (!this.coreDb) return {};
     const turn = store.getTurnById(turnId);
     const workspaceDb = openWorkspaceDb(this.coreDb.dataRoot, workspaceIdForOwner(turn.owner));
     try {
-      return await workerTurnTerminalPublication(workspaceDb, turnId);
+      return await workerTurnTerminalPublication(workspaceDb, turnId, outcome);
     } finally {
       workspaceDb.sqlite.close();
     }

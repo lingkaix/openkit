@@ -277,13 +277,13 @@ export function createCoordinatorTaskTool(options: {
                     checkpoint,
                   });
               })
-              .catch((error) => {
+              .catch(async (error) => {
                 rejectAccepted(error);
                 const ended = options.store
                   .listThreadTurns(goal.workspaceId, threadId)
                   .find((turn) => turn.id === turnId);
                 if (ended && !isSealedTurnTerminal(ended.status))
-                  options.store.updateTurn(turnId, {
+                  await options.store.updateTurn(turnId, {
                     status: 'failed',
                     completedAt: new Date().toISOString(),
                     error: {

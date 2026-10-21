@@ -333,7 +333,7 @@ export async function interruptProductTurn(input: {
             queueEntryId: admission.queueEntryId,
             workspaceId,
           });
-          terminalizeGovernedWorkerTurn({
+          await terminalizeGovernedWorkerTurn({
             store,
             turnId,
             agentSessionId: null,
@@ -355,7 +355,7 @@ export async function interruptProductTurn(input: {
             noOutstandingEffects: true,
             cause: 'turn-cancelled',
           });
-          terminalizeGovernedWorkerTurn({
+          await terminalizeGovernedWorkerTurn({
             store,
             turnId,
             agentSessionId: attempt.agentSessionId,

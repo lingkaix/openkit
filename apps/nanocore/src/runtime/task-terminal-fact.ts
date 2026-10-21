@@ -62,7 +62,7 @@ export function recordTaskTerminalFact(
   else db.sqlite.transaction(commit)();
 }
 /** Finishes file publication after a crash; never asks a model to infer a Task result. */
-export function recoverTaskTerminalFacts(store: FsStore, db: WorkspaceDb): void {
+export async function recoverTaskTerminalFacts(store: FsStore, db: WorkspaceDb): Promise<void> {
   for (const row of db.sqlite
     .prepare('SELECT schema_version AS schemaVersion,payload_json FROM task_turn_terminal_facts')
     .all() as { schemaVersion: unknown; payload_json: string }[]) {
@@ -78,7 +78,7 @@ export function recoverTaskTerminalFacts(store: FsStore, db: WorkspaceDb): void 
     if (workspaceIdForOwner(turn.owner) !== fact.workspaceId || turn.threadId !== fact.threadId)
       throw new Error('Task terminal fact lineage conflicts with the Turn owner.');
     if (!isSealedTurnTerminal(turn.status))
-      store.updateTurn(turn.id, {
+      await store.updateTurn(turn.id, {
         status: fact.status,
         error: fact.error,
         completedAt: fact.completedAt,

@@ -108,7 +108,7 @@ export async function publishGenerativePresentation(
     input: { actor: context.actor, ...input },
     responseKind: 'generative_presentation',
     workspaceDb: context.workspaceDb,
-    execute: () => {
+    execute: async () => {
       assertWritableTurn(
         context.store,
         context.actor,
@@ -204,7 +204,7 @@ export async function publishGenerativePresentation(
         observed_at: createdAt,
       };
       if (answer && source.kind === 'item') {
-        context.store.createItem({
+        await context.store.createItem({
           id: source.itemId,
           owner: { kind: 'workspace', workspaceId: context.workspaceId },
           threadId: input.threadId,
@@ -234,7 +234,7 @@ export async function publishGenerativePresentation(
           summary: 'generative-ui.publish',
         });
       })();
-      appendPresentationItem(context.store, row);
+      await appendPresentationItem(context.store, row);
       return presentationId;
     },
     replay: (record) => {
@@ -691,7 +691,7 @@ function requirePresentationRow(
   return row;
 }
 
-function appendPresentationItem(store: FsStore, row: PresentationRow): void {
+async function appendPresentationItem(store: FsStore, row: PresentationRow): Promise<void> {
   const existing = store
     .listWorkspaceItemRevisions(row.workspace_id)
     .find((item) => item.id === row.item_id);
@@ -712,7 +712,7 @@ function appendPresentationItem(store: FsStore, row: PresentationRow): void {
     completedAt: row.created_at,
     causationId: row.request_id,
   };
-  store.createItem(item);
+  await store.createItem(item);
 }
 
 function projectPresentation(store: FsStore, row: PresentationRow): GenerativePresentation {

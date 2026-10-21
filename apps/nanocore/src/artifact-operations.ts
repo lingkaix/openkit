@@ -349,7 +349,7 @@ export function createArtifactOperationImplementations(
           },
           responseKind: 'artifact',
           workspaceDb,
-          execute: () => {
+          execute: async () => {
             assertArtifactWorkspaceLineage(
               actorId,
               administratorEligible(context),
@@ -358,7 +358,7 @@ export function createArtifactOperationImplementations(
               artifactId
             );
             return IntroduceWorkspaceArtifactResponseSchema.parse(
-              store.introduceArtifact({
+              await store.introduceArtifact({
                 workspaceId,
                 threadId,
                 artifactId,
