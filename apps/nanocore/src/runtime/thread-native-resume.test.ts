@@ -2,14 +2,20 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { workspaceIdForOwner } from '@openkit/protocol';
+import { TurnSchema, workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, expect, it, vi } from 'vitest';
+import { FsStore } from '../lib/store.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { AgentSessionRecordSchema } from '../storage/workspace-file-records.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
-import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
+import {
+  createDemoWorkspaceForUser,
+  DEMO_THREAD_ID,
+  DEMO_WORKSPACE_ID,
+} from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
@@ -26,7 +32,6 @@ import type {
 } from './worker-governance-backend.js';
 import { WorkerGovernanceTurnExecutor } from './worker-governance-turn-executor.js';
 import { workerStorageDefaultWorkSlotRef } from './worker-storage-bindings.js';
-import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
 
 // Confirm synthetic image admission without replacing production package or resume selection.
 vi.mock('./agent-environment.js', async (importOriginal) => {
@@ -73,12 +78,13 @@ it.each([
   try {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
+    const store = new FsStore({ dataRoot });
+    const demo = createDemoWorkspaceForUser(FIXTURE_LOCAL_USER_ID);
     recordWorkspaceOwnerMembership({
       coreDb,
       workspaceId: DEMO_WORKSPACE_ID,
       ownerUserId: FIXTURE_LOCAL_USER_ID,
     });
-    const store = await createDemoStore({ dataRoot });
     const oldSessionId = testEntityId('as', 'resume-old-codex');
     const failedSessionId = testEntityId('as', 'resume-failed-opencode');
     const timestamp = '2026-10-17T15:00:00.000Z';
@@ -87,19 +93,27 @@ it.each([
       storageRef: 'wst_00000000-0000-7ac8-9f6c-13552db6aa87',
       workSlotRef: workerStorageDefaultWorkSlotRef(DEMO_WORKSPACE_ID, DEMO_THREAD_ID),
     };
-    if (oldAgentId) {
-      const oldTurn = await store.createTurn(
-        DEMO_WORKSPACE_ID,
-        DEMO_THREAD_ID,
-        'Earlier work',
-        actor
-      );
-      const workspaceDb = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
-      try {
-        applyScopedMigrations(workspaceDb);
-        const environmentPackage = resolveAgentEnvironmentPackage({
+    const oldTurn = oldAgentId
+      ? TurnSchema.parse({
+          id: testEntityId('tu', 'resume-old-turn'),
+          owner: demo.thread.owner,
+          threadId: DEMO_THREAD_ID,
+          triggerActor: actor,
+          agentId: oldAgentId,
+          agentSessionId: oldSessionId,
+          items: [],
+          status: 'completed',
+          error: null,
+          configVersion: null,
+          startedAt: timestamp,
+          completedAt: timestamp,
+          durationMs: 0,
+        })
+      : null;
+    const oldPackage = oldTurn
+      ? resolveAgentEnvironmentPackage({
           coreDb,
-          agentSetup: createTestAgentSetup({ agentId: oldAgentId, adapter: oldAdapter }),
+          agentSetup: createTestAgentSetup({ agentId: oldAgentId!, adapter: oldAdapter }),
           agentSessionId: oldSessionId,
           triggerActor: actor,
           backend: { kind: 'openshell' },
@@ -107,62 +121,100 @@ it.each([
           turnInput: 'Earlier work',
           workspaceCwd: '/workspace',
           workspaceRoots: [],
-        });
-        await store.updateTurn(oldTurn.id, { status: 'completed' });
-        await store.createAgentSession({
-          id: oldSessionId,
-          agentId: oldAgentId,
-          environmentPackageSnapshotId: environmentPackage.snapshotId,
-          workspaceId: DEMO_WORKSPACE_ID,
-          threadId: DEMO_THREAD_ID,
-          status: 'closed',
-          message: null,
-          nativeHandleDigest: 'a'.repeat(64),
-          retainedStorage: storage,
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        });
+        })
+      : null;
+    const failedTurn = TurnSchema.parse({
+      id: testEntityId('tu', 'resume-failed-turn'),
+      owner: demo.thread.owner,
+      threadId: DEMO_THREAD_ID,
+      triggerActor: actor,
+      agentId: 'agent_opencode_server',
+      agentSessionId: failedSessionId,
+      items: [],
+      status: 'failed',
+      error: {
+        code: 'worker_preparation_failed',
+        message: 'Preparation failed before native open.',
+      },
+      configVersion: null,
+      startedAt: '2026-10-17T15:01:00.000Z',
+      completedAt: '2026-10-17T15:02:00.000Z',
+      durationMs: 60_000,
+    });
+    const historicalSession = {
+      workspaceId: DEMO_WORKSPACE_ID,
+      threadId: DEMO_THREAD_ID,
+      configVersion: null,
+      environmentPackageSnapshotId: null,
+      nativeHandleDigest: null,
+      retainedStorage: null,
+      policySnapshotId: null,
+      sessionCompatibilityKey: null,
+      sandboxSummary: null,
+      stale: false,
+      workspaceRoots: [],
+    };
+    // Import authored retained history, not live worker completion or physical release proof.
+    // The later failed preparation captured no package or native reference; selection must walk past it.
+    await store.importWorkspaceSnapshot({
+      workspace: demo.workspace,
+      threads: [demo.thread],
+      knowledge: demo.knowledge,
+      turns: [...(oldTurn ? [oldTurn] : []), failedTurn],
+      itemRevisions: [],
+      artifacts: [],
+      agentSessions: [
+        ...(oldPackage
+          ? [
+              AgentSessionRecordSchema.parse({
+                ...historicalSession,
+                id: oldSessionId,
+                agentId: oldAgentId,
+                environmentPackageSnapshotId: oldPackage.snapshotId,
+                status: 'closed',
+                message: null,
+                nativeHandleDigest: 'a'.repeat(64),
+                retainedStorage: storage,
+                createdAt: timestamp,
+                updatedAt: timestamp,
+              }),
+            ]
+          : []),
+        AgentSessionRecordSchema.parse({
+          ...historicalSession,
+          id: failedSessionId,
+          agentId: 'agent_opencode_server',
+          status: 'failed',
+          message: failedTurn.error!.message,
+          createdAt: failedTurn.startedAt,
+          updatedAt: failedTurn.completedAt,
+        }),
+      ],
+      turnEvents: [],
+      notebookInitialization: {
+        requestId: '00000000-0000-4000-8000-000000000390',
+        producer: actor,
+        instructionReference: 'test-fixture:retained-native-resume-history',
+      },
+      initialNotebookFiles: Object.fromEntries(
+        demo.knowledge.map((page) => [page.path, page.content])
+      ),
+    });
+    if (oldPackage) {
+      const workspaceDb = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
+      try {
+        applyScopedMigrations(workspaceDb);
         recordAgentEnvironmentPackageSnapshot(workspaceDb, {
-          environmentPackage,
+          environmentPackage: oldPackage,
           createdAt: timestamp,
         });
       } finally {
         workspaceDb.sqlite.close();
       }
     }
-    // Use the real failure publisher for an allocated AgentSession that failed before native open.
-    await store.createAgentSession({
-      id: failedSessionId,
-      agentId: 'agent_opencode_server',
-      workspaceId: DEMO_WORKSPACE_ID,
-      threadId: DEMO_THREAD_ID,
-      status: 'created',
-      message: null,
-      createdAt: '2026-10-17T15:01:00.000Z',
-      updatedAt: '2026-10-17T15:01:00.000Z',
-    });
-    const failedTurn = await store.createTurn(
-      DEMO_WORKSPACE_ID,
-      DEMO_THREAD_ID,
-      'Prepare OpenCode',
-      actor
-    );
-    await store.updateTurn(failedTurn.id, {
-      agentId: 'agent_opencode_server',
-      agentSessionId: failedSessionId,
-    });
-    await terminalizeGovernedWorkerTurn({
-      store,
-      turnId: failedTurn.id,
-      agentSessionId: failedSessionId,
-      outcome: 'failed',
-      errorCode: 'worker_preparation_failed',
-      message: 'Preparation failed before native open.',
-      requestId: null,
-      completedAt: '2026-10-17T15:02:00.000Z',
-    });
     expect(store.getAgentSession(failedSessionId)).toMatchObject({
       status: 'failed',
+      environmentPackageSnapshotId: null,
       nativeHandleDigest: null,
     });
 

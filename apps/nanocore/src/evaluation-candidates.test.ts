@@ -54,8 +54,8 @@ async function fixture(privateSecond = false) {
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
   databases.push(workspaceDb);
   applyScopedMigrations(workspaceDb);
-  const candidates = ['First exact output\r\n', 'Second exact output\n'].map(
-    async (body, index) => {
+  const candidates = await Promise.all(
+    ['First exact output\r\n', 'Second exact output\n'].map(async (body, index) => {
       const requestId = `import-candidate-${index}`;
       const contentDigest = `sha256:${createHash('sha256').update(body).digest('hex')}`;
       const timestamp = new Date().toISOString();
@@ -72,7 +72,7 @@ async function fixture(privateSecond = false) {
             id: userId,
           })
         : null;
-      const artifact = store.createArtifact({
+      const artifact = await store.createArtifact({
         id: allocateEntityId('ar'),
         workspaceId: workspace.id,
         threadId: privateThread?.id ?? null,
@@ -106,7 +106,7 @@ async function fixture(privateSecond = false) {
           completedAt: new Date().toISOString(),
         });
       return { artifactId: artifact.id, artifactVersion: artifact.version, contentDigest };
-    }
+    })
   );
   const inflightCommands = new WeakMap<FsStore, Map<string, InflightIdempotentCommand>>();
   const access = {
@@ -231,6 +231,8 @@ describe('Workspace candidate set authority', () => {
         choice: { ...state.candidates[0]!, artifactVersion: 9 },
       })
     ).rejects.toMatchObject({ code: 'invalid_request' });
+    // Seed the pre-existing Reviews only in a stopped fixture phase; selection remains with its current owner.
+    await shutdownControlStoreWorkerClient();
     for (const candidate of state.candidates) {
       createArtifactReview(state.workspaceDb, {
         ...candidate,

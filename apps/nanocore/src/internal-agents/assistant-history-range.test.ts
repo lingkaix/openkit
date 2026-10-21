@@ -15,6 +15,7 @@ import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from '../test-support/local-user.js';
+import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   assertConversationRetrievalTraceReadable,
@@ -58,7 +59,47 @@ async function fixture(
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = await store.createWorkspace('Exact source-bound history');
+  const workspaceId = allocateEntityId('ws');
+  const audience = { visibility: 'private' as const, privateOwnerUserId: LOCAL_USER_ID };
+  const destination = {
+    id: allocateEntityId('th'),
+    owner: { kind: 'workspace' as const, workspaceId },
+    name: 'Current conversation',
+    preview: 'Current conversation',
+    status: 'active' as const,
+    entryPath: 'conversation' as const,
+    threadSource: 'conversation' as const,
+    ...audience,
+    createdAt: '2026-10-15T00:00:00.000Z',
+    updatedAt: timestamp,
+  };
+  const source = {
+    ...destination,
+    id: allocateEntityId('th'),
+    name: 'Past source',
+    preview: 'Past source',
+    createdAt: timestamp,
+  };
+  // Retained conversations predate the single-Timeline rule; the earliest remains current.
+  const workspace = await store.importWorkspaceSnapshot({
+    workspace: {
+      id: workspaceId,
+      name: 'Exact source-bound history',
+      kind: 'code',
+      status: 'active',
+      counts: { threadCount: 2, artifactCount: 0, knowledgeEntryCount: 0 },
+      createdAt: destination.createdAt,
+      updatedAt: timestamp,
+    },
+    threads: [destination, source],
+    turns: [],
+    itemRevisions: [],
+    knowledge: [],
+    artifacts: [],
+    agentSessions: [],
+    turnEvents: [],
+    ...notebookImportFixture({ workspaceId, knowledge: [], userId: LOCAL_USER_ID }),
+  });
   // The querying member must be removable without violating canonical owner continuity.
   const ownerUserId = allocateEntityId('usr');
   coreDb.sqlite
@@ -72,33 +113,19 @@ async function fixture(
     (workspace_id, user_id, status, joined_at, revision, created_at, updated_at)
     VALUES (?, ?, 'active', ?, 1, ?, ?)`)
     .run(workspace.id, LOCAL_USER_ID, timestamp, timestamp, timestamp);
-  const audience = { visibility: 'private' as const, privateOwnerUserId: LOCAL_USER_ID };
-  const source = await store.createThread(
-    workspace.id,
-    'Past source',
-    undefined,
-    'conversation',
-    audience
-  );
-  const destination = await store.createThread(
-    workspace.id,
-    'Current conversation',
-    undefined,
-    'conversation',
-    audience
-  );
   const sourceTurn = await store.createTurn(workspace.id, source.id, 'Retained source.', {
     kind: 'user',
     id: LOCAL_USER_ID,
   });
-  const items = texts.map((text) => message(store, sourceTurn, text));
+  const items: MessageItem[] = [];
+  for (const text of texts) items.push(await message(store, sourceTurn, text));
   const turn = await store.createTurn(
     workspace.id,
     destination.id,
     'Read exact source history.',
     { kind: 'user', id: LOCAL_USER_ID },
     null,
-    { agentId, executorKind: 'assistant' }
+    { agentId, ...(agentId === 'quick-chat' ? { executorKind: 'assistant' as const } : {}) }
   );
   const actor: Actor = { kind: 'local', userId: LOCAL_USER_ID };
   const context = {
@@ -124,12 +151,12 @@ async function fixture(
 }
 
 /** Creates an accepted source message through the existing Item owner. */
-function message(
+async function message(
   store: FsStore,
   turn: ReturnType<FsStore['getTurnById']>,
   text: string
-): MessageItem {
-  return store.createItem({
+): Promise<MessageItem> {
+  return (await store.createItem({
     id: allocateEntityId('it'),
     owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
     threadId: turn.threadId,
@@ -140,7 +167,7 @@ function message(
     status: 'completed',
     createdAt: timestamp,
     completedAt: timestamp,
-  }) as MessageItem;
+  })) as MessageItem;
 }
 
 /** Binds the requested fixture range through its actual source-digest producer. */
@@ -215,7 +242,7 @@ describe('Assistant exact source-bound history ranges', () => {
   it('reads the exact committed range of a real current-run compaction summary and keeps its trace readable after terminal status changes', async () => {
     const f = await fixture([], 'knowledge-manager');
     // Preserve real compaction pressure under the local bytes/3 estimate.
-    const source = message(
+    const source = await message(
       f.store,
       f.turn,
       `${privateText} The decision remains pending. `.repeat(660)
@@ -311,14 +338,23 @@ describe('Assistant exact source-bound history ranges', () => {
 
   it('binds compaction evidence to returned trace references in the trusted asking context, excluding later reads', async () => {
     const f = await fixture(['A bounded exact source.']);
-    const first = result(await execute(f, { range: range(f) }));
+    const requestedRange = range(f);
+    const first = result(await execute(f, { range: requestedRange }));
+    // The query owns a private KM Thread; changing the source outcome would invalidate its range digest.
+    const queryThread = await f.store.createThread(
+      f.workspace.id,
+      'Knowledge question',
+      undefined,
+      'knowledge-manager',
+      { visibility: 'private', privateOwnerUserId: LOCAL_USER_ID }
+    );
     const run = await f.store.createTurn(
       f.workspace.id,
-      f.source.id,
+      queryThread.id,
       'Knowledge query run.',
       { kind: 'user', id: LOCAL_USER_ID },
       null,
-      { agentId: 'knowledge-manager', executorKind: 'assistant' }
+      { agentId: 'knowledge-manager' }
     );
     const item = await f.store.createItem({
       id: allocateEntityId('it'),
@@ -329,7 +365,7 @@ describe('Assistant exact source-bound history ranges', () => {
       status: 'completed',
       tool: 'thread.history.read',
       server: null,
-      arguments: { range: range(f) },
+      arguments: { range: requestedRange },
       result: JSON.stringify({ content: [{ type: 'text', text: JSON.stringify(first) }] }),
       error: null,
       durationMs: 1,
@@ -340,14 +376,16 @@ describe('Assistant exact source-bound history ranges', () => {
     const evidence = {
       ...nativeContext,
       nativeAuthority: {
-        actorRef: { kind: 'agent' as const, id: 'worker', responsibleUserId: LOCAL_USER_ID },
-        assertCurrent: () => {},
+        actorRef: run.triggerActor,
+        requestActor: f.context.actor,
+        assertCurrent: f.history.assertCurrent,
       },
       threadId: run.threadId,
       items: [item],
       strategy: 'compaction' as const,
       retrievalContext: { threadId: f.context.threadId, turnId: f.turn.id },
     };
+    expect(range(f)).toEqual(requestedRange);
     const digest = readInternalContextEvidence(evidence);
     result(await execute(f, { range: range(f) }));
     expect(readInternalContextEvidence(evidence)).toBe(digest);
@@ -526,7 +564,7 @@ describe('Assistant exact source-bound history ranges', () => {
         kind: 'user',
         id: LOCAL_USER_ID,
       });
-      requestedRange = range(f, [message(f.store, turn, privateText)]);
+      requestedRange = range(f, [await message(f.store, turn, privateText)]);
     } else if (fault === 'digest mismatch')
       requestedRange = { ...requestedRange, sourceDigest: `sha256:${'0'.repeat(64)}` };
     else if (fault === 'hidden reasoning' || fault === 'hidden summary') {
@@ -539,7 +577,7 @@ describe('Assistant exact source-bound history ranges', () => {
         createdAt: timestamp,
         completedAt: timestamp,
       };
-      const hidden = f.store.createItem(
+      const hidden = await f.store.createItem(
         fault === 'hidden reasoning'
           ? { ...base, type: 'reasoning', summary: [], content: [privateText] }
           : {

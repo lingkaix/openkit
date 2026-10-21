@@ -148,7 +148,10 @@ async function fixture(explicitSetupVersion = true) {
 it('retains two exact run choices and their AEP explanation without changing setup, default or pin', async () => {
   const f = await fixture();
   const catalogBefore = readFileSync(catalogDocumentPath(f.dataRoot, f.workspace.id));
-  const inputs = [f.request(f.first.version.digest), f.request(f.second.version.digest)];
+  const inputs = [
+    await f.request(f.first.version.digest),
+    await f.request(f.second.version.digest),
+  ];
   for (const input of inputs) {
     const response = await f.call(input);
     expect(response.status, await response.clone().text()).toBe(202);
@@ -247,7 +250,7 @@ it('retains the winning pin Audit only for pin-selected supply, without copying 
   const winner = await pin(f.first.version.digest);
   expect(winner.id).not.toBe(firstPin.id);
   const run = async (source: 'pin' | 'run') => {
-    const { skillSelections, ...input } = f.request(f.first.version.digest);
+    const { skillSelections, ...input } = await f.request(f.first.version.digest);
     const response = await f.call(source === 'run' ? { ...input, skillSelections } : input);
     expect(response.status, await response.clone().text()).toBe(202);
     const { id: turnId } = await response.json();

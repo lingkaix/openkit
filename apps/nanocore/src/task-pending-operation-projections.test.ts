@@ -78,7 +78,7 @@ async function fixture(
     createdAt: turn.startedAt!,
     completedAt: turn.startedAt!,
   });
-  raiseRecordedPendingRequest(store, db.sqlite, {
+  await raiseRecordedPendingRequest(store, db.sqlite, {
     ...common,
     requestId: 'ap_projection',
     requestItemId: 'it_00000000-0000-7a40-898b-989ad9a320c9',
@@ -106,7 +106,7 @@ async function fixture(
         isSecret,
       },
     ];
-    await store.createItem({
+    const questionItem = await store.createItem({
       id: testEntityId('it', `it_${requestId}`),
       owner: turn.owner,
       threadId: thread.id,
@@ -120,15 +120,20 @@ async function fixture(
       createdAt: turn.startedAt!,
       completedAt: turn.startedAt!,
     });
-    raiseRecordedPendingRequest(store, db.sqlite, {
-      ...common,
-      requestId,
-      requestItemId: testEntityId('it', `it_${requestId}`),
-      kind: 'user-input',
-      requesterKind: 'person',
-      questions,
-      questionDigest: `digest-${requestId}`,
-    });
+    await raiseRecordedPendingRequest(
+      store,
+      db.sqlite,
+      {
+        ...common,
+        requestId,
+        requestItemId: testEntityId('it', `it_${requestId}`),
+        kind: 'user-input',
+        requesterKind: 'person',
+        questions,
+        questionDigest: `digest-${requestId}`,
+      },
+      questionItem
+    );
   }
   for (const requestId of ['ap_projection', 'ui_projection', 'ui_withdraw', 'ui_secret']) {
     expect(

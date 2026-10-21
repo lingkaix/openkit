@@ -1,129 +1,18 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { workObservationBodyBundleId } from '../evidence-bundles.js';
 import { withTurnModelCapture } from '../llm/model-capture.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
-import { applyScopedMigrations } from '../storage/migrate.js';
 import { appendWorkObservation, readWorkObservations } from '../storage/work-observations.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { DEFAULT_CAPTURE_COVERAGE_BINDING, FsStore } from './store.js';
 
-// Fault the armed Turn manifest's durable synchronization.
-// A new Turn is written under workspaces/.staging/record-* and published by one rename,
-// so the file fault is that temporary turn.json fsync. The directory fault is only the
-// directory explicitly armed for the case: the canonical turns/ parent after the rename
-// for admission, once turn.json is visible. An existing Turn is rewritten in place, so
-// the observation cases arm that Turn directory and no parent or child can satisfy it.
-const syncFailure = vi.hoisted(() => ({
-  target: null as string | null,
-  /** Exact directory whose synchronization is armed by this case. */
-  directoryTarget: null as string | null,
-  stage: 'file' as 'file' | 'directory',
-  failures: 0,
-  descriptors: new Map<number, string>(),
-}));
-vi.mock('node:fs', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:fs')>();
-
-  /** Returns the workspaces directory that contains one canonical turn.json path. */
-  const workspacesRoot = (turnJsonPath: string): string | null => {
-    const turnDirectory = dirname(turnJsonPath);
-    const turnsDirectory = dirname(turnDirectory);
-    const threadDirectory = dirname(turnsDirectory);
-    const threadsDirectory = dirname(threadDirectory);
-    const workspaceDirectory = dirname(threadsDirectory);
-    const workspacesDirectory = dirname(workspaceDirectory);
-    if (
-      basename(turnJsonPath) !== 'turn.json' ||
-      basename(turnsDirectory) !== 'turns' ||
-      basename(threadsDirectory) !== 'threads' ||
-      basename(workspacesDirectory) !== 'workspaces'
-    ) {
-      return null;
-    }
-    return workspacesDirectory;
-  };
-
-  /** Returns whether a staged temporary turn.json body is the armed Turn. */
-  const stagedBodyIsTurn = (path: string, turnId: string): boolean => {
-    try {
-      const parsed: unknown = JSON.parse(actual.readFileSync(path, 'utf8'));
-      return (
-        typeof parsed === 'object' &&
-        parsed !== null &&
-        'id' in parsed &&
-        (parsed as { id?: unknown }).id === turnId
-      );
-    } catch {
-      return false;
-    }
-  };
-
-  /**
-   * Selects the temporary turn.json fsync for the armed Turn.
-   *
-   * @param path Opened temporary file.
-   * @param target Canonical turn.json path armed by the test.
-   */
-  const isArmedTurnManifestTemp = (path: string, target: string): boolean => {
-    if (!basename(path).startsWith('.turn.json.')) return false;
-    if (dirname(path) === dirname(target)) return true;
-    const recordDirectory = dirname(path);
-    const stagingDirectory = dirname(recordDirectory);
-    return (
-      basename(stagingDirectory) === '.staging' &&
-      basename(recordDirectory).startsWith('record-') &&
-      dirname(stagingDirectory) === workspacesRoot(target) &&
-      stagedBodyIsTurn(path, basename(dirname(target)))
-    );
-  };
-
-  /**
-   * Selects only the directory explicitly armed for this case.
-   *
-   * @param path Opened directory.
-   * @param target Canonical turn.json path armed by the test.
-   */
-  const isArmedTurnDirectorySync = (path: string, target: string): boolean => {
-    return path === syncFailure.directoryTarget && actual.existsSync(target);
-  };
-
-  const openSync: typeof actual.openSync = (path, flags, mode) => {
-    const descriptor = actual.openSync(path, flags, mode);
-    syncFailure.descriptors.set(descriptor, String(path));
-    return descriptor;
-  };
-  const closeSync: typeof actual.closeSync = (descriptor) => {
-    syncFailure.descriptors.delete(descriptor);
-    actual.closeSync(descriptor);
-  };
-  const fsyncSync: typeof actual.fsyncSync = (descriptor) => {
-    const path = syncFailure.descriptors.get(descriptor);
-    const target = syncFailure.target;
-    if (
-      target &&
-      path &&
-      (syncFailure.stage === 'file'
-        ? isArmedTurnManifestTemp(path, target)
-        : isArmedTurnDirectorySync(path, target))
-    ) {
-      syncFailure.failures += 1;
-      throw new Error(`injected Turn manifest ${syncFailure.stage} sync failure`);
-    }
-    actual.fsyncSync(descriptor);
-  };
-  return { ...actual, openSync, closeSync, fsyncSync };
-});
-
 const syncFailureRoots: string[] = [];
 afterEach(async () => {
   await shutdownControlStoreWorkerClient();
-  syncFailure.target = null;
-  syncFailure.directoryTarget = null;
-  syncFailure.failures = 0;
   for (const root of syncFailureRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -131,92 +20,105 @@ const LOCAL_ACTOR = { kind: 'user', id: 'usr_00000000-0000-7000-8000-00000000000
 
 describe('Turn capture coverage binding', () => {
   it.each([
-    'file',
-    'directory',
-  ] as const)('blocks governed collection when admission coverage %s sync fails', async (stage) => {
+    { stage: 'thread metadata', operation: 'UPDATE', table: 'control_threads' },
+    { stage: 'Turn coverage', operation: 'INSERT', table: 'control_turns' },
+  ] as const)('blocks governed collection when native admission $stage fails', async ({
+    operation,
+    table,
+  }) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capture-sync-'));
     syncFailureRoots.push(dataRoot);
     const store = await createDemoStore({ dataRoot });
     store.setLiveCaptureCoverage({ scope: 'server', value: 'on' });
-    const thread = await store.createThread(
-      'ws_00000000-0000-7000-8000-000000000001',
-      'Capture sync failure'
-    );
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const thread = await store.createThread(workspaceId, 'Capture sync failure');
+    const before = structuredClone(store.getThread(workspaceId, thread.id));
     const turnId = 'tu_00000000-0000-7a17-81b3-4a0efca762bc';
-    const turnPath = join(
-      dataRoot,
-      'workspaces',
-      'ws_00000000-0000-7000-8000-000000000001',
-      'threads',
-      thread.id,
-      'turns',
-      turnId,
-      'turn.json'
-    );
-    syncFailure.target = turnPath;
-    syncFailure.directoryTarget = dirname(dirname(turnPath));
-    syncFailure.stage = stage;
-    const collect = vi.fn(async () => undefined);
-
-    await expect(
-      (async () => {
-        const turn = await store.createTurn(
-          'ws_00000000-0000-7000-8000-000000000001',
-          thread.id,
-          'Must not collect',
-          LOCAL_ACTOR,
-          null,
-          {
-            turnId,
-          }
-        );
-        await withTurnModelCapture({ store, turn }, collect);
-      })()
-    ).rejects.toThrow(`injected Turn manifest ${stage} sync failure`);
-    expect(syncFailure.failures).toBe(1);
-    expect(collect).not.toHaveBeenCalled();
-    // A rename may be visible after directory-sync failure; visibility is not admission ACK.
-    expect(existsSync(turnPath)).toBe(stage === 'directory');
-    expect(existsSync(join(dirname(turnPath), 'observations.jsonl'))).toBe(false);
-  });
-
-  it.each([
-    'file',
-    'directory',
-  ] as const)('retains no observation or body when required Turn manifest %s sync fails', async (stage) => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capture-manifest-sync-'));
-    syncFailureRoots.push(dataRoot);
-    const store = await createDemoStore({ dataRoot });
-    const thread = await store.createThread(
-      'ws_00000000-0000-7000-8000-000000000001',
-      'Manifest sync failure'
-    );
-    const turn = await store.createTurn(
-      'ws_00000000-0000-7000-8000-000000000001',
-      thread.id,
-      'Admitted',
-      LOCAL_ACTOR,
-      null,
-      {
-        captureCoverage: { scope: 'server', value: 'on' },
-      }
-    );
     const turnRoot = join(
       dataRoot,
       'workspaces',
-      'ws_00000000-0000-7000-8000-000000000001',
+      workspaceId,
+      'threads',
+      thread.id,
+      'turns',
+      turnId
+    );
+    const collect = vi.fn(async () => undefined);
+    const admitted = vi.fn();
+    store.setTurnAdmissionHooks({ onAdmitted: admitted });
+    const db = openWorkspaceDb(dataRoot, workspaceId);
+    try {
+      // These replace file and parent-directory fsync faults: SQL now owns the whole admission tuple.
+      db.sqlite.exec(`CREATE TRIGGER capture_admission_abort BEFORE ${operation} ON ${table}
+        BEGIN SELECT RAISE(ABORT, 'capture_admission_abort'); END`);
+      await expect(
+        (async () => {
+          const turn = await store.createTurn(
+            workspaceId,
+            thread.id,
+            'Must not collect',
+            LOCAL_ACTOR,
+            null,
+            { turnId }
+          );
+          await withTurnModelCapture({ store, turn }, collect);
+        })()
+      ).rejects.toMatchObject({ code: 'constraint', commit: 'not-committed' });
+      expect(collect).not.toHaveBeenCalled();
+      expect(admitted).not.toHaveBeenCalled();
+      expect(store.getTurnCaptureCoverage(turnId)).toBeNull();
+      expect(() => store.getTurnById(turnId)).toThrow('Turn not found');
+      expect(store.getThread(workspaceId, thread.id)).toEqual(before);
+      expect(db.sqlite.prepare('SELECT id FROM control_turns WHERE id=?').all(turnId)).toEqual([]);
+      expect(
+        db.sqlite.prepare('SELECT id FROM control_product_entries WHERE turn_id=?').all(turnId)
+      ).toEqual([]);
+      expect(
+        db.sqlite.prepare('SELECT id FROM control_work_observations WHERE turn_id=?').all(turnId)
+      ).toEqual([]);
+      expect(existsSync(join(turnRoot, 'turn.json'))).toBe(false);
+      expect(existsSync(join(turnRoot, 'observations.jsonl'))).toBe(false);
+    } finally {
+      db.sqlite.exec('DROP TRIGGER IF EXISTS capture_admission_abort');
+      db.sqlite.close();
+    }
+    await shutdownControlStoreWorkerClient();
+    const reloaded = new FsStore({ dataRoot });
+    expect(reloaded.getTurnCaptureCoverage(turnId)).toBeNull();
+    expect(reloaded.getThread(workspaceId, thread.id)).toEqual(before);
+  });
+
+  it.each([
+    { stage: 'Turn metadata', operation: 'UPDATE', table: 'control_turns' },
+    { stage: 'expected observation', operation: 'INSERT', table: 'control_work_observations' },
+  ] as const)('retains no observation or body when native $stage commit fails', async ({
+    operation,
+    table,
+  }) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capture-manifest-sync-'));
+    syncFailureRoots.push(dataRoot);
+    const store = await createDemoStore({ dataRoot });
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const thread = await store.createThread(workspaceId, 'Manifest sync failure');
+    const turn = await store.createTurn(workspaceId, thread.id, 'Admitted', LOCAL_ACTOR, null, {
+      captureCoverage: { scope: 'server', value: 'on' },
+    });
+    const before = structuredClone(store.getTurnById(turn.id));
+    const turnRoot = join(
+      dataRoot,
+      'workspaces',
+      workspaceId,
       'threads',
       thread.id,
       'turns',
       turn.id
     );
-    const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+    const db = openWorkspaceDb(dataRoot, workspaceId);
     try {
-      applyScopedMigrations(db);
-      syncFailure.target = join(turnRoot, 'turn.json');
-      syncFailure.directoryTarget = turnRoot;
-      syncFailure.stage = stage;
-      expect(() =>
+      // Expected metadata must ACK before the independent retained-body publisher can run.
+      db.sqlite.exec(`CREATE TRIGGER capture_observation_abort BEFORE ${operation} ON ${table}
+        BEGIN SELECT RAISE(ABORT, 'capture_observation_abort'); END`);
+      await expect(
         appendWorkObservation(db, {
           threadId: thread.id,
           turnId: turn.id,
@@ -242,14 +144,15 @@ describe('Turn capture coverage binding', () => {
             },
           ],
         })
-      ).toThrow(`injected Turn manifest ${stage} sync failure`);
-      expect(syncFailure.failures).toBe(1);
+      ).rejects.toMatchObject({ code: 'constraint', commit: 'not-committed' });
       expect(readWorkObservations(db, { threadId: thread.id, turnId: turn.id })).toEqual([]);
       expect(db.sqlite.prepare('SELECT COUNT(*) AS count FROM evidence_bundles').get()).toEqual({
         count: 0,
       });
+      expect(store.getTurnById(turn.id)).toEqual(before);
+      expect(store.getTurnCaptureCoverage(turn.id)).toEqual({ scope: 'server', value: 'on' });
       const bundleId = workObservationBodyBundleId(
-        'ws_00000000-0000-7000-8000-000000000001',
+        workspaceId,
         thread.id,
         turn.id,
         'blocked-observation',
@@ -260,7 +163,7 @@ describe('Turn capture coverage binding', () => {
           join(
             dataRoot,
             'workspaces',
-            'ws_00000000-0000-7000-8000-000000000001',
+            workspaceId,
             'evidence',
             'backend',
             bundleId,
@@ -271,9 +174,13 @@ describe('Turn capture coverage binding', () => {
       ).toBe(false);
       expect(existsSync(join(turnRoot, 'observations.jsonl'))).toBe(false);
     } finally {
-      syncFailure.target = null;
+      db.sqlite.exec('DROP TRIGGER IF EXISTS capture_observation_abort');
       db.sqlite.close();
     }
+    await shutdownControlStoreWorkerClient();
+    const reloaded = new FsStore({ dataRoot });
+    expect(reloaded.getTurnById(turn.id)).toEqual(before);
+    expect(reloaded.getTurnCaptureCoverage(turn.id)).toEqual({ scope: 'server', value: 'on' });
   });
 
   it('records the off pair at admission by default', async () => {
@@ -336,8 +243,12 @@ describe('Turn capture coverage binding', () => {
     expect(store.getTurnById(turn.id).status).toBe('running');
   });
 
-  it('reads the recorded pair back from turn.json after restart', async () => {
+  it.each([
+    'missing',
+    'stale',
+  ] as const)('reads the recorded native pair with a %s turn.json after restart', async (projection) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capture-coverage-'));
+    syncFailureRoots.push(dataRoot);
     const store = await createDemoStore({ dataRoot });
     store.setLiveCaptureCoverage({ scope: 'task', value: 'on' });
     const thread = await store.createThread(
@@ -360,20 +271,27 @@ describe('Turn capture coverage binding', () => {
       turn.id,
       'turn.json'
     );
-    const recorded = JSON.parse(readFileSync(turnPath, 'utf8')) as {
-      captureCoverage?: { scope: string; value: string };
-      items: unknown[];
-    };
-    expect(recorded.items).toEqual([]);
-    expect(recorded.captureCoverage).toEqual({ scope: 'task', value: 'on' });
-
+    expect(store.getTurnById(turn.id).items).toEqual([]);
+    expect(store.getTurnCaptureCoverage(turn.id)).toEqual({ scope: 'task', value: 'on' });
+    expect(existsSync(turnPath)).toBe(false);
+    const stale = JSON.stringify({ ...turn, captureCoverage: { scope: 'server', value: 'off' } });
+    if (projection === 'stale') {
+      mkdirSync(dirname(turnPath), { recursive: true });
+      writeFileSync(turnPath, stale);
+    }
+    store.setLiveCaptureCoverage({ scope: 'server', value: 'off' });
+    await shutdownControlStoreWorkerClient();
     const reloaded = new FsStore({ dataRoot });
     expect(reloaded.getTurnCaptureCoverage(turn.id)).toEqual({ scope: 'task', value: 'on' });
     expect(reloaded.getTurnById(turn.id).status).toBe('running');
+    expect(reloaded.getTurnById(turn.id).items).toEqual([]);
+    expect(existsSync(turnPath)).toBe(projection === 'stale');
+    if (projection === 'stale') expect(readFileSync(turnPath, 'utf8')).toBe(stale);
   });
 
   it('records on from server.jsonc policy.workDataCapture at the next admitted Turn', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capture-config-on-'));
+    syncFailureRoots.push(dataRoot);
     mkdirSync(join(dataRoot, 'config'), { recursive: true });
     writeFileSync(
       join(dataRoot, 'config', 'server.jsonc'),

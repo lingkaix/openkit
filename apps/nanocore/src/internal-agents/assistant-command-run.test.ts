@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
@@ -92,7 +92,7 @@ function response(text = 'Bounded answer.', id = 'provider-response-original') {
 }
 
 /** Creates the actual admitted actor, conversation, catalog, capture and evidence owners. */
-async function fixture(selected = true, description?: string) {
+async function fixture(selected = true, description?: string, history = false) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'assistant-command-run-'));
   roots.push(dataRoot);
   const coreDb = openCoreDb(dataRoot);
@@ -119,6 +119,36 @@ async function fixture(selected = true, description?: string) {
     .run(workspace.id, SKILL_READER_ID, timestamp, timestamp, timestamp);
   const actor: Actor = { kind: 'session', userId: SKILL_READER_ID };
   const thread = await store.createThread(workspace.id, 'Assistant command');
+  if (history) {
+    // Keep history large enough to require a summary with the local bytes/3 estimate.
+    for (let index = 0; index < 8; index += 1) {
+      const earlier = await store.createTurn(
+        workspace.id,
+        thread.id,
+        'Earlier request.',
+        { kind: 'user', id: actor.userId },
+        null,
+        { startedAt: `2026-10-15T00:00:0${index}.000Z`, agentId: 'quick-chat' }
+      );
+      for (const type of ['user-message', 'assistant-message'] as const) {
+        await store.createItem({
+          id: allocateEntityId('it'),
+          owner: { kind: 'workspace', workspaceId: workspace.id },
+          threadId: thread.id,
+          turnId: earlier.id,
+          type,
+          status: 'completed',
+          text: `${type} ${index}: ${'x'.repeat(2400)}`,
+          ...(type === 'user-message'
+            ? { actor: { kind: 'user', id: actor.userId } as const }
+            : {}),
+          createdAt: earlier.startedAt!,
+          completedAt: earlier.startedAt!,
+        });
+      }
+      await store.updateTurn(earlier.id, { status: 'completed', completedAt: earlier.startedAt });
+    }
+  }
   const turn = await store.createTurn(
     workspace.id,
     thread.id,
@@ -500,37 +530,9 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
     false,
     true,
   ])('accounts summary production and refuses revoked overview publication=%s', async (revokeOverview) => {
-    const f = await fixture(false);
+    const f = await fixture(false, undefined, true);
     await f.store.updateTurn(f.turn.id, { agentId: 'quick-chat' });
-    // Keep history large enough to require a summary with the local bytes/3 estimate.
-    for (let index = 0; index < 8; index += 1) {
-      const earlier = await f.store.createTurn(
-        f.workspaceId,
-        f.threadId,
-        'Earlier request.',
-        { kind: 'user', id: f.actor.userId },
-        null,
-        { startedAt: `2026-10-15T00:00:0${index}.000Z`, agentId: 'quick-chat' }
-      );
-      for (const type of ['user-message', 'assistant-message'] as const) {
-        await f.store.createItem({
-          id: allocateEntityId('it'),
-          owner: { kind: 'workspace', workspaceId: f.workspaceId },
-          threadId: f.threadId,
-          turnId: earlier.id,
-          type,
-          status: 'completed',
-          text: `${type} ${index}: ${'x'.repeat(2400)}`,
-          ...(type === 'user-message'
-            ? { actor: { kind: 'user', id: f.actor.userId } as const }
-            : {}),
-          createdAt: earlier.startedAt!,
-          completedAt: earlier.startedAt!,
-        });
-      }
-      await f.store.updateTurn(earlier.id, { status: 'completed', completedAt: earlier.startedAt });
-    }
-    const assembly = assembleAssistantCommandRun({
+    const assembly = await assembleAssistantCommandRun({
       resources: f.resources,
       tools: f.tools,
       messages: [{ role: 'user', content: [{ type: 'text', text: 'Current canonical input.' }] }],
@@ -998,44 +1000,75 @@ describe('ordinary Assistant command capture and Gateway composition', () => {
 
   it('propagates real append refusal as ModelCaptureError with zero dispatch', async () => {
     const f = await fixture();
-    mkdirSync(
-      join(
-        f.dataRoot,
-        'workspaces',
-        f.workspaceId,
-        'threads',
-        f.threadId,
-        'turns',
-        f.turn.id,
-        'observations.jsonl'
-      )
+    await shutdownControlStoreWorkerClient();
+    const nativeTurnBefore = f.workspaceDb.sqlite
+      .prepare('SELECT * FROM control_turns WHERE id=?')
+      .get(f.turn.id);
+    // Refuse the actual native environment insert, after valid Assistant and capture admission.
+    f.workspaceDb.sqlite.exec(
+      `CREATE TRIGGER fail_assistant_environment_append BEFORE INSERT ON control_work_observations
+       WHEN json_extract(NEW.record_json, '$.type') = 'env.bound'
+       BEGIN SELECT RAISE(ABORT, 'fixture native environment append failure'); END`
     );
-
-    await expect(runAssistantCommand(f.input)).rejects.toBeInstanceOf(ModelCaptureError);
-
-    expect(f.createResponses).not.toHaveBeenCalled();
-  });
-
-  it('rejects missing persisted capture admission before dispatch', async () => {
-    const f = await fixture();
-    const path = join(
-      f.dataRoot,
-      'workspaces',
-      f.workspaceId,
-      'threads',
-      f.threadId,
-      'turns',
-      f.turn.id,
-      'turn.json'
-    );
-    const persisted = JSON.parse(readFileSync(path, 'utf8'));
-    delete persisted.captureCoverage;
-    writeFileSync(path, JSON.stringify(persisted));
+    expect(
+      f.workspaceDb.sqlite
+        .prepare("SELECT name FROM sqlite_schema WHERE type='trigger' AND name=?")
+        .get('fail_assistant_environment_append')
+    ).toEqual({ name: 'fail_assistant_environment_append' });
 
     await expect(runAssistantCommand(f.input)).rejects.toBeInstanceOf(ModelCaptureError);
 
     expect(f.createResponses).not.toHaveBeenCalled();
     expect(environments(f)).toEqual([]);
+    expect(
+      f.workspaceDb.sqlite.prepare('SELECT * FROM control_turns WHERE id=?').get(f.turn.id)
+    ).toEqual(nativeTurnBefore);
+    await shutdownControlStoreWorkerClient();
+    f.workspaceDb.sqlite.exec('DROP TRIGGER fail_assistant_environment_append');
+    // Removing only the fault lets the same real capture owner commit, without a Provider effect.
+    await expect(
+      withTurnModelCapture(
+        {
+          store: f.store,
+          turn: f.turn,
+          workspaceDb: f.workspaceDb,
+          requireAssistantSkillAdmission: true,
+          environment: {
+            systemPrompt: f.assembly.systemPrompt,
+            tools: f.assembly.tools,
+            assistantSkillAdmission: f.assembly.assistantSkillAdmission,
+          },
+        },
+        async () => 'native environment committed'
+      )
+    ).resolves.toBe('native environment committed');
+    expect(environments(f)).toHaveLength(1);
+    expect(f.createResponses).not.toHaveBeenCalled();
+  });
+
+  it('rejects missing persisted capture admission before dispatch', async () => {
+    const f = await fixture();
+    await shutdownControlStoreWorkerClient();
+    const nativeTurnBefore = f.workspaceDb.sqlite
+      .prepare('SELECT * FROM control_turns WHERE id=?')
+      .get(f.turn.id) as { record_json: string };
+    const persisted = JSON.parse(nativeTurnBefore.record_json);
+    expect(persisted.captureCoverage).toEqual({ scope: 'server', value: 'off' });
+    delete persisted.captureCoverage;
+    const missingAdmission = JSON.stringify(persisted);
+    expect(
+      f.workspaceDb.sqlite
+        .prepare('UPDATE control_turns SET record_json=? WHERE id=?')
+        .run(missingAdmission, f.turn.id).changes
+    ).toBe(1);
+
+    await expect(runAssistantCommand(f.input)).rejects.toBeInstanceOf(ModelCaptureError);
+
+    expect(f.createResponses).not.toHaveBeenCalled();
+    expect(environments(f)).toEqual([]);
+    expect(
+      f.workspaceDb.sqlite.prepare('SELECT * FROM control_turns WHERE id=?').get(f.turn.id)
+    ).toEqual({ ...nativeTurnBefore, record_json: missingAdmission });
   });
 
   it.each([

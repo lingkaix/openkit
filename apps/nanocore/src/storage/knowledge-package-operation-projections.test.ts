@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -9,6 +10,7 @@ import { LocalStorage } from '@openkit/storage';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { readDefaultKnowledgeBaseId, readKnowledgeMounts } from '../config/knowledge-base.js';
+import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { deriveManagedSourceAccess } from '../knowledge/managed-source-access.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { parseOkfDocument } from '../knowledge/okf.js';
@@ -18,6 +20,7 @@ import { FsStore } from '../lib/store.js';
 import { createApp } from '../test-support/app.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { operationRequest } from '../test-support/operation-request.js';
 import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
@@ -153,6 +156,78 @@ async function fixture() {
     return app.fetch(request);
   };
   return { source, target, tamperTarget, call, transfer, dataRoot, coreDb, store, userId, app };
+}
+
+/** Applies an exact Source Thread audience through the current request, decision and configuration owners. */
+async function restrictSourceThread(
+  f: {
+    dataRoot: string;
+    coreDb: ReturnType<typeof openCoreDb>;
+    store: FsStore;
+    workspaceId: string;
+    userId: string;
+  },
+  sourceThreadId: string
+) {
+  const manager = createRuntimeConfigManager({ dataRoot: f.dataRoot });
+  const app = createApp({
+    coreDb: f.coreDb,
+    dataRoot: f.dataRoot,
+    store: f.store,
+    runtimeConfigManager: manager,
+  });
+  const decisionThread = await f.store.createThread(f.workspaceId, 'Source policy decision');
+  const owner = { kind: 'workspace' as const, workspaceId: f.workspaceId };
+  const scope = {
+    subjects: [],
+    actions: [],
+    resources: [{ kind: 'container', container: { owner, kind: 'thread', id: sourceThreadId } }],
+  };
+  const common = {
+    author: { kind: 'human', id: f.userId },
+    authority: { kind: 'human', userId: f.userId },
+    authoredAt: new Date().toISOString(),
+    state: 'active',
+    lifetime: { anchor: { owner, kind: 'workspace', id: f.workspaceId } },
+  };
+  const statements = [
+    { ...common, id: 'source-current-audience', kind: 'managed-boundary', scope },
+  ];
+  const requested = await app.request(
+    ...operationRequest(
+      'workspace.resource-access-request',
+      {
+        workspaceId: f.workspaceId,
+        threadId: decisionThread.id,
+        change: {
+          resource: { family: 'thread', id: sourceThreadId },
+          replacement: { schemaVersion: 1, statements },
+        },
+      },
+      { body: JSON.stringify({ requestId: randomUUID() }) }
+    )
+  );
+  expect(requested.status, await requested.clone().text()).toBe(200);
+  const request = (await requested.json()) as { id: string };
+  await f.store.applyPendingRequestCommand(f.workspaceId, {
+    action: 'grant-command',
+    workspaceId: f.workspaceId,
+    threadId: decisionThread.id,
+    requestId: request.id,
+    actor: { kind: 'user', id: f.userId },
+    now: new Date().toISOString(),
+    decisionContext: { kind: 'local', userId: f.userId },
+  });
+  const applied = await app.request(
+    ...operationRequest('workspace.resource-access-apply', {
+      workspaceId: f.workspaceId,
+      threadId: decisionThread.id,
+      approvalRequestId: request.id,
+      confirmation: 'APPLY WORKSPACE RESOURCE POLICY',
+    })
+  );
+  expect(applied.status, await applied.clone().text()).toBe(200);
+  expect(await applied.json()).toMatchObject({ reloadStatus: 'applied' });
 }
 
 describe('Knowledge package public operation round trip', () => {
@@ -626,7 +701,7 @@ describe('Independent package boundary probes', () => {
   });
 });
 
-it('stops export disclosure when its Source origin becomes private', async () => {
+it('stops export disclosure when its Source origin becomes restricted', async () => {
   const f = await fixture();
   const origin = await f.store.createThread(f.source.id, 'Initially shared Source');
   const secret = 'SOURCE-REVOKED-TAIL-MARKER';
@@ -656,7 +731,7 @@ it('stops export disclosure when its Source origin becomes private', async () =>
     )
   );
   expect(exported.status).toBe(200);
-  Object.assign(origin, { visibility: 'private', privateOwnerUserId: allocateEntityId('usr') });
+  await restrictSourceThread({ ...f, workspaceId: f.source.id }, origin.id);
   const denied = await server.fetch(
     new Request('http://127.0.0.1/api/app/operations/knowledge.source.read', {
       method: 'POST',

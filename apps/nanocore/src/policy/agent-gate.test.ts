@@ -218,8 +218,8 @@ async function configurationFixture() {
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: userId });
   const store = await createDemoStore({ dataRoot });
+  recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: userId });
   const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
   cleanup.push(() => {
     workspaceDb.sqlite.close();
@@ -356,7 +356,7 @@ describe('agent gate at native I16', () => {
     const shadow = agentDocument();
     admittedBinding(shadow).state = 'shadow';
     const original = readFileSync(f.serverPath, 'utf8');
-    const proposedShadow = f.propose(shadow);
+    const proposedShadow = await f.propose(shadow);
     expect(readFileSync(f.serverPath, 'utf8')).toBe(original);
     await expect(
       f.service.apply({
@@ -379,7 +379,7 @@ describe('agent gate at native I16', () => {
     );
     const active = structuredClone(loadedShadow);
     admittedBinding(active).state = 'active';
-    expect(() => f.propose(active)).toThrow(/shadow/i);
+    await expect(f.propose(active)).rejects.toThrow(/shadow/i);
     const binding = admittedBinding(loadedShadow);
     const evaluated = await new PolicyInterception(undefined, {
       id: agentId,
@@ -399,9 +399,9 @@ describe('agent gate at native I16', () => {
     expect(evaluated.result).toBe('allow');
     const different = structuredClone(active);
     admittedBinding(different).timeoutMs += 1;
-    expect(() => f.propose(different)).toThrow(/shadow/i);
+    await expect(f.propose(different)).rejects.toThrow(/shadow/i);
     const beforeActivation = readFileSync(f.serverPath, 'utf8');
-    const activation = f.propose(active);
+    const activation = await f.propose(active);
     expect(readFileSync(f.serverPath, 'utf8')).toBe(beforeActivation);
     expect(activation.preview.policyProposal).toMatchObject({
       proposer: human,

@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WorkerControlClient } from '../../../packages/worker-shim/src/control-client.js';
 import { createDefaultWorkerControlGateway } from './app.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
-import { ALREADY_DECIDED_PUBLICATION_ADMISSION, type FsStore } from './lib/store.js';
+import type { FsStore } from './lib/store.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import * as attemptActionOwners from './runtime/execution-attempt-records.js';
 import {
@@ -2436,7 +2436,7 @@ describe('worker control routes', () => {
           expect(session.state).toBe('cleaned');
           // This transport fixture has no physical worker; the normal terminal callback settles its actual Workspace projection before modeled release.
           const completedAt = session.physicalCleanedAt!;
-          const projection = projectWorkerBackendCleanup(workspaceDb, {
+          const projection = await projectWorkerBackendCleanup(workspaceDb, {
             agentSessionId: lineage.agentSessionId,
             backendType: session.backendKind,
             backendVersion: session.backendVersion,
@@ -2464,24 +2464,26 @@ describe('worker control routes', () => {
             createdAt: completedAt,
             updatedAt: completedAt,
           });
-          const terminal = await store.updateTurn(lineage.turnId, {
-            agentId: environmentPackage.agent.agentId,
-            agentSessionId: lineage.agentSessionId,
-            status: 'completed',
-            completedAt,
-          });
-          store.emitTurnEvent(
+          const terminal = await store.completeTurn(
             lineage.turnId,
             {
-              event: 'turn.completed',
-              requestId: lineage.requestId,
-              workspaceId: lineage.workspaceId,
-              threadId: lineage.threadId,
-              turnId: lineage.turnId,
-              data: { type: 'turn-completed', stopReason: 'completed', turn: terminal },
+              agentId: environmentPackage.agent.agentId,
+              agentSessionId: lineage.agentSessionId,
+              status: 'completed',
+              completedAt,
             },
-            ALREADY_DECIDED_PUBLICATION_ADMISSION
+            { requestId: lineage.requestId, stopReason: 'completed' }
           );
+          // Reuse the exact completion event already committed by the terminal owner.
+          const terminalEvent = await store.persistTurnEvent(lineage.turnId, {
+            event: 'turn.completed',
+            requestId: lineage.requestId,
+            workspaceId: lineage.workspaceId,
+            threadId: lineage.threadId,
+            turnId: lineage.turnId,
+            data: { type: 'turn-completed', stopReason: 'completed', turn: terminal },
+          });
+          store.emitTurnEvent(lineage.turnId, terminalEvent);
           await closeOwnedExecutionAttempt(coreDb, {
             attemptId: session.attemptId,
             firstTerminalCause: 'turn-completed',

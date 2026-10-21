@@ -138,25 +138,27 @@ async function seedRetainedWork(f: Awaited<ReturnType<typeof fixture>>) {
       }
     ),
   ];
-  const turns = threads.map(async (thread, index) => {
-    const turn = await f.store.createTurn(f.owned.id, thread.id, 'Retained input', {
-      kind: 'user',
-      id: f.userId,
-    });
-    await f.store.createItem({
-      id: testEntityId('it', `it_caller_${index}`),
-      owner: { kind: 'workspace', workspaceId: f.owned.id },
-      threadId: thread.id,
-      turnId: turn.id,
-      type: 'user-message',
-      actor: { kind: 'user', id: f.userId },
-      status: 'completed',
-      text: `private-content-${index}`,
-      createdAt: timestamp,
-      completedAt: timestamp,
-    });
-    return turn;
-  });
+  const turns = await Promise.all(
+    threads.map(async (thread, index) => {
+      const turn = await f.store.createTurn(f.owned.id, thread.id, 'Retained input', {
+        kind: 'user',
+        id: f.userId,
+      });
+      await f.store.createItem({
+        id: testEntityId('it', `it_caller_${index}`),
+        owner: { kind: 'workspace', workspaceId: f.owned.id },
+        threadId: thread.id,
+        turnId: turn.id,
+        type: 'user-message',
+        actor: { kind: 'user', id: f.userId },
+        status: 'completed',
+        text: `private-content-${index}`,
+        createdAt: timestamp,
+        completedAt: timestamp,
+      });
+      return turn;
+    })
+  );
   for (const [index, turn] of [turns[0]!, turns[2]!].entries()) {
     const body = `Artifact private-content-${index}`;
     await f.store.createArtifact({

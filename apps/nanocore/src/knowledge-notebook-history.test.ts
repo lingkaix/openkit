@@ -8,6 +8,8 @@ import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
+import { createRuntimeConfigManager } from './config/runtime-config.js';
+import { readSourcePointers } from './knowledge/source-pointers.js';
 import { FsStore } from './lib/store.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
@@ -20,7 +22,7 @@ import {
 } from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
-const fixtures: Array<ReturnType<typeof fixture>> = [];
+const fixtures: Array<Awaited<ReturnType<typeof fixture>>> = [];
 
 /** Compose actual public admission, Store, SQLite and Git through the existing fresh-scope initializer. */
 async function fixture(snapshotRoot?: string) {
@@ -49,6 +51,7 @@ async function fixture(snapshotRoot?: string) {
     fixtures.push(f);
     return f;
   } catch (error) {
+    await shutdownControlStoreWorkerClient();
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
     throw error;
@@ -81,14 +84,14 @@ function page(id: string, body: string, source: string): string {
 }
 
 /** Independent raw Git observation of the actual published owner. */
-function git(f: ReturnType<typeof fixture>, ...args: string[]) {
+function git(f: Awaited<ReturnType<typeof fixture>>, ...args: string[]) {
   return execFileSync('git', ['--git-dir', f.repositoryPath, ...args], {
     encoding: 'utf8',
   }).trimEnd();
 }
 /** Existing native route; request identity uses the common command header. */
 async function call(
-  f: ReturnType<typeof fixture>,
+  f: Awaited<ReturnType<typeof fixture>>,
   operation: string,
   input: Record<string, unknown>
 ) {
@@ -110,7 +113,8 @@ async function call(
   };
 }
 /** Closes incomplete suite setup as well as case-local owners. */
-function cleanupFixtures() {
+async function cleanupFixtures() {
+  await shutdownControlStoreWorkerClient();
   for (const f of fixtures.splice(0)) {
     if (f.workspaceDb.sqlite.open) f.workspaceDb.sqlite.close();
     if (f.coreDb.sqlite.open) f.coreDb.sqlite.close();
@@ -120,7 +124,7 @@ function cleanupFixtures() {
 afterEach(cleanupFixtures);
 
 /** Seed through current native source admission and fixed-base publication. */
-async function seed(f: ReturnType<typeof fixture>) {
+async function seed(f: Awaited<ReturnType<typeof fixture>>) {
   const rootRevision = git(f, 'rev-parse', 'refs/heads/published');
   const source = await call(f, 'knowledge.source.register', {
     requestId: randomUUID(),
@@ -177,13 +181,14 @@ describe('native Workspace Notebook history and restore', () => {
   beforeAll(async () => {
     const f = await fixture();
     original = await seed(f);
+    await shutdownControlStoreWorkerClient();
     f.workspaceDb.sqlite.close();
     f.coreDb.sqlite.close();
     originalSnapshotRoot = f.dataRoot;
     fixtures.splice(fixtures.indexOf(f), 1);
   });
-  afterAll(() => {
-    cleanupFixtures();
+  afterAll(async () => {
+    await cleanupFixtures();
     if (originalSnapshotRoot) rmSync(originalSnapshotRoot, { recursive: true, force: true });
   });
   describe('exact history, diff and restore', () => {
@@ -215,6 +220,7 @@ describe('native Workspace Notebook history and restore', () => {
       expect(edit.status, JSON.stringify(edit.body)).toBe(200);
       baseRevision = edit.body.notebookRevision;
       // Close both databases before copying; the baseline is never mutated by a case.
+      await shutdownControlStoreWorkerClient();
       f.workspaceDb.sqlite.close();
       f.coreDb.sqlite.close();
       snapshotRoot = f.dataRoot;
@@ -227,8 +233,8 @@ describe('native Workspace Notebook history and restore', () => {
         summary: 'Restore original text',
       };
     });
-    afterAll(() => {
-      cleanupFixtures();
+    afterAll(async () => {
+      await cleanupFixtures();
       if (snapshotRoot) rmSync(snapshotRoot, { recursive: true, force: true });
       if (restoredSnapshotRoot) rmSync(restoredSnapshotRoot, { recursive: true, force: true });
     });
@@ -481,7 +487,13 @@ describe('native Workspace Notebook history and restore', () => {
   });
   it('withholds source-denied historical metadata and bytes and rechecks a revoked credential', async () => {
     const f = await fixture();
-    const origin = f.store.createThread(DEMO_WORKSPACE_ID, 'Source audience');
+    const origin = await f.store.createThread(
+      DEMO_WORKSPACE_ID,
+      'Source audience',
+      undefined,
+      'conversation',
+      { visibility: 'workspace' }
+    );
     const source = await call(f, 'knowledge.source.register', {
       requestId: randomUUID(),
       kind: 'document',
@@ -504,17 +516,42 @@ describe('native Workspace Notebook history and restore', () => {
     });
     expect(published.status, JSON.stringify(published.body)).toBe(200);
     const baseRevision = published.body.notebookRevision;
+    const pointer = readSourcePointers({
+      dataRoot: f.dataRoot,
+      ownerScope: { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID },
+    }).get(source.body.source.id)!;
+    const originalPath = join(
+      f.dataRoot,
+      'workspaces',
+      DEMO_WORKSPACE_ID,
+      'knowledge',
+      'raw',
+      pointer.fields.contentRef.locator.path
+    );
+    const originalBytes = Buffer.from('Independent fact.');
+    expect(readFileSync(originalPath)).toEqual(originalBytes);
     const issued = createOpenKitAccessTokenRecord(f.coreDb, {
       ownerUserId: LOCAL_USER_ID,
       scope: 'workspace',
       workspaceIds: [DEMO_WORKSPACE_ID],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
+    const runtimeConfigManager = createRuntimeConfigManager({ dataRoot: f.dataRoot });
+    const policyFixture = {
+      ...f,
+      app: createApp({
+        coreDb: f.coreDb,
+        dataRoot: f.dataRoot,
+        store: f.store,
+        runtimeConfigManager,
+      }),
+    };
     const server = createApp({
       mode: 'server',
       coreDb: f.coreDb,
       dataRoot: f.dataRoot,
       store: f.store,
+      runtimeConfigManager,
     });
     const invoke = async (operation: string, input: Record<string, unknown>) => {
       const { requestId, ...body } = input;
@@ -529,12 +566,63 @@ describe('native Workspace Notebook history and restore', () => {
       });
       return { status: response.status, body: await response.json() };
     };
-    expect((await invoke('knowledge.notebook.history', { limit: 1 })).status).toBe(200);
-    // Test-owned current audience facts, as in the existing canonical reader regressions; no new Thread transition API.
-    Object.assign(origin, {
-      visibility: 'private',
-      privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000002',
+    const permitted = await invoke('knowledge.notebook.history', { limit: 1 });
+    expect(permitted.status).toBe(200);
+    expect(permitted.body.revisions[0]).toMatchObject({
+      revision: baseRevision,
+      availability: 'available',
+      summary: 'DENIED-SUMMARY-MARKER',
+      changedPaths: ['denied-marker.md'],
     });
+    // Revoke the Source Thread's current Policy audience without changing its fixed visibility.
+    const decisionThread = await f.store.createThread(DEMO_WORKSPACE_ID, 'Source policy decision');
+    const owner = { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID };
+    const requested = await call(policyFixture, 'workspace.resource-access-request', {
+      requestId: randomUUID(),
+      threadId: decisionThread.id,
+      change: {
+        resource: { family: 'thread', id: origin.id },
+        replacement: {
+          schemaVersion: 1,
+          statements: [
+            {
+              id: 'source-history-audience-revoked',
+              kind: 'managed-boundary',
+              author: { kind: 'human', id: LOCAL_USER_ID },
+              authority: { kind: 'human', userId: LOCAL_USER_ID },
+              authoredAt: new Date().toISOString(),
+              state: 'active',
+              scope: {
+                subjects: [],
+                actions: [],
+                resources: [
+                  { kind: 'container', container: { owner, kind: 'thread', id: origin.id } },
+                ],
+              },
+              lifetime: { anchor: { owner, kind: 'workspace', id: DEMO_WORKSPACE_ID } },
+            },
+          ],
+        },
+      },
+    });
+    expect(requested.status, JSON.stringify(requested.body)).toBe(200);
+    await f.store.applyPendingRequestCommand(DEMO_WORKSPACE_ID, {
+      action: 'grant-command',
+      workspaceId: DEMO_WORKSPACE_ID,
+      threadId: decisionThread.id,
+      requestId: requested.body.id,
+      actor: { kind: 'user', id: LOCAL_USER_ID },
+      now: new Date().toISOString(),
+      decisionContext: { kind: 'local', userId: LOCAL_USER_ID },
+    });
+    const applied = await call(policyFixture, 'workspace.resource-access-apply', {
+      threadId: decisionThread.id,
+      approvalRequestId: requested.body.id,
+      confirmation: 'APPLY WORKSPACE RESOURCE POLICY',
+    });
+    expect(applied.status, JSON.stringify(applied.body)).toBe(200);
+    expect(applied.body.reloadStatus).toBe('applied');
+    expect(f.store.getThread(DEMO_WORKSPACE_ID, origin.id)).toEqual(origin);
     const denied = await invoke('knowledge.notebook.history', { limit: 1 });
     expect(denied.status, JSON.stringify(denied.body)).toBe(200);
     expect(denied.body.revisions).toEqual([
@@ -569,6 +657,22 @@ describe('native Workspace Notebook history and restore', () => {
     expect((await invoke('knowledge.notebook.restore', restore)).status).toBe(403);
     expect(f.store.listCommandRequests()).toEqual(receipts);
     expect(git(f, 'rev-parse', 'refs/heads/published')).toBe(baseRevision);
+    expect(
+      execFileSync(
+        'git',
+        ['--git-dir', f.repositoryPath, 'show', `${baseRevision}:pages/denied-marker.md`],
+        {
+          encoding: 'utf8',
+        }
+      )
+    ).toBe(original);
+    expect(
+      readSourcePointers({
+        dataRoot: f.dataRoot,
+        ownerScope: { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID },
+      }).get(source.body.source.id)?.content
+    ).toBe(pointer.content);
+    expect(readFileSync(originalPath)).toEqual(originalBytes);
     revokeOpenKitAccessTokenRecord(f.coreDb, issued.record.tokenId);
     expect((await invoke('knowledge.notebook.history', { limit: 1 })).status).toBe(401);
     expect((await invoke('knowledge.notebook.restore', restore)).status).toBe(401);

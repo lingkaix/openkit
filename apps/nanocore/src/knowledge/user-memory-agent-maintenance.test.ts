@@ -20,6 +20,7 @@ import { FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import {
   resolveWorkspaceKnowledgeRetrievalPages,
@@ -86,7 +87,10 @@ function fixture(enabled = true) {
     });
     await execute('knowledge.notebook.update', { summary: 'Record labels.' });
     expect(run.validateResult('{"summary":"Recorded."}')).toBeUndefined();
-    store.updateTurn(run.turn.id, { status: 'completed', completedAt: new Date().toISOString() });
+    await store.updateTurn(run.turn.id, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+    });
     return { turnId: run.turn.id, text: 'Recorded.' };
   });
   const dependencies = {
@@ -99,8 +103,8 @@ function fixture(enabled = true) {
     openWorkspace: (id: string) => openWorkspaceDb(dataRoot, id),
     inflightCommands: new WeakMap(),
     run,
-    pin: (run: Pick<KnowledgeManagerAgentRun, 'turn' | 'inputs'>) => {
-      store.updateTurn(run.turn.id, {
+    pin: async (run: Pick<KnowledgeManagerAgentRun, 'turn' | 'inputs'>) => {
+      await store.updateTurn(run.turn.id, {
         internalExecution: {
           roleId: 'knowledge-manager',
           logicalModelId: 'fixture-model',
@@ -121,7 +125,8 @@ function fixture(enabled = true) {
     tellContent: 'I prefer green labels.',
     signal: new AbortController().signal,
   };
-  onTestFinished(() => {
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
     userDb.sqlite.close();
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
@@ -213,8 +218,8 @@ function useFakeProvider(f: ReturnType<typeof fixture>) {
       },
     }),
   };
-  f.dependencies.pin = (run) => {
-    pinKnowledgeManagerExecution(native, run);
+  f.dependencies.pin = async (run) => {
+    await pinKnowledgeManagerExecution(native, run);
   };
   f.run.mockImplementation(async (run) => {
     const payload = JSON.parse(
@@ -317,7 +322,7 @@ describe('User-private bounded Memory maintenance', () => {
             signal: run.signal,
           });
       }
-      f.store.updateTurn(run.turn.id, {
+      await f.store.updateTurn(run.turn.id, {
         status: 'completed',
         completedAt: new Date().toISOString(),
       });
@@ -344,7 +349,7 @@ describe('User-private bounded Memory maintenance', () => {
             { summary: 'Inspect the selected citing page without edits.' },
             { callId: randomUUID(), toolOccurrence: 1, signal: run.signal }
           );
-        f.store.updateTurn(run.turn.id, {
+        await f.store.updateTurn(run.turn.id, {
           status: 'completed',
           completedAt: new Date().toISOString(),
         });
@@ -431,7 +436,7 @@ describe('User-private bounded Memory maintenance', () => {
     expect(f.run).toHaveBeenCalledTimes(1);
     const published = f.notebook().readRevision(accepted.notebookRevision!);
     const work = f.store.getTurnById(result.turnId);
-    const timeline = openAssistantTimeline(
+    const timeline = await openAssistantTimeline(
       f.store,
       workspaceIdForOwner(work.owner),
       userId,
@@ -570,7 +575,7 @@ describe('User-private bounded Memory maintenance', () => {
           { summary: 'No changes.' },
           { callId: randomUUID(), toolOccurrence: 2, signal: run.signal }
         );
-      f.store.updateTurn(run.turn.id, {
+      await f.store.updateTurn(run.turn.id, {
         status: 'completed',
         completedAt: new Date().toISOString(),
       });
@@ -650,7 +655,7 @@ describe('User-private bounded Memory maintenance', () => {
     expect(result.outcome).toBe('skipped');
     expect(await runUserMemoryMaintenanceCommand(f.dependencies, input)).toEqual(result);
     expect(f.run).not.toHaveBeenCalled();
-    const prepared = prepareUserMemoryMaintenance(f.dependencies, {
+    const prepared = await prepareUserMemoryMaintenance(f.dependencies, {
       ...f.input,
       requestId: randomUUID(),
     });
@@ -662,6 +667,6 @@ describe('User-private bounded Memory maintenance', () => {
       outcome: 'skipped',
       threadId: f.store.getTurnById(prepared.turnId).threadId,
     });
-    prepared.fail();
+    await prepared.fail();
   });
 });

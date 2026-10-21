@@ -129,16 +129,15 @@ describe('canonical product retrieval adapters', () => {
     testRoots.push(dataRoot);
     const store = createTestStore({ dataRoot });
     const workspace = await store.createWorkspace('Audiences');
-    const own = store.createThread(workspace.id, 'Own');
-    const other = store.createThread(workspace.id, 'Other');
-    const shared = await store.createThread(workspace.id, 'Shared');
-    Object.assign(own, { visibility: 'private', privateOwnerUserId: actor.userId });
-    Object.assign(other, {
+    const own = await store.createThread(workspace.id, 'Own', undefined, 'conversation', {
+      visibility: 'private',
+      privateOwnerUserId: actor.userId,
+    });
+    const other = await store.createThread(workspace.id, 'Other', undefined, 'conversation', {
       visibility: 'private',
       privateOwnerUserId: testEntityId('usr', 'other_user'),
     });
-    Object.assign(shared, { visibility: 'workspace' });
-    delete (shared as unknown as Record<string, unknown>).privateOwnerUserId;
+    const shared = await store.createThread(workspace.id, 'Shared');
     for (const [thread, text] of [
       [own, 'own private marker'],
       [other, 'other secret marker'],

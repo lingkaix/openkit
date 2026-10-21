@@ -13,6 +13,7 @@ import type {
   ServerKnowledgeManagerAgentRun,
 } from '../internal-agents/knowledge-manager-agent.js';
 import { FsStore } from '../lib/store.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
@@ -117,11 +118,11 @@ function fixture(kind: 'user' | 'server') {
     });
     expect(input.validateResult('{"summary":"Recorded the release label."}')).toBeUndefined();
     const patch = { status: 'completed' as const, completedAt: new Date().toISOString() };
-    if (input.turn.owner.kind === 'server') store.updateServerTurn(input.turn.id, patch);
-    else store.updateTurn(input.turn.id, patch);
+    if (input.turn.owner.kind === 'server') await store.updateServerTurn(input.turn.id, patch);
+    else await store.updateTurn(input.turn.id, patch);
     return { turnId: input.turn.id, text: '{"summary":"Recorded the release label."}' };
   });
-  const pin = (
+  const pin = async (
     input: Pick<KnowledgeManagerAgentRun | ServerKnowledgeManagerAgentRun, 'turn' | 'inputs'>
   ) => {
     const patch = {
@@ -134,8 +135,8 @@ function fixture(kind: 'user' | 'server') {
         knowledge: input.inputs!,
       },
     };
-    if (input.turn.owner.kind === 'server') store.updateServerTurn(input.turn.id, patch);
-    else store.updateTurn(input.turn.id, patch);
+    if (input.turn.owner.kind === 'server') await store.updateServerTurn(input.turn.id, patch);
+    else await store.updateTurn(input.turn.id, patch);
   };
   const runtimeConfigManager = {
     current: () => ({
@@ -153,7 +154,8 @@ function fixture(kind: 'user' | 'server') {
     run,
     pin,
   };
-  onTestFinished(() => {
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
     userDb?.sqlite.close();
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
@@ -268,7 +270,7 @@ describe('canonical Source inputs to bounded maintenance', () => {
     );
   });
 
-  it('retains a Server Turn synchronously then delivers an existing Source only during execution', async () => {
+  it('awaits native Server Turn admission then delivers an existing Source only during execution', async () => {
     const f = fixture('server');
     const writer = { ...f.dependencies, actor: f.actor };
     const registered = await registerServerKnowledgeSource(writer, {
@@ -283,7 +285,7 @@ describe('canonical Source inputs to bounded maintenance', () => {
     });
     const source = captured(f);
     const dependencies: ServerKnowledgeMaintenanceDependencies = f.dependencies;
-    const prepared = prepareServerKnowledgeMaintenance(dependencies, {
+    const prepared = await prepareServerKnowledgeMaintenance(dependencies, {
       requestId: randomUUID(),
       requestActor: f.actor,
       actor: { kind: 'user', id: f.actor.userId },
@@ -292,9 +294,11 @@ describe('canonical Source inputs to bounded maintenance', () => {
       sources: [source.reference],
       signal: new AbortController().signal,
     });
-    expect(prepared).not.toHaveProperty('then');
+    // The native admission ACK precedes this committed owner read; Provider execution stays lazy.
     expect(f.store.getServerTurnById(prepared.turnId).id).toBe(prepared.turnId);
     expect(f.run).not.toHaveBeenCalled();
+    expect(f.notebook.publishedRevision()).toBe(source.revision);
+    expect(f.notebook.readSourcePointers(source.revision)[source.sourceId]).toBe(source.content);
     const result = await prepared.execute();
     expect(await readServerKnowledgeSource(writer, registered.id)).toEqual({
       source: registered,

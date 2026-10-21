@@ -176,7 +176,7 @@ async function fixture(withWorkspaceSchemas = false) {
       },
     },
   };
-  const confirm = (proposal: ReturnType<typeof service.propose>) => ({
+  const confirm = (proposal: Awaited<ReturnType<typeof service.propose>>) => ({
     requestId: randomUUID(),
     candidate: proposal.candidate,
     confirmation: proposal.confirmation,
@@ -288,7 +288,7 @@ async function mcpPolicyFixture(observed = true) {
 
 /** Builds the supported active binding without performing discovery or credential access. */
 function activePolicyDocument(
-  f: ReturnType<typeof fixture>,
+  f: Awaited<ReturnType<typeof fixture>>,
   workspaceId = f.workspaceId
 ): PolicyDocumentV1 {
   const principal = { kind: 'human' as const, id: f.actor.userId };
@@ -330,7 +330,7 @@ describe('administration catalog configuration', () => {
     const f = await fixture();
     const serverPath = join(f.dataRoot, 'config/server.jsonc');
     const original = readFileSync(serverPath, 'utf8');
-    expect(() =>
+    await expect(
       f.service.propose(
         {
           targetFamily: 'policy',
@@ -343,7 +343,7 @@ describe('administration catalog configuration', () => {
         },
         f.home
       )
-    ).toThrow('Policy binding input authority');
+    ).rejects.toThrow('Policy binding input authority');
     expect(readFileSync(serverPath, 'utf8')).toBe(original);
     expect(f.reload).not.toHaveBeenCalled();
   });
@@ -357,7 +357,7 @@ describe('administration catalog configuration', () => {
     });
     const serverPath = join(f.dataRoot, 'config/server.jsonc');
     const original = readFileSync(serverPath, 'utf8');
-    const proposal = f.service.propose(
+    const proposal = await f.service.propose(
       {
         targetFamily: 'policy',
         targetId: 'server',
@@ -432,7 +432,7 @@ describe('administration catalog configuration', () => {
         },
       ],
     });
-    const proposal = f.service.propose(
+    const proposal = await f.service.propose(
       {
         targetFamily: 'policy',
         targetId: 'server',
@@ -605,7 +605,7 @@ describe('administration catalog configuration', () => {
           subject: { ...subject, principal: { kind: 'human', id: allocateEntityId('usr') } },
         })
       ).toBeNull();
-      const withdrawal = f.service.propose(
+      const withdrawal = await f.service.propose(
         {
           targetFamily: 'policy',
           targetId: 'server',
@@ -632,7 +632,7 @@ describe('administration catalog configuration', () => {
           policy: f.manager.current().openKitConfig.policy!.mediation,
         })
       ).toBeNull();
-      const renewed = f.service.propose(
+      const renewed = await f.service.propose(
         {
           targetFamily: 'policy',
           targetId: 'server',
@@ -663,7 +663,7 @@ describe('administration catalog configuration', () => {
     const f = await mcpPolicyFixture();
     const serverPath = join(f.dataRoot, 'config/server.jsonc');
     const original = readFileSync(serverPath, 'utf8');
-    const proposal = f.service.propose(f.policyRequest(), f.home);
+    const proposal = await f.service.propose(f.policyRequest(), f.home);
     expect(readFileSync(serverPath, 'utf8')).toBe(original);
     const artifact = f.store.getArtifact(f.workspaceId, proposal.candidate.artifactId);
     if (artifact.content.format !== 'json') throw new Error('Expected candidate JSON.');
@@ -709,7 +709,7 @@ describe('administration catalog configuration', () => {
     'require_approval',
   ] as const)('prepares and applies unobserved %s with a digest-bound warning and later exact-name enforcement', async (effect) => {
     const f = await mcpPolicyFixture(false);
-    const proposal = f.service.propose(f.policyRequest('future-tool', effect), f.home);
+    const proposal = await f.service.propose(f.policyRequest('future-tool', effect), f.home);
     const artifact = f.store.getArtifact(f.workspaceId, proposal.candidate.artifactId);
     if (artifact.content.format !== 'json') throw new Error('Expected candidate JSON.');
     const body = JSON.parse(artifact.content.body);
@@ -791,7 +791,7 @@ describe('administration catalog configuration', () => {
     'require_approval',
   ] as const)('does not warn for observed %s', async (effect) => {
     const f = await mcpPolicyFixture();
-    const proposal = f.service.propose(f.policyRequest('read', effect), f.home);
+    const proposal = await f.service.propose(f.policyRequest('read', effect), f.home);
     expect(('warnings' in proposal.preview ? proposal.preview.warnings : undefined) ?? []).toEqual(
       []
     );
@@ -799,7 +799,7 @@ describe('administration catalog configuration', () => {
 
   it('applies the confirmed warning unchanged when the Tool becomes observed', async () => {
     const f = await mcpPolicyFixture(false);
-    const proposal = f.service.propose(f.policyRequest('future-tool'), f.home);
+    const proposal = await f.service.propose(f.policyRequest('future-tool'), f.home);
     const before = f.store.getArtifact(f.workspaceId, proposal.candidate.artifactId);
     if (before.content.format !== 'json') throw new Error('Expected candidate JSON.');
     expect(JSON.parse(before.content.body).warnings).toHaveLength(1);
@@ -813,7 +813,7 @@ describe('administration catalog configuration', () => {
 
   it('does not turn an observation loss into rejection of a confirmed restriction', async () => {
     const f = await mcpPolicyFixture();
-    const proposal = f.service.propose(f.policyRequest(), f.home);
+    const proposal = await f.service.propose(f.policyRequest(), f.home);
     f.observe([{ name: 'renamed', inputSchema: { type: 'object' } }]);
     expect(await f.service.apply(f.confirm(proposal))).toMatchObject({
       persisted: true,
@@ -838,7 +838,7 @@ describe('administration catalog configuration', () => {
       },
     };
     const before = readFileSync(join(f.dataRoot, 'config/server.jsonc'), 'utf8');
-    expect(() => f.service.propose(proposed, f.home)).toThrow(
+    await expect(f.service.propose(proposed, f.home)).rejects.toThrow(
       'Human Tool conditions require exact Workspace Tool scope without finite uses.'
     );
     expect(readFileSync(join(f.dataRoot, 'config/server.jsonc'), 'utf8')).toBe(before);
@@ -887,7 +887,7 @@ describe('administration catalog configuration', () => {
     };
     const serverPath = join(f.dataRoot, 'config/server.jsonc');
     const original = readFileSync(serverPath, 'utf8');
-    const proposal = f.service.propose(
+    const proposal = await f.service.propose(
       {
         targetFamily: 'policy',
         targetId: 'server',
@@ -987,7 +987,7 @@ describe('administration catalog configuration', () => {
         },
       ],
     });
-    const proposal = f.service.propose(
+    const proposal = await f.service.propose(
       {
         targetFamily: 'policy',
         targetId: 'server',
@@ -1102,7 +1102,7 @@ describe('administration catalog configuration', () => {
     });
     expect(await reopened.apply(request)).toEqual(applied);
     expect(f.reload).toHaveBeenCalledTimes(1);
-    const gateway = f.service.propose(
+    const gateway = await f.service.propose(
       {
         targetFamily: 'gateway',
         targetId: 'gateway',
@@ -1139,7 +1139,7 @@ describe('administration catalog configuration', () => {
       },
       { modelMetadata: { missing: { tool_call: true } } },
     ]) {
-      expect(() => f.service.propose({ ...f.request, changes }, f.home)).toThrow();
+      await expect(f.service.propose({ ...f.request, changes }, f.home)).rejects.toThrow();
     }
     const gateway = {
       targetFamily: 'gateway',
@@ -1154,8 +1154,8 @@ describe('administration catalog configuration', () => {
         ],
       },
     };
-    expect(() => f.service.propose(gateway, f.home)).toThrow();
-    const proposal = f.service.propose(f.request, f.home);
+    await expect(f.service.propose(gateway, f.home)).rejects.toThrow();
+    const proposal = await f.service.propose(f.request, f.home);
     const request = f.confirm(proposal);
     await expect(
       f.service.apply({
@@ -1181,17 +1181,17 @@ describe('administration catalog configuration', () => {
 
   it('rechecks revoked authority before discovery, proposal, application and replay', async () => {
     const f = await fixture();
-    const proposal = f.service.propose(f.request, f.home);
+    const proposal = await f.service.propose(f.request, f.home);
     revokeOpenKitAccessTokenRecord(f.coreDb, f.token.tokenId);
     expect(() => f.service.read('provider')).toThrow();
-    expect(() => f.service.propose(f.request, f.home)).toThrow();
+    await expect(f.service.propose(f.request, f.home)).rejects.toThrow();
     await expect(f.service.apply(f.confirm(proposal))).rejects.toThrow('administrator authority');
     expect(f.reload).not.toHaveBeenCalled();
   });
 
   it('replays an extended retained apply outcome after reopening without repeating the effect', async () => {
     const f = await fixture();
-    const proposal = f.service.propose(f.request, f.home);
+    const proposal = await f.service.propose(f.request, f.home);
     const request = f.confirm(proposal);
     const outcomeId = deriveEntityId('ar', [
       'configuration_result',
@@ -1253,7 +1253,7 @@ describe('administration catalog configuration', () => {
 
   it('retains persisted bytes and reports reload failure without repeating the effect', async () => {
     const f = await fixture();
-    const proposal = f.service.propose(f.request, f.home);
+    const proposal = await f.service.propose(f.request, f.home);
     f.reload.mockImplementation(() => {
       throw new Error('reload failed');
     });
@@ -1277,7 +1277,7 @@ describe('administration catalog configuration', () => {
       ...f,
       actor: { kind: 'session', userId: f.actor.userId },
     });
-    const proposal = session.propose(f.request, f.home);
+    const proposal = await session.propose(f.request, f.home);
     expect(JSON.stringify(session.read('provider', 'codex'))).not.toContain('accountSlotId');
     expect(JSON.stringify(session.schema('provider'))).not.toContain('secretRef');
     const scoped = createAdministrationConfiguration({
@@ -1298,14 +1298,14 @@ describe('administration catalog configuration', () => {
       'administration',
       { visibility: 'private', privateOwnerUserId: f.actor.userId }
     );
-    expect(() => session.propose(f.request, { ...f.home, threadId: foreign.id })).toThrow();
+    await expect(session.propose(f.request, { ...f.home, threadId: foreign.id })).rejects.toThrow();
     expect((await session.apply(f.confirm(proposal))).persisted).toBe(true);
   });
 
   it('conflicts on changed input under one request ID and fences interrupted writes', async () => {
     const f = await fixture();
-    const first = f.service.propose(f.request, f.home);
-    const second = f.service.propose(
+    const first = await f.service.propose(f.request, f.home);
+    const second = await f.service.propose(
       { ...f.request, changes: { displayName: 'Renamed Codex' } },
       f.home
     );
@@ -1314,7 +1314,7 @@ describe('administration catalog configuration', () => {
     await expect(
       f.service.apply({ ...f.confirm(second), requestId: request.requestId })
     ).rejects.toMatchObject({ code: 'idempotency_key_conflict' });
-    const next = f.service.propose(
+    const next = await f.service.propose(
       {
         ...f.request,
         expectedRevision: f.files.readFile('providers/catalog.provider.jsonc').file.revision,
@@ -1374,7 +1374,7 @@ describe('administration catalog configuration', () => {
         },
       },
     });
-    const request = f.confirm(f.service.propose(f.request, f.home));
+    const request = f.confirm(await f.service.propose(f.request, f.home));
     const send = () =>
       app.request(
         ...operationRequest(

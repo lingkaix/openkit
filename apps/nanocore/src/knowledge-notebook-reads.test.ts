@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -10,6 +11,7 @@ import {
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
+import { createRuntimeConfigManager } from './config/runtime-config.js';
 import { KnowledgeNotebook } from './knowledge/notebook.js';
 import { FsStore } from './lib/store.js';
 import {
@@ -34,6 +36,7 @@ import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from './test-support/local-user.js';
+import { operationRequest } from './test-support/operation-request.js';
 import {
   captureWorkspaceSourceFixture,
   readWorkspaceSourceFixture,
@@ -42,6 +45,107 @@ import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 const roots: string[] = [];
 const databases: ReturnType<typeof openCoreDb>[] = [];
+/** Applies an exact Source Thread audience through the current request, decision and configuration owners. */
+async function restrictSourceThread(
+  f: {
+    dataRoot: string;
+    coreDb: ReturnType<typeof openCoreDb>;
+    store: FsStore;
+    workspaceId: string;
+    userId: string;
+  },
+  sourceThreadId: string,
+  allow = false,
+  deferReload = false
+) {
+  const manager = createRuntimeConfigManager({ dataRoot: f.dataRoot });
+  const app = createApp({
+    coreDb: f.coreDb,
+    dataRoot: f.dataRoot,
+    store: f.store,
+    runtimeConfigManager: manager,
+  });
+  const decisionThread = await f.store.createThread(f.workspaceId, 'Source policy decision');
+  const owner = { kind: 'workspace' as const, workspaceId: f.workspaceId };
+  const scope = {
+    subjects: [],
+    actions: [],
+    resources: [{ kind: 'container', container: { owner, kind: 'thread', id: sourceThreadId } }],
+  };
+  const common = {
+    author: { kind: 'human', id: f.userId },
+    authority: { kind: 'human', userId: f.userId },
+    authoredAt: new Date().toISOString(),
+    state: 'active',
+    lifetime: { anchor: { owner, kind: 'workspace', id: f.workspaceId } },
+  };
+  const statements = [
+    { ...common, id: 'source-current-audience', kind: 'managed-boundary', scope },
+    ...(allow
+      ? [
+          {
+            ...common,
+            id: 'source-current-reader',
+            kind: 'permission',
+            effect: 'allow',
+            grant: { kind: 'ordinary' },
+            scope: {
+              ...scope,
+              subjects: [{ kind: 'human', id: f.userId }],
+              actions: ['thread.read'],
+            },
+          },
+        ]
+      : []),
+  ];
+  const requested = await app.request(
+    ...operationRequest(
+      'workspace.resource-access-request',
+      {
+        workspaceId: f.workspaceId,
+        threadId: decisionThread.id,
+        change: {
+          resource: { family: 'thread', id: sourceThreadId },
+          replacement: { schemaVersion: 1, statements },
+        },
+      },
+      { body: JSON.stringify({ requestId: randomUUID() }) }
+    )
+  );
+  expect(requested.status, await requested.clone().text()).toBe(200);
+  const request = (await requested.json()) as { id: string };
+  await f.store.applyPendingRequestCommand(f.workspaceId, {
+    action: 'grant-command',
+    workspaceId: f.workspaceId,
+    threadId: decisionThread.id,
+    requestId: request.id,
+    actor: { kind: 'user', id: f.userId },
+    now: new Date().toISOString(),
+    decisionContext: { kind: 'local', userId: f.userId },
+  });
+  // Save the approved restriction first; activate it at the existing synchronous read crossing.
+  const reload = manager.reload.bind(manager);
+  const delayed = deferReload
+    ? vi
+        .spyOn(manager, 'reload')
+        .mockImplementationOnce(() => reload({ dryRun: true, mode: 'safe' }))
+    : undefined;
+  const applied = await app.request(
+    ...operationRequest('workspace.resource-access-apply', {
+      workspaceId: f.workspaceId,
+      threadId: decisionThread.id,
+      approvalRequestId: request.id,
+      confirmation: 'APPLY WORKSPACE RESOURCE POLICY',
+    })
+  );
+  expect(applied.status, await applied.clone().text()).toBe(200);
+  delayed?.mockRestore();
+  expect((await applied.json()).reloadStatus).toBe(deferReload ? 'dry-run' : 'applied');
+  return () => {
+    expect(manager.reload({ dryRun: false, mode: 'safe' }).status).toBe('applied');
+  };
+}
+
 afterEach(async () => {
   await closeRetrievalServices();
   vi.restoreAllMocks();
@@ -211,13 +315,7 @@ describe('published Workspace notebook reads', () => {
 
   it('rechecks source audience at return when it changes during selected Source pointer verification', async () => {
     const f = await fixture();
-    const sourceThread = await f.store.createThread(
-      f.workspaceId,
-      'Private source',
-      undefined,
-      'conversation',
-      { visibility: 'private', privateOwnerUserId: LOCAL_USER_ID }
-    );
+    const sourceThread = await f.store.createThread(f.workspaceId, 'Initially shared source');
     const source = await registerSource(f, sourceThread.id);
     publish(f, {
       'selected.md': page('Denied after selection', [
@@ -225,10 +323,16 @@ describe('published Workspace notebook reads', () => {
       ]),
       'public.md': page('Public page'),
     });
+    const activateRestriction = await restrictSourceThread(
+      { ...f, userId: LOCAL_USER_ID },
+      sourceThread.id,
+      false,
+      true
+    );
     const list = f.store.listKnowledgeSources.bind(f.store);
     vi.spyOn(f.store, 'listKnowledgeSources').mockImplementation((workspaceId) => {
       const sources = list(workspaceId);
-      Object.assign(sourceThread, { privateOwnerUserId: randomUUID() });
+      activateRestriction();
       return sources;
     });
     expect(readAuthorizedWorkspaceNotebookPages(f).pages.map((entry) => entry.id)).toEqual([
@@ -238,23 +342,20 @@ describe('published Workspace notebook reads', () => {
 
   it('rechecks source audience immediately after a direct selected Source pointer read', async () => {
     const f = await fixture();
-    const thread = await f.store.createThread(
-      f.workspaceId,
-      'Current private audience',
-      undefined,
-      'conversation',
-      {
-        visibility: 'private',
-        privateOwnerUserId: LOCAL_USER_ID,
-      }
-    );
+    const thread = await f.store.createThread(f.workspaceId, 'Current Source audience');
     const source = await registerSource(f, thread.id);
     const content = page('Direct page read', [`source:${source.id}@${source.contentDigest}`]);
     const revision = publish(f, { 'selected.md': content });
+    const activateRestriction = await restrictSourceThread(
+      { ...f, userId: LOCAL_USER_ID },
+      thread.id,
+      false,
+      true
+    );
     const list = f.store.listKnowledgeSources.bind(f.store);
     vi.spyOn(f.store, 'listKnowledgeSources').mockImplementation((workspaceId) => {
       const sources = list(workspaceId);
-      Object.assign(thread, { privateOwnerUserId: randomUUID() });
+      activateRestriction();
       return sources;
     });
     expect(knowledgePageReadable({ ...f, notebookRevision: revision }, 'selected', content)).toBe(
@@ -346,13 +447,7 @@ describe('published Workspace notebook reads', () => {
 
   it('filters foreign private source identity and denies exact historical reads after source revocation', async () => {
     const f = await fixture();
-    const sourceThread = await f.store.createThread(
-      f.workspaceId,
-      'Source audience',
-      undefined,
-      'conversation',
-      { visibility: 'private', privateOwnerUserId: LOCAL_USER_ID }
-    );
+    const sourceThread = await f.store.createThread(f.workspaceId, 'Source audience');
     const source = await registerSource(f, sourceThread.id);
     const destination = await f.store.createThread(f.workspaceId, 'Shared destination');
     // The public aggregate projects exact admitted Notebook pages; authored timestamps remain in OKF bytes.
@@ -381,6 +476,7 @@ describe('published Workspace notebook reads', () => {
     expect(f.store.getWorkspace(f.workspaceId).counts.knowledgeEntryCount).toBe(2);
     expect(readAuthorizedWorkspaceNotebookPages(f).pages).toHaveLength(2);
     expect(knowledgeSourceAudienceReadable(f, source.id)).toBe(true);
+    await restrictSourceThread({ ...f, userId: LOCAL_USER_ID }, sourceThread.id, true);
     const memberId = addMember(f);
     const foreignAccess: KnowledgeRetrievalAccess = {
       ...f.access,
@@ -393,7 +489,7 @@ describe('published Workspace notebook reads', () => {
       )
     ).toEqual(['public']);
     expect(knowledgeSourceAudienceReadable({ ...f, access: foreignAccess }, source.id)).toBe(false);
-    Object.assign(sourceThread, { privateOwnerUserId: randomUUID() });
+    await restrictSourceThread({ ...f, userId: LOCAL_USER_ID }, sourceThread.id);
     expect(knowledgeSourceAudienceReadable(f, source.id)).toBe(false);
     expect(knowledgeSourceAudienceReadable(f, randomUUID())).toBe(false);
     const app = createApp({
@@ -452,7 +548,7 @@ describe('published Workspace notebook reads', () => {
         message: 'Knowledge page is unavailable.',
       })
     );
-    Object.assign(sourceThread, { privateOwnerUserId: LOCAL_USER_ID });
+    await restrictSourceThread({ ...f, userId: LOCAL_USER_ID }, sourceThread.id, true);
     expect(
       readAuthorizedWorkspaceNotebookPages({
         ...f,
