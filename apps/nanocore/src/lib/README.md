@@ -76,3 +76,5 @@ Turn interruption carries its original receipt and authenticated command Audit e
 Native identity discovery scans only admitted scopes, as startup readers do. A quarantined Workspace cannot block reads or writes in a healthy sibling, and it never supplies fallback authority. Explicit access to the refused Workspace still follows the existing recovery diagnostic.
 
 An unscoped Turn lookup searches admitted native owners only. If it finds no owner while a Workspace is quarantined, it cannot prove absence and returns the existing scope-admission `recovery_required` refusal without opening that Workspace. Known healthy Turns remain readable, and an absent Turn remains not found when the entire search domain is admitted. No cached body or replacement owner is used.
+
+Workspace and Server Turn DTOs, and current Server event DTOs, project through the fixed retained decoder before current Protocol validation, leaving descriptive canonical additions unchanged.

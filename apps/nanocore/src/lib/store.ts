@@ -171,6 +171,8 @@ import {
 } from '../storage/fs-layout.js';
 import { publishImmutableProductJson } from '../storage/immutable-content.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
+import { StoredServerEventPayloadV1Schema } from '../storage/retained-server-work-v1.js';
+import { StoredItemPayloadV1Schema } from '../storage/retained-work-items-v1.js';
 import {
   assertServerItemRevision,
   assertServerTurnEventLineage,
@@ -3249,7 +3251,11 @@ export class FsStore {
     const previousRevision = prior.length;
     const previous = prior.at(-1);
     const retained = previous
-      ? (preserveDescriptiveRecord(previous, ItemSchema.parse(previous), item) as Item)
+      ? (preserveDescriptiveRecord(
+          previous,
+          StoredItemPayloadV1Schema.parse(previous),
+          item
+        ) as Item)
       : item;
     const content = await publishImmutableProductJson(
       scope.contentMount,
@@ -4110,7 +4116,7 @@ export class FsStore {
       ? readNativeTurnHistory(this.nativeScope({ kind: 'server' }), item.turnId)
       : undefined;
     const current = native?.turn.items.find((candidate) => candidate.id === itemId) ?? item;
-    const updated = ItemSchema.parse({ ...current, ...input });
+    const updated = ItemSchema.parse({ ...StoredItemPayloadV1Schema.parse(current), ...input });
     assertServerItemRevision(current, updated);
     return this.dataRoot
       ? this.persistNativeItem(updated, native!)
@@ -4225,7 +4231,9 @@ export class FsStore {
   public getServerTurnTranscript(turnId: string): ServerTurnEventEnvelope[] {
     const turn = this.getServerTurnById(turnId);
     return this.dataRoot
-      ? readServerTurnEvents(this.dataRoot, turn)
+      ? readServerTurnEvents(this.dataRoot, turn).map((event) =>
+          ServerTurnEventEnvelopeSchema.parse(StoredServerEventPayloadV1Schema.parse(event))
+        )
       : [...this.serverTurnStream(turnId).events];
   }
 
@@ -5228,7 +5236,7 @@ export class FsStore {
     const turn = native?.turn ?? this.getTurnById(item.turnId);
     const current = turn.items.find((candidate) => candidate.id === itemId);
     if (!current) throw new StoreRecordNotFoundError(`Item not found: ${itemId}`);
-    item = current;
+    item = StoredItemPayloadV1Schema.parse(current);
     let patch: Partial<Item> = input;
     if (isSealedTurnTerminal(turn.status)) {
       if (admission?.category === 'display-projection-refresh') {
@@ -5264,7 +5272,7 @@ export class FsStore {
       }
     }
 
-    const updated = ItemSchema.parse({ ...current, ...patch });
+    const updated = ItemSchema.parse({ ...item, ...patch });
     if (
       updated.id !== item.id ||
       workspaceIdForOwner(updated.owner) !== workspaceIdForOwner(item.owner) ||

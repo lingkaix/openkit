@@ -47,7 +47,7 @@ const StoredServerTurnEventV1Schema = z.discriminatedUnion('type', [
 
 /** The native Server transcript owns its closed event grammar independently of protocolVersion. */
 export const StoredServerEventPayloadV1Schema = z.object({
-  owner: z.object({ kind: z.literal('server'), workspaceId: z.never().optional() }),
+  owner: z.object({ kind: z.literal('server'), workspaceId: z.never().optional() }).strict(),
   workspaceId: z.never().optional(),
   protocolVersion: z.string().min(1),
   event: z.enum([

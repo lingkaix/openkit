@@ -301,11 +301,13 @@ export function listUnresolvedUserInputRequestItemIds(itemRevisions: readonly It
 /**
  * Rejects a valid revision that rewrites immutable human attribution.
  *
- * @param previous Previous canonical Item revision.
- * @param next Proposed later revision for the same Item.
+ * @param previousRecord Previous canonical Item revision.
+ * @param nextRecord Proposed later revision for the same Item.
  * @throws Error when owner, actor, responsible user, or command causation changes.
  */
-export function assertImmutableItemAttribution(previous: Item, next: Item): void {
+export function assertImmutableItemAttribution(previousRecord: Item, nextRecord: Item): void {
+  const previous = ItemReaderSchema.parse(previousRecord);
+  const next = ItemReaderSchema.parse(nextRecord);
   const actorChanged =
     ((previous.type === 'user-message' && next.type === 'user-message') ||
       (previous.type === 'approval-decision' && next.type === 'approval-decision') ||
@@ -1365,8 +1367,8 @@ function loadWorkspace(workspaceRoot: string, workspaceId: string): WorkspaceFil
     workspace: history.workspace,
     knowledge,
     threads: history.threads,
-    turns: history.turns,
-    itemRevisions: history.itemRevisions,
+    turns: history.turns.map((turn) => TurnReaderSchema.parse(turn)),
+    itemRevisions: history.itemRevisions.map((item) => ItemReaderSchema.parse(item)),
     artifacts: history.artifacts,
     knowledgeProposals: history.knowledgeProposals,
     knowledgeProposalReviews: history.knowledgeProposalReviews,
@@ -1374,7 +1376,9 @@ function loadWorkspace(workspaceRoot: string, workspaceId: string): WorkspaceFil
     agentSessions: history.agentSessions,
     streamEvents: history.turnEvents.map(([turnId, events]) => [
       turnId,
-      events.slice(-TURN_STREAM_EVENT_WINDOW_SIZE),
+      events
+        .slice(-TURN_STREAM_EVENT_WINDOW_SIZE)
+        .map((event) => SseEventReaderSchema.parse(event)),
     ]),
     turnCaptureCoverage,
   };
