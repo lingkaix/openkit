@@ -3,10 +3,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { FsStore } from '../lib/store.js';
-import { openWorkspaceDb } from '../storage/db.js';
-import { applyScopedMigrations } from '../storage/migrate.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
+import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { testGoalDomainProposal } from '../test-support/goal-domain.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
 import { considerGoal } from './goal-coordinator.js';
 import {
   advanceGoalRevision,
@@ -20,11 +22,24 @@ import { commandInputHash } from './idempotent-command.js';
 import { respondRecordedApproval } from './pending-request-flow.js';
 import { readPendingRequest } from './pending-requests.js';
 
+/** Initializes real native owners and closes the worker before deleting the private root. */
+function createPersistentStore(dataRoot: string) {
+  const coreDb = openCoreDb(dataRoot);
+  applyMigrations(coreDb);
+  ensureLocalUser(coreDb);
+  onTestFinished(async () => {
+    await getControlStoreWorkerClient().shutdown();
+    coreDb.sqlite.close();
+    rmSync(dataRoot, { recursive: true, force: true });
+  });
+  return new FsStore({ dataRoot });
+}
+
 describe('Goal durable owner', () => {
   it('rolls back the Goal Thread with its rejected receipt and retries the same request once', async () => {
     const root = mkdtempSync(join(tmpdir(), 'goal-receipt-rollback-'));
-    const store = new FsStore({ dataRoot: root });
-    const workspace = store.createWorkspace('Goal receipt rollback');
+    const store = createPersistentStore(root);
+    const workspace = await store.createWorkspace('Goal receipt rollback');
     let db = openWorkspaceDb(root, workspace.id);
     applyScopedMigrations(db);
     const context = {
@@ -46,8 +61,8 @@ describe('Goal durable owner', () => {
       await expect(
         executeGoalOperation('goal.create', input, context, store, db)
       ).rejects.toMatchObject({
-        code: 'SQLITE_CONSTRAINT_TRIGGER',
-        message: 'goal receipt rejected',
+        code: 'constraint',
+        commit: 'not-committed',
       });
       expect(db.sqlite.prepare('SELECT goal_id FROM goals').all()).toEqual([]);
       expect(db.sqlite.prepare('SELECT request_id FROM idempotency_requests').all()).toEqual([]);
@@ -57,6 +72,7 @@ describe('Goal durable owner', () => {
         recursive: true,
       }).filter((path) => /(?:^|[/\\])thread\.json$/.test(path as string));
       db.sqlite.exec('DROP TRIGGER reject_goal_receipt');
+      await getControlStoreWorkerClient().shutdown();
       db.sqlite.close();
       db = openWorkspaceDb(root, workspace.id);
       const reopened = new FsStore({ dataRoot: root });
@@ -88,14 +104,13 @@ describe('Goal durable owner', () => {
       });
     } finally {
       db.sqlite.close();
-      rmSync(root, { recursive: true, force: true });
     }
   });
 
   it('creates intent and cards without work and preserves intent history after revision', async () => {
     const root = mkdtempSync(join(tmpdir(), 'goal-owner-'));
-    const store = new FsStore({ dataRoot: root });
-    const ws = store.createWorkspace('Goal test');
+    const store = createPersistentStore(root);
+    const ws = await store.createWorkspace('Goal test');
     const db = openWorkspaceDb(root, ws.id);
     applyScopedMigrations(db);
     try {
@@ -172,8 +187,8 @@ describe('Goal durable owner', () => {
   });
   it('creates shared Goal execution in the owner-only personal Workspace', async () => {
     const root = mkdtempSync(join(tmpdir(), 'goal-audience-'));
-    const store = new FsStore({ dataRoot: root });
-    const ws = store.ensureQuickChatWorkspace('usr_00000000-0000-7000-8000-000000000001');
+    const store = createPersistentStore(root);
+    const ws = await store.ensureQuickChatWorkspace('usr_00000000-0000-7000-8000-000000000001');
     const db = openWorkspaceDb(root, ws.id);
     applyScopedMigrations(db);
     try {
@@ -195,7 +210,6 @@ describe('Goal durable owner', () => {
       expect(db.sqlite.prepare('SELECT * FROM goals').all()).toHaveLength(1);
     } finally {
       db.sqlite.close();
-      rmSync(root, { recursive: true, force: true });
     }
   });
 });
@@ -204,10 +218,12 @@ describe('Goal durable owner', () => {
 describe('Proposed Plan eligibility', () => {
   async function fixture() {
     const root = mkdtempSync(join(tmpdir(), 'goal-plan-'));
-    onTestFinished(() => rmSync(root, { recursive: true, force: true }));
-    const store = new FsStore({ dataRoot: root });
-    const ws = store.createWorkspace('Plan eligibility');
+    const store = createPersistentStore(root);
+    const ws = await store.createWorkspace('Plan eligibility');
     const db = openWorkspaceDb(root, ws.id);
+    onTestFinished(() => {
+      if (db.sqlite.open) db.sqlite.close();
+    });
     applyScopedMigrations(db);
     const human = {
       actor: { kind: 'local' as const, userId: 'usr_00000000-0000-7000-8000-000000000001' },
@@ -226,7 +242,7 @@ describe('Proposed Plan eligibility', () => {
       threadId: created.goal!.threadId,
       goalId: created.goal!.goalId,
     };
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       ws.id,
       scope.threadId,
       'Coordinate',
@@ -315,13 +331,12 @@ describe('Proposed Plan eligibility', () => {
   ] as const;
   async function retainedFixture(table: (typeof retainedFamilies)[number]) {
     const f = await fixture();
-    onTestFinished(() => f.db.sqlite.close());
     if (table === 'goal_plan_versions' || table === 'goal_card_tasks') {
       const plan = await f.propose();
       if (table === 'goal_card_tasks') {
         await f.resolve(plan.pendingRequestId);
         await f.consume(plan.pendingRequestId);
-        const task = f.store.createThread(f.scope.workspaceId, 'Retained Task');
+        const task = await f.store.createThread(f.scope.workspaceId, 'Retained Task');
         f.db.sqlite.transaction(() =>
           reserveGoalTask(
             f.store,
@@ -366,11 +381,11 @@ describe('Proposed Plan eligibility', () => {
     expect(view.cards[0]?.description).toBe('Design the schema');
     if (table === 'goals') {
       advanceGoalRevision(f.db, f.scope.goalId);
-      f.store.updateTurn(f.coordinator.coordinatorTurnId, {
+      await f.store.updateTurn(f.coordinator.coordinatorTurnId, {
         status: 'completed',
         completedAt: new Date().toISOString(),
       });
-      expect(considerGoal(f.store, f.db, f.scope.goalId)?.agentId).toBe('goal-coordinator');
+      expect((await considerGoal(f.store, f.db, f.scope.goalId))?.agentId).toBe('goal-coordinator');
     } else if (table === 'goal_cards') {
       await executeGoalOperation(
         'goal.card.edit',
@@ -422,7 +437,7 @@ describe('Proposed Plan eligibility', () => {
       expect(() => advanceGoalRevision(f.db, f.scope.goalId)).toThrow(
         'Unsupported retained record format.'
       );
-      expect(() => considerGoal(f.store, f.db, f.scope.goalId)).toThrow(
+      await expect(considerGoal(f.store, f.db, f.scope.goalId)).rejects.toThrow(
         'Unsupported retained record format.'
       );
     }
@@ -563,6 +578,7 @@ describe('Proposed Plan eligibility', () => {
           surface === 'goal-operation'
             ? f.resolve(plan.pendingRequestId)
             : respondRecordedApproval({
+                coreDb: undefined,
                 store: f.store,
                 sqlite: f.db.sqlite,
                 workspaceId: f.scope.workspaceId,
@@ -695,7 +711,7 @@ describe('Proposed Plan eligibility', () => {
         f.store,
         f.db
       );
-      const thread = f.store.createThread(f.scope.workspaceId, 'Ordinary Task');
+      const thread = await f.store.createThread(f.scope.workspaceId, 'Ordinary Task');
       const input = {
         goalId: f.scope.goalId,
         cardId: f.card.cardId,
@@ -758,7 +774,7 @@ describe('Proposed Plan eligibility', () => {
         f.store,
         f.db
       );
-      const task = f.store.createThread(f.scope.workspaceId, 'Task');
+      const task = await f.store.createThread(f.scope.workspaceId, 'Task');
       const admission = {
         goalId: f.scope.goalId,
         cardId: f.card.cardId,
@@ -793,7 +809,7 @@ describe('Proposed Plan eligibility', () => {
         f.store,
         f.db
       );
-      const another = f.store.createThread(f.scope.workspaceId, 'Another Task');
+      const another = await f.store.createThread(f.scope.workspaceId, 'Another Task');
       expect(() =>
         f.db.sqlite.transaction(() =>
           reserveGoalTask(f.store, f.db, { ...admission, cardRevision: 2 }, another.id)
@@ -922,7 +938,6 @@ describe('Proposed Plan eligibility', () => {
       );
     } finally {
       f.db.sqlite.close();
-      rmSync(f.root, { recursive: true, force: true });
     }
   });
   it('refuses a completion grant through Plan approval and leaves the Goal open', async () => {
@@ -976,7 +991,6 @@ describe('Proposed Plan eligibility', () => {
       });
     } finally {
       f.db.sqlite.close();
-      rmSync(f.root, { recursive: true, force: true });
     }
   });
   it.each([
@@ -988,7 +1002,7 @@ describe('Proposed Plan eligibility', () => {
       const p = await f.propose();
       await f.resolve(p.pendingRequestId);
       await f.consume(p.pendingRequestId);
-      const evidence = f.store.createItem({
+      const evidence = await f.store.createItem({
         id: testEntityId('it', 'goal-completion-evidence'),
         owner: { kind: 'workspace', workspaceId: f.scope.workspaceId },
         threadId: f.scope.threadId,
@@ -1073,16 +1087,16 @@ describe('Proposed Plan eligibility', () => {
       }
     } finally {
       f.db.sqlite.close();
-      rmSync(f.root, { recursive: true, force: true });
     }
   });
 });
 
 describe('Public Goal command publication', () => {
   it('captures a public Plan proposal for the Coordinator without attributing its caller to the responsible person', async () => {
-    const store = new FsStore();
-    const ws = store.createWorkspace('Public proposal');
-    const db = openWorkspaceDb(mkdtempSync(join(tmpdir(), 'goal-public-plan-')), ws.id);
+    const root = mkdtempSync(join(tmpdir(), 'goal-public-plan-'));
+    const store = createPersistentStore(root);
+    const ws = await store.createWorkspace('Public proposal');
+    const db = openWorkspaceDb(root, ws.id);
     applyScopedMigrations(db);
     const person = {
       actor: { kind: 'local' as const, userId: 'usr_00000000-0000-7000-8000-000000000001' },
@@ -1157,10 +1171,11 @@ describe('Public Goal command publication', () => {
     }
   });
   it('publishes one replayable origin handoff and never recreates a missing receipted Goal', async () => {
-    const store = new FsStore();
-    const ws = store.createWorkspace('Origin');
-    const origin = store.createThread(ws.id, 'Chat');
-    const db = openWorkspaceDb(mkdtempSync(join(tmpdir(), 'goal-origin-')), ws.id);
+    const root = mkdtempSync(join(tmpdir(), 'goal-origin-'));
+    const store = createPersistentStore(root);
+    const ws = await store.createWorkspace('Origin');
+    const origin = await store.createThread(ws.id, 'Chat');
+    const db = openWorkspaceDb(root, ws.id);
     applyScopedMigrations(db);
     const context = {
       actor: { kind: 'local' as const, userId: 'usr_00000000-0000-7000-8000-000000000001' },

@@ -81,14 +81,15 @@ it('admits Server history only with current Server authority and never through a
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
-  onTestFinished(() => {
+  onTestFinished(async () => {
+    await getControlStoreWorkerClient().shutdown();
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
   });
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Ordinary Workspace');
+  const workspace = await store.createWorkspace('Ordinary Workspace');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
-  const thread = store.createServerThread('Private Server maintenance');
+  const thread = await store.createServerThread('Private Server maintenance');
   const admin = createOpenKitAccessTokenRecord(coreDb, {
     ownerUserId: userId,
     scope: 'server-admin',
@@ -279,14 +280,16 @@ it('publishes the public event cache and notification only after outer FULL COMM
   onTestFinished(unsubscribe);
   Atomics.store(gate, 0, 1);
   let settled = false;
-  const publication = (async () =>
-    await f.store.emitTurnEvent(turn.id, {
+  const publication = (async () => {
+    const envelope = await f.store.persistTurnEvent(turn.id, {
       event: 'error',
       workspaceId: f.workspace.id,
       threadId: thread.id,
       turnId: turn.id,
       data: { type: 'error', code: 'fixture', message: 'Recorded event' },
-    }))().finally(() => {
+    });
+    f.store.emitTurnEvent(turn.id, envelope);
+  })().finally(() => {
     settled = true;
   });
   while (!settled && Atomics.load(gate, 1) === 0) await nextTurn();
