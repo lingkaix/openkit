@@ -30,11 +30,18 @@ import {
   isSchedulerExecutionBusyRefusal,
   listSchedulerExecutionAttemptsForTurn,
 } from './execution-attempt-records.js';
+import {
+  createExecutionStepJournalReader,
+  decodeExecutionJournalSpan,
+  WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION,
+} from './execution-journal.js';
 import { commandInputHash } from './idempotent-command.js';
+import { requireNanoHostExecutionAttempt } from './nanohost-attempt-records.js';
 import {
   hasNanoHostAttemptPreEffectProof,
   hasNanoHostUnusedFailedStartAnchorProof,
 } from './nanohost-attempt-recovery.js';
+import { getNanoHostRuntimeTarget } from './nanohost-runtime-target.js';
 import { getSchedulerPreparationClaims } from './scheduler-dispatch-loop.js';
 import {
   clearWorkerCheckpoint,
@@ -51,6 +58,10 @@ import {
   type WorkerTurnStage,
   workerTurnStageForStopReason,
 } from './worker-stage.js';
+import {
+  listBackendWorkspaceHandles,
+  listWorkspaceMaterializationRecords,
+} from './workspace-sync-records.js';
 
 /**
  * Worker stages that still need visible recovery materialization.
@@ -233,7 +244,7 @@ export function hasWorkerCheckpointNeverSubmittedProof(
     attempt.agentSessionId !== checkpoint.workerSessionId ||
     attempt.phase !== 'closed' ||
     attempt.disposition !== 'not_accepted' ||
-    attempt.terminalCause !== 'turn-start-failed' ||
+    !['turn-start-failed', 'restart-before-effects'].includes(attempt.terminalCause ?? '') ||
     attempt.operationId !== null ||
     attempt.deadline !== null ||
     attempt.fenceRef !== null ||
@@ -243,6 +254,10 @@ export function hasWorkerCheckpointNeverSubmittedProof(
     return false;
   const admission = requireSchedulerExecutionAttemptAdmissionContext(coreDb, attempt.attemptId);
   if (getSchedulerPreparationClaims(coreDb).has(admission.queueEntryId)) return false;
+  if (attempt.terminalCause === 'restart-before-effects') {
+    const native = requireNanoHostExecutionAttempt(coreDb, attempt.attemptId);
+    if (native.recoveryState !== null || native.recoveryDeadline !== null) return false;
+  }
   const turn = store.getTurn(checkpoint.workspaceId, checkpoint.threadId, checkpoint.turnId);
   const session = store.getAgentSession(checkpoint.workerSessionId);
   const pkg = requireAgentEnvironmentPackageSnapshot(
@@ -366,7 +381,15 @@ export function hasWorkerCheckpointNeverSubmittedProof(
           other.agentSessionId === session.id &&
           !['completed', 'failed', 'cancelled', 'interrupted'].includes(other.status)
       ) ||
-    !hasNanoHostUnusedFailedStartAnchorProof(coreDb, workspaceDb, pkg, attempt.attemptId)
+    !(attempt.terminalCause === 'restart-before-effects'
+      ? hasNanoHostAttemptPreEffectProof(coreDb, attempt.attemptId) &&
+        !listBackendWorkspaceHandles(workspaceDb, attempt.workspaceId).some(
+          (row) => row.packageSnapshotId === pkg.snapshotId
+        ) &&
+        !listWorkspaceMaterializationRecords(workspaceDb, attempt.workspaceId).some(
+          (row) => row.packageSnapshotId === pkg.snapshotId
+        )
+      : hasNanoHostUnusedFailedStartAnchorProof(coreDb, workspaceDb, pkg, attempt.attemptId))
   )
     return false;
   // Validate existing partial publications before invoking a lifecycle owner that can repair missing writes.
@@ -444,6 +467,133 @@ export function hasWorkerCheckpointNeverSubmittedProof(
   )
     throw new Error('Never-submitted checkpoint has contradictory terminal publication.');
   return true;
+}
+
+/**
+ * Cancels the original unused obligations only after native terminal acknowledgement.
+ * @param coreDb Original attempt and adapter-owned absence proof.
+ * @param store Original product owner and native journal writer.
+ * @param db Original Workspace journal and immutable package owner.
+ * @param checkpoint Exact accepted command checkpoint; never authorizes another execution.
+ * @throws Error for missing, extra, unknown or conflicting authority or obligations.
+ */
+export async function cancelNeverAllocatedWorkerJournal(
+  coreDb: CoreDb,
+  store: FsStore,
+  db: WorkspaceDb,
+  checkpoint: WorkerCheckpointRecord
+): Promise<void> {
+  const attempt = listSchedulerExecutionAttemptsForTurn(coreDb, checkpoint).find(
+    (row) => !isSchedulerExecutionBusyRefusal(row)
+  );
+  if (attempt?.terminalCause !== 'restart-before-effects') return;
+  if (!hasWorkerCheckpointNeverSubmittedProof(coreDb, store, db, checkpoint))
+    throw new Error('Native no-allocation proof is incomplete.');
+  const { workspaceId, turnId, workerSessionId, requestId } = checkpoint;
+  const { attemptId, bindingRef, inputRef } = attempt;
+  const pkg = requireAgentEnvironmentPackageSnapshot(db, workspaceId, inputRef!).snapshot;
+  const roots = db.sqlite
+    .prepare('SELECT id FROM control_executions WHERE work_id=?')
+    .all(turnId) as { id: string }[];
+  if (roots.length !== 1) throw new Error('Native no-allocation execution is not unique.');
+  const ref = { owner: { kind: 'workspace' as const, workspaceId }, executionId: roots[0]!.id };
+  const reader = createExecutionStepJournalReader(db, ref.owner);
+  let root = await reader.readExecution(ref);
+  const rows = db.sqlite
+    .prepare('SELECT step_id,span_json FROM control_execution_steps WHERE execution_id=?')
+    .all(ref.executionId) as { step_id: string; span_json: string }[];
+  const steps = await Promise.all(
+    rows.map((row) => reader.readInvocation({ execution: ref, stepId: row.step_id }))
+  );
+  const materialize = steps.find((step) => step.control.kind === 'materialize');
+  const terminal = steps.find((step) => step.control.kind === 'terminal-publication');
+  const release = steps.find((step) => step.control.kind === 'release');
+  const turn = store.getTurnById(turnId);
+  const fingerprint = commandInputHash({
+    turnId,
+    attemptId,
+    bindingRef,
+    packageSnapshotId: inputRef,
+  });
+  if (
+    steps.length !== 3 ||
+    !materialize ||
+    !terminal ||
+    !release ||
+    root.definitionVersion !== WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION ||
+    root.workId !== turnId ||
+    root.fingerprint !== fingerprint ||
+    root.terminalCause !== 'failed' ||
+    !isDeepStrictEqual(
+      root.exclusionRefs,
+      root.phase === 'closed' ? [] : [attemptId, bindingRef]
+    ) ||
+    !['closing', 'closed'].includes(root.phase) ||
+    terminal.state !== 'completed' ||
+    turn.status !== 'failed' ||
+    store.getTurnEvents(turnId).filter((event) => event.event === 'turn.completed').length !== 1 ||
+    !['intent', 'cancelled'].includes(materialize.state) ||
+    !['intent', 'cancelled'].includes(release.state) ||
+    (release.state === 'cancelled' &&
+      (materialize.state !== 'cancelled' || root.phase !== 'closed')) ||
+    (root.phase === 'closed' && release.state !== 'cancelled') ||
+    !materialize.control.target ||
+    materialize.control.target.allocationRef !== bindingRef ||
+    materialize.control.target.backendKind !== pkg.backend.preferred ||
+    !getNanoHostRuntimeTarget(coreDb, materialize.control.target.targetId) ||
+    !isDeepStrictEqual(release.control.target, materialize.control.target) ||
+    terminal.control.target !== null ||
+    steps.some(
+      ({ control: c, carriage: k, parent }) =>
+        c.attemptId !== attemptId ||
+        c.operationId !== null ||
+        c.permittingDecisionRef !== null ||
+        c.fingerprint !== fingerprint ||
+        !isDeepStrictEqual(c.actor, turn.triggerActor) ||
+        !isDeepStrictEqual(c.inputRefs, [turnId, inputRef]) ||
+        !isDeepStrictEqual(c.authorityRefs, [turnId, workerSessionId, attemptId]) ||
+        c.physicalFenceRefs.length !== 0 ||
+        c.retryPermitted ||
+        c.retryDeclarationRef !== null ||
+        c.deadlineUnixNano !== null ||
+        parent !== null ||
+        k.operation !== `worker.${c.kind}` ||
+        k.requestId !== requestId ||
+        k.sequence !== null ||
+        k.bindingRef !== bindingRef ||
+        (c.kind !== 'terminal-publication' && c.outputRefs.length !== 0)
+    )
+  )
+    throw new Error('Native no-allocation obligations conflict.');
+  for (const step of [materialize, release]) {
+    if (step.state === 'cancelled') continue;
+    if (!hasWorkerCheckpointNeverSubmittedProof(coreDb, store, db, checkpoint))
+      throw new Error('Native no-allocation proof changed.');
+    root = await reader.readExecution(ref);
+    const closing = step === release;
+    if (closing && root.openSteps.some((open) => open.stepId !== release.ref.stepId))
+      throw new Error('Native no-allocation obligations remain unresolved.');
+    const span = decodeExecutionJournalSpan(
+      JSON.parse(rows.find((row) => row.step_id === step.ref.stepId)!.span_json)
+    );
+    await store.settleWorkspaceExecutionJournalStep(workspaceId, {
+      ref: step.ref,
+      expectedExecutionRevision: root.revision,
+      state: 'cancelled',
+      outputRefs: [],
+      span: {
+        ...span,
+        endTimeUnixNano: BigInt(Date.now()) * 1_000_000n,
+        status: { code: 'ERROR' },
+      },
+      nextPhase: closing ? 'closed' : 'closing',
+      terminalCause: root.terminalCause,
+      exclusionRefs: closing ? [] : root.exclusionRefs,
+    });
+  }
+  root = await reader.readExecution(ref);
+  if (root.phase !== 'closed' || root.openSteps.length || root.exclusionRefs.length)
+    throw new Error('Native no-allocation root remains unresolved.');
 }
 
 /**
@@ -1115,6 +1265,8 @@ export async function clearWorkerCheckpointAfterTerminalState(
     }
   }
 
+  if (input.coreDb && input.store)
+    await cancelNeverAllocatedWorkerJournal(input.coreDb, input.store, workspaceDb, checkpoint);
   return clearWorkerCheckpoint(workspaceDb, input.workspaceId, input.threadId, input.turnId);
 }
 

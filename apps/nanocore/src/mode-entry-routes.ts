@@ -147,6 +147,7 @@ import {
 } from './runtime/worker-checkpoints.js';
 import { turnStatusForCanonicalWorkerStopReason } from './runtime/worker-control-records.js';
 import {
+  cancelNeverAllocatedWorkerJournal,
   classifyClosedWorkerApprovalGate,
   classifyClosedWorkerUserInputGate,
   clearWorkerCheckpointAfterTerminalState,
@@ -1067,6 +1068,12 @@ async function publishCheckpointNeverSubmittedFailure(input: {
     errorCode: turn.error?.code ?? 'worker_governance_turn_failed',
     message: turn.error?.message ?? session.message ?? 'The worker attempt failed to start.',
   });
+  await cancelNeverAllocatedWorkerJournal(
+    input.coreDb,
+    input.store,
+    input.workspaceDb,
+    input.checkpoint
+  );
 }
 
 /**

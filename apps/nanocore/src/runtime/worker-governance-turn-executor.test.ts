@@ -75,7 +75,12 @@ import { parseWorkerContextPackageTrace } from '../context/worker-context-packag
 import { readStrictWorkerContextPackageDigest } from '../context/worker-context-projection.js';
 import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
-import { commandRequestExpiresAt, commandRequestKey, FsStore } from '../lib/store.js';
+import {
+  commandRequestExpiresAt,
+  commandRequestKey,
+  FsStore,
+  StoreRecordNotFoundError,
+} from '../lib/store.js';
 import type {
   LLMGatewayDispatchContext,
   LLMGatewayProviderDispatcher,
@@ -11895,6 +11900,13 @@ describe('retained-record failure publication', () => {
         "UPDATE scheduler_execution_attempts SET startup_deadline = '2099-01-01T00:00:00.000Z'"
       )
       .run();
+    expect(fixture.turn.agentSessionId ?? null).toBeNull();
+    expect(
+      fixture.store.listThreadAgentSessions(
+        workspaceIdForOwner(fixture.turn.owner),
+        fixture.turn.threadId
+      )
+    ).toEqual([]);
     const backend = new FakeWorkerGovernanceBackend();
     const original = snapshotLedger.recordAgentEnvironmentPackageSnapshot;
     const recording = vi
@@ -11932,7 +11944,9 @@ describe('retained-record failure publication', () => {
       );
       expect(backend.calls).not.toContain('materialize');
       expect(backend.calls).not.toContain('submit');
+      expect(backend.calls).toEqual([]);
       const turn = fixture.store.getTurnById(fixture.turn.id);
+      expect(turn.agentSessionId ?? null).toBeNull();
       expect(turn).toMatchObject({
         status: 'failed',
         error: {
@@ -11940,15 +11954,21 @@ describe('retained-record failure publication', () => {
           message: 'The agent environment snapshot could not be prepared.',
         },
       });
-      const session = fixture.store.getAgentSession(fixture.agentSessionId);
-      expect(session.message).toBe('The agent environment snapshot could not be prepared.');
+      const sessions = fixture.store.listThreadAgentSessions(
+        workspaceIdForOwner(fixture.turn.owner),
+        fixture.turn.threadId
+      );
+      expect(sessions).toEqual([]);
+      expect(() => fixture.store.getAgentSession(fixture.agentSessionId)).toThrow(
+        StoreRecordNotFoundError
+      );
       const terminal = fixture.store
         .getTurnEvents(fixture.turn.id)
         .find((event) => event.event === 'turn.completed');
       expect(terminal).toMatchObject({
         data: { type: 'turn-completed', stopReason: 'error', turn: { error: turn.error } },
       });
-      for (const published of [turn, session, terminal, logged.mock.calls])
+      for (const published of [turn, sessions, terminal, logged.mock.calls])
         expect(JSON.stringify(published)).not.toContain(marker);
     } finally {
       recording.mockRestore();

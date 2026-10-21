@@ -2251,6 +2251,13 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           type: 'user-message',
           owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
         });
+        // Durable package bytes must precede every Session or journal reference to this snapshot.
+        if (workspaceDb) {
+          recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+            createdAt: preparedWorkerContext ? timestamp : this.now(),
+            environmentPackage: launchPackage,
+          });
+        }
         if (workspaceDb)
           bindWorkerCheckpointToPreparedSession({
             coreDb: this.coreDb!,
@@ -2310,13 +2317,6 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         await this.emitTurnStarted(store, launchPackage, requestId);
         await this.emitItemCreatedAndCompleted(store, launchPackage, requestId, userItem);
         await this.emitAgentSession(store, launchPackage, requestId, agentSession);
-
-        if (workspaceDb) {
-          recordAgentEnvironmentPackageSnapshot(workspaceDb, {
-            createdAt: preparedWorkerContext ? timestamp : this.now(),
-            environmentPackage: launchPackage,
-          });
-        }
 
         if (this.coreDb && launchContext.sandboxBindingRef) {
           launchLifecycle.session = recordWorkerBackendSessionMaterializing(this.coreDb, {
