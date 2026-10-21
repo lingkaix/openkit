@@ -42,7 +42,8 @@ import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { verifyWorkspaceExportTree } from './storage/workspace-export.js';
 import {
   assertCanonicalDirectory,
-  readCanonicalTextFile,
+  assertCanonicalRegularFile,
+  readNativeProduct,
   WorkspaceSystemRecordSchema,
 } from './storage/workspace-file-records.js';
 import {
@@ -783,10 +784,19 @@ function requireTerminalWorkspaceStorage(
 
 function requireWorkspaceRootIdentity(root: string, workspaceId: string): void {
   assertCanonicalDirectory(root);
-  const record = readRetainedV1(
-    JSON.parse(readCanonicalTextFile(join(root, 'workspace-record.json'))),
-    WorkspaceSystemRecordSchema.parse
+  assertCanonicalDirectory(join(root, 'db'));
+  const path = join(root, 'db', 'workspace.sqlite');
+  assertCanonicalRegularFile(path);
+  const workspace = readNativeProduct(
+    {
+      path,
+      owner: { kind: 'workspace', workspaceId },
+    },
+    'workspace',
+    workspaceId
   );
+  if (!workspace) throw recoveryRequired();
+  const record = readRetainedV1(workspace.record, WorkspaceSystemRecordSchema.parse);
   if (record.id !== workspaceId) {
     throw recoveryRequired();
   }

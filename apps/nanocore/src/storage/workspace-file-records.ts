@@ -2718,7 +2718,7 @@ function listFileNames(path: string): string[] {
  * @param path Canonical file path.
  * @throws Error when the path is a symbolic link or not a regular file.
  */
-function assertCanonicalRegularFile(path: string): void {
+export function assertCanonicalRegularFile(path: string): void {
   const metadata = lstatSync(path);
 
   if (metadata.isSymbolicLink()) {
