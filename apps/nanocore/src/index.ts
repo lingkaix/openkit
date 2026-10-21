@@ -42,6 +42,7 @@ import {
 } from './bootstrap/readiness.js';
 import { closeWithDeadline } from './bootstrap/shutdown.js';
 import { checkBootVaultBackend } from './bootstrap/vault.js';
+import { restoreWorkspaceRecoveryAdmission } from './bootstrap/workspace-recovery.js';
 import { recoverRunningCapabilityCalls } from './capability/usage-ledger.js';
 import { resolveBindHost, resolveBindPort } from './config/bind-host.js';
 import { resolveDataRoot } from './config/data-root.js';
@@ -259,6 +260,7 @@ const bootResult = await runBootPhases({
         });
         applyMigrations(coreDb);
         restoreWorkspaceRetirementAdmission({ coreDb, workspaceMutationAdmission });
+        restoreWorkspaceRecoveryAdmission(coreDb);
         recoverRunningCapabilityCalls({ workspaceDb: coreDb });
         // Only active server registry facts establish an expected Workspace; deletion may remove roots.
         for (const { workspaceId } of coreDb.sqlite

@@ -45,7 +45,7 @@ import {
   inventoryRegularFiles,
   verifyDataRootBackupManifest,
 } from './data-root-backup.js';
-import { bindCoreSqlite, bindWorkspaceSqlite } from './db.js';
+import { bindCoreSqlite, bindWorkspaceSqlite, openExistingCoreDbWithIntegrityCheck } from './db.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
 import {
   exportRecurringPortableHistory,
@@ -72,6 +72,7 @@ import {
   syncCanonicalDirectory,
   syncCanonicalTree,
 } from './workspace-file-records.js';
+import { prepareRecoveryAdmission } from './workspace-recovery-admissions.js';
 
 /** Closed refusal codes shared by the offline Workspace commands. */
 export type WorkspaceRecoveryErrorCode =
@@ -489,7 +490,16 @@ function graph(
     try {
       const workspace = reader.get('workspace', workspaceId);
       if (!workspace || workspace.record.id !== workspaceId) refuse('invalid-database');
-      if (workspace.record.status !== 'active') refuse('workspace-moved-out');
+      if (
+        workspace.record.status !== 'active' ||
+        db
+          .prepare(
+            "SELECT json_extract(record_json, '$.movedOut') FROM control_workspaces WHERE id=?"
+          )
+          .pluck()
+          .get(workspaceId)
+      )
+        refuse('workspace-moved-out');
       capturedRevision = workspace.revision;
       if (expectedRevision !== undefined && expectedRevision !== capturedRevision)
         refuse('invalid-database');
@@ -562,7 +572,7 @@ function graph(
     const unknownEffectTurnIds = (
       db
         .prepare(
-          "SELECT DISTINCT e.work_id FROM control_executions e JOIN control_execution_steps s ON s.execution_id=e.id WHERE s.state IN ('intent','unknown')"
+          "SELECT DISTINCT e.work_id FROM control_executions e JOIN control_execution_steps s ON s.execution_id=e.id WHERE s.state IN ('intent','unknown') UNION SELECT turn_id AS work_id FROM capability_calls WHERE status IN ('running','unknown') AND turn_id IS NOT NULL"
         )
         .all() as { work_id: string }[]
     )
@@ -990,6 +1000,35 @@ export async function createWorkspaceBackup(
       manifest,
       report: { ...report(manifest, manifestDigest, facts), source },
     };
+    if (input.purpose === 'move' && !verifiedParent) {
+      const core = openExistingCoreDbWithIntegrityCheck(sourceRoot);
+      try {
+        prepareRecoveryAdmission(core, input.backupId, output, {
+          input: {
+            command: 'capture',
+            source: input.source,
+            workspaceId: input.workspaceId,
+            expectedSourceDeploymentId: deploymentId,
+            bundleRoot: output,
+            backupId: input.backupId,
+            purpose: 'move',
+          },
+          manifest,
+          capture: common.report,
+          result: {
+            command: 'capture',
+            disposition: 'prepared',
+            workspaceId: input.workspaceId,
+            capture: common.report,
+            droppedSourceMemberIds: [],
+            restrictedRecovery: false,
+            nextAction: 'finish',
+          },
+        });
+      } finally {
+        core.sqlite.close();
+      }
+    }
     return input.purpose === 'backup'
       ? { ...common, purpose: 'backup', disposition: 'sealed' }
       : { ...common, purpose: 'move', disposition: 'prepared' };
