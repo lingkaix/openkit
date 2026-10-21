@@ -162,7 +162,6 @@ export async function askKnowledgeAgent(
     null,
     {
       agentId: 'knowledge-manager',
-      executorKind: 'assistant',
       triggerSource: { kind: 'system-input', summary: 'Knowledge question.' },
     }
   );

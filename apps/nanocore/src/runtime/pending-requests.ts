@@ -1948,10 +1948,12 @@ export function validateCanonicalLoad(
  * Infers the executor of a Turn from its agent binding. Core-local and Assistant Turns are distinguished by the caller.
  *
  * @param turn Turn.
- * @returns Worker when the Turn names an AgentSession, otherwise null.
+ * @returns The existing Pending requester executor, or null for work that receives no Pending outcomes.
  */
 export function executorKindForTurn(turn: Turn): PendingExecutorKind | null {
   if (turn.agentId === 'goal-coordinator' && !turn.agentSessionId) return 'coordinator';
+  // KM query work owns a separate bounded role run; it is neither a Worker nor the Chat requester.
+  if (turn.agentId === 'knowledge-manager' && !turn.agentSessionId) return null;
   return turn.agentSessionId || (turn.agentId && turn.agentId !== 'quick-chat')
     ? 'worker'
     : turn.agentId === 'quick-chat'
