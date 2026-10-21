@@ -1481,15 +1481,20 @@ async function seedLinkedEvidence(o, core, workspace, store, sql, retainedRoot) 
     workspaceId,
     threadId,
     agentId: 'agent_codex_host',
-    status: 'closed',
+    status: 'idle',
     message: 'Synthetic retained session.',
     createdAt: turn.startedAt,
     updatedAt: turn.startedAt,
     environmentPackageSnapshotId: sql.aepSnapshotId,
-    stale: true,
+    stale: false,
   });
-  // Native Turn assignment requires its acknowledged AgentSession; immutable AEP bytes precede the reference.
+  // Assign only a current Session, then let its lifecycle owner decide whether it can close.
   await store.updateTurn(turn.id, { agentSessionId: sql.contextAgentSessionId });
+  await store.updateAgentSession(sql.contextAgentSessionId, {
+    status: 'closed',
+    stale: true,
+    updatedAt: turn.startedAt,
+  });
   const entry = o.scheduler.createSchedulerAdmissionEntry(core, {
     backendId: 'nanohost',
     queueEntryId: 'upgrade-corpus-context-queue',
