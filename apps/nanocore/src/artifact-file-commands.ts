@@ -4,6 +4,7 @@ import {
   ImportWorkspaceArtifactResponseSchema,
 } from '@openkit/app-api-schemas';
 import { deriveEntityId, responsibleUserIdForActor } from '@openkit/protocol';
+import Database from 'better-sqlite3';
 import { ArtifactAuthorityError, type CommandRequestRecord, type FsStore } from './lib/store.js';
 import type { AdmittedOperationContext } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
@@ -51,6 +52,7 @@ export async function importArtifactFile(input: {
   let reservation: FileStorageReservation | undefined;
   let staged: Awaited<ReturnType<typeof stageArtifactPayload>> | undefined;
   let cleanupUnproved = false;
+  let artifactCreated = false;
   const failures: unknown[] = [];
   let response: ReturnType<typeof ImportWorkspaceArtifactResponseSchema.parse> | undefined;
   try {
@@ -134,6 +136,7 @@ export async function importArtifactFile(input: {
             payload
           )
         );
+        artifactCreated = true;
         return ImportWorkspaceArtifactResponseSchema.parse({
           artifactId: artifact.id,
           artifactVersion: artifact.version,
@@ -145,6 +148,29 @@ export async function importArtifactFile(input: {
   } catch (error) {
     cleanupUnproved = error instanceof ArtifactPayloadCleanupError;
     failures.push(error);
+    if (artifactCreated) {
+      try {
+        const receipt = store.getCommandRequest(
+          'artifact.import',
+          metadata.requestId,
+          { actorId, workspaceId: metadata.workspaceId },
+          workspaceDb
+        );
+        // A later maintenance failure can follow a committed receipt. Unknown results retain authority.
+        if (
+          !receipt &&
+          error instanceof Database.SqliteError &&
+          error.code.startsWith('SQLITE_CONSTRAINT')
+        ) {
+          withCanonicalFileWriteAdmission(input.admission, () =>
+            store.rollbackArtifactCreation(artifactId)
+          );
+        }
+      } catch (rollbackError) {
+        cleanupUnproved = true;
+        failures.push(rollbackError);
+      }
+    }
   }
   input.source.destroy();
   try {

@@ -306,8 +306,8 @@ export interface WorkerGovernanceNativeResume {
 export interface WorkerGovernanceMaterializationContext {
   /** Current exact canonical suppliers for disposable live originals; never serialized or retained. */
   contextPackageSources?: readonly WorkerContextPackageSourceFileInput[];
-  /** Publishes Core execution lineage synchronously after all no-effect capacity refusals and before any incoming reservation or effect. */
-  beforeMaterialization?: () => void;
+  /** Acknowledges durable Core execution lineage after all no-effect capacity refusals and before any incoming reservation or effect. */
+  beforeMaterialization?: () => void | Promise<void>;
   /** Workspace data root used to read verified Skill snapshots for worker-supply imports. */
   dataRoot?: string;
   /** Backend-private provider credentials resolved by NanoCore for this materialization only. */

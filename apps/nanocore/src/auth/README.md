@@ -1,5 +1,7 @@
 # Authentication And Authorization
 
+Operation admission awaits administrator-bearer Quick Chat provisioning before it checks the resulting Workspace authority and audience. Better Auth session creation awaits the existing active-user provisioning hook before session recording. Both paths keep their current active-user, owner and membership checks.
+
 This directory owns NanoCore authentication middleware, Better Auth browser sessions, actor resolution, server access-token authentication, bootstrap credential flow, and request-scope authorization helpers.
 
 ## Boundaries

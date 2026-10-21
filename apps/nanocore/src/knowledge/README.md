@@ -1,5 +1,7 @@
 # Knowledge Format
 
+Server maintenance awaits its model pin before it starts the shared role. Its domain result Items join the existing complete terminal Turn publication, including failures before inference and shared-role failures before notebook submission. Startup awaits interrupted Server Turn closure; recovery starts no model or notebook effect.
+
 Knowledge Manager runs have a 300-second default budget. Workspace, Server and User Memory editors read the actual pinned Turn deadline when a Tool runs, including explicit longer or shorter limits; they do not start another fixed default budget. Caller cancellation still fences every editor. The role reports its owned deadline as `knowledge_manager_timeout` in the retained Turn and ordinary failure summary, and keeps caller cancellation distinct. A User Memory failure returns an already sealed role result without appending a late Status Item. No timeout retries a Provider call or notebook effect.
 
 This directory owns the portable OKF v0.2 Markdown parser, OpenKit knowledge-profile validation and the immutable notebook content boundary.

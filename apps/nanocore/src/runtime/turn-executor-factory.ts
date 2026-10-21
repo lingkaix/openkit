@@ -2871,7 +2871,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     }
     // Both resident refusal routes precede publication.
     // Every incoming reservation or effect requires its durable Core AgentSession, checkpoint, package and backend anchor.
-    context.beforeMaterialization?.();
+    await context.beforeMaterialization?.();
     const originPhysicalEpoch = this.requireCurrentBackendPhysicalEpoch(
       identity,
       capacityPhysicalEpoch

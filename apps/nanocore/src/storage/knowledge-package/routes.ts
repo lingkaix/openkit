@@ -53,7 +53,7 @@ export function registerKnowledgePackageRoutes(
             400
           );
         const store = dependencies.requestStore(context);
-        const admitted = admitOperation(
+        const admitted = await admitOperation(
           definition,
           {
             ...context.req.query(),

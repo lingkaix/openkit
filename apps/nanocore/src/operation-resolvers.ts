@@ -159,8 +159,8 @@ export function parseOperationInput(
   return parsed.data as Record<string, unknown>;
 }
 
-/** Preserves primary admission, audience ordering and effect fencing for public and private owned entries. */
-export function admitOperation(
+/** Awaits required provisioning while preserving primary admission, audience order and effect fences for owned entries. */
+export async function admitOperation(
   definition: OperationDefinition,
   value: unknown,
   entry: OperationInvocationContext,
@@ -300,7 +300,7 @@ export function admitOperation(
             isCurrentDeploymentAdministrator(coreDb, entry.actor)
           ) {
             try {
-              ensureUserQuickChatWorkspace({ coreDb, store, userId: entry.actor.userId });
+              await ensureUserQuickChatWorkspace({ coreDb, store, userId: entry.actor.userId });
             } catch (error) {
               if (error instanceof WorkspaceOwnerMembershipRemovedError) throw denied();
               throw error;

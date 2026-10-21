@@ -58,7 +58,9 @@ import { createServerNotebookProposal } from './server-notebook-proposals.js';
 /** Existing application owners, shared by requested and fixed daily Server maintenance. */
 export interface ServerKnowledgeMaintenanceDependencies {
   readonly store: FsStore;
-  readonly pin: (run: Pick<ServerKnowledgeManagerAgentRun, 'turn' | 'inputs'>) => void;
+  readonly pin: (
+    run: Pick<ServerKnowledgeManagerAgentRun, 'turn' | 'inputs'>
+  ) => void | Promise<void>;
   readonly run: (
     run: ServerKnowledgeManagerAgentRun
   ) => Promise<{ readonly turnId: string; readonly text: string }>;
@@ -262,41 +264,54 @@ export async function prepareServerKnowledgeMaintenance(
     });
   let outcome: ReturnType<typeof result> | undefined;
   let settled: ReturnType<typeof result> | undefined;
-  const retain = async (value: ReturnType<typeof result>) => {
-    if (settled) return settled;
+  /** Prepares the Server result before this owner or the shared role seals the Turn. */
+  const resultItem = (value: ReturnType<typeof result>): Item => {
     const timestamp = new Date().toISOString();
-    await store.createServerItem(
-      {
-        id: allocateEntityId('it'),
-        owner: { kind: 'server' },
-        threadId: thread.id,
-        turnId: turn.id,
-        type: 'status',
-        level: value.outcome === 'failed' ? 'error' : 'info',
-        title: 'Knowledge maintenance',
-        summary: value.summary,
-        status: value.outcome === 'failed' ? 'failed' : 'completed',
-        knowledgeMaintenanceResult: value,
-        createdAt: timestamp,
-        completedAt: timestamp,
-      },
-      ALREADY_DECIDED_PUBLICATION_ADMISSION
-    );
+    return {
+      id: allocateEntityId('it'),
+      owner: { kind: 'server' },
+      threadId: thread.id,
+      turnId: turn.id,
+      type: 'status',
+      level: value.outcome === 'failed' ? 'error' : 'info',
+      title: 'Knowledge maintenance',
+      summary: value.summary,
+      status: value.outcome === 'failed' ? 'failed' : 'completed',
+      knowledgeMaintenanceResult: value,
+      createdAt: timestamp,
+      completedAt: timestamp,
+    };
+  };
+  const retain = async (
+    value: ReturnType<typeof result>,
+    terminal?: Parameters<FsStore['updateTurn']>[1]
+  ) => {
+    if (settled) {
+      if (terminal) await store.completeTurn(turn.id, terminal);
+      return settled;
+    }
+    const item = resultItem(value);
+    if (terminal) await store.completeTurn(turn.id, terminal, { items: [item] });
+    else await store.createServerItem(item, ALREADY_DECIDED_PUBLICATION_ADMISSION);
     settled = value;
     return value;
   };
   const fail = async () => {
     const current = store.getServerTurnById(turn.id);
-    const value = await retain(
-      outcome ??
-        result(
-          'failed',
-          current.error?.message ??
-            'Server Knowledge maintenance failed. Inspect the retained Turn before a new request.'
-        )
+    const retained = current.items.findLast(
+      (item) => item.type === 'status' && item.knowledgeMaintenanceResult
     );
+    const value =
+      settled ??
+      (retained?.type === 'status' ? retained.knowledgeMaintenanceResult : undefined) ??
+      outcome ??
+      result(
+        'failed',
+        current.error?.message ??
+          'Server Knowledge maintenance failed. Inspect the retained Turn before a new request.'
+      );
     if (current.status === 'running' || current.status === 'pending')
-      await store.updateServerTurn(turn.id, {
+      return retain(value, {
         status: 'failed',
         completedAt: new Date().toISOString(),
         error: { code: 'knowledge_maintenance_failed', message: value.summary },
@@ -576,6 +591,19 @@ export async function prepareServerKnowledgeMaintenance(
           kind: 'server' as const,
           turn,
           coreDb,
+          terminalItems: (patch: Parameters<FsStore['updateTurn']>[1]) =>
+            settled
+              ? []
+              : [
+                  resultItem(
+                    outcome ??
+                      result(
+                        'failed',
+                        patch.error?.message ??
+                          'Server Knowledge maintenance failed. Inspect the retained Turn before a new request.'
+                      )
+                  ),
+                ],
           signal: input.signal,
           inputs: {
             purpose: 'maintenance' as const,
@@ -632,7 +660,7 @@ export async function prepareServerKnowledgeMaintenance(
           },
         };
 
-        dependencies.pin(runInput);
+        await dependencies.pin(runInput);
         await dependencies.run(runInput);
         if (!outcome) throw new NotebookError('invalid_request');
         return retain(outcome);
@@ -713,7 +741,7 @@ export async function recoverServerKnowledgeManagerTurns(store: FsStore): Promis
     for (const turn of store.listServerThreadTurns(thread.id)) {
       if (turn.agentId !== 'knowledge-manager' || !['pending', 'running'].includes(turn.status))
         continue;
-      await store.updateServerTurn(turn.id, {
+      await store.completeTurn(turn.id, {
         status: 'failed',
         completedAt: new Date().toISOString(),
         error: {

@@ -366,7 +366,7 @@ const bootResult = await runBootPhases({
         // A later read-only Store construction must not remove another live request's bytes.
         discardAbandonedWorkspaceStaging(dataRoot);
         sharedStore ??= new FsStore({ dataRoot });
-        recoverServerKnowledgeManagerTurns(sharedStore);
+        await recoverServerKnowledgeManagerTurns(sharedStore);
         const recoveryStore = sharedStore;
         bootWorkerControlGateway = createDefaultWorkerControlGateway(
           recoveryCoreDb,

@@ -1709,6 +1709,7 @@ export class FsStore {
    * @param initialNotebookFiles Exact admitted root tree; retained imports must not be regenerated from entry projections.
    * @param initialNotebookSchemaText Exact imported scope schema; fresh creation uses the default schema.
    * @param initialNotebookSources Verified and reminted Source blobs in the same first Notebook tree.
+   * @param fileWriteAdmission Request admission for synchronous staging and final file publication. No scope spans native content awaits.
    */
   private async persistNewWorkspaceAtomically(
     records: WorkspaceFileRecords,
@@ -1717,9 +1718,11 @@ export class FsStore {
     notebookInitialization?: NotebookInitialization,
     initialNotebookFiles?: Readonly<Record<string, string>>,
     initialNotebookSchemaText?: string,
-    initialNotebookSources?: Readonly<Record<string, string>>
+    initialNotebookSources?: Readonly<Record<string, string>>,
+    fileWriteAdmission?: FileStorageAdmission
   ): Promise<void> {
-    if (!this.dataRoot) {
+    const dataRoot = this.dataRoot;
+    if (!dataRoot) {
       return;
     }
     if (!notebookInitialization) {
@@ -1728,8 +1731,6 @@ export class FsStore {
     if (records.knowledge.length && !initialNotebookFiles) {
       throw new Error('Workspace import requires exact admitted notebook bytes.');
     }
-
-    ensureLayoutDirectories(this.dataRoot);
 
     const workspaceId = records.workspace.id;
     const finalRoot = this.workspaceRootPath(workspaceId);
@@ -1740,62 +1741,62 @@ export class FsStore {
       throw new Error(`Workspace path already exists: ${workspaceId}`);
     }
 
-    mkdirSync(stagingParent, { recursive: true });
-    assertCanonicalDirectory(stagingParent);
-
     try {
-      // A private initializer may never overwrite a live scope or a previous staging invocation.
-      if (existsSync(stagingRoot) || existsSync(finalRoot))
-        throw new Error('Workspace bootstrap requires a genuinely unpublished scope.');
-      mkdirSync(stagingRoot, { mode: 0o700 });
-      writeWorkspaceConfiguration(stagingRoot, records.workspace, false);
-      initializeDefaultKnowledgeBaseId({
-        dataRoot: this.dataRoot,
-        workspaceRoot: stagingRoot,
-        scope: { kind: 'workspace', workspaceId },
-        knowledgeBaseId,
-      });
-      const pageScopeId = `page/workspace/${workspaceId}/${knowledgeBaseId}`;
-      const workspaceDb = openWorkspaceDbAtRoot({
-        dataRoot: this.dataRoot,
-        workspaceId,
-        workspaceRoot: stagingRoot,
-      });
-      try {
-        applyScopedMigrations(workspaceDb);
-        // Initial history belongs to this actual creation/import, not to invented predecessor edits.
-        initializeWorkspaceNotebook({
+      const prepareFiles = () => {
+        ensureLayoutDirectories(dataRoot);
+        mkdirSync(stagingParent, { recursive: true });
+        assertCanonicalDirectory(stagingParent);
+        // A private initializer may never overwrite a live scope or a previous staging invocation.
+        if (existsSync(stagingRoot) || existsSync(finalRoot))
+          throw new Error('Workspace bootstrap requires a genuinely unpublished scope.');
+        mkdirSync(stagingRoot, { mode: 0o700 });
+        writeWorkspaceConfiguration(stagingRoot, records.workspace, false);
+        initializeDefaultKnowledgeBaseId({
+          dataRoot,
           workspaceRoot: stagingRoot,
-          workspaceId,
-          workspaceDb,
-          initialization: notebookInitialization,
-          files: initialNotebookFiles ?? {},
-          ...(initialNotebookSources === undefined
-            ? {}
-            : { sourcePointers: initialNotebookSources }),
-          revalidate: () => ({
-            pageScopeId,
-            scopeSchemaText: initialNotebookSchemaText ?? DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
-            reviewRequiredPageIds: [],
-            registeredSources: new Map(
-              records.knowledgeSources.map((source) => [source.id, source.contentDigest])
-            ),
-            resolvedReferences: importedWorkspaceNotebookReferences(
-              initialNotebookFiles ?? {},
-              pageScopeId
-            ),
-          }),
+          scope: { kind: 'workspace', workspaceId },
+          knowledgeBaseId,
         });
-      } finally {
-        // Publish a complete main database rather than depending on an open handle or WAL sidecar.
-        workspaceDb.sqlite.close();
-      }
-      stageWorkspace?.({ workspaceId, workspaceRoot: stagingRoot });
-      const scope = nativeProductScope(
-        this.dataRoot,
-        { kind: 'workspace', workspaceId },
-        stagingRoot
-      );
+        const pageScopeId = `page/workspace/${workspaceId}/${knowledgeBaseId}`;
+        const workspaceDb = openWorkspaceDbAtRoot({
+          dataRoot,
+          workspaceId,
+          workspaceRoot: stagingRoot,
+        });
+        try {
+          applyScopedMigrations(workspaceDb);
+          // Initial history belongs to this actual creation/import, not to invented predecessor edits.
+          initializeWorkspaceNotebook({
+            workspaceRoot: stagingRoot,
+            workspaceId,
+            workspaceDb,
+            initialization: notebookInitialization,
+            files: initialNotebookFiles ?? {},
+            ...(initialNotebookSources === undefined
+              ? {}
+              : { sourcePointers: initialNotebookSources }),
+            revalidate: () => ({
+              pageScopeId,
+              scopeSchemaText: initialNotebookSchemaText ?? DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
+              reviewRequiredPageIds: [],
+              registeredSources: new Map(
+                records.knowledgeSources.map((source) => [source.id, source.contentDigest])
+              ),
+              resolvedReferences: importedWorkspaceNotebookReferences(
+                initialNotebookFiles ?? {},
+                pageScopeId
+              ),
+            }),
+          });
+        } finally {
+          // Publish a complete main database rather than depending on an open handle or WAL sidecar.
+          workspaceDb.sqlite.close();
+        }
+        stageWorkspace?.({ workspaceId, workspaceRoot: stagingRoot });
+      };
+      if (fileWriteAdmission) withCanonicalFileWriteAdmission(fileWriteAdmission, prepareFiles);
+      else prepareFiles();
+      const scope = nativeProductScope(dataRoot, { kind: 'workspace', workspaceId }, stagingRoot);
       const entries: Array<{ input: ControlProductEntry; id: string; identity: string }> = [];
       for (const turn of records.turns) {
         const revisions = new Map<string, number>();
@@ -1855,7 +1856,7 @@ export class FsStore {
         }
       }
       const productDb = openWorkspaceDbAtRoot({
-        dataRoot: this.dataRoot,
+        dataRoot,
         workspaceId,
         workspaceRoot: stagingRoot,
       });
@@ -1957,8 +1958,12 @@ export class FsStore {
           readNativeTurnEvents(scope, history.turn),
         ]),
       });
-      writeWorkspaceFileRecords(stagingRoot, records);
-      publishCanonicalPath(stagingRoot, finalRoot);
+      const publishFiles = () => {
+        writeWorkspaceFileRecords(stagingRoot, records);
+        publishCanonicalPath(stagingRoot, finalRoot);
+      };
+      if (fileWriteAdmission) withCanonicalFileWriteAdmission(fileWriteAdmission, publishFiles);
+      else publishFiles();
     } catch (error) {
       rmSync(stagingRoot, { recursive: true, force: true });
       throw error;
@@ -2617,6 +2622,8 @@ export class FsStore {
     /** Immutable capture admission for imported Turns; absence remains unknown history. */
     turnCaptureCoverage?: ReadonlyMap<string, CaptureCoverageBinding>;
     stageWorkspace?: (stage: ImportWorkspaceStage) => void;
+    /** Request capacity applies only during synchronous file mutation, never native content awaits. */
+    fileWriteAdmission?: FileStorageAdmission;
   }): Promise<WorkspaceRecord> {
     const history = parseCanonicalWorkspaceHistory({
       workspace: input.workspace,
@@ -2724,7 +2731,8 @@ export class FsStore {
       input.notebookInitialization,
       input.initialNotebookFiles,
       input.initialNotebookSchemaText,
-      input.initialNotebookSources
+      input.initialNotebookSources,
+      input.fileWriteAdmission
     );
 
     this.workspaces.set(workspace.id, workspace);
@@ -4875,14 +4883,29 @@ export class FsStore {
    * @param input Complete Artifact authority.
    * @param filePayload Exact privately staged original for file-backed content.
    * @param admission Declared post-terminal category for the producing Turn artifact-reference Item.
-   * @returns Created Artifact.
+   * @returns Imported Artifact synchronously, or turn output after native Item acknowledgement.
    * @throws ArtifactAuthorityError when content proof or create-only ownership is invalid.
    */
-  public async createArtifact(
+  public createArtifact(
+    input: Artifact & { origin: Extract<Artifact['origin'], { kind: 'imported' }> },
+    filePayload?: StagedArtifactPayload,
+    admission?: TerminalTurnWriteAdmission
+  ): Artifact;
+  public createArtifact(
+    input: Artifact & { origin: Extract<Artifact['origin'], { kind: 'turn-output' }> },
+    filePayload?: StagedArtifactPayload,
+    admission?: TerminalTurnWriteAdmission
+  ): Promise<Artifact>;
+  public createArtifact(
     input: Artifact,
     filePayload?: StagedArtifactPayload,
     admission?: TerminalTurnWriteAdmission
-  ): Promise<Artifact> {
+  ): Artifact | Promise<Artifact>;
+  public createArtifact(
+    input: Artifact,
+    filePayload?: StagedArtifactPayload,
+    admission?: TerminalTurnWriteAdmission
+  ): Artifact | Promise<Artifact> {
     const parsed = ArtifactSchema.safeParse(input);
     if (!parsed.success) {
       throw new ArtifactAuthorityError('invalid_request', 'Artifact input is invalid.');
@@ -4987,7 +5010,7 @@ export class FsStore {
       throw error;
     }
     if (reference) {
-      await this.createItem(reference, admission);
+      return this.createItem(reference, admission).then(() => artifact);
     }
     return artifact;
   }

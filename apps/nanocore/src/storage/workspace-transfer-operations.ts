@@ -94,7 +94,7 @@ export function createWorkspaceTransferOperationImplementations(
         );
       }
     },
-    'workspace.import': (input, context) => {
+    'workspace.import': async (input, context) => {
       const actor = (context as Extract<OperationInvocationContext, { kind: 'public' }>).actor;
       const dataRoot = store?.getDataRoot();
       if (!dataRoot || !fileAdmission)
@@ -123,19 +123,18 @@ export function createWorkspaceTransferOperationImplementations(
             importedWorkspaceExists(coreDb, store!, dataRoot, workspaceId),
         });
         assertRequestedExportHandles(report, input.sourceWorkspaceId, input.exportId);
-        return withCanonicalFileWriteAdmission(fileAdmission, () =>
-          importVerifiedWorkspace({
-            reloadConfiguration: () => {
-              dependencies.runtimeConfigManager?.reload({ dryRun: false, mode: 'safe' });
-            },
-            authorityUserId: actor.userId,
-            coreDb,
-            dataRoot,
-            requestId: input.requestId ?? null,
-            store: store!,
-            verified,
-          })
-        );
+        return await importVerifiedWorkspace({
+          reloadConfiguration: () => {
+            dependencies.runtimeConfigManager?.reload({ dryRun: false, mode: 'safe' });
+          },
+          authorityUserId: actor.userId,
+          coreDb,
+          dataRoot,
+          fileAdmission,
+          requestId: input.requestId ?? null,
+          store: store!,
+          verified,
+        });
       } catch (error) {
         if (error instanceof OperationError) throw error;
         throw new OperationError(

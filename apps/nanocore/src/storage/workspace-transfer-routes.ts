@@ -155,10 +155,7 @@ import { listExportableWorkspaceMaterialRows } from '../workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { readArtifactVersionRecord } from './artifacts/artifact-version-records.js';
 import type { FileStorageAdmission } from './artifacts/file-admission.js';
-import {
-  reserveCanonicalFileWrite,
-  withCanonicalFileWriteAdmission,
-} from './canonical-write-capacity.js';
+import { reserveCanonicalFileWrite } from './canonical-write-capacity.js';
 import {
   type CoreDb,
   openBootVerifiedWorkspaceDb,
@@ -925,10 +922,11 @@ function importWorkspaceDatabaseRows({
  * @param snapshot Verified and reminted import snapshot.
  * @param stageWorkspace Staged file and workspace-database writer.
  * @param initialization Actual current importer and command attribution for the new Notebook.
- * @returns Imported workspace record.
+ * @param fileWriteAdmission Request file capacity owner, scoped only to synchronous file publication.
+ * @returns Imported workspace record after publication and the separate Core transaction.
  * @throws Error when staged publication or transactional Core replay fails.
  */
-function publishImportedWorkspace(
+async function publishImportedWorkspace(
   coreDb: CoreDb | undefined,
   store: FsStore,
   ownerUserId: string,
@@ -936,11 +934,13 @@ function publishImportedWorkspace(
   stageWorkspace: (stage: ImportWorkspaceStage) => void,
   initialization: NonNullable<
     Parameters<FsStore['importWorkspaceSnapshot']>[0]['notebookInitialization']
-  >
+  >,
+  fileWriteAdmission?: FileStorageAdmission
 ): ReturnType<FsStore['importWorkspaceSnapshot']> {
   const importWorkspaceState = () =>
     store.importWorkspaceSnapshot({
       ...snapshot,
+      ...(fileWriteAdmission ? { fileWriteAdmission } : {}),
       stageWorkspace,
       notebookInitialization: initialization,
       initialNotebookFiles: importedWorkspaceNotebookFiles(
@@ -954,11 +954,10 @@ function publishImportedWorkspace(
     return importWorkspaceState();
   }
 
-  let publishedWorkspaceId: string | null = null;
+  // Private Workspace initialization completes before the separate Core SQL transaction.
+  const imported = await importWorkspaceState();
   try {
     return coreDb.sqlite.transaction(() => {
-      const imported = importWorkspaceState();
-      publishedWorkspaceId = imported.id;
       recordWorkspaceOwnerMembership({
         coreDb,
         ownerUserId,
@@ -973,9 +972,7 @@ function publishImportedWorkspace(
       return imported;
     })();
   } catch (error) {
-    if (publishedWorkspaceId) {
-      store.rollbackImportedWorkspace(publishedWorkspaceId);
-    }
+    store.rollbackImportedWorkspace(imported.id);
     throw error;
   }
 }
@@ -986,7 +983,7 @@ function publishImportedWorkspace(
  * @param input Verified bytes, target authorities, and request identity.
  * @returns Existing public Workspace import response.
  */
-export function importVerifiedWorkspace({
+export async function importVerifiedWorkspace({
   authorityUserId,
   recoveryOwnerUserId,
   coreDb,
@@ -995,7 +992,9 @@ export function importVerifiedWorkspace({
   store,
   verified,
   reloadConfiguration,
+  fileAdmission,
 }: {
+  readonly fileAdmission?: FileStorageAdmission;
   readonly reloadConfiguration?: () => void;
   readonly authorityUserId: string;
   /** Trusted tombstone owner for deleted-resource recovery; ordinary imports use the invoking actor. */
@@ -1146,7 +1145,7 @@ export function importVerifiedWorkspace({
       });
     }
   };
-  const workspace = publishImportedWorkspace(
+  const workspace = await publishImportedWorkspace(
     coreDb,
     store,
     recoveryOwnerUserId ?? authorityUserId,
@@ -1156,7 +1155,8 @@ export function importVerifiedWorkspace({
       requestId: requestId ?? randomUUID(),
       producer: { kind: 'user', id: authorityUserId },
       instructionReference: `workspace.import:${verified.manifest.id}${verified.manifest.knowledgeNotebookRevision ? `:notebook:${verified.manifest.knowledgeNotebookRevision}` : ''}`,
-    }
+    },
+    fileAdmission
   );
 
   reloadConfiguration?.();
@@ -1854,17 +1854,16 @@ export function registerWorkspaceTransferRoutes({
         );
       }
       return c.json(
-        withCanonicalFileWriteAdmission(fileAdmission, () =>
-          importVerifiedWorkspace({
-            ...(reloadConfiguration ? { reloadConfiguration } : {}),
-            authorityUserId: c.get('actor').userId,
-            coreDb,
-            dataRoot,
-            requestId,
-            store,
-            verified,
-          })
-        )
+        await importVerifiedWorkspace({
+          ...(reloadConfiguration ? { reloadConfiguration } : {}),
+          authorityUserId: c.get('actor').userId,
+          coreDb,
+          dataRoot,
+          fileAdmission,
+          requestId,
+          store,
+          verified,
+        })
       );
     } catch {
       return asApiError(
