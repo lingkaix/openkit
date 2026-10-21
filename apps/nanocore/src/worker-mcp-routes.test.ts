@@ -1763,20 +1763,22 @@ describe('worker MCP routes', () => {
         timestamp,
       });
     }
-    const threads = ['caller', 'peer', 'private', 'foreign'].map(
-      async (name) =>
-        await store.createThread(
-          'ws_00000000-0000-7000-8000-000000000001',
-          name,
-          testEntityId('th', `th_peers_${name}`),
-          'conversation',
-          name === 'private'
-            ? {
-                visibility: 'private',
-                privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
-              }
-            : { visibility: 'workspace' }
-        )
+    const threads = await Promise.all(
+      ['caller', 'peer', 'private', 'foreign'].map(
+        async (name) =>
+          await store.createThread(
+            'ws_00000000-0000-7000-8000-000000000001',
+            name,
+            testEntityId('th', `th_peers_${name}`),
+            'conversation',
+            name === 'private'
+              ? {
+                  visibility: 'private',
+                  privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c',
+                }
+              : { visibility: 'workspace' }
+          )
+      )
     );
     const otherWorkspace = await store.createWorkspace('Unreadable peer Workspace');
     coreDb.sqlite
@@ -1853,7 +1855,7 @@ describe('worker MCP routes', () => {
       });
       return store.getTurnById(turn.id);
     });
-    const peer = turns[1]!;
+    const peer = await turns[1]!;
     const itemFields = {
       owner: peer.owner,
       threadId: peer.threadId,

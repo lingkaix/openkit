@@ -17,7 +17,7 @@ it('inspects canonical records without deleting a live upload; explicit boot cle
   const dataRoot = await mkdtemp(join(tmpdir(), 'live-file-staging-'));
   try {
     const store = createTestStore({ dataRoot }),
-      workspace = store.createWorkspace('Private staging');
+      workspace = await store.createWorkspace('Private staging');
     const bytes = Buffer.from([0, 255, 128]);
     const reservation = new FileStorageAdmission(dataRoot, () => 0n).reserve({
       stagingBytes: 3n,

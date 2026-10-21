@@ -249,10 +249,10 @@ for (const kind of crashKinds) {
       const { FsStore } = await import('./store.js');
       initializeTestCore(dataRoot);
       const store = new FsStore({ dataRoot });
-      const kept = store.createWorkspace('Kept workspace');
-      store.createThread(kept.id, 'Kept thread');
-      const workspace = store.createWorkspace('Record workspace');
-      const thread = store.createThread(workspace.id, 'Original preview');
+      const kept = await store.createWorkspace('Kept workspace');
+      await store.createThread(kept.id, 'Kept thread');
+      const workspace = await store.createWorkspace('Record workspace');
+      const thread = await store.createThread(workspace.id, 'Original preview');
       const faults = { count: 0 };
       const captured = await withCrashFault(point, faults, dataRoot, () => {
         expect(() => {
@@ -392,10 +392,10 @@ it('drops staging left by a real interrupted Artifact write', async () => {
   const { FsStore } = await import('./store.js');
   initializeTestCore(dataRoot);
   const store = new FsStore({ dataRoot });
-  const kept = store.createWorkspace('Kept workspace');
-  store.createThread(kept.id, 'Kept thread');
-  const workspace = store.createWorkspace('Staging workspace');
-  store.createThread(workspace.id, 'Original preview');
+  const kept = await store.createWorkspace('Kept workspace');
+  await store.createThread(kept.id, 'Kept thread');
+  const workspace = await store.createWorkspace('Staging workspace');
+  await store.createThread(workspace.id, 'Original preview');
   const faults = { count: 0 };
   const captured = await withCrashFault('before-rename', faults, dataRoot, () => {
     expect(() => store.createArtifact(importedArtifact(workspace.id))).toThrow('publication-fault');
@@ -434,8 +434,8 @@ it('loads a published Turn beside the Thread preview from before that Turn', asy
   const dataRoot = newDataRoot('preview');
   initializeTestCore(dataRoot);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Preview workspace');
-  const thread = store.createThread(workspace.id, 'Original preview');
+  const workspace = await store.createWorkspace('Preview workspace');
+  const thread = await store.createThread(workspace.id, 'Original preview');
   const threadPath = join(
     dataRoot,
     'workspaces',
@@ -445,7 +445,7 @@ it('loads a published Turn beside the Thread preview from before that Turn', asy
     'thread.json'
   );
   const beforeTurn = readFileSync(threadPath);
-  store.createTurn(workspace.id, thread.id, 'partial publication input', localActor, null, {
+  await store.createTurn(workspace.id, thread.id, 'partial publication input', localActor, null, {
     turnId: 'tu_00000000-0000-7ab2-8211-16142303a54d',
   });
   writeFileSync(threadPath, beforeTurn);
@@ -476,7 +476,7 @@ for (const point of ['before-rename', 'after-rename'] as const) {
     const { FsStore } = await import('./store.js');
     initializeTestCore(dataRoot);
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Binary publication');
+    const workspace = await store.createWorkspace('Binary publication');
     const bytes = Buffer.from([0, 255, 128, 13, 10]);
     const contentDigest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
     const payloadPath = join(dataRoot, 'private-original');

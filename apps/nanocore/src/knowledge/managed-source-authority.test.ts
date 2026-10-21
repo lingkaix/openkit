@@ -42,18 +42,20 @@ function fixture() {
   });
   applyMigrations(coreDb);
   const store = new FsStore({ dataRoot });
-  const subjects = ['A', 'B'].map((name) => {
+  const subjects = ['A', 'B'].map(async (name) => {
     const userId = allocateEntityId('usr');
     coreDb.sqlite
       .prepare(
         "INSERT INTO users (id, kind, display_name, email, email_verified, created_at, updated_at, status) VALUES (?, 'human', ?, ?, 0, ?, ?, 'active')"
       )
       .run(userId, name, `${userId}@example.invalid`, Date.now(), Date.now());
-    const workspaceId = store.createWorkspace(`Source owner ${name}`, {
-      requestId: randomUUID(),
-      producer: { kind: 'user', id: userId },
-      instructionReference: 'test:managed-source-authority',
-    }).id;
+    const workspaceId = (
+      await store.createWorkspace(`Source owner ${name}`, {
+        requestId: randomUUID(),
+        producer: { kind: 'user', id: userId },
+        instructionReference: 'test:managed-source-authority',
+      })
+    ).id;
     recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: userId });
     const ownerScope = { kind: 'workspace', workspaceId } as const;
     const knowledgeBaseId = readDefaultKnowledgeBaseId({ dataRoot, scope: ownerScope });

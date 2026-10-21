@@ -83,7 +83,7 @@ it.each([
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Current deletion credential');
+    const workspace = await store.createWorkspace('Current deletion credential');
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -116,11 +116,11 @@ it.each([
     });
     // A named busy session keeps the existing early-202 path observable without external work.
     const now = new Date().toISOString();
-    store.createAgentSession({
+    await store.createAgentSession({
       id: testEntityId('as', 'deletion-current-credential-busy'),
       agentId: 'agent_codex_host',
       workspaceId: workspace.id,
-      threadId: store.createThread(workspace.id, 'Still running').id,
+      threadId: (await store.createThread(workspace.id, 'Still running')).id,
       status: 'busy',
       message: null,
       createdAt: now,
@@ -196,7 +196,7 @@ it('resumes an exact fenced request after its registry transition without ordina
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Fenced deletion restart');
+    const workspace = await store.createWorkspace('Fenced deletion restart');
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -310,7 +310,7 @@ it.each(
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Legal hold fixture');
+    const workspace = await store.createWorkspace('Legal hold fixture');
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -423,7 +423,7 @@ it('durably fences an active owner deletion request before later lifecycle effec
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Deletion fixture');
+    const workspace = await store.createWorkspace('Deletion fixture');
     const app = createApp({
       coreDb,
       dataRoot,
@@ -437,9 +437,9 @@ it('durably fences an active owner deletion request before later lifecycle effec
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: workspace.id,
     });
-    const thread = store.createThread(workspace.id, 'Deletion quiescence blocker');
+    const thread = await store.createThread(workspace.id, 'Deletion quiescence blocker');
     const timestamp = new Date().toISOString();
-    store.createAgentSession({
+    await store.createAgentSession({
       agentId: 'agent_codex_host',
       createdAt: timestamp,
       id: testEntityId('as', 'session_workspace_deletion_blocker'),
@@ -548,7 +548,7 @@ it('durably fences an active owner deletion request before later lifecycle effec
       code: 'workspace_deletion_in_progress',
     });
 
-    store.updateAgentSession(testEntityId('as', 'session_workspace_deletion_blocker'), {
+    await store.updateAgentSession(testEntityId('as', 'session_workspace_deletion_blocker'), {
       status: 'closed',
       updatedAt: new Date().toISOString(),
     });
@@ -607,7 +607,7 @@ it.each([
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace(`${blocker} fixture`);
+    const workspace = await store.createWorkspace(`${blocker} fixture`);
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -644,7 +644,7 @@ it.each([
         .run(workspace.id, 'a'.repeat(64), timestamp, timestamp, timestamp);
     } else if (blocker === 'idle ready native binding') {
       const suffix = 'deletion_idle_native';
-      const thread = store.createThread(workspace.id, 'Idle native resident');
+      const thread = await store.createThread(workspace.id, 'Idle native resident');
       const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
       let environmentPackage: ReturnType<typeof recordTestAgentEnvironmentPackage>;
       try {
@@ -659,7 +659,7 @@ it.each([
       } finally {
         workspaceDb.sqlite.close();
       }
-      store.createAgentSession({
+      await store.createAgentSession({
         id: environmentPackage.scope.agentSessionId,
         agentId: environmentPackage.agent.agentId,
         workspaceId: workspace.id,
@@ -956,7 +956,7 @@ it('lets deletion proceed for five closed failed attempts with exact fences and 
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Failed cleaned lease fixture');
+    const workspace = await store.createWorkspace('Failed cleaned lease fixture');
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -1049,7 +1049,7 @@ it('keeps deletion fenced when one of five failed attempts remains closing witho
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Sibling unproved lease fixture');
+    const workspace = await store.createWorkspace('Sibling unproved lease fixture');
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -1180,7 +1180,7 @@ it.each([
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace(`${fixture.suffix} fixture`);
+    const workspace = await store.createWorkspace(`${fixture.suffix} fixture`);
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -1290,7 +1290,7 @@ it.each([
   }
 });
 
-it('terminates a pre-transition deletion request when its original owner is disabled at boot', () => {
+it('terminates a pre-transition deletion request when its original owner is disabled at boot', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-deletion-disabled-boot-'));
   const coreDb = openCoreDb(dataRoot);
 
@@ -1298,7 +1298,7 @@ it('terminates a pre-transition deletion request when its original owner is disa
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Disabled owner deletion fixture');
+    const workspace = await store.createWorkspace('Disabled owner deletion fixture');
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -1358,8 +1358,8 @@ it('terminates a pre-transition deletion request when its owner is disabled in t
       workspaceIds: [],
     });
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Live disabled owner deletion fixture');
-    const deletingWorkspace = store.createWorkspace('Post-transition disabled owner fixture');
+    const workspace = await store.createWorkspace('Live disabled owner deletion fixture');
+    const deletingWorkspace = await store.createWorkspace('Post-transition disabled owner fixture');
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -1450,7 +1450,7 @@ it('terminates a pre-transition deletion request when its owner is disabled in t
   }
 });
 
-it('keeps the mutation fence closed without rewriting conflicting deletion requests at boot', () => {
+it('keeps the mutation fence closed without rewriting conflicting deletion requests at boot', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-deletion-conflict-boot-'));
   const coreDb = openCoreDb(dataRoot);
 
@@ -1458,7 +1458,7 @@ it('keeps the mutation fence closed without rewriting conflicting deletion reque
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Conflicting deletion fixture');
+    const workspace = await store.createWorkspace('Conflicting deletion fixture');
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -1505,7 +1505,7 @@ it('keeps the mutation fence closed without rewriting conflicting deletion reque
   }
 });
 
-it('restores registry-owned boot fences without relying on a nonterminal request', () => {
+it('restores registry-owned boot fences without relying on a nonterminal request', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-deletion-registry-boot-'));
   const coreDb = openCoreDb(dataRoot);
 
@@ -1513,8 +1513,8 @@ it('restores registry-owned boot fences without relying on a nonterminal request
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
-    const deletingWorkspace = store.createWorkspace('Deleting registry fixture');
-    const deletedWorkspace = store.createWorkspace('Deleted registry fixture');
+    const deletingWorkspace = await store.createWorkspace('Deleting registry fixture');
+    const deletedWorkspace = await store.createWorkspace('Deleted registry fixture');
     for (const workspace of [deletingWorkspace, deletedWorkspace]) {
       recordWorkspaceOwnerMembership({
         coreDb,
@@ -1591,7 +1591,7 @@ it.each([
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace(`${crashPoint} crash fixture`);
+    const workspace = await store.createWorkspace(`${crashPoint} crash fixture`);
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -1733,7 +1733,7 @@ it.each([
   }
 });
 
-it('preserves private Thread ownership only through the exact current deletion recovery export', () => {
+it('preserves private Thread ownership only through the exact current deletion recovery export', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-private-deletion-export-'));
   const coreDb = openCoreDb(dataRoot);
   try {
@@ -1748,9 +1748,9 @@ it('preserves private Thread ownership only through the exact current deletion r
     ) VALUES (?, 'Private owner', 'private-owner@example.test', false, ?, ?, 'human', 'active', NULL)`)
       .run(privateOwnerUserId, now, now);
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Private deletion export');
+    const workspace = await store.createWorkspace('Private deletion export');
     recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId: workspace.id });
-    const privateThread = store.createThread(
+    const privateThread = await store.createThread(
       workspace.id,
       'Private history',
       undefined,
@@ -1876,13 +1876,13 @@ it('retains a Thread-owned retrieval trace in the verified deletion recovery exp
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Deletion retrieval trace fixture');
+    const workspace = await store.createWorkspace('Deletion retrieval trace fixture');
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: workspace.id,
     });
-    const thread = store.createThread(workspace.id, 'Deletion trace owner');
+    const thread = await store.createThread(workspace.id, 'Deletion trace owner');
     const repositoryWorkspaceDb = (workspaceId: string) => {
       const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
       applyScopedMigrations(workspaceDb);
@@ -2049,7 +2049,7 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Terminal deletion fixture');
+    const workspace = await store.createWorkspace('Terminal deletion fixture');
     const app = createApp({
       coreDb,
       dataRoot,
@@ -2075,7 +2075,7 @@ it('terminates ordinary Workspace authority and retains exact Core tombstone lin
     const priorExport = (await priorExportResponse.json()) as { exportId: string };
 
     // Deletion's exact internal export must preserve private owners without granting the caller private access.
-    const privateThread = store.createThread(
+    const privateThread = await store.createThread(
       workspace.id,
       'Private recovery history',
       undefined,

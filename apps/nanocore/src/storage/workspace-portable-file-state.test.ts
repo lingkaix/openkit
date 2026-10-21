@@ -80,7 +80,7 @@ function initializeNotebook(workspaceRoot: string): KnowledgeNotebook {
 }
 
 /** Fresh current Workspace avoids unrelated Demo source disclosure in export-refusal tests. */
-function workspaceFixture() {
+async function workspaceFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-portable-files-'));
   const coreDb = openCoreDb(dataRoot);
   onTestFinished(() => {
@@ -90,7 +90,7 @@ function workspaceFixture() {
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Demo Workspace', {
+  const workspace = await store.createWorkspace('Demo Workspace', {
     requestId: randomUUID(),
     producer: { kind: 'user', id: LOCAL_USER_ID },
     instructionReference: 'test:portable-workspace',
@@ -231,7 +231,7 @@ describe('workspace portable file state', () => {
       workspaceId: sourceWorkspaceId,
       workspaceRoot: sourceRoot,
       notebook,
-    } = workspaceFixture();
+    } = await workspaceFixture();
     const sourceKnowledgeBaseId = readDefaultKnowledgeBaseId({
       dataRoot,
       scope: { kind: 'workspace', workspaceId: sourceWorkspaceId },
@@ -651,7 +651,7 @@ describe('workspace portable file state', () => {
     expect(store.listKnowledgeProposals(importedWorkspaceId)).toEqual([]);
     expect(store.listKnowledgeProposalReviewDecisions(importedWorkspaceId)).toEqual([]);
 
-    store.updateWorkspace(importedWorkspaceId, { name: 'Persist unrelated imported change' });
+    await store.updateWorkspace(importedWorkspaceId, { name: 'Persist unrelated imported change' });
     expect(readWorkspaceKnowledgePage(importedRoot, importedAcceptedKnowledge.id)).toBe(
       expectedImportedAcceptedPageBytes
     );
@@ -720,8 +720,9 @@ describe('workspace portable file state', () => {
   });
 
   it('fails export before publication when a retained trace source is no longer readable', async () => {
-    const { dataRoot, coreDb, store, workspaceId, workspaceRoot, notebook } = workspaceFixture();
-    const thread = store.createThread(workspaceId, 'Trace owner', undefined, 'conversation', {
+    const { dataRoot, coreDb, store, workspaceId, workspaceRoot, notebook } =
+      await workspaceFixture();
+    const thread = await store.createThread(workspaceId, 'Trace owner', undefined, 'conversation', {
       visibility: 'workspace',
     });
     const traceId = testEntityId('krt', 'portable-trace-export');
@@ -796,8 +797,9 @@ describe('workspace portable file state', () => {
   });
 
   it('fails export without disclosure when a selected page becomes restricted', async () => {
-    const { dataRoot, coreDb, store, workspaceId, workspaceRoot, notebook } = workspaceFixture();
-    const thread = store.createThread(workspaceId, 'Trace owner', undefined, 'conversation', {
+    const { dataRoot, coreDb, store, workspaceId, workspaceRoot, notebook } =
+      await workspaceFixture();
+    const thread = await store.createThread(workspaceId, 'Trace owner', undefined, 'conversation', {
       visibility: 'workspace',
     });
     const page = knowledgePageFixture(

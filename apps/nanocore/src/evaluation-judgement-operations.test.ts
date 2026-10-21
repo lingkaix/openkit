@@ -27,7 +27,7 @@ it('joins exact human annotations and corrections to ordinary transactional comm
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot: root });
-  const workspace = store.createWorkspace('Human evaluation');
+  const workspace = await store.createWorkspace('Human evaluation');
   const workspaceId = workspace.id;
   recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: userId });
   const db = openWorkspaceDb(root, workspaceId);

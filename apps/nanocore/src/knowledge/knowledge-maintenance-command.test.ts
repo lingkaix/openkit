@@ -43,7 +43,7 @@ async function fixture(reviewRequired = false, failAfterPublication = false) {
   const userId = ensureLocalUser(coreDb);
   const actor = { kind: 'user' as const, id: userId };
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Maintenance command proof', {
+  const workspace = await store.createWorkspace('Maintenance command proof', {
     requestId: randomUUID(),
     producer: actor,
     instructionReference: 'fixture:human-workspace',
@@ -109,10 +109,15 @@ async function fixture(reviewRequired = false, failAfterPublication = false) {
     publicationRequest
   );
   const baseRevision = notebook.publishedRevision();
-  const ordinary = store.createThread(workspace.id, 'Shared source conversation');
-  const sourceTurn = store.createTurn(workspace.id, ordinary.id, 'Record the label rule', actor);
+  const ordinary = await store.createThread(workspace.id, 'Shared source conversation');
+  const sourceTurn = await store.createTurn(
+    workspace.id,
+    ordinary.id,
+    'Record the label rule',
+    actor
+  );
   const now = new Date().toISOString();
-  store.createItem({
+  await store.createItem({
     id: allocateEntityId('it'),
     owner: { kind: 'workspace', workspaceId: workspace.id },
     threadId: ordinary.id,
@@ -124,7 +129,7 @@ async function fixture(reviewRequired = false, failAfterPublication = false) {
     createdAt: now,
     completedAt: now,
   });
-  store.updateTurn(sourceTurn.id, { status: 'completed', completedAt: now });
+  await store.updateTurn(sourceTurn.id, { status: 'completed', completedAt: now });
   const metadata = { tool_call: true, limit: { context: 64_000, output: 2_000 } };
   const snapshot = createInMemoryRuntimeConfigSnapshot({
     dataRoot,

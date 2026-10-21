@@ -54,11 +54,11 @@ function fixture() {
 }
 
 describe('Fresh Workspace notebook admission inside native staging', () => {
-  it('seeds no-argument disk-backed Workspace creation with only the exact service-owned index', () => {
+  it('seeds no-argument disk-backed Workspace creation with only the exact service-owned index', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'notebook-empty-store-'));
     onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
     const store = createTestStore({ dataRoot });
-    const workspace = store.createWorkspace('Empty service seed');
+    const workspace = await store.createWorkspace('Empty service seed');
     const notebook = new KnowledgeNotebook({
       repositoryPath: join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'notebook.git'),
     });
@@ -100,7 +100,7 @@ describe('Fresh Workspace notebook admission inside native staging', () => {
     } finally {
       workspaceDb.sqlite.close();
     }
-    const second = store.createWorkspace('Another empty service seed');
+    const second = await store.createWorkspace('Another empty service seed');
     const secondNotebook = new KnowledgeNotebook({
       repositoryPath: join(dataRoot, 'workspaces', second.id, 'knowledge', 'notebook.git'),
     });
@@ -108,7 +108,7 @@ describe('Fresh Workspace notebook admission inside native staging', () => {
       secondNotebook.readRevision(secondNotebook.publishedRevision()).metadata.changeRequest
         .requestId
     ).not.toBe(retained.metadata.changeRequest.requestId);
-    const explicit = store.createWorkspace('Explicit User', {
+    const explicit = await store.createWorkspace('Explicit User', {
       requestId: randomUUID(),
       producer,
       instructionReference: 'workspace.create:actual-user',
@@ -194,11 +194,11 @@ User-authored note.
     }
   });
 
-  it('keeps import without native attribution refused before Workspace publication', () => {
+  it('keeps import without native attribution refused before Workspace publication', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'notebook-unattributed-import-'));
     onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
     const source = new FsStore();
-    const workspace = source.createWorkspace('Unattributed import');
+    const workspace = await source.createWorkspace('Unattributed import');
     const target = createTestStore({ dataRoot });
     expect(() =>
       target.importWorkspaceSnapshot({

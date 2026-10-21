@@ -106,7 +106,7 @@ function page(
 }
 
 /** Use independent native scope admission, immutable Git, real receipts, editor and publisher. */
-function fixture(scope: Scope, enabled = false) {
+async function fixture(scope: Scope, enabled = false) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'typed-authoring-guidance-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -114,7 +114,7 @@ function fixture(scope: Scope, enabled = false) {
   const actor = { kind: 'user' as const, id: userId };
   const requestActor = { kind: 'local' as const, userId };
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Typed authoring', {
+  const workspace = await store.createWorkspace('Typed authoring', {
     requestId: randomUUID(),
     producer: actor,
     instructionReference: 'fixture:human-notebook-creation',
@@ -187,13 +187,13 @@ function fixture(scope: Scope, enabled = false) {
     }),
   });
   const workspaceMutationAdmission = new WorkspaceMutationAdmission();
-  const finish = (run: Run) => {
+  const finish = async (run: Run) => {
     expect(
       run.validateResult('{"summary":"Finished the native notebook operation."}')
     ).toBeUndefined();
     const update = { status: 'completed' as const, completedAt: new Date().toISOString() };
-    if (run.turn.owner.kind === 'workspace') store.updateTurn(run.turn.id, update);
-    else store.updateServerTurn(run.turn.id, update);
+    if (run.turn.owner.kind === 'workspace') await store.updateTurn(run.turn.id, update);
+    else await store.updateServerTurn(run.turn.id, update);
     return { turnId: run.turn.id, text: '{"summary":"Finished the native notebook operation."}' };
   };
   const run = vi.fn(async (input: Run) => {
@@ -209,7 +209,7 @@ function fixture(scope: Scope, enabled = false) {
     openWorkspace: (id: string) => openWorkspaceDb(dataRoot, id),
     inflightCommands: new WeakMap(),
     run,
-    pin: (
+    pin: async (
       input:
         | Pick<KnowledgeManagerAgentRun, 'turn' | 'inputs'>
         | Pick<ServerKnowledgeManagerAgentRun, 'turn' | 'inputs'>
@@ -223,8 +223,8 @@ function fixture(scope: Scope, enabled = false) {
         knowledge: input.inputs!,
       };
       if (input.turn.owner.kind === 'workspace')
-        store.updateTurn(input.turn.id, { internalExecution });
-      else store.updateServerTurn(input.turn.id, { internalExecution });
+        await store.updateTurn(input.turn.id, { internalExecution });
+      else await store.updateServerTurn(input.turn.id, { internalExecution });
     },
   };
   const input = () => ({
@@ -277,7 +277,7 @@ describe('bounded typed Knowledge authoring guidance', () => {
     false,
     true,
   ])('validates native attributed bytes with delegated publication=%s', async (enabled) => {
-    const f = fixture('workspace', enabled);
+    const f = await fixture('workspace', enabled);
     const schema = f.activeSchema.replace(
       /allowed_review_states: .*/,
       'allowed_review_states: [user-authored, delegated, accepted]'
@@ -313,7 +313,7 @@ describe('bounded typed Knowledge authoring guidance', () => {
   });
 
   it('returns the existing shared-limit refusal from the real Workspace editor without publication', async () => {
-    const f = fixture('workspace');
+    const f = await fixture('workspace');
     let before = '';
     let feedback: { exitCode: number; stderr: string } | undefined;
     f.run.mockImplementationOnce(async (run) => {
@@ -335,7 +335,7 @@ describe('bounded typed Knowledge authoring guidance', () => {
     'user',
     'server',
   ] as const)('submits five valid %s pages atomically within the shared editor limit', async (scope) => {
-    const f = fixture(scope);
+    const f = await fixture(scope);
     f.run.mockImplementationOnce(async (run) => {
       const payload = JSON.parse((run.messages[0]!.content[0] as { text: string }).text);
       const references = payload.sources.map((source: { reference: string }) => source.reference);
@@ -370,7 +370,7 @@ describe('bounded typed Knowledge authoring guidance', () => {
     'user',
     'server',
   ] as const)('delivers the admitted active %s contract and required fields without editable schema authority', async (scope) => {
-    const f = fixture(scope);
+    const f = await fixture(scope);
     let refused = false;
     f.run.mockImplementationOnce(async (run) => {
       try {
@@ -432,7 +432,7 @@ describe('bounded typed Knowledge authoring guidance', () => {
     'user',
     'server',
   ] as const)('omits the whole oversized %s contract and exposes a truthful size-bound notice', async (scope) => {
-    const f = fixture(scope);
+    const f = await fixture(scope);
     const oversized =
       f.activeSchema +
       `description: "SCHEMA-BEGIN-${scope}-${'雪'.repeat(6000)}-SCHEMA-END-${scope}"\n`;
@@ -454,7 +454,7 @@ describe('bounded typed Knowledge authoring guidance', () => {
   }, 120_000);
 
   it('keeps typed source-pinned edits in an exact candidate until the actual human Review', async () => {
-    const f = fixture('workspace');
+    const f = await fixture('workspace');
     let references: string[] = [];
     f.run.mockImplementationOnce(async (run) => {
       const payload = JSON.parse((run.messages[0]!.content[0] as { text: string }).text);
@@ -528,7 +528,7 @@ describe('bounded typed Knowledge authoring guidance', () => {
   ])(
     'still refuses %s edits missing %s through the full native validator',
     async (type, missing) => {
-      const f = fixture('workspace');
+      const f = await fixture('workspace');
       f.run.mockImplementationOnce(async (run) => {
         const payload = JSON.parse((run.messages[0]!.content[0] as { text: string }).text);
         const references = payload.sources.map((source: { reference: string }) => source.reference);

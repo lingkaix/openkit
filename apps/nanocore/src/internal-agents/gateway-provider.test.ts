@@ -36,13 +36,13 @@ afterEach(() => {
 });
 
 /** Creates actual persisted admission even when the model transport is a fixture. */
-function captureBinding(value: 'off' | 'on' = 'off') {
+async function captureBinding(value: 'off' | 'on' = 'off') {
   const dataRoot = mkdtempSync(join(tmpdir(), 'internal-model-capture-'));
   roots.push(dataRoot);
   const store = createTestStore({ dataRoot });
-  const workspace = store.createWorkspace('Internal capture');
-  const thread = store.createThread(workspace.id, 'Internal capture');
-  const turn = store.createTurn(
+  const workspace = await store.createWorkspace('Internal capture');
+  const thread = await store.createThread(workspace.id, 'Internal capture');
+  const turn = await store.createTurn(
     workspace.id,
     thread.id,
     'Request',
@@ -197,7 +197,7 @@ describe('internal Agent Gateway provider', () => {
       );
     });
     const provider = createInternalAgentGatewayProvider({
-      capture: captureBinding(),
+      capture: await captureBinding(),
       logicalModel: model,
       reasoningEffort: profile.reasoningEffort,
       resolveLogicalModel: () => model,
@@ -219,7 +219,7 @@ describe('internal Agent Gateway provider', () => {
   });
 
   it('logs undeclared Tool output from the real adapter as output-projection', async () => {
-    const capture = captureBinding();
+    const capture = await captureBinding();
     const faux = fauxProvider({
       api: 'openai-responses',
       provider: 'provider',
@@ -298,7 +298,7 @@ describe('internal Agent Gateway provider', () => {
   });
 
   it('logs terminal local resolution without the preceding member HTTP status', async () => {
-    const capture = captureBinding();
+    const capture = await captureBinding();
     const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const model = {
       ...logicalModel,
@@ -362,7 +362,7 @@ describe('internal Agent Gateway provider', () => {
   });
 
   it('logs the real required prefixItems rejection as pre-transport without private content', async () => {
-    const capture = captureBinding();
+    const capture = await captureBinding();
     const stock = openaiProvider();
     const models = createModels();
     models.setProvider(stock);
@@ -496,7 +496,7 @@ describe('internal Agent Gateway provider', () => {
     'unsupported-after-handoff',
     'sink-failure',
   ] as const)('keeps %s diagnostics safe and independent of product closeout', async (scenario) => {
-    const capture = captureBinding();
+    const capture = await captureBinding();
     const original =
       scenario === 'pre-transport' || scenario === 'unsupported-after-handoff'
         ? new GatewayUnsupportedFeatureError('schema-canary')
@@ -599,7 +599,7 @@ describe('internal Agent Gateway provider', () => {
   it('emits one diagnostic after retry and failover exhaustion', async () => {
     vi.useFakeTimers();
     try {
-      const capture = captureBinding();
+      const capture = await captureBinding();
       const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const createResponses = vi.fn(async (_provider, _input, context) => {
         context.transport.onProviderHandoff();
@@ -663,7 +663,7 @@ describe('internal Agent Gateway provider', () => {
 
   it('returns existing unavailable outcome when the pinned model no longer resolves', async () => {
     const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const capture = captureBinding();
+    const capture = await captureBinding();
     const createResponses = vi.fn().mockResolvedValue({
       id: 'unexpected',
       object: 'response',
@@ -771,7 +771,7 @@ describe('internal Agent Gateway provider', () => {
         workspaceId: 'ws_00000000-0000-762a-9808-5bd4bc2f5b3f',
       },
       usageEndpoint: 'responses',
-      capture: captureBinding(),
+      capture: await captureBinding(),
       onDispatch,
     });
 
@@ -919,7 +919,7 @@ describe('internal Agent Gateway provider', () => {
     });
     const onDispatch = vi.fn();
     const provider = createInternalAgentGatewayProvider({
-      capture: captureBinding(),
+      capture: await captureBinding(),
       logicalModel,
       resolveLogicalModel: () => logicalModel,
       dispatcher: { createResponses },
@@ -1011,7 +1011,7 @@ describe('internal Agent Gateway provider', () => {
         ],
       });
     const provider = createInternalAgentGatewayProvider({
-      capture: captureBinding(),
+      capture: await captureBinding(),
       logicalModel,
       resolveLogicalModel: () => logicalModel,
       dispatcher: { createResponses },
@@ -1061,7 +1061,7 @@ describe('internal Agent Gateway provider', () => {
   it('keeps malformed Tool calls and arguments fatal instead of requesting correction', async () => {
     const createResponses = vi.fn();
     const provider = createInternalAgentGatewayProvider({
-      capture: captureBinding(),
+      capture: await captureBinding(),
       logicalModel,
       resolveLogicalModel: () => logicalModel,
       dispatcher: { createResponses },
@@ -1142,7 +1142,7 @@ describe('internal Agent Gateway provider', () => {
         }) as never
     );
     const provider = createInternalAgentGatewayProvider({
-      capture: captureBinding(),
+      capture: await captureBinding(),
       logicalModel,
       resolveLogicalModel: () => logicalModel,
       dispatcher: { createResponses },
@@ -1181,7 +1181,7 @@ describe('internal Agent Gateway provider', () => {
       modelFamilyId: 'gemini',
       routes: [{ ...logicalModel.routes[0]!, providerModel: model.id }],
     };
-    const capture = captureBinding();
+    const capture = await captureBinding();
     const payloads: Record<string, unknown>[] = [];
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
       payloads.push(JSON.parse(String(init?.body)));
@@ -1287,7 +1287,7 @@ describe('internal Agent Gateway provider', () => {
     models.setProvider(faux.provider);
     const answer = '  Admitted. 世界\n\t';
     faux.setResponses([fauxAssistantMessage(answer)]);
-    const capture = captureBinding(value);
+    const capture = await captureBinding(value);
     const providerOptions = {
       logicalModel,
       dispatcher: new LLMGatewayProviderDispatcher({
@@ -1440,7 +1440,7 @@ describe('internal Agent Gateway provider', () => {
         requiresApiKey: false,
         subscriptionProviderId: 'openai-codex',
       }),
-      capture: captureBinding(),
+      capture: await captureBinding(),
       providerSubscriptionAccountManager: {
         // This metadata/capture fixture explicitly admits quota; real-manager tests own defaults.
         codexInferenceAllowed: (async () =>
@@ -1478,7 +1478,7 @@ describe('internal Agent Gateway provider', () => {
         workspaceId: 'ws_00000000-0000-762a-9808-5bd4bc2f5b3f',
       },
       usageEndpoint: 'responses',
-      capture: captureBinding(),
+      capture: await captureBinding(),
     });
     const input = request();
 
@@ -1519,7 +1519,7 @@ describe('internal role shares Gateway planning and replay rules', () => {
   it.each(
     internalDecisions
   )('%s follows the same retry and advancement rule', async (kind, primaryCalls, advances) => {
-    const capture = captureBinding();
+    const capture = await captureBinding();
     vi.useFakeTimers();
     try {
       for (const autoFailover of [false, true]) {
@@ -1607,7 +1607,7 @@ describe('internal role shares Gateway planning and replay rules', () => {
           providerProfileId: id,
         })),
       },
-      capture: captureBinding(),
+      capture: await captureBinding(),
       dispatcher: {
         createResponses: async (config: { id: string }) => {
           calls.push(config.id);
@@ -1659,7 +1659,7 @@ describe('internal role shares Gateway planning and replay rules', () => {
           providerProfileId: id,
         })),
       },
-      capture: captureBinding(),
+      capture: await captureBinding(),
       dispatcher: { createResponses } as never,
       onDispatch,
       resolveGatewayProvider: (id) =>
@@ -1689,7 +1689,7 @@ describe('Round 2 internal-role exhaustion cause', () => {
     { kind: 'rate_limited', attempts: 4, disabled: true },
     { kind: 'context_overflow', attempts: 1 },
   ] as const)('propagates only the terminating kind: %j', async (scenario) => {
-    const capture = captureBinding();
+    const capture = await captureBinding();
     vi.useFakeTimers();
     try {
       const disabled = 'disabled' in scenario;
@@ -1771,7 +1771,7 @@ describe('Round 2 internal-role exhaustion cause', () => {
 
 describe('slice 1d internal logical call', () => {
   it('retains a failed call when every member is excluded before model dispatch', async () => {
-    const capture = captureBinding();
+    const capture = await captureBinding();
     const createResponses = vi.fn();
     const resolveGatewayProvider = vi.fn();
     const provider = createInternalAgentGatewayProvider({
@@ -1833,7 +1833,7 @@ describe('slice 1d internal logical call', () => {
 
 describe('slice 1d round 2 internal lifecycle', () => {
   it('settles a deadline-cancelled call before owned capture closes and ignores late completion', async () => {
-    const capture = captureBinding();
+    const capture = await captureBinding();
     const faux = fauxProvider({
       api: 'openai-responses',
       provider: 'provider',
@@ -1841,7 +1841,14 @@ describe('slice 1d round 2 internal lifecycle', () => {
     });
     const events = createAssistantMessageEventStream();
     // Only the upstream stream is uncooperative; all OpenKit cancellation and ledger owners run.
-    const stream = vi.fn(() => events);
+    let observeStreamEntry!: () => void;
+    const streamEntered = new Promise<void>((resolve) => {
+      observeStreamEntry = resolve;
+    });
+    const stream = vi.fn(() => {
+      observeStreamEntry();
+      return events;
+    });
     Object.assign(faux.provider, { stream });
     const models = createModels();
     models.setProvider(faux.provider);
@@ -1899,6 +1906,7 @@ describe('slice 1d round 2 internal lifecycle', () => {
         }
       );
       await vi.advanceTimersByTimeAsync(0);
+      await streamEntered;
       expect(stream).toHaveBeenCalledOnce();
       const read = () => ({
         calls: listWorkspaceCapabilityCalls(
@@ -1943,7 +1951,7 @@ describe('slice 1d round 2 internal lifecycle', () => {
 
   for (const failed of [false, true])
     it(`ignores late usage after ${failed ? 'failed' : 'successful'} closeout`, async () => {
-      const capture = captureBinding();
+      const capture = await captureBinding();
       let usageCallback: ((usage: unknown) => void) | undefined;
       const createResponses = vi.fn(async (_p, _r, context) => {
         usageCallback = context.onUsage;
@@ -2016,7 +2024,7 @@ describe('slice 1d round 2 internal lifecycle', () => {
       expect(() => usageCallback?.({ total_tokens: 43 })).not.toThrow();
     });
   it('carries one absolute deadline through internal retry and failover', async () => {
-    const capture = captureBinding();
+    const capture = await captureBinding();
     vi.useFakeTimers();
     const contexts: Array<Parameters<LLMGatewayProviderDispatcher['createResponses']>[2]> = [];
     const createResponses = vi.fn(async (_p, _r, context) => {
@@ -2099,7 +2107,7 @@ describe('internal rolling context Gateway boundary', () => {
   };
 
   /** Binds the real projection while leaving only outer Provider transport under test control. */
-  function boundaryFixture(
+  async function boundaryFixture(
     admitted = logicalModel,
     current = () => admitted,
     limit: { context?: number; output?: number } = { context: 64_000, output: 8_000 }
@@ -2113,7 +2121,7 @@ describe('internal rolling context Gateway boundary', () => {
       modelMetadata: { model: { tool_call: true, limit } },
     }));
     const provider = createInternalAgentGatewayProvider({
-      capture: captureBinding(),
+      capture: await captureBinding(),
       logicalModel: admitted,
       resolveLogicalModel,
       dispatcher: { createResponses },
@@ -2133,7 +2141,7 @@ describe('internal rolling context Gateway boundary', () => {
       contextManagement: { type: 'compaction' as const, compactThreshold: 100 },
     };
     let current = admitted;
-    const { provider, createResponses, resolveLogicalModel } = boundaryFixture(
+    const { provider, createResponses, resolveLogicalModel } = await boundaryFixture(
       admitted,
       () => current
     );
@@ -2168,7 +2176,7 @@ describe('internal rolling context Gateway boundary', () => {
     'prompt',
     'schema',
   ] as const)('rejects physical overflow from %s before Provider dispatch', async (component) => {
-    const { provider, createResponses } = boundaryFixture(logicalModel, undefined, {
+    const { provider, createResponses } = await boundaryFixture(logicalModel, undefined, {
       context: 16_000,
       output: 2_000,
     });
@@ -2195,7 +2203,7 @@ describe('internal rolling context Gateway boundary', () => {
   });
 
   it('retains final serialized admission failure through stock normalization without replay', async () => {
-    const { provider, createResponses } = boundaryFixture();
+    const { provider, createResponses } = await boundaryFixture();
     createResponses.mockImplementationOnce(async (_provider, _input, context) => {
       try {
         context.transport.finalRequestAdmission({
@@ -2218,7 +2226,7 @@ describe('internal rolling context Gateway boundary', () => {
   });
 
   it('retains a Provider context rejection through the shared loop and Assistant Turn projection', async () => {
-    const { provider, createResponses } = boundaryFixture();
+    const { provider, createResponses } = await boundaryFixture();
     createResponses.mockRejectedValueOnce(
       Object.assign(new Error('private-provider-context'), {
         failure: { kind: 'context_overflow', settled: true, status: 400 },
@@ -2249,7 +2257,7 @@ describe('internal rolling context Gateway boundary', () => {
 
   it('reserves known output capacity when fitting an otherwise admissible request', async () => {
     const limit = { context: 16_000, output: 1_000 };
-    const { provider, createResponses } = boundaryFixture(logicalModel, undefined, limit);
+    const { provider, createResponses } = await boundaryFixture(logicalModel, undefined, limit);
     const assembled = request('Current source fact. '.repeat(400));
 
     await expect(provider(assembled)).resolves.toMatchObject({ message: { role: 'assistant' } });
@@ -2272,7 +2280,7 @@ describe('internal rolling context Gateway boundary', () => {
       ...logicalModel,
       contract: { context: 64_000, output: admittedOutput, inputModalities: null, reasoning: null },
     };
-    const { provider, createResponses } = boundaryFixture(admitted);
+    const { provider, createResponses } = await boundaryFixture(admitted);
 
     await expect(provider(request())).resolves.toMatchObject({ message: { role: 'assistant' } });
 
@@ -2289,7 +2297,7 @@ describe('internal rolling context Gateway boundary', () => {
       contextManagement: { type: 'compaction', compactThreshold: 1_000 },
       contract: { context: 8_000, output: 2_000, inputModalities: null, reasoning: null },
     };
-    const { provider, createResponses } = boundaryFixture(admitted, undefined, {
+    const { provider, createResponses } = await boundaryFixture(admitted, undefined, {
       context: 128_000,
       output: 2_000,
     });
@@ -2315,7 +2323,7 @@ describe('internal rolling context Gateway boundary', () => {
   });
 
   it('rejects a Provider compaction item without accepting its summary or ordinary output', async () => {
-    const { provider, createResponses } = boundaryFixture();
+    const { provider, createResponses } = await boundaryFixture();
     createResponses.mockResolvedValueOnce({
       ...completeResponse,
       output: [
@@ -2345,7 +2353,7 @@ describe('internal rolling context Gateway boundary', () => {
   });
 
   it('fails closed when no physical context limit can be established', async () => {
-    const { provider, createResponses } = boundaryFixture(logicalModel, undefined, {});
+    const { provider, createResponses } = await boundaryFixture(logicalModel, undefined, {});
 
     await expect(provider(request())).rejects.toMatchObject({
       code: 'internal_agent_context_unavailable',
@@ -2355,7 +2363,7 @@ describe('internal rolling context Gateway boundary', () => {
   });
 
   it('returns a safe failure for later overflow without trimming observations or replaying a Tool', async () => {
-    const { provider, createResponses } = boundaryFixture(logicalModel, undefined, {
+    const { provider, createResponses } = await boundaryFixture(logicalModel, undefined, {
       context: 16_000,
       output: 2_000,
     });
@@ -2416,7 +2424,7 @@ describe('internal rolling context Gateway boundary', () => {
       contract: { context: 64_000, output: 8_000, inputModalities: null, reasoning: null },
     };
     const limit = { context: 64_000, output: 8_000 };
-    const { provider, createResponses, resolveLogicalModel } = boundaryFixture(
+    const { provider, createResponses, resolveLogicalModel } = await boundaryFixture(
       admitted,
       () => ({ ...admitted, contract: { ...admitted.contract!, context: 16_000 } }),
       limit
@@ -2440,11 +2448,11 @@ describe('command audit lineage at the internal Gateway seam', () => {
   const commandRequestId = '00000000-0000-4000-8000-000000000144';
 
   /** Composes real capture, Gateway, usage and audit writers; only model transport is injected. */
-  function auditFixture(
+  async function auditFixture(
     auditLineage?: CapabilityAuditLineage,
     storedRequestId: string | null = null
   ) {
-    const capture = captureBinding();
+    const capture = await captureBinding();
     const createResponses = vi
       .fn<LLMGatewayProviderDispatcher['createResponses']>()
       .mockResolvedValue({
@@ -2517,7 +2525,7 @@ describe('command audit lineage at the internal Gateway seam', () => {
     storedRequestId,
     expectedAuditRequest,
   }) => {
-    const f = auditFixture(lineage, storedRequestId);
+    const f = await auditFixture(lineage, storedRequestId);
 
     await f.provider(request());
 
@@ -2572,7 +2580,7 @@ describe('command audit lineage at the internal Gateway seam', () => {
   });
 
   it('retains the command audit request when inference fails', async () => {
-    const f = auditFixture({ commandRequestId });
+    const f = await auditFixture({ commandRequestId });
     const error = new GatewayAttemptFailure({ kind: 'invalid_request', settled: true });
     f.createResponses.mockRejectedValue(error);
     vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -2611,7 +2619,7 @@ describe('command audit lineage at the internal Gateway seam', () => {
     'reported-callback',
     'successful-response',
   ] as const)('retains command audit lineage when the %s usage write fails', async (boundary) => {
-    const f = auditFixture({ commandRequestId });
+    const f = await auditFixture({ commandRequestId });
     f.capture.workspaceDb.sqlite.exec(`
       CREATE TRIGGER reject_gateway_usage_write
       BEFORE INSERT ON usage_records

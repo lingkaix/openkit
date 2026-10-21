@@ -71,7 +71,7 @@ function recordReleasedRestartLease(
  * @param input Store, Core, and lineage for one recovery row.
  * @returns Created AgentSession id.
  */
-function seedInterruptedWorker(input: {
+async function seedInterruptedWorker(input: {
   readonly coreDb: CoreDb;
   readonly dataRoot: string;
   readonly diagnosticsSummary: string;
@@ -80,14 +80,19 @@ function seedInterruptedWorker(input: {
   readonly taskId?: string;
   readonly threadId: string;
   readonly workspaceId: string;
-}): string {
-  const turn = input.store.createTurn(input.workspaceId, input.threadId, input.diagnosticsSummary, {
-    kind: 'user',
-    id: 'usr_00000000-0000-7000-8000-000000000001',
-  });
+}): Promise<string> {
+  const turn = await input.store.createTurn(
+    input.workspaceId,
+    input.threadId,
+    input.diagnosticsSummary,
+    {
+      kind: 'user',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
+    }
+  );
   const agentSessionId = testEntityId('as', `as_${turn.id}`);
   const completedAt = '2026-09-16T00:00:00.000Z';
-  input.store.createAgentSession({
+  await input.store.createAgentSession({
     agentId: 'agent_codex_host',
     createdAt: turn.startedAt ?? completedAt,
     id: agentSessionId,
@@ -97,7 +102,7 @@ function seedInterruptedWorker(input: {
     updatedAt: completedAt,
     workspaceId: input.workspaceId,
   });
-  input.store.updateTurn(turn.id, {
+  await input.store.updateTurn(turn.id, {
     agentSessionId,
     completedAt,
     error: {
@@ -158,7 +163,7 @@ describe('interrupted worker list Thread audience', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Recovery audience team');
+    const workspace = await store.createWorkspace('Recovery audience team');
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -177,28 +182,28 @@ describe('interrupted worker list Thread audience', () => {
       )
       .run(workspace.id, stamp, stamp, stamp);
 
-    const ownPrivateThread = store.createThread(
+    const ownPrivateThread = await store.createThread(
       workspace.id,
       'Own private recovery thread',
       undefined,
       'conversation',
       { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001' }
     );
-    const otherPrivateThread = store.createThread(
+    const otherPrivateThread = await store.createThread(
       workspace.id,
       'Other private recovery thread',
       undefined,
       'conversation',
       { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-73d4-904a-d4c4b905df7c' }
     );
-    const sharedThread = store.createThread(
+    const sharedThread = await store.createThread(
       workspace.id,
       'Shared recovery thread',
       undefined,
       'conversation',
       { visibility: 'workspace' }
     );
-    const ownPrivateTurnId = seedInterruptedWorker({
+    const ownPrivateTurnId = await seedInterruptedWorker({
       coreDb,
       dataRoot,
       diagnosticsSummary: PRIVATE_DIAGNOSTICS,
@@ -208,7 +213,7 @@ describe('interrupted worker list Thread audience', () => {
       threadId: ownPrivateThread.id,
       workspaceId: workspace.id,
     });
-    const otherPrivateTurnId = seedInterruptedWorker({
+    const otherPrivateTurnId = await seedInterruptedWorker({
       coreDb,
       dataRoot,
       diagnosticsSummary: PRIVATE_DIAGNOSTICS,
@@ -218,7 +223,7 @@ describe('interrupted worker list Thread audience', () => {
       threadId: otherPrivateThread.id,
       workspaceId: workspace.id,
     });
-    const sharedTurnId = seedInterruptedWorker({
+    const sharedTurnId = await seedInterruptedWorker({
       coreDb,
       dataRoot,
       diagnosticsSummary: SHARED_DIAGNOSTICS,
@@ -423,14 +428,14 @@ describe('interrupted worker list Thread audience', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Receipt recovery');
+    const workspace = await store.createWorkspace('Receipt recovery');
     recordWorkspaceOwnerMembership({
       coreDb,
       workspaceId: workspace.id,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
     });
-    const thread = store.createThread(workspace.id, 'Original attempt');
-    const turnId = seedInterruptedWorker({
+    const thread = await store.createThread(workspace.id, 'Original attempt');
+    const turnId = await seedInterruptedWorker({
       coreDb,
       dataRoot,
       store,

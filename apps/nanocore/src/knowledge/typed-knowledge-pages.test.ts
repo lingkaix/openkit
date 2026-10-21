@@ -111,13 +111,13 @@ describe('governed domain page fields', () => {
 });
 
 /** Real Core, native fixed-base publisher, retained KB and Retrieval Kernel; no selector double. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'domain-page-selection-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Typed domain pages');
+  const workspace = await store.createWorkspace('Typed domain pages');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
   applyScopedMigrations(workspaceDb);
@@ -189,7 +189,7 @@ function fixture() {
 }
 
 it('publishes exact typed metadata, reads it after restart and rejects a missing required field before publication', async () => {
-  const f = fixture();
+  const f = await fixture();
   const changes = ['Rule', 'Effect', 'Objective'].map((type) => ({
     path: `${type.toLowerCase()}.md`,
     content: page(type.toLowerCase(), type, f.workspace.id),
@@ -206,7 +206,7 @@ it('publishes exact typed metadata, reads it after restart and rejects a missing
 });
 
 it('intersects exact type and any-match applicability after ordinary governance, including pins and absent-filter identity', async () => {
-  const f = fixture();
+  const f = await fixture();
   await f.publish([
     { path: 'invoice-rule.md', content: page('invoice-rule', 'Rule', f.workspace.id) },
     {
@@ -253,12 +253,12 @@ it('intersects exact type and any-match applicability after ordinary governance,
 });
 
 it('forwards typed filters through the native operation and records supplied filters in the existing trace', async () => {
-  const f = fixture();
+  const f = await fixture();
   await f.publish([
     { path: 'invoice-rule.md', content: page('invoice-rule', 'Rule', f.workspace.id) },
     { path: 'invoice-effect.md', content: page('invoice-effect', 'Effect', f.workspace.id) },
   ]);
-  const thread = f.store.createThread(f.workspace.id, 'Filtered native query');
+  const thread = await f.store.createThread(f.workspace.id, 'Filtered native query');
   Object.assign(f.access, { outputThreadId: thread.id });
   const filters = { types: ['Rule', 'Rule'], appliesTo: ['tool:invoice.check'] };
   const traced = await f.retrieve(filters);
@@ -286,8 +286,8 @@ it('forwards typed filters through the native operation and records supplied fil
 });
 
 it('retains selector mismatch separately from an actual Source audience denial without widening wildcard selectors', async () => {
-  const f = fixture();
-  const sourceThread = f.store.createThread(
+  const f = await fixture();
+  const sourceThread = await f.store.createThread(
     f.workspace.id,
     'Private source',
     undefined,
@@ -327,7 +327,7 @@ it('retains selector mismatch separately from an actual Source audience denial w
   ]);
   // Narrow after publication so the query proves current audience admission, not setup refusal.
   Object.assign(sourceThread, { visibility: 'private', privateOwnerUserId: f.access.actor.id });
-  const thread = f.store.createThread(
+  const thread = await f.store.createThread(
     f.workspace.id,
     'Shared selector query',
     undefined,

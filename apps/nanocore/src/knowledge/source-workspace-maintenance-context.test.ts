@@ -44,7 +44,7 @@ it('captures native Workspace tell during execution and publishes from the exact
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Native Source maintenance');
+  const workspace = await store.createWorkspace('Native Source maintenance');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
   applyScopedMigrations(workspaceDb);
@@ -196,7 +196,10 @@ it('captures native Workspace tell during execution and publishes from the exact
     await execute('knowledge.notebook.update', { summary: 'Retain the supplied release label.' });
     expect(input.validateResult('{"summary":"Retained the release label."}')).toBeUndefined();
     deliveries.push({ sourceId, reference: supplied.reference, baseRevision });
-    store.updateTurn(input.turn.id, { status: 'completed', completedAt: new Date().toISOString() });
+    await store.updateTurn(input.turn.id, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+    });
     return { turnId: input.turn.id, text: '{"summary":"Retained the release label."}' };
   });
   const dependencies: KnowledgeMaintenanceDependencies = {
@@ -238,7 +241,7 @@ it('captures native Workspace tell during execution and publishes from the exact
     signal: new AbortController().signal,
   };
   expect(input).not.toHaveProperty('requestActor');
-  const prepared = prepareKnowledgeMaintenance(dependencies, input);
+  const prepared = await prepareKnowledgeMaintenance(dependencies, input);
   expect(prepared).not.toBeInstanceOf(Promise);
   expect(store.getTurnById(prepared.turnId).triggerActor).toEqual(actor);
   expect(run).not.toHaveBeenCalled();

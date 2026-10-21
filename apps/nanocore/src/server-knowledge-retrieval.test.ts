@@ -33,7 +33,7 @@ import { notebookImportFixture } from './test-support/notebook-import.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /** Real current administrator, Workspace query owner and separately published Server notebook. */
-function fixture(imported = false) {
+async function fixture(imported = false) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'server-knowledge-retrieval-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -42,7 +42,7 @@ function fixture(imported = false) {
   const store = new FsStore({ dataRoot });
   const importedWorkspaceId = allocateEntityId('ws');
   const workspace = imported
-    ? store.importWorkspaceSnapshot({
+    ? await store.importWorkspaceSnapshot({
         workspace: {
           id: importedWorkspaceId,
           name: 'Imported Server Knowledge consumer',
@@ -67,7 +67,7 @@ function fixture(imported = false) {
         turnEvents: [],
         ...notebookImportFixture({ workspaceId: importedWorkspaceId, knowledge: [], userId }),
       })
-    : store.createWorkspace('Server Knowledge consumer');
+    : await store.createWorkspace('Server Knowledge consumer');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   initializeScopedNotebook({
     coreDb,
@@ -115,7 +115,7 @@ Quasar deployment operations use the shared literal document.
 
 describe('Server Knowledge through the existing retrieval source', () => {
   it('retrieves current Server pages in a foreign-imported Workspace and retains exact local query-owned history', async () => {
-    const f = fixture(true);
+    const f = await fixture(true);
     const source = await registerServerKnowledgeSource(
       { ...f, inflightCommands: new WeakMap() },
       {
@@ -150,7 +150,7 @@ describe('Server Knowledge through the existing retrieval source', () => {
         changes: [{ path: 'shared-guide.md', content: page('{kind: server}', [sourceRef]) }],
       }
     );
-    const thread = f.store.createThread(f.workspace.id, 'Asking Thread');
+    const thread = await f.store.createThread(f.workspace.id, 'Asking Thread');
     const access = { ...f.access, outputThreadId: thread.id };
     const input = {
       ...f,
@@ -261,7 +261,7 @@ describe('Server Knowledge through the existing retrieval source', () => {
   });
 
   it('selects an ordinary generated delegated Workspace publication only with its actual publishing commit', async () => {
-    const f = fixture();
+    const f = await fixture();
     const workspaceDb = openWorkspaceDb(f.dataRoot, f.workspace.id);
     applyScopedMigrations(workspaceDb);
     onTestFinished(() => workspaceDb.sqlite.close());
@@ -360,7 +360,7 @@ describe('Server Knowledge through the existing retrieval source', () => {
   });
 
   it('reads a fresh source-free Server overview and page without creating a Source family or a fabricated query trace', async () => {
-    const f = fixture();
+    const f = await fixture();
     expect(listServerKnowledgeSources(f)).toEqual([]);
     const bound = { ...f, workspaceId: f.workspace.id };
     expect(readAuthorizedServerNotebookPages({ ...bound, pageIds: ['index'] }).pages[0]?.id).toBe(
@@ -412,6 +412,6 @@ describe('Server Knowledge through the existing retrieval source', () => {
 });
 
 /** Reads the exact retained Server base used by this fixture's real notebook creator. */
-function serverPageScope(f: ReturnType<typeof fixture>): string {
+function serverPageScope(f: Awaited<ReturnType<typeof fixture>>): string {
   return `page/server/${readDefaultKnowledgeBaseId({ dataRoot: f.dataRoot, scope: { kind: 'server' } })}`;
 }

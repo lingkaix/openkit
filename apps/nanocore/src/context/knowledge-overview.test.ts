@@ -18,17 +18,17 @@ import {
 } from './knowledge-overview.js';
 
 /** Real notebooks and live authority; no retrieval index or Provider is required for navigation. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'knowledge-overview-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Overview');
+  const workspace = await store.createWorkspace('Overview');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
-  const thread = store.createThread(workspace.id, 'Working agent');
+  const thread = await store.createThread(workspace.id, 'Working agent');
   const actor = { kind: 'user' as const, id: userId };
-  const turn = store.createTurn(workspace.id, thread.id, 'Ask about Knowledge', actor);
+  const turn = await store.createTurn(workspace.id, thread.id, 'Ask about Knowledge', actor);
   const notebook = new KnowledgeNotebook({
     repositoryPath: join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'notebook.git'),
   });
@@ -49,7 +49,7 @@ function fixture() {
 }
 
 /** Publishes a real human root revision through the existing Git owner. */
-function publishIndex(f: ReturnType<typeof fixture>, content: string) {
+function publishIndex(f: Awaited<ReturnType<typeof fixture>>, content: string) {
   const baseRevision = f.notebook.publishedRevision();
   const candidateRevision = f.notebook.prepare({
     baseRevision,
@@ -66,8 +66,8 @@ function publishIndex(f: ReturnType<typeof fixture>, content: string) {
   return candidateRevision;
 }
 
-it('delivers a bounded UTF-8 overview at its source revision, stays pinned after publication and rechecks current authority', () => {
-  const f = fixture();
+it('delivers a bounded UTF-8 overview at its source revision, stays pinned after publication and rechecks current authority', async () => {
+  const f = await fixture();
   const content = `---\nokf_version: "0.2"\n---\n# Admissions\n${'€'.repeat(2000)}`;
   const revision = publishIndex(f, content);
   const result = prepareKnowledgeOverview(f);
@@ -110,8 +110,8 @@ it('delivers a bounded UTF-8 overview at its source revision, stays pinned after
   expect(() => result.assertCurrent()).toThrow();
 });
 
-it('includes Server navigation only with the admitted current credential and marks unavailable indexes without diagnostics', () => {
-  const f = fixture();
+it('includes Server navigation only with the admitted current credential and marks unavailable indexes without diagnostics', async () => {
+  const f = await fixture();
   const requestActor = { kind: 'local' as const, userId: f.userId };
   initializeScopedNotebook({
     coreDb: f.coreDb,

@@ -31,13 +31,13 @@ afterEach(() => {
 });
 
 /** Creates a real persisted Turn with capture off and a migrated Workspace database. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-observation-recovery-'));
   roots.push(dataRoot);
   const store = createTestStore({ dataRoot });
-  const workspace = store.createWorkspace('Recovery');
-  const thread = store.createThread(workspace.id, 'Recovery');
-  const turn = store.createTurn(
+  const workspace = await store.createWorkspace('Recovery');
+  const thread = await store.createThread(workspace.id, 'Recovery');
+  const turn = await store.createTurn(
     workspace.id,
     thread.id,
     'Recover',
@@ -64,7 +64,7 @@ function fixture() {
 }
 
 /** Exercises the existing product terminalization before the recovery observation seam. */
-function recover(f: ReturnType<typeof fixture>, anchored = true, timestamp = completedAt) {
+function recover(f: Awaited<ReturnType<typeof fixture>>, anchored = true, timestamp = completedAt) {
   const turn = terminalizeGovernedWorkerTurn({
     agentSessionId: null,
     completedAt: timestamp,
@@ -147,17 +147,17 @@ function tool(id: string, callRef: string, phase: string, toolName?: string): Wo
 }
 
 /** Appends through the production ledger writer rather than constructing retained rows. */
-function observe(f: ReturnType<typeof fixture>, observation: WorkObservationDraft) {
-  return appendWorkObservation(f.db, { ...f.owner, observation, bodies: [] }).observation;
+async function observe(f: Awaited<ReturnType<typeof fixture>>, observation: WorkObservationDraft) {
+  return (await appendWorkObservation(f.db, { ...f.owner, observation, bodies: [] })).observation;
 }
 
 describe('restart recovery observations', () => {
   it.each([
     false,
     true,
-  ])('records the actual recovery decision with capture off (anchored=%s)', (anchored) => {
-    const f = fixture();
-    expect(recover(f, anchored)).toMatchObject({
+  ])('records the actual recovery decision with capture off (anchored=%s)', async (anchored) => {
+    const f = await fixture();
+    expect(await recover(f, anchored)).toMatchObject({
       status: anchored ? 'interrupted' : 'failed',
       completedAt,
     });
@@ -184,19 +184,19 @@ describe('restart recovery observations', () => {
     );
   });
 
-  it('pairs only observed model and runtime calls inside the Turn, using committed order', () => {
-    const f = fixture();
-    observe(f, model('model-open', 'same-corr', 'request', '2026-09-29T00:00:30.000Z'));
-    observe(f, model('model-text-end', 'same-corr', 'text_end'));
-    observe(f, model('model-toolcall-end', 'same-corr', 'toolcall_end'));
-    observe(f, model('model-closed', 'model-closed'));
-    observe(f, { ...model('model-done', 'model-closed', 'done'), parent: 'model-closed' });
-    observe(f, tool('tool-open', 'tool-open', 'started', 'exec_command'));
-    observe(f, tool('tool-running', 'tool-open', 'running', 'exec_command'));
-    observe(f, tool('tool-unnamed', 'tool-unnamed', 'started'));
-    observe(f, tool('tool-closed', 'same-corr', 'started', 'read_file'));
-    observe(f, tool('tool-complete', 'same-corr', 'completed', 'read_file'));
-    const sibling = f.store.createTurn(
+  it('pairs only observed model and runtime calls inside the Turn, using committed order', async () => {
+    const f = await fixture();
+    await observe(f, model('model-open', 'same-corr', 'request', '2026-09-29T00:00:30.000Z'));
+    await observe(f, model('model-text-end', 'same-corr', 'text_end'));
+    await observe(f, model('model-toolcall-end', 'same-corr', 'toolcall_end'));
+    await observe(f, model('model-closed', 'model-closed'));
+    await observe(f, { ...model('model-done', 'model-closed', 'done'), parent: 'model-closed' });
+    await observe(f, tool('tool-open', 'tool-open', 'started', 'exec_command'));
+    await observe(f, tool('tool-running', 'tool-open', 'running', 'exec_command'));
+    await observe(f, tool('tool-unnamed', 'tool-unnamed', 'started'));
+    await observe(f, tool('tool-closed', 'same-corr', 'started', 'read_file'));
+    await observe(f, tool('tool-complete', 'same-corr', 'completed', 'read_file'));
+    const sibling = await f.store.createTurn(
       f.db.workspaceId,
       f.owner.threadId,
       'Another Turn',
@@ -206,17 +206,17 @@ describe('restart recovery observations', () => {
         captureCoverage: { scope: 'server', value: 'off' },
       }
     );
-    appendWorkObservation(f.db, {
+    await appendWorkObservation(f.db, {
       threadId: sibling.threadId,
       turnId: sibling.id,
       observation: model('sibling-done', 'same-corr', 'done'),
       bodies: [],
     });
-    const last = observe(
+    const last = await observe(
       f,
       model('last-committed', 'unpaired-terminal', 'error', '2026-09-29T00:00:01.000Z')
     );
-    recover(f);
+    await recover(f);
     const rows = readWorkObservations(f.db, f.owner);
     expect(rows.at(-1)).toMatchObject({
       type: 'turn.reap',
@@ -242,8 +242,8 @@ describe('restart recovery observations', () => {
     expect(JSON.stringify(rows.at(-1))).not.toMatch(/arguments|stdout|bodies|exception/);
   });
 
-  it('keeps another pending model attempt when a same-corr terminal names the first request', () => {
-    const f = fixture();
+  it('keeps another pending model attempt when a same-corr terminal names the first request', async () => {
+    const f = await fixture();
     const context = { workspaceDb: f.db, ...f.owner, corr: 'logical-call' };
     const first = new ModelCapture({ ...context, attempt: 0 }, [], 'provider_test');
     const second = new ModelCapture({ ...context, attempt: 1 }, [], 'provider_test');
@@ -254,15 +254,15 @@ describe('restart recovery observations', () => {
     expect(requests[0]!.id).not.toBe(requests[1]!.id);
     first.event({ type: 'error' });
     expect(readWorkObservations(f.db, f.owner).at(-1)?.parent).toBe(requests[0]!.id);
-    recover(f);
+    await recover(f);
     expect(readWorkObservations(f.db, f.owner).at(-1)?.payload.unresolvedCalls).toEqual([
       { corr: 'logical-call', type: 'model.observed', name: null, ts: requests[1]!.ts },
     ]);
   });
 
-  it('fails required collection when the deterministic reap id belongs to another supported type', () => {
-    const f = fixture();
-    observe(f, model(`turn.reap:${f.owner.turnId}`, 'collision'));
+  it('fails required collection when the deterministic reap id belongs to another supported type', async () => {
+    const f = await fixture();
+    await observe(f, model(`turn.reap:${f.owner.turnId}`, 'collision'));
     const path = join(f.turnRoot, 'observations.jsonl');
     const original = readFileSync(path);
     expect(() => recover(f)).toThrow('recovery_required');
@@ -273,13 +273,13 @@ describe('restart recovery observations', () => {
     expect(readFileSync(path)).toEqual(original);
   });
 
-  it('reuses the exact committed snapshot after late observations and a cold retry', () => {
-    const f = fixture();
-    observe(f, model('open', 'open'));
-    recover(f);
+  it('reuses the exact committed snapshot after late observations and a cold retry', async () => {
+    const f = await fixture();
+    await observe(f, model('open', 'open'));
+    await recover(f);
     const original = readWorkObservations(f.db, f.owner).find((row) => row.type === 'turn.reap');
     expect(original).toBeDefined();
-    observe(f, {
+    await observe(f, {
       ...model('late-done', 'open', 'done', '2026-09-29T00:02:00.000Z'),
       parent: 'open',
     });
@@ -288,21 +288,21 @@ describe('restart recovery observations', () => {
     const db = openWorkspaceDb(f.dataRoot, f.db.workspaceId);
     databases.push(db);
     const cold = { ...f, db, store: new FsStore({ dataRoot: f.dataRoot }) };
-    expect(recover(cold, true, '2026-09-29T00:03:00.000Z')).toMatchObject({ completedAt });
+    expect(await recover(cold, true, '2026-09-29T00:03:00.000Z')).toMatchObject({ completedAt });
     expect(readWorkObservations(db, f.owner).filter((row) => row.type === 'turn.reap')).toEqual([
       original,
     ]);
     expect(readFileSync(join(f.turnRoot, 'observations.jsonl'))).toEqual(bytes);
   });
 
-  it('preserves never-recorded coverage without binding current policy', () => {
-    const f = fixture();
+  it('preserves never-recorded coverage without binding current policy', async () => {
+    const f = await fixture();
     const path = join(f.turnRoot, 'turn.json');
     const raw = JSON.parse(readFileSync(path, 'utf8'));
     delete raw.captureCoverage;
     writeFileSync(path, `${JSON.stringify(raw)}\n`);
     const cold = { ...f, store: new FsStore({ dataRoot: f.dataRoot }) };
-    expect(recover(cold)).toMatchObject({ status: 'interrupted' });
+    expect(await recover(cold)).toMatchObject({ status: 'interrupted' });
     expect(JSON.parse(readFileSync(path, 'utf8')).captureCoverage).toBeUndefined();
     expect(existsSync(join(f.turnRoot, 'observations.jsonl'))).toBe(false);
   });
@@ -312,9 +312,9 @@ describe('restart recovery observations', () => {
     'failed',
     'interrupted',
     'cancelled',
-  ] as const)('does not reap a Turn already sealed by another owner: %s', (status) => {
-    const f = fixture();
-    const terminal = f.store.updateTurn(
+  ] as const)('does not reap a Turn already sealed by another owner: %s', async (status) => {
+    const f = await fixture();
+    const terminal = await f.store.updateTurn(
       f.owner.turnId,
       {
         status,
@@ -326,23 +326,23 @@ describe('restart recovery observations', () => {
       },
       ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
-    expect(recover(f)).toMatchObject({ status: terminal.status, error: terminal.error });
+    expect(await recover(f)).toMatchObject({ status: terminal.status, error: terminal.error });
     expect(existsSync(join(f.turnRoot, 'observations.jsonl'))).toBe(false);
   });
 
-  it('leaves a never-created product Turn without an observation ledger', () => {
-    const f = fixture();
+  it('leaves a never-created product Turn without an observation ledger', async () => {
+    const f = await fixture();
     expect(
-      recover({ ...f, owner: { ...f.owner, turnId: 'tu_00000000-0000-76d4-be96-fe2dccab50f4' } })
+      await recover({ ...f, owner: { ...f.owner, turnId: 'tu_00000000-0000-76d4-be96-fe2dccab50f4' } })
     ).toEqual({
       status: 'missing',
     });
     expect(existsSync(join(f.turnRoot, 'observations.jsonl'))).toBe(false);
   });
 
-  it('propagates committed ledger corruption after terminalization and allows a repaired retry', () => {
-    const f = fixture();
-    observe(f, model('open', 'open'));
+  it('propagates committed ledger corruption after terminalization and allows a repaired retry', async () => {
+    const f = await fixture();
+    await observe(f, model('open', 'open'));
     const path = join(f.turnRoot, 'observations.jsonl');
     const valid = readFileSync(path);
     appendFileSync(path, '{corrupt committed row}\n');
@@ -356,7 +356,7 @@ describe('restart recovery observations', () => {
     expect(readFileSync(path)).toEqual(corrupt);
     // Repair belongs to the ledger owner; retry must reuse the already-decided product outcome.
     writeFileSync(path, valid);
-    recover(
+    await recover(
       { ...f, store: new FsStore({ dataRoot: f.dataRoot }) },
       true,
       '2026-09-29T00:03:00.000Z'

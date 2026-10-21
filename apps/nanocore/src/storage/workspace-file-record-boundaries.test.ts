@@ -46,21 +46,31 @@ function artifactDigest(content: string): string {
  *
  * @returns Store plus the two workspace, thread, turn, and filesystem lineages.
  */
-function createBoundaryFixture() {
+async function createBoundaryFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-file-record-boundary-'));
   const store = createTestStore({ dataRoot });
-  const firstWorkspace = store.createWorkspace('First boundary workspace');
-  const firstThread = store.createThread(firstWorkspace.id, 'First boundary thread');
-  const firstTurn = store.createTurn(firstWorkspace.id, firstThread.id, 'First boundary turn', {
-    kind: 'user',
-    id: 'usr_00000000-0000-7000-8000-000000000001',
-  });
-  const secondWorkspace = store.createWorkspace('Second boundary workspace');
-  const secondThread = store.createThread(secondWorkspace.id, 'Second boundary thread');
-  const secondTurn = store.createTurn(secondWorkspace.id, secondThread.id, 'Second boundary turn', {
-    kind: 'user',
-    id: 'usr_00000000-0000-7000-8000-000000000001',
-  });
+  const firstWorkspace = await store.createWorkspace('First boundary workspace');
+  const firstThread = await store.createThread(firstWorkspace.id, 'First boundary thread');
+  const firstTurn = await store.createTurn(
+    firstWorkspace.id,
+    firstThread.id,
+    'First boundary turn',
+    {
+      kind: 'user',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
+    }
+  );
+  const secondWorkspace = await store.createWorkspace('Second boundary workspace');
+  const secondThread = await store.createThread(secondWorkspace.id, 'Second boundary thread');
+  const secondTurn = await store.createTurn(
+    secondWorkspace.id,
+    secondThread.id,
+    'Second boundary turn',
+    {
+      kind: 'user',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
+    }
+  );
 
   return {
     dataRoot,
@@ -81,7 +91,7 @@ function createBoundaryFixture() {
 }
 
 /** Admits public Source requests with real current authority; the caller cannot choose a Source ID. */
-function sourceBoundaryApp(f: ReturnType<typeof createBoundaryFixture>) {
+function sourceBoundaryApp(f: Awaited<ReturnType<typeof createBoundaryFixture>>) {
   const coreDb = openCoreDb(f.dataRoot);
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
@@ -96,11 +106,11 @@ function sourceBoundaryApp(f: ReturnType<typeof createBoundaryFixture>) {
 }
 
 /** Fresh import supplies actual User attribution; no materialized page directory initializes content. */
-function createNotebookBoundaryFixture() {
+async function createNotebookBoundaryFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-file-record-notebook-'));
   onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
   const source = new FsStore();
-  const workspace = source.createWorkspace('Notebook boundary workspace');
+  const workspace = await source.createWorkspace('Notebook boundary workspace');
   const store = createTestStore({ dataRoot });
   const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
   const repositoryPath = join(workspaceRoot, 'knowledge', 'notebook.git');
@@ -141,12 +151,12 @@ function createNotebookBoundaryFixture() {
  * @param workspaceId Owning Workspace that must be quarantined.
  * @returns Reopened Store and isolated root for additional native readback checks.
  */
-function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
+async function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
   const restartRoot = mkdtempSync(join(tmpdir(), 'openkit-local-refusal-'));
   onTestFinished(() => rmSync(restartRoot, { recursive: true, force: true }));
-  const seed = new FsStore({ dataRoot: restartRoot });
-  const sibling = seed.createWorkspace('Healthy refusal control');
-  const siblingThread = seed.createThread(sibling.id, 'Retained sibling thread');
+  const seed = createTestStore({ dataRoot: restartRoot });
+  const sibling = await seed.createWorkspace('Healthy refusal control');
+  const siblingThread = await seed.createThread(sibling.id, 'Retained sibling thread');
   const siblingBefore = seed.getWorkspace(sibling.id);
   cpSync(dataRoot, restartRoot, { recursive: true, verbatimSymlinks: true });
 
@@ -183,7 +193,7 @@ function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
   );
   expect(reopened.getWorkspace(sibling.id)).toEqual(siblingBefore);
   expect(reopened.getThread(sibling.id, siblingThread.id)).toEqual(siblingThread);
-  const progress = reopened.createThread(sibling.id, 'Healthy sibling progress');
+  const progress = await reopened.createThread(sibling.id, 'Healthy sibling progress');
   expect(new FsStore({ dataRoot: restartRoot }).getThread(sibling.id, progress.id)).toEqual(
     progress
   );
@@ -194,8 +204,8 @@ function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
 
 describe('workspace file-record write and load boundaries', () => {
   // Fresh navigation and body-only normalization belong to notebook-initialization.test.ts, under the Notebook owner's Content, Revisions And History section.
-  it('preserves the authored Git index during Thread writes without adopting materialized bytes', () => {
-    const f = createNotebookBoundaryFixture();
+  it('preserves the authored Git index during Thread writes without adopting materialized bytes', async () => {
+    const f = await createNotebookBoundaryFixture();
     const authored = '---\nokf_version: "0.2"\n---\n# Team knowledge\n\nKeep this navigation.\n';
     f.initialize({ 'index.md': authored });
     const revision = f.notebook.publishedRevision();
@@ -207,7 +217,7 @@ describe('workspace file-record write and load boundaries', () => {
     mkdirSync(pagesRoot, { recursive: true });
     const materialized = '# Materialized navigation is not content authority.\n';
     writeFileSync(indexPath, materialized);
-    f.store.createThread(f.workspace.id, 'Do not adopt the materialized index');
+    await f.store.createThread(f.workspace.id, 'Do not adopt the materialized index');
 
     expect(f.notebook.publishedRevision()).toBe(revision);
     expect(f.notebook.readRevision(revision).files['index.md']).toBe(authored);
@@ -218,14 +228,14 @@ describe('workspace file-record write and load boundaries', () => {
     expect(readFileSync(indexPath, 'utf8')).toBe(materialized);
 
     rmSync(indexPath);
-    reopened.createThread(f.workspace.id, 'Do not recreate a materialized index');
+    await reopened.createThread(f.workspace.id, 'Do not recreate a materialized index');
     expect(existsSync(indexPath)).toBe(false);
     expect(f.notebook.publishedRevision()).toBe(revision);
     expect(f.notebook.readRevision(revision).files['index.md']).toBe(authored);
   });
 
-  it('does not repair corrupt published Git from materialized pages during Thread writes', () => {
-    const f = createNotebookBoundaryFixture();
+  it('does not repair corrupt published Git from materialized pages during Thread writes', async () => {
+    const f = await createNotebookBoundaryFixture();
     const authored = '---\nokf_version: "0.2"\n---\n# Retained navigation\n';
     f.initialize({ 'index.md': authored });
     const indexPath = join(f.workspaceRoot, 'knowledge', 'pages', 'index.md');
@@ -240,7 +250,7 @@ describe('workspace file-record write and load boundaries', () => {
     );
 
     expect(() => f.notebook.publishedRevision()).toThrow('Notebook recovery required.');
-    expectLocalWorkspaceRefusal(f.dataRoot, f.workspace.id);
+    await expectLocalWorkspaceRefusal(f.dataRoot, f.workspace.id);
     expect(readFileSync(publishedPath, 'utf8')).toBe(corruptRef);
     expect(readFileSync(indexPath, 'utf8')).toBe(authored);
   });
@@ -249,8 +259,8 @@ describe('workspace file-record write and load boundaries', () => {
     '---\nokf_version: ["0.2"]\n---\n# Invalid scalar\n',
     '---\nokf_version: "0.1"\n---\n# Conflicting version\n',
     '---\nokf_version: "0.2"\n# Unclosed frontmatter\n',
-  ])('rejects an invalid initial root index before publishing the Workspace', (content) => {
-    const f = createNotebookBoundaryFixture();
+  ])('rejects an invalid initial root index before publishing the Workspace', async (content) => {
+    const f = await createNotebookBoundaryFixture();
     const originalWorkspaces = f.store.listWorkspaces();
     const files = { 'index.md': content };
 
@@ -260,10 +270,10 @@ describe('workspace file-record write and load boundaries', () => {
     expect(f.store.listWorkspaces()).toEqual(originalWorkspaces);
     expect(new FsStore({ dataRoot: f.dataRoot }).listWorkspaces()).toEqual(originalWorkspaces);
   });
-  it('does not fall back to owner-nested workspace records when the canonical root is absent', () => {
+  it('does not fall back to owner-nested workspace records when the canonical root is absent', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-file-record-no-fallback-'));
     const seedStore = createTestStore({ dataRoot });
-    const workspace = seedStore.createWorkspace('Legacy nested workspace');
+    const workspace = await seedStore.createWorkspace('Legacy nested workspace');
     const canonicalRoot = join(dataRoot, 'workspaces', workspace.id);
     const ownerNestedRoot = join(
       dataRoot,
@@ -292,7 +302,7 @@ describe('workspace file-record write and load boundaries', () => {
     'artifact',
     'knowledge source',
   ] as const)('rejects a cross-workspace duplicate %s id without replacing its owner', async (family) => {
-    const f = createBoundaryFixture();
+    const f = await createBoundaryFixture();
     const { first, second, store } = f;
     const firstTimestamp = first.turn.startedAt ?? new Date().toISOString();
     const secondTimestamp = second.turn.startedAt ?? new Date().toISOString();
@@ -300,7 +310,7 @@ describe('workspace file-record write and load boundaries', () => {
     switch (family) {
       case 'AgentSession': {
         const id = 'as_00000000-0000-7b0f-96e7-3f6551c1efa7';
-        const original = store.createAgentSession({
+        const original = await store.createAgentSession({
           id,
           agentId: 'agent_codex_host',
           workspaceId: first.workspace.id,
@@ -449,10 +459,10 @@ describe('workspace file-record write and load boundaries', () => {
     'createdAt',
     'invalid create schema',
     'invalid update schema',
-  ] as const)('rejects an item revision that changes or violates %s', (violation) => {
-    const { dataRoot, first, second, store } = createBoundaryFixture();
+  ] as const)('rejects an item revision that changes or violates %s', async (violation) => {
+    const { dataRoot, first, second, store } = await createBoundaryFixture();
     const timestamp = first.turn.startedAt ?? new Date().toISOString();
-    const original = store.createItem({
+    const original = await store.createItem({
       id: 'it_00000000-0000-7c6d-b3b1-e8c48c8b327a',
       owner: { kind: 'workspace', workspaceId: first.workspace.id },
       threadId: first.thread.id,
@@ -464,13 +474,15 @@ describe('workspace file-record write and load boundaries', () => {
       completedAt: timestamp,
     });
 
-    const operation = () => {
+    const operation = async () => {
       switch (violation) {
         case 'id':
-          store.updateItem(original.id, { id: 'it_00000000-0000-75cc-9039-96ddac89d51f' } as never);
+          await store.updateItem(original.id, {
+            id: 'it_00000000-0000-75cc-9039-96ddac89d51f',
+          } as never);
           break;
         case 'type':
-          store.createItem({
+          await store.createItem({
             id: original.id,
             owner: { kind: 'workspace', workspaceId: first.workspace.id },
             threadId: first.thread.id,
@@ -485,26 +497,26 @@ describe('workspace file-record write and load boundaries', () => {
           });
           break;
         case 'workspaceId':
-          store.updateItem(original.id, { workspaceId: second.workspace.id } as never);
+          await store.updateItem(original.id, { workspaceId: second.workspace.id } as never);
           break;
         case 'threadId':
-          store.updateItem(original.id, { threadId: second.thread.id } as never);
+          await store.updateItem(original.id, { threadId: second.thread.id } as never);
           break;
         case 'turnId':
-          store.updateItem(original.id, { turnId: second.turn.id } as never);
+          await store.updateItem(original.id, { turnId: second.turn.id } as never);
           break;
         case 'createdAt':
-          store.updateItem(original.id, { createdAt: '2030-01-01T00:00:00.000Z' });
+          await store.updateItem(original.id, { createdAt: '2030-01-01T00:00:00.000Z' });
           break;
         case 'invalid create schema':
-          store.createItem({
+          await store.createItem({
             ...original,
             id: 'it_00000000-0000-7c32-92fd-418f5c9c8e1c',
             status: 'not-an-item-status',
           } as never);
           break;
         case 'invalid update schema':
-          store.updateItem(original.id, { status: 'not-an-item-status' } as never);
+          await store.updateItem(original.id, { status: 'not-an-item-status' } as never);
           break;
       }
     };
@@ -598,17 +610,17 @@ describe('workspace file-record write and load boundaries', () => {
       },
       changed: { causationId: 'req_user_input_changed' },
     },
-  ])('rejects a valid item revision that changes immutable $name', ({
+  ])('rejects a valid item revision that changes immutable $name', async ({
     original,
     changed,
     currentResponsibleUserId,
   }) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-item-attribution-boundary-'));
     const store = createTestStore({ dataRoot });
-    const workspace = store.createWorkspace('Item attribution boundary');
-    const thread = store.createThread(workspace.id, 'Item attribution boundary');
+    const workspace = await store.createWorkspace('Item attribution boundary');
+    const thread = await store.createThread(workspace.id, 'Item attribution boundary');
     const triggerActor = { kind: 'user', id: currentResponsibleUserId } as const;
-    const turn = store.createTurn(
+    const turn = await store.createTurn(
       workspace.id,
       thread.id,
       'Protect immutable item attribution',
@@ -682,13 +694,13 @@ describe('workspace file-record write and load boundaries', () => {
       ),
       `${supportingRequest ? `${JSON.stringify(writeRetainedV1(supportingRequest))}\n` : ''}${JSON.stringify(writeRetainedV1(item))}\n${JSON.stringify(writeRetainedV1(changedItem))}\n`
     );
-    expectLocalWorkspaceRefusal(dataRoot, workspace.id);
+    await expectLocalWorkspaceRefusal(dataRoot, workspace.id);
   });
 
-  it('rejects a foreign-user response when reloading canonical Turn items', () => {
-    const { dataRoot, first, store } = createBoundaryFixture();
+  it('rejects a foreign-user response when reloading canonical Turn items', async () => {
+    const { dataRoot, first, store } = await createBoundaryFixture();
     const timestamp = first.turn.startedAt ?? new Date().toISOString();
-    const request = store.createItem({
+    const request = await store.createItem({
       id: 'it_00000000-0000-77d0-8f57-fa3818abb424',
       owner: { kind: 'workspace', workspaceId: first.workspace.id },
       threadId: first.thread.id,
@@ -732,13 +744,13 @@ describe('workspace file-record write and load boundaries', () => {
       `${JSON.stringify(writeRetainedV1(response))}\n`
     );
 
-    expectLocalWorkspaceRefusal(dataRoot, first.workspace.id);
+    await expectLocalWorkspaceRefusal(dataRoot, first.workspace.id);
   });
 
-  it('leaves item read models unchanged when the canonical append fails', () => {
-    const { first, store } = createBoundaryFixture();
+  it('leaves item read models unchanged when the canonical append fails', async () => {
+    const { first, store } = await createBoundaryFixture();
     const timestamp = first.turn.startedAt ?? new Date().toISOString();
-    const original = store.createItem({
+    const original = await store.createItem({
       id: 'it_00000000-0000-72d9-a1ba-fc94cc09ebec',
       owner: { kind: 'workspace', workspaceId: first.workspace.id },
       threadId: first.thread.id,
@@ -779,8 +791,8 @@ describe('workspace file-record write and load boundaries', () => {
     'workspaceId',
     'threadId',
     'startedAt',
-  ] as const)('rejects a turn update that changes immutable %s without altering memory or reload', (field) => {
-    const { dataRoot, first, second, store } = createBoundaryFixture();
+  ] as const)('rejects a turn update that changes immutable %s without altering memory or reload', async (field) => {
+    const { dataRoot, first, second, store } = await createBoundaryFixture();
     const patch =
       field === 'id'
         ? { id: 'tu_00000000-0000-7d05-b7b7-98b9d4579c71' }
@@ -813,10 +825,10 @@ describe('workspace file-record write and load boundaries', () => {
     'workspaceId',
     'threadId',
     'createdAt',
-  ] as const)('rejects an AgentSession update that changes immutable %s without altering memory or reload', (field) => {
-    const { dataRoot, first, second, store } = createBoundaryFixture();
+  ] as const)('rejects an AgentSession update that changes immutable %s without altering memory or reload', async (field) => {
+    const { dataRoot, first, second, store } = await createBoundaryFixture();
     const timestamp = first.turn.startedAt ?? new Date().toISOString();
-    const session = store.createAgentSession({
+    const session = await store.createAgentSession({
       id: 'as_00000000-0000-76dd-90ec-52fddf601ff7',
       agentId: 'agent_codex_host',
       workspaceId: first.workspace.id,
@@ -843,8 +855,8 @@ describe('workspace file-record write and load boundaries', () => {
     }).not.toThrow();
   });
 
-  it('rejects a second current AgentSession for the same Thread without a projection', () => {
-    const { dataRoot, first, store } = createBoundaryFixture();
+  it('rejects a second current AgentSession for the same Thread without a projection', async () => {
+    const { dataRoot, first, store } = await createBoundaryFixture();
     const timestamp = first.turn.startedAt ?? new Date().toISOString();
     const firstSession = store.createAgentSession({
       id: 'as_00000000-0000-747a-8276-9839920addd4',
@@ -886,10 +898,10 @@ describe('workspace file-record write and load boundaries', () => {
       .toEqual([firstSession]);
   });
 
-  it('creates a successor AgentSession after the predecessor becomes terminal', () => {
-    const { first, store } = createBoundaryFixture();
+  it('creates a successor AgentSession after the predecessor becomes terminal', async () => {
+    const { first, store } = await createBoundaryFixture();
     const timestamp = first.turn.startedAt ?? new Date().toISOString();
-    const predecessor = store.createAgentSession({
+    const predecessor = await store.createAgentSession({
       id: 'as_00000000-0000-7cfe-9caa-d56ef5ebfb5d',
       agentId: 'agent_codex_host',
       workspaceId: first.workspace.id,
@@ -917,10 +929,10 @@ describe('workspace file-record write and load boundaries', () => {
     ]);
   });
 
-  it('does not reopen a terminal AgentSession', () => {
-    const { dataRoot, first, store } = createBoundaryFixture();
+  it('does not reopen a terminal AgentSession', async () => {
+    const { dataRoot, first, store } = await createBoundaryFixture();
     const timestamp = first.turn.startedAt ?? new Date().toISOString();
-    const session = store.createAgentSession({
+    const session = await store.createAgentSession({
       id: 'as_00000000-0000-7914-bbcc-ec35419944b8',
       agentId: 'agent_codex_host',
       workspaceId: first.workspace.id,
@@ -947,7 +959,7 @@ describe('workspace file-record write and load boundaries', () => {
     ['knowledge source', 'missing turn'],
     ['knowledge source', 'cross-workspace lineage'],
   ] as const)('rejects a new %s with %s before mutation', async (family, violation) => {
-    const f = createBoundaryFixture();
+    const f = await createBoundaryFixture();
     const { dataRoot, first, second, store } = f;
     const timestamp = first.turn.startedAt ?? new Date().toISOString();
     const threadId =
@@ -969,9 +981,9 @@ describe('workspace file-record write and load boundaries', () => {
           ? 'ar_00000000-0000-7079-8b12-81b344b6a5e1'
           : 'ks_00000000-0000-7c89-a9fd-b9379d38d369';
 
-    const operation = () => {
+    const operation = async () => {
       if (family === 'AgentSession') {
-        store.createAgentSession({
+        await store.createAgentSession({
           id,
           agentId: 'agent_codex_host',
           workspaceId: first.workspace.id,
@@ -985,7 +997,7 @@ describe('workspace file-record write and load boundaries', () => {
       }
       if (family === 'artifact') {
         const artifactTurnId = turnId ?? first.turn.id;
-        store.createArtifact({
+        await store.createArtifact({
           id,
           workspaceId: first.workspace.id,
           threadId,
@@ -1048,8 +1060,8 @@ describe('workspace file-record write and load boundaries', () => {
     'item',
     'artifact',
     'AgentSession',
-  ] as const)('rejects a persisted %s event whose nested payload lineage differs from its envelope', (family) => {
-    const { dataRoot, first, second, store } = createBoundaryFixture();
+  ] as const)('rejects a persisted %s event whose nested payload lineage differs from its envelope', async (family) => {
+    const { dataRoot, first, second, store } = await createBoundaryFixture();
     const timestamp = second.turn.startedAt ?? new Date().toISOString();
     let event: Parameters<FsStore['emitTurnEvent']>[1];
     let ownRecordPath: string;
@@ -1089,7 +1101,7 @@ describe('workspace file-record write and load boundaries', () => {
       }
 
       case 'artifact': {
-        const artifact = store.createArtifact({
+        const artifact = await store.createArtifact({
           id: 'ar_00000000-0000-7393-a5cd-4fbe2a969e4c',
           workspaceId: second.workspace.id,
           threadId: second.thread.id,
@@ -1127,7 +1139,7 @@ describe('workspace file-record write and load boundaries', () => {
       }
 
       case 'AgentSession': {
-        const agentSession = store.createAgentSession({
+        const agentSession = await store.createAgentSession({
           id: 'as_00000000-0000-7fee-91c8-74b960d30b20',
           agentId: 'agent_codex_host',
           workspaceId: second.workspace.id,
@@ -1187,12 +1199,12 @@ describe('workspace file-record write and load boundaries', () => {
         })
       )}\n`
     );
-    const refused = expectLocalWorkspaceRefusal(dataRoot, first.workspace.id);
+    const refused = await expectLocalWorkspaceRefusal(dataRoot, first.workspace.id);
     expect(readSecond(refused.store)).toEqual(expectedSecond);
     expect(readFileSync(join(refused.dataRoot, relative(dataRoot, ownRecordPath)))).toEqual(
       ownBytes
     );
-    const progress = refused.store.createThread(
+    const progress = await refused.store.createThread(
       second.workspace.id,
       'Second owner remains writable'
     );
@@ -1210,14 +1222,14 @@ describe('workspace file-record write and load boundaries', () => {
   it.each([
     'artifact',
     'AgentSession',
-  ] as const)('rejects a persisted event that references a missing %s record', (family) => {
-    const { dataRoot, first, store } = createBoundaryFixture();
+  ] as const)('rejects a persisted event that references a missing %s record', async (family) => {
+    const { dataRoot, first, store } = await createBoundaryFixture();
     const timestamp = first.turn.startedAt ?? new Date().toISOString();
     let event: Parameters<FsStore['emitTurnEvent']>[1];
     let recordRoot: string;
 
     if (family === 'artifact') {
-      const artifact = store.createArtifact({
+      const artifact = await store.createArtifact({
         id: 'ar_00000000-0000-70b9-84c0-0dc43cac0400',
         workspaceId: first.workspace.id,
         threadId: first.thread.id,
@@ -1248,7 +1260,7 @@ describe('workspace file-record write and load boundaries', () => {
       };
       recordRoot = join(first.root, 'artifacts', artifact.id);
     } else {
-      const agentSession = store.createAgentSession({
+      const agentSession = await store.createAgentSession({
         id: 'as_00000000-0000-7a30-87a3-5ec55741b8c7',
         agentId: 'agent_codex_host',
         workspaceId: first.workspace.id,
@@ -1271,7 +1283,7 @@ describe('workspace file-record write and load boundaries', () => {
     store.emitTurnEvent(first.turn.id, event);
     rmSync(recordRoot, { recursive: true });
 
-    const refused = expectLocalWorkspaceRefusal(dataRoot, first.workspace.id);
+    const refused = await expectLocalWorkspaceRefusal(dataRoot, first.workspace.id);
     expect(existsSync(recordRoot)).toBe(false);
     expect(existsSync(join(refused.dataRoot, relative(dataRoot, recordRoot)))).toBe(false);
   });
@@ -1279,8 +1291,8 @@ describe('workspace file-record write and load boundaries', () => {
   it.each([
     'turn items',
     'artifact body',
-  ] as const)('fails closed when canonical %s are also embedded in metadata JSON', (duplicateAuthority) => {
-    const { dataRoot, first, store } = createBoundaryFixture();
+  ] as const)('fails closed when canonical %s are also embedded in metadata JSON', async (duplicateAuthority) => {
+    const { dataRoot, first, store } = await createBoundaryFixture();
     const timestamp = first.turn.startedAt ?? new Date().toISOString();
 
     if (duplicateAuthority === 'turn items') {
@@ -1307,7 +1319,7 @@ describe('workspace file-record write and load boundaries', () => {
       turnRecord.items = [item];
       writeFileSync(turnPath, `${JSON.stringify(turnRecord, null, 2)}\n`);
     } else {
-      const artifact = store.createArtifact({
+      const artifact = await store.createArtifact({
         id: 'ar_00000000-0000-78bf-b0ac-55525ed5cf3c',
         workspaceId: first.workspace.id,
         threadId: first.thread.id,
@@ -1340,6 +1352,6 @@ describe('workspace file-record write and load boundaries', () => {
       writeFileSync(artifactPath, `${JSON.stringify(artifactRecord, null, 2)}\n`);
     }
 
-    expectLocalWorkspaceRefusal(dataRoot, first.workspace.id);
+    await expectLocalWorkspaceRefusal(dataRoot, first.workspace.id);
   });
 });

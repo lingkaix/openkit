@@ -38,7 +38,7 @@ async function fixture(uses?: number) {
   const userId = ensureLocalUser(coreDb);
   const actor = { kind: 'local' as const, userId };
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Joint Goal approval');
+  const workspace = await store.createWorkspace('Joint Goal approval');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const db = openWorkspaceDb(dataRoot, workspace.id);
   cleanup.push(() => {
@@ -77,7 +77,7 @@ async function fixture(uses?: number) {
   );
   const key = { workspaceId: workspace.id, goalId: created.goal!.goalId };
   const goalScope = { ...key, threadId: created.goal!.threadId };
-  const turn = store.createTurn(
+  const turn = await store.createTurn(
     workspace.id,
     goalScope.threadId,
     'Coordinate',
@@ -216,8 +216,8 @@ describe('jointly approved Goal-domain publication', () => {
     });
     expect(prepared.kernel.effect).toBe('allow');
     expect(prepared.kernel.trace.process).toBeUndefined();
-    const thread = f.store.createThread(f.key.workspaceId, 'Policy owner finite-use fixture');
-    const turn = f.store.createTurn(
+    const thread = await f.store.createThread(f.key.workspaceId, 'Policy owner finite-use fixture');
+    const turn = await f.store.createTurn(
       f.key.workspaceId,
       thread.id,
       'Policy unit effect',

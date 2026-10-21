@@ -92,24 +92,30 @@ function answer(): OpenAICompatibleResponsesResponse {
 }
 
 /** Composes actual Assistant, Pending Request, Task, scheduler, identity and setup owners. */
-function fixture(targetWorkspaceId?: string) {
+async function fixture(targetWorkspaceId?: string) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'assistant-semantic-handoff-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Semantic Task handoff');
+  const workspace = await store.createWorkspace('Semantic Task handoff');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: LOCAL_USER_ID });
-  const thread = store.createThread(workspace.id, 'Private Assistant', undefined, 'conversation', {
-    visibility: 'private',
-    privateOwnerUserId: LOCAL_USER_ID,
-  });
-  const old = store.createTurn(workspace.id, thread.id, 'Private prior context.', {
+  const thread = await store.createThread(
+    workspace.id,
+    'Private Assistant',
+    undefined,
+    'conversation',
+    {
+      visibility: 'private',
+      privateOwnerUserId: LOCAL_USER_ID,
+    }
+  );
+  const old = await store.createTurn(workspace.id, thread.id, 'Private prior context.', {
     kind: 'user',
     id: LOCAL_USER_ID,
   });
   const timestamp = old.startedAt!;
-  store.createItem({
+  await store.createItem({
     id: allocateEntityId('it'),
     owner: { kind: 'workspace', workspaceId: workspace.id },
     threadId: thread.id,
@@ -121,7 +127,7 @@ function fixture(targetWorkspaceId?: string) {
     createdAt: timestamp,
     completedAt: timestamp,
   });
-  store.updateTurn(old.id, { status: 'completed', completedAt: timestamp });
+  await store.updateTurn(old.id, { status: 'completed', completedAt: timestamp });
   const preferred = createTestAgentSetup({ agentId: 'agent_semantic_preferred' });
   const selected = createTestAgentSetup({ agentId: 'agent_semantic_selected' });
   const modelId = selected.logicalModels.preferredLogicalModelId;
@@ -245,14 +251,14 @@ function fixture(targetWorkspaceId?: string) {
 
 describe('Assistant semantic Task handoff', () => {
   it('keeps a retained predecessor receipt-free Task inspect-only after reopen without resuming it', async () => {
-    const f = fixture();
+    const f = await fixture();
     // Reconstruct the P14-canonical queued boundary before P19 selection proofs and Worker closeout.
     // The old receiving Thread has no parent/source, and an ordinary answer has no exact selection.
     f.store.setTurnAdmissionHooks(null);
     const now = '2026-10-14T00:00:00.000Z';
     const actor = { kind: 'user' as const, id: LOCAL_USER_ID };
     const input = 'Implement the bounded sample change.';
-    const raising = f.store.createTurn(
+    const raising = await f.store.createTurn(
       f.workspace.id,
       f.thread.id,
       'Clarify the work.',
@@ -276,7 +282,7 @@ describe('Assistant semantic Task handoff', () => {
         isSecret: false,
       },
     ];
-    f.store.createItem({
+    await f.store.createItem({
       id: requestItemId,
       owner: { kind: 'workspace', workspaceId: f.workspace.id },
       threadId: f.thread.id,
@@ -302,12 +308,12 @@ describe('Assistant semantic Task handoff', () => {
       questions,
       now,
     });
-    f.store.updateTurn(raising.id, { status: 'completed', completedAt: now });
+    await f.store.updateTurn(raising.id, { status: 'completed', completedAt: now });
     const answers = { chat_clarification: [input] as [string] };
     expect(
       answerPendingRequest(f.workspaceDb.sqlite, requestId, actor, answers, now)
     ).not.toBeNull();
-    const source = f.store.createTurn(
+    const source = await f.store.createTurn(
       f.workspace.id,
       f.thread.id,
       'User-input outcomes',
@@ -331,7 +337,7 @@ describe('Assistant semantic Task handoff', () => {
         now,
       })
     ).toHaveLength(1);
-    f.store.createItem({
+    await f.store.createItem({
       id: pendingRequestItemId(requestId, 'answer'),
       owner: { kind: 'workspace', workspaceId: f.workspace.id },
       threadId: f.thread.id,
@@ -375,7 +381,7 @@ describe('Assistant semantic Task handoff', () => {
       ],
     });
     expect(assistantPendingOutcomeSourceHash(source, [record], LOCAL_USER_ID)).toBe(priorHash);
-    const receiving = f.store.createThread(
+    const receiving = await f.store.createThread(
       f.workspace.id,
       input,
       deriveEntityId('th', assistantPendingOutcomeSource(source, [record], LOCAL_USER_ID)),
@@ -406,7 +412,7 @@ describe('Assistant semantic Task handoff', () => {
     });
     const turnInput = JSON.stringify(workerRequest);
     const contextDigest = commandInputHash(workerRequest);
-    const worker = f.store.createTurn(f.workspace.id, receiving.id, turnInput, actor, null, {
+    const worker = await f.store.createTurn(f.workspace.id, receiving.id, turnInput, actor, null, {
       turnId,
       status: 'pending',
       agentId: f.selected.manifest.id,
@@ -555,7 +561,7 @@ describe('Assistant semantic Task handoff', () => {
     false,
     true,
   ])('proposes exact work, waits for selection, and admits a shared Task without rerouting or nested receipts (restart=%s)', async (restart) => {
-    const f = fixture();
+    const f = await fixture();
     const response = await f.submit();
     expect(f.requests.length).toBeGreaterThan(0);
     const tools = f.requests[0]!.tools as Array<{
@@ -828,7 +834,7 @@ describe('Assistant semantic Task handoff', () => {
     'missing',
     'other-thread',
   ] as const)('keeps an Assistant command with a %s receipt pointer in recovery without rerouting or redispatch', async (damage) => {
-    const f = fixture();
+    const f = await fixture();
     const submitted = await f.submit();
     expect(submitted.status).toBe(202);
     const accepted = SubmitConversationResponseSchema.parse(await submitted.json());
@@ -838,7 +844,7 @@ describe('Assistant semantic Task handoff', () => {
         .prepare('DELETE FROM idempotency_requests WHERE request_key = ?')
         .run(original.key);
     } else {
-      const other = f.store.createThread(
+      const other = await f.store.createThread(
         f.workspace.id,
         'Other retained conversation',
         undefined,
@@ -848,7 +854,7 @@ describe('Assistant semantic Task handoff', () => {
           privateOwnerUserId: LOCAL_USER_ID,
         }
       );
-      const unrelated = f.store.createTurn(f.workspace.id, other.id, 'Other input', {
+      const unrelated = await f.store.createTurn(f.workspace.id, other.id, 'Other input', {
         kind: 'user',
         id: LOCAL_USER_ID,
       });
@@ -901,7 +907,7 @@ describe('Assistant semantic Task handoff', () => {
     'Do not start',
     'Yes, but change the work',
   ])('keeps a non-exact selection inert: %s', async (answer) => {
-    const f = fixture();
+    const f = await fixture();
     expect((await f.submit()).status).toBe(202);
     const request = f.store
       .listThreadItems(f.workspace.id, f.thread.id)
@@ -943,7 +949,7 @@ describe('Assistant semantic Task handoff', () => {
   });
 
   it('refuses a confirmed unavailable destination without creating execution owners or another model call', async () => {
-    const f = fixture(allocateEntityId('ws'));
+    const f = await fixture(allocateEntityId('ws'));
     expect((await f.submit()).status).toBe(202);
     const request = f.store
       .listThreadItems(f.workspace.id, f.thread.id)
@@ -978,7 +984,7 @@ describe('Assistant semantic Task handoff', () => {
   });
 
   it('rejects a changed pending payload against its canonical request before selection or execution', async () => {
-    const f = fixture();
+    const f = await fixture();
     expect((await f.submit()).status).toBe(202);
     const request = f.store
       .listThreadItems(f.workspace.id, f.thread.id)

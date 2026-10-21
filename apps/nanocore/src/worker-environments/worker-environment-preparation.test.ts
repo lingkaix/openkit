@@ -95,12 +95,12 @@ function referenceDeclaration(
   return { kind: 'reference', pullPolicy: 'if-not-present', ref };
 }
 
-function createFixture() {
+async function createFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-environment-preparation-'));
   dataRoots.push(dataRoot);
   const store = createTestStore({ dataRoot });
-  const workspace = store.ensureQuickChatWorkspace(actor.userId);
-  const thread = store.createThread(
+  const workspace = await store.ensureQuickChatWorkspace(actor.userId);
+  const thread = await store.createThread(
     workspace.id,
     'Administration',
     testEntityId('th', 'thread_admin'),
@@ -215,7 +215,7 @@ function prepareRequest(
 
 describe('Worker environment preparation', () => {
   it('allows confirmation preparation for an already selected image whose defaults still need admission', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const request = prepareRequest(
       fixture.thread.id,
       fixture.configuration,
@@ -233,7 +233,7 @@ describe('Worker environment preparation', () => {
   });
 
   it('persists canonical A and B Artifacts and reads them after an FsStore restart', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const request = prepareRequest(fixture.thread.id, fixture.configuration, buildDeclaration());
     request.replaceNow = {
       prompt: 'Check hf_publicFixture exactly.',
@@ -294,7 +294,7 @@ describe('Worker environment preparation', () => {
   });
 
   it('replays an identical command and conflicts when its request id names different input', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const request = prepareRequest(fixture.thread.id, fixture.configuration);
     const service = fixture.createService();
     const first = await service.prepare({ actor }, request);
@@ -311,7 +311,7 @@ describe('Worker environment preparation', () => {
   });
 
   it('replays prior-mode receipts through both split operations with byte-identical normalization and cross-operation conflicts', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const service = fixture.createService();
     const implementations = createWorkerEnvironmentOperationImplementations({
       operations: null,
@@ -384,7 +384,7 @@ describe('Worker environment preparation', () => {
   });
 
   it('recovers only the retained result on a fresh causation Turn without rewriting A history', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const initialRequest = prepareRequest(fixture.thread.id, fixture.configuration, {
       kind: 'reference',
       pullPolicy: 'never',
@@ -400,7 +400,7 @@ describe('Worker environment preparation', () => {
     expect(fixture.store.listArtifacts(fixture.workspace.id)).toHaveLength(1);
     expect(authoredArtifact.origin.kind).toBe('turn-output');
     if (authoredArtifact.origin.kind !== 'turn-output') throw new Error('unexpected origin');
-    const recoveryThread = fixture.store.createThread(
+    const recoveryThread = await fixture.store.createThread(
       fixture.workspace.id,
       'Recovery',
       testEntityId('th', 'thread_recovery'),
@@ -450,8 +450,8 @@ describe('Worker environment preparation', () => {
   });
 
   it('refuses a busy direct Thread before creating artifacts or dispatching effects', async () => {
-    const fixture = createFixture();
-    fixture.store.createTurn(
+    const fixture = await createFixture();
+    await fixture.store.createTurn(
       fixture.workspace.id,
       fixture.thread.id,
       'Existing administration work',
@@ -468,7 +468,7 @@ describe('Worker environment preparation', () => {
   });
 
   it('refuses B publication when administrator or private-home authority is revoked', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     vi.mocked(fixture.runtimeEffects.prepareImage).mockImplementationOnce(async (input) => {
       expect(input.authorize()).toBe(true);
       fixture.state.administrator = false;
@@ -507,7 +507,7 @@ describe('Worker environment preparation', () => {
   });
 
   it('rechecks the exact affected storage revisions after image preparation', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const request = {
       ...prepareRequest(fixture.thread.id, fixture.configuration),
       replaceNow: {
@@ -541,8 +541,8 @@ describe('Worker environment preparation', () => {
   });
 
   it('publishes on the actual private Assistant Turn without terminalizing it', async () => {
-    const fixture = createFixture();
-    const turn = fixture.store.createTurn(
+    const fixture = await createFixture();
+    const turn = await fixture.store.createTurn(
       fixture.workspace.id,
       fixture.thread.id,
       'Internal administration request',
@@ -566,7 +566,7 @@ describe('Worker environment preparation', () => {
   });
 
   it('rejects a mismatched Dockerfile digest before durable or external effects', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     const declaration = buildDeclaration();
     if (declaration.kind !== 'build') throw new Error('unexpected declaration');
 
@@ -585,7 +585,7 @@ describe('Worker environment preparation', () => {
   });
 
   it('preserves a runtime recovery-required result and terminalizes its direct Turn', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     vi.mocked(fixture.runtimeEffects.prepareImage).mockRejectedValueOnce(
       new WorkerEnvironmentOperationError('recovery_required', 'settlement persistence deferred')
     );
@@ -601,7 +601,7 @@ describe('Worker environment preparation', () => {
   });
 
   it('rejects a stale manifest revision before Artifact or image effects', async () => {
-    const fixture = createFixture();
+    const fixture = await createFixture();
     fixture.state.configRevision = `sha256:${'d'.repeat(64)}`;
     expect(() =>
       readWorkerEnvironmentTargetManifest(

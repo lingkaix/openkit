@@ -33,15 +33,15 @@ describe('canonical product retrieval adapters', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'retrieval-product-'));
     testRoots.push(dataRoot);
     const store = createTestStore({ dataRoot });
-    const workspace = store.createWorkspace('Retrieval');
-    const thread = store.createThread(workspace.id, 'Past conversation');
-    const turn = store.createTurn(workspace.id, thread.id, 'old conversation marker', {
+    const workspace = await store.createWorkspace('Retrieval');
+    const thread = await store.createThread(workspace.id, 'Past conversation');
+    const turn = await store.createTurn(workspace.id, thread.id, 'old conversation marker', {
       kind: 'user',
       id: actor.userId,
     });
-    message(store, turn, 'old conversation marker');
+    await message(store, turn, 'old conversation marker');
     const body = 'Artifact unique marker';
-    store.createArtifact({
+    await store.createArtifact({
       id: 'ar_00000000-0000-7472-9b71-dafe5512cf50',
       workspaceId: workspace.id,
       threadId: thread.id,
@@ -126,10 +126,10 @@ describe('canonical product retrieval adapters', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'retrieval-audience-'));
     testRoots.push(dataRoot);
     const store = createTestStore({ dataRoot });
-    const workspace = store.createWorkspace('Audiences');
+    const workspace = await store.createWorkspace('Audiences');
     const own = store.createThread(workspace.id, 'Own');
     const other = store.createThread(workspace.id, 'Other');
-    const shared = store.createThread(workspace.id, 'Shared');
+    const shared = await store.createThread(workspace.id, 'Shared');
     Object.assign(own, { visibility: 'private', privateOwnerUserId: actor.userId });
     Object.assign(other, {
       visibility: 'private',
@@ -142,11 +142,11 @@ describe('canonical product retrieval adapters', () => {
       [other, 'other secret marker'],
       [shared, 'shared marker'],
     ] as const) {
-      const turn = store.createTurn(workspace.id, thread.id, text, {
+      const turn = await store.createTurn(workspace.id, thread.id, text, {
         kind: 'user',
         id: actor.userId,
       });
-      message(store, turn, text);
+      await message(store, turn, text);
     }
     // A shared destination excludes private sources even for an eligible administrator.
     const input = {
@@ -219,8 +219,12 @@ describe('canonical product retrieval adapters', () => {
 });
 
 /** Adds the canonical visible message owned by a Turn; createTurn alone stores no Item. */
-function message(store: FsStore, turn: ReturnType<FsStore['createTurn']>, text: string): void {
-  store.createItem({
+async function message(
+  store: FsStore,
+  turn: ReturnType<FsStore['createTurn']>,
+  text: string
+): Promise<void> {
+  await store.createItem({
     id: testEntityId('it', `it_${turn.id}`),
     owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
     threadId: turn.threadId,

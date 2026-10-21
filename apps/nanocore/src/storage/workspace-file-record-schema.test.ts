@@ -88,15 +88,20 @@ function createStrictKnowledgeProposal(store: FsStore, workspaceId: string) {
  *
  * @returns Store, data root, workspace, thread, turn, and workspace root.
  */
-function createCanonicalRecordFixture() {
+async function createCanonicalRecordFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-canonical-record-schema-'));
   const store = createTestStore({ dataRoot });
-  const workspace = store.createWorkspace('Canonical record schema workspace');
-  const thread = store.createThread(workspace.id, 'Canonical record schema thread');
-  const turn = store.createTurn(workspace.id, thread.id, 'Validate canonical record schemas', {
-    kind: 'user',
-    id: 'usr_00000000-0000-7000-8000-000000000001',
-  });
+  const workspace = await store.createWorkspace('Canonical record schema workspace');
+  const thread = await store.createThread(workspace.id, 'Canonical record schema thread');
+  const turn = await store.createTurn(
+    workspace.id,
+    thread.id,
+    'Validate canonical record schemas',
+    {
+      kind: 'user',
+      id: 'usr_00000000-0000-7000-8000-000000000001',
+    }
+  );
 
   return {
     dataRoot,
@@ -118,12 +123,12 @@ function createCanonicalRecordFixture() {
  * @param workspaceId Owning Workspace that must be quarantined.
  * @returns Reopened Store and isolated root for additional native readback checks.
  */
-function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
+async function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
   const restartRoot = mkdtempSync(join(tmpdir(), 'openkit-local-refusal-'));
   onTestFinished(() => rmSync(restartRoot, { recursive: true, force: true }));
-  const seed = new FsStore({ dataRoot: restartRoot });
-  const sibling = seed.createWorkspace('Healthy refusal control');
-  const siblingThread = seed.createThread(sibling.id, 'Retained sibling thread');
+  const seed = createTestStore({ dataRoot: restartRoot });
+  const sibling = await seed.createWorkspace('Healthy refusal control');
+  const siblingThread = await seed.createThread(sibling.id, 'Retained sibling thread');
   const siblingBefore = seed.getWorkspace(sibling.id);
   cpSync(dataRoot, restartRoot, { recursive: true, verbatimSymlinks: true });
 
@@ -160,7 +165,7 @@ function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
   );
   expect(reopened.getWorkspace(sibling.id)).toEqual(siblingBefore);
   expect(reopened.getThread(sibling.id, siblingThread.id)).toEqual(siblingThread);
-  const progress = reopened.createThread(sibling.id, 'Healthy sibling progress');
+  const progress = await reopened.createThread(sibling.id, 'Healthy sibling progress');
   expect(new FsStore({ dataRoot: restartRoot }).getThread(sibling.id, progress.id)).toEqual(
     progress
   );
@@ -170,31 +175,31 @@ function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
 }
 
 describe('workspace canonical record schemas', () => {
-  it('reloads native proposal metadata without changing its canonical bytes', () => {
-    const { dataRoot, store, workspace, workspaceRoot } = createCanonicalRecordFixture();
+  it('reloads native proposal metadata without changing its canonical bytes', async () => {
+    const { dataRoot, store, workspace, workspaceRoot } = await createCanonicalRecordFixture();
     const proposal = createStrictKnowledgeProposal(store, workspace.id);
     const path = join(workspaceRoot, 'knowledge', 'proposals', `${proposal.id}.md`);
     const content = readFileSync(path, 'utf8');
 
     const restarted = new FsStore({ dataRoot });
-    restarted.createThread(workspace.id, 'Persist native proposal metadata');
+    await restarted.createThread(workspace.id, 'Persist native proposal metadata');
 
     expect(restarted.getKnowledgeProposal(proposal.id)).toEqual(proposal);
     expect(readFileSync(path, 'utf8')).toBe(content);
   });
 
-  it('rejects a knowledge proposal missing its required created_at field', () => {
-    const { dataRoot, store, workspace, workspaceRoot } = createCanonicalRecordFixture();
+  it('rejects a knowledge proposal missing its required created_at field', async () => {
+    const { dataRoot, store, workspace, workspaceRoot } = await createCanonicalRecordFixture();
     const proposal = createStrictKnowledgeProposal(store, workspace.id);
     const path = join(workspaceRoot, 'knowledge', 'proposals', `${proposal.id}.md`);
 
     writeFileSync(path, readFileSync(path, 'utf8').replace(`created_at: "${TIMESTAMP}"\n`, ''));
 
-    expectLocalWorkspaceRefusal(dataRoot, workspace.id);
+    await expectLocalWorkspaceRefusal(dataRoot, workspace.id);
   });
 
-  it('ignores an embedded Proposal status while preserving its source bytes', () => {
-    const { dataRoot, store, workspace, workspaceRoot } = createCanonicalRecordFixture();
+  it('ignores an embedded Proposal status while preserving its source bytes', async () => {
+    const { dataRoot, store, workspace, workspaceRoot } = await createCanonicalRecordFixture();
     const proposal = createStrictKnowledgeProposal(store, workspace.id);
     const path = join(workspaceRoot, 'knowledge', 'proposals', `${proposal.id}.md`);
     const content = readFileSync(path, 'utf8');
@@ -208,12 +213,12 @@ describe('workspace canonical record schemas', () => {
     const reopened = new FsStore({ dataRoot });
     expect(reopened.getKnowledgeProposal(proposal.id)).toEqual(proposal);
     expect(reopened.getKnowledgeProposal(proposal.id)).not.toHaveProperty('status');
-    reopened.createThread(workspace.id, 'Preserve ignored status');
+    await reopened.createThread(workspace.id, 'Preserve ignored status');
     expect(readFileSync(path, 'utf8')).toBe(extended);
   });
 
-  it('rejects a knowledge proposal review with invalid persisted fields', () => {
-    const { dataRoot, store, workspace, workspaceRoot } = createCanonicalRecordFixture();
+  it('rejects a knowledge proposal review with invalid persisted fields', async () => {
+    const { dataRoot, store, workspace, workspaceRoot } = await createCanonicalRecordFixture();
     const proposal = createStrictKnowledgeProposal(store, workspace.id);
     store.recordKnowledgeProposalReviewDecision({
       proposalId: proposal.id,
@@ -238,7 +243,7 @@ describe('workspace canonical record schemas', () => {
 
     writeFileSync(path, `${JSON.stringify(record)}\n`);
 
-    expectLocalWorkspaceRefusal(dataRoot, workspace.id);
+    await expectLocalWorkspaceRefusal(dataRoot, workspace.id);
   });
 
   it.each([
@@ -247,7 +252,7 @@ describe('workspace canonical record schemas', () => {
     'null original digest',
     'foreign scope',
   ])('rejects a knowledge source with %s', async (violation) => {
-    const { dataRoot, store, workspace, workspaceRoot } = createCanonicalRecordFixture();
+    const { dataRoot, store, workspace, workspaceRoot } = await createCanonicalRecordFixture();
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     const userId = ensureLocalUser(coreDb);
@@ -321,7 +326,7 @@ describe('workspace canonical record schemas', () => {
     if (violation === 'foreign scope') {
       expect(() => new FsStore({ dataRoot })).toThrow();
     } else {
-      expectLocalWorkspaceRefusal(dataRoot, workspace.id);
+      await expectLocalWorkspaceRefusal(dataRoot, workspace.id);
     }
   });
 
@@ -329,9 +334,10 @@ describe('workspace canonical record schemas', () => {
     'environmentPackageSnapshotId',
     'sessionCompatibilityKey',
     'policySnapshotId',
-  ])('rejects an AgentSession missing required %s', (field) => {
-    const { dataRoot, store, workspace, thread, workspaceRoot } = createCanonicalRecordFixture();
-    const session = store.createAgentSession({
+  ])('rejects an AgentSession missing required %s', async (field) => {
+    const { dataRoot, store, workspace, thread, workspaceRoot } =
+      await createCanonicalRecordFixture();
+    const session = await store.createAgentSession({
       id: 'as_00000000-0000-78b0-aef0-27ad15cf38f1',
       agentId: 'agent_codex_host',
       workspaceId: workspace.id,
@@ -347,12 +353,12 @@ describe('workspace canonical record schemas', () => {
     delete record[field];
     writeFileSync(path, `${JSON.stringify(record)}\n`);
 
-    expectLocalWorkspaceRefusal(dataRoot, workspace.id);
+    await expectLocalWorkspaceRefusal(dataRoot, workspace.id);
   });
 
-  it('stores only a scalar environment package snapshot reference in an AgentSession', () => {
-    const { store, workspace, thread, workspaceRoot } = createCanonicalRecordFixture();
-    const session = store.createAgentSession({
+  it('stores only a scalar environment package snapshot reference in an AgentSession', async () => {
+    const { store, workspace, thread, workspaceRoot } = await createCanonicalRecordFixture();
+    const session = await store.createAgentSession({
       id: 'as_00000000-0000-7262-a704-19543c73f9a3',
       agentId: 'agent_codex_host',
       workspaceId: workspace.id,

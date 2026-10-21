@@ -23,8 +23,8 @@ async function fixture(actorKind: 'session' | 'local' = 'session') {
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot: root });
-  const workspace = store.createWorkspace('Discovery');
-  const other = store.createWorkspace('Other authorized Workspace');
+  const workspace = await store.createWorkspace('Discovery');
+  const other = await store.createWorkspace('Other authorized Workspace');
   for (const entry of [workspace, other])
     recordWorkspaceOwnerMembership({ coreDb, workspaceId: entry.id, ownerUserId: userId });
   store.setWorkspaceAgentCatalogProjection(() =>
@@ -46,7 +46,7 @@ async function fixture(actorKind: 'session' | 'local' = 'session') {
     { coreDb }
   );
   const goal = created.goal!;
-  const turn = store.createTurn(
+  const turn = await store.createTurn(
     workspace.id,
     goal.threadId,
     'Discover Workers',
@@ -200,7 +200,10 @@ it('rechecks actor authority before publishing discovery', async () => {
 it('refuses an ended Coordinator before reading catalog content', async () => {
   const f = await fixture();
   try {
-    f.store.updateTurn(f.turn.id, { status: 'completed', completedAt: new Date().toISOString() });
+    await f.store.updateTurn(f.turn.id, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+    });
     const resources = vi.spyOn(f.store, 'getWorkspaceResources');
     expect((await f.tool.execute({})).isError).toBe(true);
     expect(resources).not.toHaveBeenCalled();

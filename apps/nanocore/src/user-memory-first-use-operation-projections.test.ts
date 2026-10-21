@@ -32,7 +32,7 @@ vi.mock('./internal-agents/knowledge-manager-agent.js', async (original) => ({
 }));
 
 /** Real identities, Workspace admission and storage; only bounded model execution is injected. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'memory-fresh-query-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -50,12 +50,12 @@ function fixture() {
   const userId = userIds[0]!;
   const actor = { kind: 'session' as const, userId };
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Fresh Memory context');
+  const workspace = await store.createWorkspace('Fresh Memory context');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
-  const foreign = store.createWorkspace('Other User context');
+  const foreign = await store.createWorkspace('Other User context');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: foreign.id, ownerUserId: userIds[1]! });
-  const timeline = openAssistantTimeline(store, workspace.id, userId, 'Private recall');
-  const turn = store.createTurn(
+  const timeline = await openAssistantTimeline(store, workspace.id, userId, 'Private recall');
+  const turn = await store.createTurn(
     workspace.id,
     timeline.id,
     'My saved preference?',
@@ -90,7 +90,10 @@ function fixture() {
       uncertainty: 'No saved page matched.',
     });
     expect(input.validateResult(answer)).toBeUndefined();
-    store.updateTurn(input.turn.id, { status: 'completed', completedAt: new Date().toISOString() });
+    await store.updateTurn(input.turn.id, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+    });
     return { turnId: input.turn.id, text: answer };
   });
   const invoke = createOperationInvocation({
@@ -147,7 +150,7 @@ function fixture() {
 
 describe('first private User Memory query', () => {
   it('returns an empty schema-valid public search with real User KB, Notebook and Timeline references', async () => {
-    const f = fixture();
+    const f = await fixture();
     const credential = createOpenKitAccessTokenRecord(f.coreDb, {
       ownerUserId: f.userId,
       scope: 'server-admin',
@@ -186,7 +189,7 @@ describe('first private User Memory query', () => {
   });
 
   it('runs native ask through the real private Memory reader and search on first use', async () => {
-    const f = fixture();
+    const f = await fixture();
     expect(existsSync(userDbPath(f.dataRoot, f.userId))).toBe(false);
     const result = await f.invoke(
       'memory.ask',
@@ -207,10 +210,16 @@ describe('first private User Memory query', () => {
   });
 
   it('refuses foreign Workspace and shared Thread entry before creating User storage', async () => {
-    const f = fixture();
-    const shared = f.store.createThread(f.workspace.id, 'Shared work', undefined, 'conversation', {
-      visibility: 'workspace',
-    });
+    const f = await fixture();
+    const shared = await f.store.createThread(
+      f.workspace.id,
+      'Shared work',
+      undefined,
+      'conversation',
+      {
+        visibility: 'workspace',
+      }
+    );
     for (const operation of ['memory.search', 'memory.ask'] as const) {
       const input =
         operation === 'memory.search'
@@ -239,7 +248,7 @@ describe('first private User Memory query', () => {
     'Scope schema',
     'UserDb and Notebook',
   ] as const)('does not replace an established lost %s with empty Memory', async (lost) => {
-    const f = fixture();
+    const f = await fixture();
     const userDb = openUserDb(f.dataRoot, f.userId);
     applyScopedMigrations(userDb);
     const revision = initializeScopedNotebook({

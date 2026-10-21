@@ -40,7 +40,7 @@ import { initializeScopedNotebook, resolveScopedNotebookOwner } from './scoped-n
 const query = 'portablePreferenceMarker';
 
 /** Separate real deployments deliberately use the same canonical local User identity. */
-function deployment() {
+async function deployment() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'memory-trace-portability-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
@@ -50,7 +50,7 @@ function deployment() {
   const userDb = openUserDb(dataRoot, userId);
   applyScopedMigrations(userDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Memory trace portability', {
+  const workspace = await store.createWorkspace('Memory trace portability', {
     requestId: randomUUID(),
     producer: actorRef,
     instructionReference: 'test:memory-trace-portability',
@@ -83,7 +83,7 @@ function deployment() {
       'notebook.git'
     ),
   });
-  const timeline = openAssistantTimeline(store, workspace.id, userId, 'Private Assistant');
+  const timeline = await openAssistantTimeline(store, workspace.id, userId, 'Private Assistant');
   const access = {
     coreDb,
     userDb,
@@ -133,8 +133,8 @@ function deployment() {
 
 describe('User Memory selection trace portability', () => {
   it('exports only authorized trace metadata, preserves foreign User evidence without target access, and admits fresh self selection', async () => {
-    const source = deployment();
-    const target = deployment();
+    const source = await deployment();
+    const target = await deployment();
     expect(target.userId).toBe(source.userId);
     const sourceServerId = readDataRootLayoutMarker(source.dataRoot).deploymentId;
     const targetServerId = readDataRootLayoutMarker(target.dataRoot).deploymentId;
@@ -219,7 +219,7 @@ describe('User Memory selection trace portability', () => {
     );
 
     const targetPage = readMemoryPage(target.writer, 'preferences')!;
-    const imported = importVerifiedWorkspace({
+    const imported = await importVerifiedWorkspace({
       authorityUserId: target.userId,
       coreDb: target.coreDb,
       dataRoot: target.dataRoot,
@@ -282,7 +282,7 @@ describe('User Memory selection trace portability', () => {
       }).traceId
     ).toBe(fresh.retrievalTraceRef!.objectId);
 
-    const sameDeployment = importVerifiedWorkspace({
+    const sameDeployment = await importVerifiedWorkspace({
       authorityUserId: source.userId,
       coreDb: source.coreDb,
       dataRoot: source.dataRoot,
@@ -307,6 +307,6 @@ describe('User Memory selection trace portability', () => {
 });
 
 /** Keeps each deployment's actual User base in retained trace references. */
-function userPageScope(owner: ReturnType<typeof deployment>): string {
+function userPageScope(owner: Awaited<ReturnType<typeof deployment>>): string {
   return `page/user/${owner.userId}/${readDefaultKnowledgeBaseId({ dataRoot: owner.dataRoot, scope: { kind: 'user', userId: owner.userId } })}`;
 }

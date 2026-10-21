@@ -43,12 +43,12 @@ async function sourceSnapshot() {
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Source snapshot root');
+  const workspace = await store.createWorkspace('Source snapshot root');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const actor = { kind: 'user' as const, id: userId };
-  const thread = store.createThread(workspace.id, 'Original evidence');
-  const turn = store.createTurn(workspace.id, thread.id, 'Capture the PNG.', actor, null);
-  store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
+  const thread = await store.createThread(workspace.id, 'Original evidence');
+  const turn = await store.createTurn(workspace.id, thread.id, 'Capture the PNG.', actor, null);
+  await store.updateTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
   const now = new Date().toISOString();
   const source = await captureWorkspaceSourceFixture({
     dataRoot,

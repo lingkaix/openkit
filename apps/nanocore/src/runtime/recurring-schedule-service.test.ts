@@ -28,14 +28,14 @@ const ready: Extract<RecurringPreparation, { kind: 'ready' }> = {
     workspaceRoots: [],
   },
 };
-function fixture() {
+async function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'recurrence-service-'));
   const db = openCoreDb(root);
   applyMigrations(db);
   const localUserId = ensureLocalUser(db);
   const store = new FsStore({ dataRoot: root });
-  const workspace = store.createWorkspace('Recurring');
-  const thread = store.createThread(workspace.id, 'Target');
+  const workspace = await store.createWorkspace('Recurring');
+  const thread = await store.createThread(workspace.id, 'Target');
   recordWorkspaceOwnerMembership({
     coreDb: db,
     workspaceId: workspace.id,
@@ -107,7 +107,7 @@ afterEach(() => {
 
 describe('serialized recurring scanner', () => {
   it('uses one five-second timer and publishes the fixed pending Turn once after queue admission', async () => {
-    const { db, store, schedules, schedule, start } = fixture();
+    const { db, store, schedules, schedule, start } = await fixture();
     const createTurn = vi.spyOn(store, 'createTurn');
     const { service, setTimer } = start();
     await service.runOnce();
@@ -131,7 +131,7 @@ describe('serialized recurring scanner', () => {
   });
 
   it('coalesces overlapping callbacks and retries a failure only on a later scan', async () => {
-    const { schedules, schedule, start } = fixture();
+    const { schedules, schedule, start } = await fixture();
     let release!: (value: RecurringPreparation) => void;
     const prepare = vi.fn(
       () =>
@@ -165,7 +165,7 @@ describe('serialized recurring scanner', () => {
   });
 
   it('rechecks the exact responsible membership after slow preparation without actor substitution', async () => {
-    const { db, schedules, schedule, workspace, start } = fixture();
+    const { db, schedules, schedule, workspace, start } = await fixture();
     let release!: (value: RecurringPreparation) => void;
     const prepare = vi.fn(
       () =>
@@ -217,7 +217,7 @@ describe('serialized recurring scanner', () => {
   });
 
   it('expires when preparation crosses the original deadline without counting an outcome', async () => {
-    const { db, schedules, schedule, setTime, start } = fixture();
+    const { db, schedules, schedule, setTime, start } = await fixture();
     let release!: (value: RecurringPreparation) => void;
     const { service } = start(
       () =>
@@ -240,7 +240,7 @@ describe('serialized recurring scanner', () => {
   });
 
   it('lets pause win against a scanner awaiting preparation', async () => {
-    const { db, schedules, schedule, start } = fixture();
+    const { db, schedules, schedule, start } = await fixture();
     let release!: (value: RecurringPreparation) => void;
     const { service } = start(
       () =>
@@ -262,7 +262,7 @@ describe('serialized recurring scanner', () => {
   });
 
   it('fences unknown preparation effects and does not retry them', async () => {
-    const { schedules, schedule, start } = fixture();
+    const { schedules, schedule, start } = await fixture();
     const prepare = vi.fn(async () => {
       throw new Error('unknown owner effect');
     });
@@ -278,7 +278,7 @@ describe('serialized recurring scanner', () => {
   });
 
   it('keeps unknown preparation fenced after current user authority is lost', async () => {
-    const { db, schedules, schedule, start } = fixture();
+    const { db, schedules, schedule, start } = await fixture();
     let rejectPreparation!: (error: Error) => void;
     const prepare = vi.fn(
       () =>
@@ -308,7 +308,7 @@ describe('serialized recurring scanner', () => {
   });
 
   it('honors the existing Workspace mutation fence before materialization', async () => {
-    const { db, gate, workspace, start } = fixture();
+    const { db, gate, workspace, start } = await fixture();
     await gate.close(workspace.id);
     const prepare = vi.fn(async () => structuredClone(ready));
     const { service } = start(prepare);
@@ -321,7 +321,7 @@ describe('serialized recurring scanner', () => {
 });
 
 it('inspects durable acceptance after an unknown commit result and never submits it again', async () => {
-  const { db, schedules, schedule, start } = fixture();
+  const { db, schedules, schedule, start } = await fixture();
   const original = schedules.commitAttempt.bind(schedules);
   let loseResult = true;
   vi.spyOn(schedules, 'commitAttempt').mockImplementation((...input) => {
@@ -348,7 +348,7 @@ it('inspects durable acceptance after an unknown commit result and never submits
 });
 
 it('does not accept into a private Thread owned by another responsible user', async () => {
-  const { store, schedules, schedule, workspace, thread, start } = fixture();
+  const { store, schedules, schedule, workspace, thread, start } = await fixture();
   const original = store.getThread.bind(store);
   vi.spyOn(store, 'getThread').mockImplementation((workspaceId, threadId) =>
     workspaceId === workspace.id && threadId === thread.id
@@ -370,7 +370,7 @@ it('does not accept into a private Thread owned by another responsible user', as
 });
 
 it('holds mutation admission through bounded preparation so backup waits for the scanner to leave', async () => {
-  const { db, gate, workspace, start } = fixture();
+  const { db, gate, workspace, start } = await fixture();
   let release!: (value: RecurringPreparation) => void;
   const { service } = start(
     () =>
@@ -395,7 +395,7 @@ it('holds mutation admission through bounded preparation so backup waits for the
 });
 
 it('owns one scanner across distinct Core handles for the same data root', async () => {
-  const { root, store, gate, start } = fixture();
+  const { root, store, gate, start } = await fixture();
   const first = start();
   await first.service.runOnce();
   const otherDb = openCoreDb(root);
@@ -418,7 +418,7 @@ it('owns one scanner across distinct Core handles for the same data root', async
 });
 
 it('reconciles an already accepted queue without attempting initial file publication again', async () => {
-  const { db, schedules, schedule, store, clock, start } = fixture();
+  const { db, schedules, schedule, store, clock, start } = await fixture();
   const occurrence = schedules.collectScanCandidates(clock())[0]!;
   const accepted = schedules.commitAttempt(occurrence.id, 2, structuredClone(ready))!;
   // Reuse the owner's exact-replay fixture: accepted attempt evidence stays intact.
@@ -438,7 +438,7 @@ it('reconciles an already accepted queue without attempting initial file publica
 });
 
 it('prepares Knowledge maintenance after Worker candidates and contains callback failures on empty scans', async () => {
-  const { store, start } = fixture();
+  const { store, start } = await fixture();
   const events: string[] = [];
   const createTurn = store.createTurn.bind(store);
   vi.spyOn(store, 'createTurn').mockImplementation((...input) => {

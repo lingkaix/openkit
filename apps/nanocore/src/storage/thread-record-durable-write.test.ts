@@ -52,16 +52,16 @@ function expectDurableRename(
 }
 
 describe('Current Thread record durable publication', () => {
-  it('fsyncs thread.json before and after the atomic rename', () => {
+  it('fsyncs thread.json before and after the atomic rename', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-visibility-durable-'));
     const store = createTestStore({ dataRoot });
-    const workspace = store.createWorkspace('Migration workspace');
-    const formal = store.createThread(workspace.id, 'Formal worker history');
-    const turn = store.createTurn(workspace.id, formal.id, 'Work', {
+    const workspace = await store.createWorkspace('Migration workspace');
+    const formal = await store.createThread(workspace.id, 'Formal worker history');
+    const turn = await store.createTurn(workspace.id, formal.id, 'Work', {
       kind: 'user',
       id: 'usr_00000000-0000-7000-8000-000000000001',
     });
-    store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
+    await store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
     trace.events.length = 0;
     const updated = store.updateThread(workspace.id, formal.id, { name: 'Updated formal work' });
     expect(updated).toMatchObject({

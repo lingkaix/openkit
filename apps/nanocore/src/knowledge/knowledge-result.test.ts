@@ -645,7 +645,7 @@ it.each([
   'Effect',
   'Objective',
 ])('repairs typed %s applicability after an actual submission refusal', async (type) => {
-  const f = fixture();
+  const f = await fixture();
   const observed = observeNotebookTools();
   const notebook = new KnowledgeNotebook({
     repositoryPath: join(f.dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'knowledge', 'notebook.git'),

@@ -28,7 +28,7 @@ it('projects an admitted Server citation through the existing answer operation w
   });
   const actor = { kind: 'local' as const, userId };
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Shared Knowledge reader');
+  const workspace = await store.createWorkspace('Shared Knowledge reader');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   initializeScopedNotebook({
     coreDb,
@@ -75,13 +75,13 @@ Release after the shared gate passes.
   const serverScopeId = `page/server/${readDefaultKnowledgeBaseId({ dataRoot, scope: { kind: 'server' } })}`;
   let citationScopeId = serverScopeId;
   const contentDigest = `sha256:${createHash('sha256').update(content).digest('hex')}`;
-  const thread = store.createThread(
+  const thread = await store.createThread(
     workspace.id,
     'Knowledge answer',
     undefined,
     'knowledge-manager'
   );
-  const turn = store.createTurn(
+  const turn = await store.createTurn(
     workspace.id,
     thread.id,
     'Release rule',

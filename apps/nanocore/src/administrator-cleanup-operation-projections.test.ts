@@ -200,9 +200,9 @@ function sandbox(coreDb: CoreDb, id: string) {
 }
 
 /** Populates all seven source families through their retained record producers and real scope admission. */
-function populate(f: ReturnType<typeof fixture>) {
+async function populate(f: ReturnType<typeof fixture>) {
   const request = deletion(f);
-  const quarantinedId = f.store.createWorkspace('Quarantined cleanup metadata').id;
+  const quarantinedId = (await f.store.createWorkspace('Quarantined cleanup metadata')).id;
   recordWorkspaceOwnerMembership({
     coreDb: f.coreDb,
     workspaceId: quarantinedId,
@@ -393,7 +393,7 @@ describe('administrator cleanup public operation composition', () => {
 
   it('joins every real source, preserves waiting and unknown facts, and exposes no private payload', async () => {
     const f = await fixture();
-    const { execution, storage, quarantinedId } = populate(f);
+    const { execution, storage, quarantinedId } = await populate(f);
     const result = bounded(await f.native());
     expect(result.items.map((item) => item.source)).toEqual(SOURCES);
     expect(result.incomplete).toBe(false);
@@ -448,7 +448,7 @@ describe('administrator cleanup public operation composition', () => {
     'workspace-readonly',
   ] as const)('denies the %s credential despite current Workspace ownership', async (scope) => {
     const f = await fixture();
-    populate(f);
+    await populate(f);
     const token = createOpenKitAccessTokenRecord(f.coreDb, {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       scope,
@@ -470,7 +470,7 @@ describe('administrator cleanup public operation composition', () => {
 
   it('rechecks the original credential on every invocation after revocation', async () => {
     const f = await fixture();
-    populate(f);
+    await populate(f);
     bounded(await f.native());
     revokeOpenKitAccessTokenRecord(f.coreDb, f.token.tokenId);
     await expect(f.native()).rejects.toMatchObject({ status: 403 });
@@ -481,7 +481,7 @@ describe('administrator cleanup public operation composition', () => {
 
   it('denies the next read after the current administrator is disabled', async () => {
     const f = await fixture();
-    populate(f);
+    await populate(f);
     bounded(await f.native());
     f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, f.actor.userId))();
     await expect(f.native()).rejects.toMatchObject({ status: 403 });
@@ -498,7 +498,7 @@ describe('administrator cleanup public operation composition', () => {
     'bootstrap',
   ] as const)('refuses %s invocation before any source access', async (kind) => {
     const f = await fixture();
-    const { execution } = populate(f);
+    const { execution } = await populate(f);
     const contexts = {
       worker: {
         kind: 'worker' as const,
@@ -539,7 +539,7 @@ describe('administrator cleanup public operation composition', () => {
 
   it('denies publication when the administrator is revoked during a real source read', async () => {
     const f = await fixture();
-    populate(f);
+    await populate(f);
     const prepare = f.coreDb.sqlite.prepare.bind(f.coreDb.sqlite);
     let revoked = false;
     vi.spyOn(f.coreDb.sqlite, 'prepare').mockImplementation((sql: string) => {
@@ -555,7 +555,7 @@ describe('administrator cleanup public operation composition', () => {
 
   it('returns a safe unavailable operation error when current authority storage is lost', async () => {
     const f = await fixture();
-    populate(f);
+    await populate(f);
     const prepare = f.coreDb.sqlite.prepare.bind(f.coreDb.sqlite);
     vi.spyOn(f.coreDb.sqlite, 'prepare').mockImplementation((sql: string) => {
       if (sql.includes('openkit_access_tokens')) {
@@ -592,7 +592,7 @@ describe('administrator cleanup public operation composition', () => {
 
   it('observes a deleting Workspace without opening its content gate or changing any source', async () => {
     const f = await fixture();
-    const { request } = populate(f);
+    const { request } = await populate(f);
     f.coreDb.sqlite.transaction(() =>
       beginWorkspaceDeletion({
         coreDb: f.coreDb,
@@ -631,7 +631,7 @@ describe('administrator cleanup public operation composition', () => {
     'backend-session',
   ])('preserves other sources when %s becomes unavailable', async (source) => {
     const f = await fixture();
-    populate(f);
+    await populate(f);
     if (source === 'workspace-deletion') {
       const path = join(
         f.dataRoot,
@@ -667,7 +667,7 @@ describe('administrator cleanup public operation composition', () => {
 
   it('preserves contradictory and stale proof as unknown across the public boundary', async () => {
     const f = await fixture();
-    populate(f);
+    await populate(f);
     f.coreDb.sqlite
       .prepare('UPDATE worker_backend_sessions SET physical_cleaned_at = ?')
       .run(CREATED);
@@ -862,7 +862,7 @@ describe('administrator cleanup public operation composition', () => {
 
   it('preserves coherent current owner facts during a concurrent source transition', async () => {
     const f = await fixture();
-    const { execution } = populate(f);
+    const { execution } = await populate(f);
     const concurrent = openCoreDb(f.dataRoot);
     const prepare = f.coreDb.sqlite.prepare.bind(f.coreDb.sqlite);
     let changed = false;
@@ -955,7 +955,7 @@ describe('administrator cleanup public operation composition', () => {
 
   it('reads current deletion and runtime records after reopening Core storage', async () => {
     const f = await fixture();
-    const { request, execution } = populate(f);
+    const { request, execution } = await populate(f);
     bounded(await f.native());
     f.coreDb.sqlite.close();
     f.coreDb = openCoreDb(f.dataRoot);
@@ -982,7 +982,7 @@ describe('administrator cleanup public operation composition', () => {
 
   it('uses the same real JSON operation through generated CLI and eligible remote MCP', async () => {
     const f = await fixture();
-    populate(f);
+    await populate(f);
     const app = createApp({
       coreDb: f.coreDb,
       dataRoot: f.dataRoot,

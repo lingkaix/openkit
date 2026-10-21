@@ -14,7 +14,7 @@ import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 describe('quarantined Workspace native admission', () => {
-  it('diagnoses only an eligible viewer and preserves the outsider response before history reads', () => {
+  it('diagnoses only an eligible viewer and preserves the outsider response before history reads', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'resolver-scope-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -26,9 +26,9 @@ describe('quarantined Workspace native admission', () => {
       VALUES (?, 'Outside viewer', 'outside@example.invalid', 0, ?, ?, 'human', 'active')`)
       .run(outsiderId, Date.now(), Date.now());
     const store = new FsStore({ dataRoot });
-    const workspace = store.createWorkspace('Unreadable authority');
+    const workspace = await store.createWorkspace('Unreadable authority');
     recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId });
-    const thread = store.createThread(workspace.id, 'Do not disclose this history');
+    const thread = await store.createThread(workspace.id, 'Do not disclose this history');
     const admission = new WorkspaceMutationAdmission();
     const invoke = (userId: string) =>
       admitOperation(
@@ -48,7 +48,7 @@ describe('quarantined Workspace native admission', () => {
       }
     };
     try {
-      invoke(ownerUserId).release?.();
+      (await invoke(ownerUserId)).release?.();
       const outsiderBefore = refusal(outsiderId);
       expect(JSON.parse(outsiderBefore!)).toEqual({
         code: 'workspace_access_denied',

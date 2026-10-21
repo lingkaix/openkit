@@ -35,13 +35,13 @@ const digest = `sha256:${createHash('sha256').update(Buffer.from(content)).diges
 const unavailable = (reference: string) => ({ status: 'unavailable', reference });
 
 /** Actual Core, Workspace membership and scoped publication; no Storage or admission double. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'source-meaning-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Shared raw meaning');
+  const workspace = await store.createWorkspace('Shared raw meaning');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
   applyScopedMigrations(workspaceDb);
@@ -63,7 +63,7 @@ function fixture() {
 
 /** Build the URI from the governed published pointer, never from an assumed raw filename. */
 function retained(
-  f: ReturnType<typeof fixture>,
+  f: Awaited<ReturnType<typeof fixture>>,
   scope: Exclude<KnowledgeOwnerScope, { kind: 'user' }>,
   sourceId: string
 ) {
@@ -100,7 +100,7 @@ function retained(
 
 describe('pinned raw Source meaning receiver', () => {
   it('delivers admitted Server original UTF-8 and refuses wrong pins, KBs and changed bytes uniformly', async () => {
-    const f = fixture();
+    const f = await fixture();
     const writer = {
       coreDb: f.coreDb,
       store: f.store,
@@ -145,10 +145,10 @@ describe('pinned raw Source meaning receiver', () => {
   });
 
   it('uses the path-governing Workspace Source and current audience and sensitivity before disclosure', async () => {
-    const f = fixture();
+    const f = await fixture();
     f.access.requestActor = { kind: 'session', userId: f.userId };
     const scope = { kind: 'workspace' as const, workspaceId: f.workspace.id };
-    const origin = f.store.createThread(
+    const origin = await f.store.createThread(
       f.workspace.id,
       'Source origin',
       undefined,
@@ -157,7 +157,7 @@ describe('pinned raw Source meaning receiver', () => {
         visibility: 'workspace',
       }
     );
-    const destination = f.store.createThread(
+    const destination = await f.store.createThread(
       f.workspace.id,
       'Shared meaning destination',
       undefined,

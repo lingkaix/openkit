@@ -34,13 +34,13 @@ const original = 'Native Knowledge work keeps exact originals.\r\nΩ 雪.\n';
 const digest = `sha256:${createHash('sha256').update(Buffer.from(original)).digest('hex')}`;
 
 /** Current membership and native Notebook admission supply authority without minting a credential or lease. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'source-native-role-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Native Knowledge authority');
+  const workspace = await store.createWorkspace('Native Knowledge authority');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
   applyScopedMigrations(workspaceDb);
@@ -146,7 +146,7 @@ function fixture() {
 
 describe('native role Source authority and Worker raw exposure', () => {
   it('admits the accountable native KM without a public credential, captures and reads, then honors current disable', async () => {
-    const f = fixture();
+    const f = await fixture();
     expect(f.access).not.toHaveProperty('requestActor');
     expect(
       currentWorkspaceAuthority(f.coreDb, f.workspace.id, f.actor, 'knowledge.read', true)
@@ -235,7 +235,7 @@ describe('native role Source authority and Worker raw exposure', () => {
   });
 
   it('keeps actual Worker-shaped raw meaning unavailable despite the responsible member’s native Knowledge rights', async () => {
-    const f = fixture();
+    const f = await fixture();
     const human = { kind: 'user' as const, id: f.userId };
     const humanAccess: KnowledgeRetrievalAccess = {
       store: f.store,
@@ -258,7 +258,7 @@ describe('native role Source authority and Worker raw exposure', () => {
         access: humanAccess,
       })
     ).resolves.toMatchObject({ status: 'available', content: original, contentDigest: digest });
-    const thread = f.store.createThread(
+    const thread = await f.store.createThread(
       f.workspace.id,
       'Worker destination',
       undefined,
@@ -266,7 +266,7 @@ describe('native role Source authority and Worker raw exposure', () => {
       { visibility: 'workspace' }
     );
     const sessionId = allocateEntityId('as');
-    const turn = f.store.createTurn(
+    const turn = await f.store.createTurn(
       f.workspace.id,
       thread.id,
       'Inspect exact meaning.',
@@ -275,7 +275,7 @@ describe('native role Source authority and Worker raw exposure', () => {
       { agentId: 'agent_codex_host', agentSessionId: sessionId }
     );
     const now = new Date().toISOString();
-    const session = f.store.createAgentSession({
+    const session = await f.store.createAgentSession({
       id: sessionId,
       agentId: turn.agentId!,
       workspaceId: f.workspace.id,

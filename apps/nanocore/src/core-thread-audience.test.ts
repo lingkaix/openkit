@@ -39,13 +39,13 @@ const READ_ACTORS: readonly MemberActor[] = [
  *
  * @returns Server-mode app, own/other private Threads, shared Thread, and mutation owners.
  */
-function createCoreAudienceFixture() {
+async function createCoreAudienceFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-thread-audience-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Team');
+  const workspace = await store.createWorkspace('Team');
   recordWorkspaceOwnerMembership({
     coreDb,
     ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -62,21 +62,24 @@ function createCoreAudienceFixture() {
       `INSERT INTO workspace_members (workspace_id, user_id, status, invitation_id, joined_at, removed_at, revision, created_at, updated_at) VALUES (?, 'usr_00000000-0000-73d4-904a-d4c4b905df7c', 'active', NULL, ?, NULL, 1, ?, ?)`
     )
     .run(workspace.id, STAMP, STAMP, STAMP);
-  const own = assignAudience(
+  const own = await assignAudience(
     store.createThread(workspace.id, 'local-private needle'),
     'private',
     'usr_00000000-0000-7000-8000-000000000001'
   );
-  const denied = assignAudience(
+  const denied = await assignAudience(
     store.createThread(workspace.id, 'other-private needle'),
     'private',
     'usr_00000000-0000-73d4-904a-d4c4b905df7c'
   );
-  const shared = assignAudience(store.createThread(workspace.id, 'shared needle'), 'workspace');
-  const ownTurn = seedCompletedSurface(store, workspace.id, own, 'local-private');
-  const deniedTurn = seedCompletedSurface(store, workspace.id, denied, 'other-private');
-  const sharedTurn = seedCompletedSurface(store, workspace.id, shared, 'shared');
-  const approvalTurn = store.createTurn(workspace.id, own.id, 'Approve private push', {
+  const shared = await assignAudience(
+    store.createThread(workspace.id, 'shared needle'),
+    'workspace'
+  );
+  const ownTurn = await seedCompletedSurface(store, workspace.id, own, 'local-private');
+  const deniedTurn = await seedCompletedSurface(store, workspace.id, denied, 'other-private');
+  const sharedTurn = await seedCompletedSurface(store, workspace.id, shared, 'shared');
+  const approvalTurn = await store.createTurn(workspace.id, own.id, 'Approve private push', {
     kind: 'user',
     id: 'usr_00000000-0000-7000-8000-000000000001',
   });
@@ -95,7 +98,7 @@ function createCoreAudienceFixture() {
     [approvalTurn, 'ap_local_private', 'it_00000000-0000-7e55-98df-414094b7707e'],
     [deniedApprovalTurn, 'ap_other_private', 'it_00000000-0000-7b56-bcdb-1d8dc2f6af03'],
   ] as const) {
-    store.createItem({
+    await store.createItem({
       id: requestItemId,
       owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: turn.threadId,
@@ -203,7 +206,7 @@ function createCoreAudienceFixture() {
   };
 }
 
-type AudienceFixture = ReturnType<typeof createCoreAudienceFixture>;
+type AudienceFixture = Awaited<ReturnType<typeof createCoreAudienceFixture>>;
 
 /**
  * Overwrites durable audience fields the same way the dashboard visibility fixture does.
@@ -237,17 +240,17 @@ function assignAudience(
  * @param label Unique needle used in names and payloads.
  * @returns The completed Turn.
  */
-function seedCompletedSurface(
+async function seedCompletedSurface(
   store: FsStore,
   workspaceId: string,
   thread: ReturnType<FsStore['createThread']>,
   label: string
-): ReturnType<FsStore['createTurn']> {
-  const turn = store.createTurn(workspaceId, thread.id, `${label} needle`, {
+): Promise<ReturnType<FsStore['createTurn']>> {
+  const turn = await store.createTurn(workspaceId, thread.id, `${label} needle`, {
     kind: 'user',
     id: 'usr_00000000-0000-7000-8000-000000000001',
   });
-  store.createItem({
+  await store.createItem({
     completedAt: STAMP,
     createdAt: STAMP,
     id: testEntityId('it', `it_${label}`),
@@ -354,10 +357,10 @@ async function expectNondisclosing404(
 
 describe('core Thread audience', () => {
   it('records the admitted Stop requester with exact lineage and preserves it on replay', async () => {
-    const fixture = createCoreAudienceFixture();
+    const fixture = await createCoreAudienceFixture();
     try {
       const { app, coreDb, store, workspace, shared } = fixture;
-      const turn = store.createTurn(workspace.id, shared.id, 'Queued work', {
+      const turn = await store.createTurn(workspace.id, shared.id, 'Queued work', {
         kind: 'user',
         id: 'usr_00000000-0000-7000-8000-000000000001',
       });
@@ -451,7 +454,7 @@ describe('core Thread audience', () => {
   });
 
   it('filters private interruption Audit history by the current exact Thread audience', async () => {
-    const fixture = createCoreAudienceFixture();
+    const fixture = await createCoreAudienceFixture();
     try {
       const db = openWorkspaceDb(fixture.dataRoot, fixture.workspace.id);
       const initialHistory = listWorkspaceAuditEvents(db, fixture.workspace.id);
@@ -499,7 +502,7 @@ describe('core Thread audience', () => {
   });
 
   it('requires CoreDb server auth instead of the local implicit actor', async () => {
-    const fixture = createCoreAudienceFixture();
+    const fixture = await createCoreAudienceFixture();
     try {
       const response = await fixture.app.request('/api/app/operations/thread.read', {
         method: 'POST',
@@ -513,7 +516,7 @@ describe('core Thread audience', () => {
   });
 
   it('admits own and shared Thread GET and list while denying the other member private Thread', async () => {
-    const fixture = createCoreAudienceFixture();
+    const fixture = await createCoreAudienceFixture();
     try {
       for (const actor of READ_ACTORS) {
         const headers = bearer(fixture.coreDb, actor, fixture.workspace.id);
@@ -577,7 +580,7 @@ describe('core Thread audience', () => {
   });
 
   it('admits own and shared Turn, items, and conversation.targets for current members', async () => {
-    const fixture = createCoreAudienceFixture();
+    const fixture = await createCoreAudienceFixture();
     try {
       for (const actor of READ_ACTORS) {
         const headers = bearer(fixture.coreDb, actor, fixture.workspace.id);
@@ -622,7 +625,7 @@ describe('core Thread audience', () => {
   });
 
   it('refuses another member private Turn, items, and conversation.targets without disclosing titles', async () => {
-    const fixture = createCoreAudienceFixture();
+    const fixture = await createCoreAudienceFixture();
     try {
       for (const actor of READ_ACTORS) {
         const headers = bearer(fixture.coreDb, actor, fixture.workspace.id);
@@ -672,7 +675,7 @@ describe('core Thread audience', () => {
   });
 
   it('denies ordinary-member turn.start, feedback and approval on private Threads and admits current administrators', async () => {
-    const fixture = createCoreAudienceFixture();
+    const fixture = await createCoreAudienceFixture();
     try {
       const member = bearer(
         fixture.coreDb,
@@ -828,7 +831,7 @@ describe('core Thread audience', () => {
   });
 
   it('replays own thread.create requestId and does not return another actor private Thread', async () => {
-    const fixture = createCoreAudienceFixture();
+    const fixture = await createCoreAudienceFixture();
     try {
       const owner = bearer(
         fixture.coreDb,

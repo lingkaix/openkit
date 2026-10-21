@@ -27,10 +27,10 @@ describe('workspace layout symbolic-link boundaries', () => {
   it.each([
     'logs',
     'evidence',
-  ] as const)('rejects a linked workspace %s directory without creating outside children', (name) => {
+  ] as const)('rejects a linked workspace %s directory without creating outside children', async (name) => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-linked-workspace-write-'));
     const store = createTestStore({ dataRoot });
-    const workspace = store.createWorkspace('Linked workspace write');
+    const workspace = await store.createWorkspace('Linked workspace write');
     const workspaceRoot = join(dataRoot, 'workspaces', workspace.id);
     const outsideRoot = mkdtempSync(join(tmpdir(), 'openkit-linked-layout-outside-'));
 

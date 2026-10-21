@@ -29,7 +29,7 @@ afterEach(() => {
 });
 
 /** Real Workspace, exact original Artifacts and current Core membership authority. */
-function fixture(privateSecond = false) {
+async function fixture(privateSecond = false) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'evaluation-candidates-'));
   roots.push(dataRoot);
   const coreDb = openCoreDb(dataRoot);
@@ -37,7 +37,7 @@ function fixture(privateSecond = false) {
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Candidate comparison');
+  const workspace = await store.createWorkspace('Candidate comparison');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const bob = allocateEntityId('usr');
   coreDb.sqlite
@@ -52,58 +52,60 @@ function fixture(privateSecond = false) {
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
   databases.push(workspaceDb);
   applyScopedMigrations(workspaceDb);
-  const candidates = ['First exact output\r\n', 'Second exact output\n'].map((body, index) => {
-    const requestId = `import-candidate-${index}`;
-    const contentDigest = `sha256:${createHash('sha256').update(body).digest('hex')}`;
-    const timestamp = new Date().toISOString();
-    const privateThread =
-      privateSecond && index === 1
-        ? store.createThread(workspace.id, 'Private source', undefined, 'conversation', {
-            visibility: 'private',
-            privateOwnerUserId: userId,
+  const candidates = ['First exact output\r\n', 'Second exact output\n'].map(
+    async (body, index) => {
+      const requestId = `import-candidate-${index}`;
+      const contentDigest = `sha256:${createHash('sha256').update(body).digest('hex')}`;
+      const timestamp = new Date().toISOString();
+      const privateThread =
+        privateSecond && index === 1
+          ? await store.createThread(workspace.id, 'Private source', undefined, 'conversation', {
+              visibility: 'private',
+              privateOwnerUserId: userId,
+            })
+          : null;
+      const sourceTurn = privateThread
+        ? await store.createTurn(workspace.id, privateThread.id, 'Produce private candidate', {
+            kind: 'user',
+            id: userId,
           })
         : null;
-    const sourceTurn = privateThread
-      ? store.createTurn(workspace.id, privateThread.id, 'Produce private candidate', {
-          kind: 'user',
-          id: userId,
-        })
-      : null;
-    const artifact = store.createArtifact({
-      id: allocateEntityId('ar'),
-      workspaceId: workspace.id,
-      threadId: privateThread?.id ?? null,
-      turnId: sourceTurn?.id ?? null,
-      kind: 'file',
-      title: `Candidate ${index + 1}`,
-      status: 'ready',
-      summary: null,
-      version: 1,
-      content: { format: 'text', body },
-      contentDigest,
-      lastMutationRequestId: requestId,
-      origin:
-        privateThread && sourceTurn
-          ? { kind: 'turn-output', threadId: privateThread.id, turnId: sourceTurn.id, requestId }
-          : {
-              kind: 'imported',
-              sourceKind: 'direct-import',
-              sourceId: requestId,
-              sourceDigest: contentDigest,
-              actor: { kind: 'user', id: userId },
-              requestId,
-              recordedAt: timestamp,
-            },
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    });
-    if (sourceTurn)
-      store.updateTurn(sourceTurn.id, {
-        status: 'completed',
-        completedAt: new Date().toISOString(),
+      const artifact = store.createArtifact({
+        id: allocateEntityId('ar'),
+        workspaceId: workspace.id,
+        threadId: privateThread?.id ?? null,
+        turnId: sourceTurn?.id ?? null,
+        kind: 'file',
+        title: `Candidate ${index + 1}`,
+        status: 'ready',
+        summary: null,
+        version: 1,
+        content: { format: 'text', body },
+        contentDigest,
+        lastMutationRequestId: requestId,
+        origin:
+          privateThread && sourceTurn
+            ? { kind: 'turn-output', threadId: privateThread.id, turnId: sourceTurn.id, requestId }
+            : {
+                kind: 'imported',
+                sourceKind: 'direct-import',
+                sourceId: requestId,
+                sourceDigest: contentDigest,
+                actor: { kind: 'user', id: userId },
+                requestId,
+                recordedAt: timestamp,
+              },
+        createdAt: timestamp,
+        updatedAt: timestamp,
       });
-    return { artifactId: artifact.id, artifactVersion: artifact.version, contentDigest };
-  });
+      if (sourceTurn)
+        await store.updateTurn(sourceTurn.id, {
+          status: 'completed',
+          completedAt: new Date().toISOString(),
+        });
+      return { artifactId: artifact.id, artifactVersion: artifact.version, contentDigest };
+    }
+  );
   const inflightCommands = new WeakMap<FsStore, Map<string, InflightIdempotentCommand>>();
   const access = {
     coreDb,
@@ -116,15 +118,15 @@ function fixture(privateSecond = false) {
 }
 
 describe('Workspace candidate set authority', () => {
-  it('has one Workspace SQLite family for immutable membership and ordered human selections', () => {
-    const state = fixture();
+  it('has one Workspace SQLite family for immutable membership and ordered human selections', async () => {
+    const state = await fixture();
     expect(
       state.workspaceDb.sqlite.prepare('SELECT payload_json FROM evaluation_candidate_sets').all()
     ).toEqual([]);
   });
 
   it('writes and reads the shared retained v1 marker for membership and selection history', async () => {
-    const state = fixture();
+    const state = await fixture();
     const created = await createCandidateSet(state.access, {
       workspaceId: state.workspace.id,
       requestId: 'shared-retained-marker',
@@ -186,7 +188,7 @@ describe('Workspace candidate set authority', () => {
   });
 
   it('retains two exact members, attributable choices, replay prefixes and restart history without changing pinned versions', async () => {
-    const state = fixture();
+    const state = await fixture();
     const create = {
       workspaceId: state.workspace.id,
       requestId: 'ordered-comparison',
@@ -325,8 +327,11 @@ describe('Workspace candidate set authority', () => {
       createCandidateSet(state.access, { ...create, candidates: [...state.candidates].reverse() })
     ).rejects.toMatchObject({ code: 'idempotency_key_conflict' });
     expect(readCandidateSet(state.access, original.candidateSetId).judgements).toHaveLength(3);
-    const publicationThread = state.store.createThread(state.workspace.id, 'Later source version');
-    state.store.commitArtifactVersion({
+    const publicationThread = await state.store.createThread(
+      state.workspace.id,
+      'Later source version'
+    );
+    await state.store.commitArtifactVersion({
       workspaceId: state.workspace.id,
       artifactId: state.candidates[0]!.artifactId,
       threadId: publicationThread.id,
@@ -357,7 +362,7 @@ describe('Workspace candidate set authority', () => {
   });
 
   it('rolls back a new choice with its failed receipt inside the existing Workspace transaction', async () => {
-    const state = fixture();
+    const state = await fixture();
     const original = await createCandidateSet(state.access, {
       workspaceId: state.workspace.id,
       requestId: 'transaction-comparison',
@@ -381,7 +386,7 @@ describe('Workspace candidate set authority', () => {
   });
 
   it('admits every current source and omits the entire set rather than disclose private membership', async () => {
-    const state = fixture(true);
+    const state = await fixture(true);
     const original = await createCandidateSet(state.access, {
       workspaceId: state.workspace.id,
       requestId: 'private-comparison',
@@ -412,7 +417,7 @@ describe('Workspace candidate set authority', () => {
   });
 
   it('joins ordinary native JSON operations to real Workspace admission and server attribution', async () => {
-    const state = fixture();
+    const state = await fixture();
     const operations = createEvaluationOperationImplementations({
       coreDb: state.coreDb,
       store: state.store,

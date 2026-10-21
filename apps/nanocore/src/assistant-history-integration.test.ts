@@ -59,15 +59,18 @@ interface HistoryResult {
 }
 
 /** Retains a completed canonical message so indexing consumes the actual Item owner. */
-function retainMessage(
+async function retainMessage(
   store: FsStore,
   workspaceId: string,
   threadId: string,
   text: string,
   completeTurn = true
 ) {
-  const turn = store.createTurn(workspaceId, threadId, text, { kind: 'user', id: LOCAL_USER_ID });
-  const item = store.createItem({
+  const turn = await store.createTurn(workspaceId, threadId, text, {
+    kind: 'user',
+    id: LOCAL_USER_ID,
+  });
+  const item = await store.createItem({
     id: allocateEntityId('it'),
     owner: { kind: 'workspace', workspaceId: workspaceId },
     threadId,
@@ -79,7 +82,7 @@ function retainMessage(
     createdAt: stamp,
     completedAt: stamp,
   });
-  if (completeTurn) store.updateTurn(turn.id, { status: 'completed', completedAt: stamp });
+  if (completeTurn) await store.updateTurn(turn.id, { status: 'completed', completedAt: stamp });
   return item;
 }
 
@@ -95,8 +98,8 @@ async function fixture(queries: HistoryQuery[], privateSourceTurnOpen = false) {
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('History integration');
-  const otherWorkspace = store.createWorkspace('Other history ownership');
+  const workspace = await store.createWorkspace('History integration');
+  const otherWorkspace = await store.createWorkspace('Other history ownership');
   for (const entry of [workspace, otherWorkspace]) {
     recordWorkspaceOwnerMembership({ coreDb, workspaceId: entry.id, ownerUserId: LOCAL_USER_ID });
   }
@@ -206,34 +209,46 @@ async function fixture(queries: HistoryQuery[], privateSourceTurnOpen = false) {
   expect(opened.status).toBe(200);
   const timeline = await opened.json();
   expect(timeline).toMatchObject({ visibility: 'private', privateOwnerUserId: LOCAL_USER_ID });
-  const current = retainMessage(
+  const current = await retainMessage(
     store,
     workspace.id,
     timeline.id,
     `${CURRENT_QUERY} ${CURRENT_DETAIL}`
   );
   // Retained earlier conversations remain independent canonical history after the Timeline cutover.
-  const past = store.createThread(workspace.id, 'Past private history', undefined, 'conversation', {
-    visibility: 'private',
-    privateOwnerUserId: LOCAL_USER_ID,
-  });
-  const privateItem = retainMessage(
+  const past = await store.createThread(
+    workspace.id,
+    'Past private history',
+    undefined,
+    'conversation',
+    {
+      visibility: 'private',
+      privateOwnerUserId: LOCAL_USER_ID,
+    }
+  );
+  const privateItem = await retainMessage(
     store,
     workspace.id,
     past.id,
     `${PAST_QUERY} ${PRIVATE_DETAIL} ${'繁'.repeat(30_000)}`,
     !privateSourceTurnOpen
   );
-  const shared = store.createThread(workspace.id, 'Past Task history', undefined, 'conversation', {
-    visibility: 'workspace',
-  });
-  const sharedItem = retainMessage(
+  const shared = await store.createThread(
+    workspace.id,
+    'Past Task history',
+    undefined,
+    'conversation',
+    {
+      visibility: 'workspace',
+    }
+  );
+  const sharedItem = await retainMessage(
     store,
     workspace.id,
     shared.id,
     `${PAST_QUERY} ${SHARED_DETAIL}`
   );
-  const foreign = store.createThread(
+  const foreign = await store.createThread(
     workspace.id,
     'Other private Timeline',
     undefined,
@@ -243,13 +258,13 @@ async function fixture(queries: HistoryQuery[], privateSourceTurnOpen = false) {
       privateOwnerUserId: otherUserId,
     }
   );
-  const foreignItem = retainMessage(
+  const foreignItem = await retainMessage(
     store,
     workspace.id,
     foreign.id,
     `${PAST_QUERY} ${FOREIGN_DETAIL}`
   );
-  const otherThread = store.createThread(
+  const otherThread = await store.createThread(
     otherWorkspace.id,
     'Other Workspace history',
     undefined,
@@ -259,17 +274,17 @@ async function fixture(queries: HistoryQuery[], privateSourceTurnOpen = false) {
       privateOwnerUserId: LOCAL_USER_ID,
     }
   );
-  const crossWorkspaceItem = retainMessage(
+  const crossWorkspaceItem = await retainMessage(
     store,
     otherWorkspace.id,
     otherThread.id,
     `${PAST_QUERY} ${CROSS_WORKSPACE_DETAIL}`
   );
-  const hiddenTurn = store.createTurn(workspace.id, shared.id, 'Unpublished reasoning', {
+  const hiddenTurn = await store.createTurn(workspace.id, shared.id, 'Unpublished reasoning', {
     kind: 'user',
     id: LOCAL_USER_ID,
   });
-  const reasoning = store.createItem({
+  const reasoning = await store.createItem({
     id: allocateEntityId('it'),
     owner: { kind: 'workspace', workspaceId: workspace.id },
     threadId: shared.id,
@@ -281,7 +296,7 @@ async function fixture(queries: HistoryQuery[], privateSourceTurnOpen = false) {
     createdAt: stamp,
     completedAt: stamp,
   });
-  store.updateTurn(hiddenTurn.id, { status: 'completed', completedAt: stamp });
+  await store.updateTurn(hiddenTurn.id, { status: 'completed', completedAt: stamp });
   const selectors = { workspaceId: workspace.id, threadId: timeline.id as string };
   const requestId = randomUUID();
   const submit = () =>
@@ -519,7 +534,7 @@ describe('Assistant history Tool through canonical Items and real R2', () => {
         const result = await search.call(this, query);
         if (!changed && result.hits.some((hit) => hit.key.id === f.privateItem.id)) {
           changed = true;
-          f.store.updateItem(f.privateItem.id, {
+          await f.store.updateItem(f.privateItem.id, {
             text: 'Current source no longer contains the old content.',
           });
         }
@@ -569,7 +584,7 @@ describe('Assistant history Tool through canonical Items and real R2', () => {
     let changed = false;
     let queryTurnId = '';
     let retainedTraceFiles: ReturnType<typeof traces> = [];
-    f.beforeAnswer(() => {
+    f.beforeAnswer(async () => {
       // The fault follows a real, authorized kernel result already observed by the model.
       const observed = toolResults(f.requests)[0]!.result;
       expect(observed.hits.some((hit) => hit.reference.itemId === f.privateItem.id)).toBe(true);
@@ -588,7 +603,7 @@ describe('Assistant history Tool through canonical Items and real R2', () => {
       };
       expect(() => assertConversationRetrievalTraceReadable(readContext)).not.toThrow();
       if (fault === 'source revision') {
-        f.store.updateItem(f.privateItem.id, {
+        await f.store.updateItem(f.privateItem.id, {
           text: 'Source content was revised before publication.',
         });
       } else {

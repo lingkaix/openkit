@@ -87,7 +87,7 @@ it('keeps scheduling off by default and retains a visible unavailable-model outc
     rmSync(dataRoot, { recursive: true, force: true });
   });
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Scheduled maintenance');
+  const workspace = await store.createWorkspace('Scheduled maintenance');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const directory = join(dataRoot, 'workspaces', workspace.id, 'config');
   mkdirSync(directory, { recursive: true });
@@ -179,7 +179,7 @@ it('stops bounded maintenance through the public Turn command before a late Prov
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Interruptible maintenance');
+  const workspace = await store.createWorkspace('Interruptible maintenance');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const notebook = new KnowledgeNotebook({
     repositoryPath: join(dataRoot, 'workspaces', workspace.id, 'knowledge', 'notebook.git'),

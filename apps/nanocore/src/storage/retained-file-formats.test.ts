@@ -21,12 +21,12 @@ import { appendWorkspaceTurnEvent, loadWorkspaceFileRecords } from './workspace-
 const families = ['Workspace', 'Turn', 'Artifact', 'AgentSession', 'Item', 'stream event'] as const;
 
 /** Publishes minimal native records, with exactly one row in each JSONL file. */
-function createRetainedFixture() {
+async function createRetainedFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-retained-file-formats-'));
   onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
   const store = createTestStore({ dataRoot });
-  const workspace = store.createWorkspace('Retained formats');
-  const thread = store.createThread(workspace.id, 'Retained formats');
+  const workspace = await store.createWorkspace('Retained formats');
+  const thread = await store.createThread(workspace.id, 'Retained formats');
   const actor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
   const internalExecution = {
     roleId: 'assistant',
@@ -36,11 +36,11 @@ function createRetainedFixture() {
     contextStrategy: 'rolling' as const,
     threshold: 16_000,
   };
-  const turn = store.createTurn(workspace.id, thread.id, 'Retained request', actor, null, {
+  const turn = await store.createTurn(workspace.id, thread.id, 'Retained request', actor, null, {
     internalExecution,
   });
   const now = workspace.createdAt;
-  store.createItem({
+  await store.createItem({
     id: 'it_00000000-0000-7107-a6b6-12de9088d8ca',
     owner: { kind: 'workspace', workspaceId: workspace.id },
     threadId: thread.id,
@@ -53,7 +53,7 @@ function createRetainedFixture() {
     completedAt: now,
   });
   const sessionId = 'as_00000000-0000-74db-9692-cadae15b58fb';
-  store.createAgentSession({
+  await store.createAgentSession({
     id: sessionId,
     agentId: 'agent_retained_formats',
     workspaceId: workspace.id,
@@ -136,12 +136,12 @@ function createRetainedFixture() {
  * @param workspaceId Owning Workspace that must be quarantined.
  * @returns Reopened Store and isolated root for additional native readback checks.
  */
-function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
+async function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
   const restartRoot = mkdtempSync(join(tmpdir(), 'openkit-local-refusal-'));
   onTestFinished(() => rmSync(restartRoot, { recursive: true, force: true }));
   const seed = new FsStore({ dataRoot: restartRoot });
-  const sibling = seed.createWorkspace('Healthy refusal control');
-  const siblingThread = seed.createThread(sibling.id, 'Retained sibling thread');
+  const sibling = await seed.createWorkspace('Healthy refusal control');
+  const siblingThread = await seed.createThread(sibling.id, 'Retained sibling thread');
   const siblingBefore = seed.getWorkspace(sibling.id);
   cpSync(dataRoot, restartRoot, { recursive: true, verbatimSymlinks: true });
 
@@ -178,7 +178,7 @@ function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
   );
   expect(reopened.getWorkspace(sibling.id)).toEqual(siblingBefore);
   expect(reopened.getThread(sibling.id, siblingThread.id)).toEqual(siblingThread);
-  const progress = reopened.createThread(sibling.id, 'Healthy sibling progress');
+  const progress = await reopened.createThread(sibling.id, 'Healthy sibling progress');
   expect(new FsStore({ dataRoot: restartRoot }).getThread(sibling.id, progress.id)).toEqual(
     progress
   );
@@ -190,8 +190,8 @@ function expectLocalWorkspaceRefusal(dataRoot: string, workspaceId: string) {
 describe('native retained file formats', () => {
   it.each(
     families
-  )('writes %s v1 and reopens descriptive additions without changing bytes', (family) => {
-    const { dataRoot, expected, paths } = createRetainedFixture();
+  )('writes %s v1 and reopens descriptive additions without changing bytes', async (family) => {
+    const { dataRoot, expected, paths } = await createRetainedFixture();
     const path = paths[family];
     const record = JSON.parse(readFileSync(path, 'utf8'));
     // Observe the native writer before adding any fixture-owned content.
@@ -206,8 +206,8 @@ describe('native retained file formats', () => {
     expect(readFileSync(path, 'utf8')).toBe(annotatedBytes);
   });
 
-  it.each(families)('refuses %s with a missing or unknown retained version', (family) => {
-    const { dataRoot, paths } = createRetainedFixture();
+  it.each(families)('refuses %s with a missing or unknown retained version', async (family) => {
+    const { dataRoot, paths } = await createRetainedFixture();
     const path = paths[family];
     const originalBytes = readFileSync(path, 'utf8');
     expect(loadWorkspaceFileRecords(dataRoot)).toHaveLength(1);
@@ -220,7 +220,7 @@ describe('native retained file formats', () => {
       writeFileSync(path, invalidBytes);
 
       const workspaceId = JSON.parse(readFileSync(paths.Workspace, 'utf8')).id as string;
-      const restarted = expectLocalWorkspaceRefusal(dataRoot, workspaceId);
+      const restarted = await expectLocalWorkspaceRefusal(dataRoot, workspaceId);
       expect(
         loadWorkspaceFileRecords(restarted.dataRoot).map(({ workspace }) => workspace.id)
       ).not.toContain(workspaceId);

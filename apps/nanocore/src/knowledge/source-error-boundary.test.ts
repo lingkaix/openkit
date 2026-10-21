@@ -19,13 +19,13 @@ const ORIGINAL =
   'Harmless literal original used only to check error disclosure.\r\nUnicode Ω 雪.\n';
 
 /** Creates an authorized owner and the real HTTP, Notebook, SQLite and Storage boundary. */
-function fixture() {
+async function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'source-error-boundary-'));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Source error boundary');
+  const workspace = await store.createWorkspace('Source error boundary');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
   applyScopedMigrations(workspaceDb);
@@ -86,7 +86,7 @@ async function expectError(response: Response, status: number, code: string, dat
 
 describe('public Source error contract', () => {
   it('refuses an invalid new profile as JSON invalid_request without capture effects', async () => {
-    const f = fixture();
+    const f = await fixture();
     const before = {
       revision: f.notebook.publishedRevision(),
       pointers: f.notebook.readSourcePointers(f.notebook.publishedRevision()),
@@ -111,7 +111,7 @@ describe('public Source error contract', () => {
     'knowledge.source.list',
     'knowledge.source.read',
   ] as const)('preserves a typed failure for a corrupt retained pointer through %s without repair', async (operation) => {
-    const f = fixture();
+    const f = await fixture();
     const captured = await f.register('Valid original evidence');
     expect(captured.status).toBe(200);
     const { source } = RegisterKnowledgeSourceResponseSchema.parse(await captured.json());

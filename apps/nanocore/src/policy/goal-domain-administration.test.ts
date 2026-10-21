@@ -70,7 +70,7 @@ async function fixture() {
   const userId = ensureLocalUser(coreDb);
   const actor = { kind: 'local' as const, userId };
   const store = new FsStore({ dataRoot: root });
-  const workspace = store.createWorkspace('Bounded Goal administration');
+  const workspace = await store.createWorkspace('Bounded Goal administration');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const db = openWorkspaceDb(root, workspace.id);
   cleanups.push(() => {
@@ -114,7 +114,7 @@ async function fixture() {
     )
   ).goal!;
   const scope = { workspaceId: workspace.id, threadId: goal.threadId, goalId: goal.goalId };
-  const coordinatorTurn = store.createTurn(
+  const coordinatorTurn = await store.createTurn(
     workspace.id,
     goal.threadId,
     'Coordinate',
@@ -201,7 +201,7 @@ async function fixture() {
   });
 
   const requestId = randomUUID();
-  const thread = store.createThread(
+  const thread = await store.createThread(
     workspace.id,
     'Issue review',
     deriveEntityId('th', ['task', requestId]),
@@ -243,7 +243,7 @@ async function fixture() {
   });
   const turnInput = serializeStructuredWorkerDelegationRequest(request);
   const agentSessionId = allocateEntityId('as');
-  const turn = store.createTurn(
+  const turn = await store.createTurn(
     workspace.id,
     thread.id,
     turnInput,
@@ -262,7 +262,7 @@ async function fixture() {
       }),
     }
   );
-  store.createItem({
+  await store.createItem({
     id: deriveEntityId('it', ['task-user', turn.id]),
     owner: { kind: 'workspace', workspaceId: workspace.id },
     threadId: thread.id,
@@ -604,7 +604,7 @@ describe('bounded native Goal-domain administration', () => {
       'function'
     );
     if (reason === 'ended-coordinator')
-      f.store.updateTurn(f.coordinatorTurn.id, {
+      await f.store.updateTurn(f.coordinatorTurn.id, {
         status: 'completed',
         completedAt: new Date().toISOString(),
       });
@@ -734,7 +734,10 @@ describe('bounded native Goal-domain administration', () => {
     f.domains.close(f.scope);
     expect(f.tasks.evaluateTask(f.effect)!.kernel.effect).toBe('deny');
     expect(f.domains.read(f.scope)).toBeNull();
-    f.store.updateTurn(f.turn.id, { status: 'completed', completedAt: new Date().toISOString() });
+    await f.store.updateTurn(f.turn.id, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+    });
     expect(() => f.tasks.evaluateTask(f.effect)).toThrow(/current exact owner facts/);
   });
 });

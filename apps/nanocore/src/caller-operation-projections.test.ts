@@ -66,8 +66,8 @@ async function fixture() {
   expect(signup.status, await signup.clone().text()).toBe(200);
   const cookie = signup.headers.get('set-cookie')!.split(';')[0]!;
   const userId = (await signup.json()).user.id as string;
-  const owned = store.createWorkspace('Owned content must not enter caller output.');
-  const foreign = store.createWorkspace('Other owner private content.');
+  const owned = await store.createWorkspace('Owned content must not enter caller output.');
+  const foreign = await store.createWorkspace('Other owner private content.');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: owned.id, ownerUserId: userId });
   recordWorkspaceOwnerMembership({
     coreDb,
@@ -112,10 +112,10 @@ async function fixture() {
 }
 
 /** Seeds distinct shared, caller-private and other-private canonical records; Artifact references are real Items. */
-function seedRetainedWork(f: Awaited<ReturnType<typeof fixture>>) {
+async function seedRetainedWork(f: Awaited<ReturnType<typeof fixture>>) {
   const threads = [
-    f.store.createThread(f.owned.id, 'Shared secret text', testEntityId('th', 'th_shared')),
-    f.store.createThread(
+    await f.store.createThread(f.owned.id, 'Shared secret text', testEntityId('th', 'th_shared')),
+    await f.store.createThread(
       f.owned.id,
       'Caller private text',
       testEntityId('th', 'th_own'),
@@ -125,7 +125,7 @@ function seedRetainedWork(f: Awaited<ReturnType<typeof fixture>>) {
         privateOwnerUserId: f.userId,
       }
     ),
-    f.store.createThread(
+    await f.store.createThread(
       f.owned.id,
       'Other private text',
       testEntityId('th', 'th_other'),
@@ -136,12 +136,12 @@ function seedRetainedWork(f: Awaited<ReturnType<typeof fixture>>) {
       }
     ),
   ];
-  const turns = threads.map((thread, index) => {
-    const turn = f.store.createTurn(f.owned.id, thread.id, 'Retained input', {
+  const turns = threads.map(async (thread, index) => {
+    const turn = await f.store.createTurn(f.owned.id, thread.id, 'Retained input', {
       kind: 'user',
       id: f.userId,
     });
-    f.store.createItem({
+    await f.store.createItem({
       id: testEntityId('it', `it_caller_${index}`),
       owner: { kind: 'workspace', workspaceId: f.owned.id },
       threadId: thread.id,
@@ -157,7 +157,7 @@ function seedRetainedWork(f: Awaited<ReturnType<typeof fixture>>) {
   });
   for (const [index, turn] of [turns[0]!, turns[2]!].entries()) {
     const body = `Artifact private-content-${index}`;
-    f.store.createArtifact({
+    await f.store.createArtifact({
       id: testEntityId('ar', `ar_turn_${index}`),
       workspaceId: f.owned.id,
       threadId: turn.threadId,
@@ -208,7 +208,7 @@ function seedRetainedWork(f: Awaited<ReturnType<typeof fixture>>) {
     updatedAt: timestamp,
   });
   // A later revision changes bytes but not the number of current canonical Items.
-  f.store.updateItem(testEntityId('it', 'it_caller_0'), { text: 'Revised private-content' });
+  await f.store.updateItem(testEntityId('it', 'it_caller_0'), { text: 'Revised private-content' });
 }
 
 /** Returns a real Core Client over the App's actual JSON and authentication boundaries. */
@@ -290,7 +290,7 @@ describe('caller operation projections', () => {
   it('counts only readable current records and preserves the same observation through native, HTTP, Core Client and CLI', async () => {
     requireCallerDefinition();
     const f = await fixture();
-    seedRetainedWork(f);
+    await seedRetainedWork(f);
     const input = { workspaceId: f.owned.id };
     const itemReads = vi.spyOn(f.store, 'listThreadItems');
     const response = await f.post('caller.read', input);
@@ -362,7 +362,11 @@ describe('caller operation projections', () => {
       expect(JSON.stringify(result)).not.toContain(admin.secret);
     }
     const reloaded = new FsStore({ dataRoot: f.dataRoot });
-    reloaded.createThread(f.owned.id, 'New canonical record', testEntityId('th', 'th_restart'));
+    await reloaded.createThread(
+      f.owned.id,
+      'New canonical record',
+      testEntityId('th', 'th_restart')
+    );
     const restarted = f.makeApp(new FsStore({ dataRoot: f.dataRoot }));
     const afterRestart = await f.post(
       'caller.read',
@@ -382,8 +386,8 @@ describe('caller operation projections', () => {
   it('observes only the exact selected owned Workspace and refuses selectors before source access', async () => {
     requireCallerDefinition();
     const f = await fixture();
-    seedRetainedWork(f);
-    const second = f.store.createWorkspace('Second owned Workspace');
+    await seedRetainedWork(f);
+    const second = await f.store.createWorkspace('Second owned Workspace');
     recordWorkspaceOwnerMembership({
       coreDb: f.coreDb,
       workspaceId: second.id,
@@ -417,7 +421,7 @@ describe('caller operation projections', () => {
   it('recomputes source audiences when administrator eligibility is revoked between reads', async () => {
     requireCallerDefinition();
     const f = await fixture();
-    seedRetainedWork(f);
+    await seedRetainedWork(f);
     const admin = f.token();
     const before = await f.post('caller.read', { workspaceId: f.owned.id });
     expect(before.status).toBe(200);
@@ -448,7 +452,7 @@ describe('caller operation projections', () => {
   ] as const)('refuses publication after %s during count acquisition', async (fault) => {
     requireCallerDefinition();
     const f = await fixture();
-    seedRetainedWork(f);
+    await seedRetainedWork(f);
     const admin = f.token();
     const listItems = f.store.listThreadItems.bind(f.store);
     const crossing = vi.spyOn(f.store, 'listThreadItems').mockImplementationOnce((...args) => {
@@ -586,7 +590,7 @@ describe('caller operation projections', () => {
   it('returns a typed failure when a count owner is unavailable, without inventing zero evidence', async () => {
     requireCallerDefinition();
     const f = await fixture();
-    seedRetainedWork(f);
+    await seedRetainedWork(f);
     const failure = vi.spyOn(f.store, 'listThreadItems').mockImplementation(() => {
       throw new Error('private-count-storage-failure');
     });

@@ -54,7 +54,7 @@ it.each([
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot: root });
-  const workspace = store.createWorkspace('Evidence inspection');
+  const workspace = await store.createWorkspace('Evidence inspection');
   recordWorkspaceOwnerMembership({
     coreDb,
     workspaceId: workspace.id,
@@ -88,7 +88,7 @@ it.each([
     );
     const goal = created.goal!;
     const scope = { workspaceId: workspace.id, threadId: goal.threadId, goalId: goal.goalId };
-    const coordinator = store.createTurn(
+    const coordinator = await store.createTurn(
       workspace.id,
       goal.threadId,
       'Inspect evidence',
@@ -155,12 +155,12 @@ it.each([
       services
     );
 
-    const completed = store.createThread(
+    const completed = await store.createThread(
       workspace.id,
       'Completed note',
       testEntityId('th', `th_task_${randomUUID()}`)
     );
-    const refused = store.createThread(
+    const refused = await store.createThread(
       workspace.id,
       'Cancelled attempt',
       testEntityId('th', `th_task_${randomUUID()}`)
@@ -184,13 +184,13 @@ it.each([
         )
       )();
     }
-    const taskTurn = store.createTurn(workspace.id, completed.id, 'Write note', {
+    const taskTurn = await store.createTurn(workspace.id, completed.id, 'Write note', {
       kind: 'user',
       id: actor.userId,
     });
     const body = 'Verified note: the issue is closed.';
     const digest = `sha256:${createHash('sha256').update(body).digest('hex')}`;
-    const artifact = store.createArtifact({
+    const artifact = await store.createArtifact({
       id: testEntityId('ar', `ar_${randomUUID()}`),
       workspaceId: workspace.id,
       threadId: completed.id,
@@ -212,7 +212,7 @@ it.each([
       createdAt: taskTurn.startedAt!,
       updatedAt: taskTurn.startedAt!,
     });
-    const reply = store.createItem({
+    const reply = await store.createItem({
       id: 'it_00000000-0000-704d-b966-477a8ad1120b',
       owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: completed.id,
@@ -260,16 +260,16 @@ it.each([
       stopReason: 'failed',
       diagnosticsSummary: refusal,
     });
-    const unrelated = store.createThread(
+    const unrelated = await store.createThread(
       workspace.id,
       'Unrelated visible Task',
       testEntityId('th', `th_task_${randomUUID()}`)
     );
-    const unrelatedTurn = store.createTurn(workspace.id, unrelated.id, 'Unlinked note', {
+    const unrelatedTurn = await store.createTurn(workspace.id, unrelated.id, 'Unlinked note', {
       kind: 'user',
       id: actor.userId,
     });
-    const unrelatedArtifact = store.createArtifact({
+    const unrelatedArtifact = await store.createArtifact({
       ...artifact,
       id: testEntityId('ar', `ar_${randomUUID()}`),
       threadId: unrelated.id,
@@ -291,18 +291,18 @@ it.each([
         )
       ).id
     ).toBe(unrelatedArtifact.id);
-    const privateThread = store.createThread(
+    const privateThread = await store.createThread(
       workspace.id,
       'Private origin',
       testEntityId('th', `th_private_${randomUUID()}`),
       'conversation',
       { visibility: 'private', privateOwnerUserId }
     );
-    const privateTurn = store.createTurn(workspace.id, privateThread.id, 'Private', {
+    const privateTurn = await store.createTurn(workspace.id, privateThread.id, 'Private', {
       kind: 'user',
       id: privateOwnerUserId,
     });
-    const privateArtifact = store.createArtifact({
+    const privateArtifact = await store.createArtifact({
       ...artifact,
       id: testEntityId('ar', `ar_${randomUUID()}`),
       content: { format: 'markdown', body: privateBody },
@@ -333,7 +333,7 @@ it.each([
       privateThread.id
     );
     // A reference in a linked shared Thread cannot launder a private Artifact's origin audience.
-    store.createItem({
+    await store.createItem({
       id: 'it_00000000-0000-7189-a388-3daa686462d9',
       owner: { kind: 'workspace', workspaceId: workspace.id },
       threadId: completed.id,
@@ -348,7 +348,10 @@ it.each([
       title: 'Private note reference',
       summary: 'Origin still private',
     });
-    store.updateTurn(taskTurn.id, { status: 'completed', completedAt: new Date().toISOString() });
+    await store.updateTurn(taskTurn.id, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+    });
     upsertWorkerCheckpoint(db, {
       workspaceId: workspace.id,
       threadId: privateThread.id,
@@ -513,11 +516,11 @@ it.each([
       const result = await tool(name).execute(args);
       return { ...result, output: JSON.parse((result.content[0] as { text: string }).text) };
     };
-    const failedTurn = store.createTurn(workspace.id, completed.id, 'Later failed attempt', {
+    const failedTurn = await store.createTurn(workspace.id, completed.id, 'Later failed attempt', {
       kind: 'user',
       id: actor.userId,
     });
-    store.updateTurn(failedTurn.id, {
+    await store.updateTurn(failedTurn.id, {
       status: 'failed',
       completedAt: new Date().toISOString(),
       error: {

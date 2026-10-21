@@ -17,7 +17,7 @@ it('imports, pins, activates and restores a reusable definition through public o
   applyMigrations(coreDb);
   const ownerUserId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
-  const workspace = store.createWorkspace('Definition lifecycle');
+  const workspace = await store.createWorkspace('Definition lifecycle');
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId: workspace.id });
   const app = createApp({ coreDb, dataRoot, store, mode: 'local' });
   const call = (operation: string, input: object) =>
