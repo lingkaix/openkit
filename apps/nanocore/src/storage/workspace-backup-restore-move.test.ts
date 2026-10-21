@@ -23,6 +23,7 @@ import {
   parseWorkspaceBackupManifest,
   parseWorkspaceBackupSeal,
 } from './workspace-backup-bundle.js';
+import { nativeProductScope, readNativeTurnHistory } from './workspace-file-records.js';
 import {
   runWorkspaceRecoveryCli,
   type WorkspaceRecoveryCliReport,
@@ -444,9 +445,77 @@ describe('D0-2 actual source lifecycle and inert transfer', () => {
         expect.objectContaining({ request_id: f.pendingId, delivery_turn_id: null }),
       ])
     );
-    expect(rows(workspaceDbPath(targetRoot, workspaceId), 'control_turns')).toHaveLength(
-      rows(workspaceDbPath(f.dataRoot, workspaceId), 'control_turns').length
+    // Pending Requests:217,242,247,274 require separate, inert closeout publication.
+    const sourceTurns = rows(workspaceDbPath(f.dataRoot, workspaceId), 'control_turns');
+    const targetDb = workspaceDbPath(targetRoot, workspaceId);
+    const targetTurns = rows(targetDb, 'control_turns');
+    const sourceIds = new Set(sourceTurns.map((turn) => turn.id));
+    const addedTurns = targetTurns.filter((turn) => !sourceIds.has(turn.id));
+    const closed = rows(targetDb, 'pending_requests').filter(
+      (request) => request.delivery === 'closed-out'
     );
+    expect(closed).toHaveLength(1);
+    expect(targetTurns).toHaveLength(sourceTurns.length + closed.length);
+    expect(addedTurns).toHaveLength(closed.length);
+    expect(
+      targetTurns.filter((turn) => sourceIds.has(turn.id)).map(({ id, status }) => ({ id, status }))
+    ).toEqual(sourceTurns.map(({ id, status }) => ({ id, status })));
+    const scope = nativeProductScope(targetRoot, { kind: 'workspace', workspaceId });
+    for (const request of closed) {
+      expect(request).toMatchObject({
+        request_id: f.pendingId,
+        state: 'ended',
+        resolution: null,
+        claim: 'unclaimed',
+        execution_call_id: null,
+        delivery_turn_id: null,
+      });
+      const publication = addedTurns.find((turn) => turn.id === request.publication_turn_id);
+      expect(publication).toBeDefined();
+      expect(publication!.id).toMatch(
+        /^tu_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+      );
+      expect(publication!.id).not.toBe(request.raising_turn_id);
+      expect(publication!.agent_session_id).toBeNull();
+      expect(['completed', 'interrupted', 'cancelled', 'failed']).toContain(publication!.status);
+      const history = readNativeTurnHistory(scope, String(publication!.id))!;
+      expect(history.turn).toMatchObject({
+        owner: { kind: 'workspace', workspaceId },
+        threadId: request.thread_id,
+        triggerActor: { kind: 'system' },
+        triggerSource: { kind: 'system-input' },
+        agentId: null,
+        agentSessionId: null,
+        completedAt: expect.any(String),
+      });
+      const closeoutId = pendingRequestItemId(String(request.request_id), 'ending');
+      expect(history.turn.items).toEqual([
+        expect.objectContaining({
+          id: closeoutId,
+          type: 'status',
+          owner: { kind: 'workspace', workspaceId },
+          threadId: request.thread_id,
+          turnId: request.publication_turn_id,
+          causationId: request.request_item_id,
+          summary: request.invalidating_event ?? request.ending,
+        }),
+      ]);
+      expect(
+        readNativeTurnHistory(scope, String(request.raising_turn_id))!.turn.items.filter(
+          (item) => item.id === closeoutId || item.causationId === request.request_item_id
+        )
+      ).toEqual([]);
+      expect(
+        rows(targetDb, 'control_executions').filter(
+          (execution) => execution.work_id === publication!.id
+        )
+      ).toEqual([]);
+      expect(
+        rows(targetDb, 'worker_turn_checkpoints').filter(
+          (checkpoint) => checkpoint.turn_id === publication!.id
+        )
+      ).toEqual([]);
+    }
   }, 120_000);
 });
 
