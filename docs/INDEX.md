@@ -31,28 +31,26 @@ and are not listed here.
 
 ## Core Model
 
-- `docs/core/agent-capability.md` — This document defines OpenKit agent capability semantics for worker capability supply and internal-role Tool projection.
 - `docs/core/agent-session.md` — This document defines the Core identity and continuity rules for `AgentSession`.
 - `docs/core/agent-supply.md` — This document defines OpenKit agent supply semantics.
-- `docs/core/agent-workflow.md` — This document owns the Core workflow mechanisms used to coordinate worker-agent work.
 - `docs/core/architecture.md` — This document owns the stable App/Core/Agent layer boundary, the split between Core coordination and agent execution, the adapter translation boundary, interna…
-- `docs/core/audit.md` — This document defines OpenKit audit semantics.
 - `docs/core/communication.md` — This document defines OpenKit core communication semantics.
 - `docs/core/contract-evolution.md` — This document owns how OpenKit classifies contract stability, promotes contract surfaces, evolves breaking contracts, and judges implementations against the pr…
 - `docs/core/core-concepts.md` — This document owns the shared root concepts that every OpenKit aspect projects: `CoreServer`, `Workspace`, `Thread`, `Turn`, `Item`, `Artifact`, `ApprovalReque…
+- `docs/core/doctrine.md` — This document owns the cross-aspect doctrine that every OpenKit design, implementation, deployment, and product projection must preserve.
+- `docs/core/evidence.md` — This document defines OpenKit evidence semantics for what is recorded and with which authority across four record classes: Audit, Usage and metering, Capture C…
 - `docs/core/fault-tolerance.md` — This document owns the OpenKit fault model, durable execution, the correctness properties that every aspect keeps under failure, the collection-before-loss pri…
-- `docs/core/foundation.md` — This document owns the cross-aspect doctrine that every OpenKit design, implementation, deployment, and product projection must preserve.
 - `docs/core/generative-apps.md` — This document owns Light App, Light App Catalog, Generative Kernel, and Generative UI: their purpose, agent-first relationship, durable authority, lifecycle, f…
 - `docs/core/identity.md` — This document defines OpenKit identity semantics.
 - `docs/core/knowledge.md` — This document defines OpenKit knowledge semantics.
-- `docs/core/metering.md` — This document owns the system-wide principles for measuring resource consumption, including runtime, storage, and network usage that is not naturally defined b…
-- `docs/core/permissions.md` — This document defines OpenKit permission semantics.
+- `docs/core/mediation.md` — This document defines OpenKit mediation semantics for operation definition and invocation, worker capability supply, and internal-role Tool projection.
+- `docs/core/policy.md` — This document defines OpenKit policy and permission semantics.
 - `docs/core/protocol.md` — This document defines stable OpenKit core protocol semantics.
 - `docs/core/runtime-model.md` — This document defines OpenKit runtime semantics.
 - `docs/core/sandbox.md` — This document defines OpenKit sandbox semantics.
-- `docs/core/storage.md` — This document records the storage principles and key concepts for OpenKit.
+- `docs/core/storage.md` — This document records the storage principles and key concepts for OpenKit across two explicit layers of one persistence module: Layer 1 (System State And Work…
 - `docs/core/vault.md` — This document defines OpenKit secret vault semantics.
-- `docs/core/work-model.md` — This document owns how OpenKit work appears to users and product surfaces.
+- `docs/core/work-model.md` — This document owns how OpenKit work appears to users and product surfaces and the Core workflow mechanisms used to coordinate worker-agent work.
 
 ## Specifications
 

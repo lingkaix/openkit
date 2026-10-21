@@ -26,5 +26,5 @@ Not recorded. Finer permissions are expected to reuse the existing subject, acti
 
 ## Affected Owners
 
-- docs/core/permissions.md
+- docs/core/policy.md
 - docs/specs/20260715-multi_user_workspace_system.md

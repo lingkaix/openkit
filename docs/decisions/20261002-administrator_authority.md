@@ -43,5 +43,5 @@ Source: change record 202610020440000000-interface_unification.
 - docs/specs/20260704-remote_auth_credential_bootstrap.md
 - docs/specs/20260704-workspace_backup_export_import.md
 - docs/specs/20260930-pending_requests.md
-- docs/core/permissions.md
+- docs/core/policy.md
 - docs/core/identity.md

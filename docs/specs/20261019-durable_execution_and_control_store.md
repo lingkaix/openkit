@@ -18,7 +18,7 @@ Product/Goal structures, authorization, Knowledge semantics, retention schemas/d
 
 - [Storage](../core/storage.md) and [Runtime Model](../core/runtime-model.md).
 - [Fault Tolerance](../core/fault-tolerance.md) and [Contract Evolution](../core/contract-evolution.md).
-- [Permissions](../core/permissions.md) and [AgentSession](../core/agent-session.md).
+- [Permissions](../core/policy.md) and [AgentSession](../core/agent-session.md).
 
 ## Related Docs
 

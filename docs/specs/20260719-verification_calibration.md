@@ -16,12 +16,12 @@ This specification owns the repository's verification calibration program: the t
 - L6 story acceptance semantics, roles, and evidence packages; `docs/specs/20260529-l6_story_acceptance.md` owns them.
 - Adaptive coordination and the composition of implementation, testing, consultation, review, and audit functions; `docs/change-execution.md` owns that coordination. This specification calibrates those functions but does not authorize or replace everyday execution rules.
 - The audit-record document type; `docs/documentation-model.md` owns it.
-- The product's runtime self-improvement and evaluation loop; `docs/specs/20260710-self_improvement_evaluation_loop.md` owns it. This program calibrates repository engineering, not product runtime behavior, and product audit records under `docs/core/audit.md` are a different domain.
+- The product's runtime self-improvement and evaluation loop; `docs/specs/20260710-self_improvement_evaluation_loop.md` owns it. This program calibrates repository engineering, not product runtime behavior, and product audit records under `docs/core/evidence.md` are a different domain.
 - Mutation tooling internals, CI job definitions, and reviewer prompt content; implementation slices own them under their own change plans.
 
 ## Core References
 
-- `docs/core/foundation.md`
+- `docs/core/doctrine.md`
 
 ## Intent
 
@@ -39,7 +39,7 @@ The program has three layers matching three trust boundaries: code mutation cali
 
 ## Current Scope
 
-The program covers this repository's engineering system at its current shape: one TypeScript monorepo, vitest and node:test suites, the existing L0 validators, agent-executed changes under the root `AGENTS.md` rules, and a small team. Strict surfaces are those named by `docs/core/foundation.md` and the root rules: security, authorization, credentials, sandbox containment, data loss, durable authority, and irreversible external effects.
+The program covers this repository's engineering system at its current shape: one TypeScript monorepo, vitest and node:test suites, the existing L0 validators, agent-executed changes under the root `AGENTS.md` rules, and a small team. Strict surfaces are those named by `docs/core/doctrine.md` and the root rules: security, authorization, credentials, sandbox containment, data loss, durable authority, and irreversible external effects.
 
 ## Goals
 

@@ -31,9 +31,9 @@ updated: "2026-09-30"
 - `docs/core/architecture.md`
 - `docs/core/work-model.md`
 - `docs/core/agent-session.md`
-- `docs/core/agent-capability.md`
+- `docs/core/mediation.md`
 - `docs/core/storage.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 
 ## Intent
 

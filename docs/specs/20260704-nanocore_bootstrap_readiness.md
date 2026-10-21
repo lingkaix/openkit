@@ -38,7 +38,7 @@ The [2026-10-19 decision](../decisions/20261019-durable_execution_and_control_st
 
 - `docs/core/architecture.md`
 - `docs/core/storage.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 
 ## Summary
 

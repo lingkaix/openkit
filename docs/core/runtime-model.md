@@ -148,7 +148,7 @@ Observable conformance requires one runtime inventory to distinguish all four pr
 
 `core-concepts.md` owns the `Turn` definition, and `protocol.md` owns its lifecycle and trigger vocabulary. Runtime owns assignment: a Turn run by a schedulable Agent is assigned to one AgentSession before dispatch; a pending queued worker may remain sessionless until then, and one current AgentSession may execute multiple sequential Turns from its bound Thread. A Core-local service Turn uses `agentSessionId=null` only under the protocol exception and MUST NOT be presented as worker execution or runtime continuity.
 
-Execution metadata belongs on the turn, AgentSession, item payloads, artifact records, approval records, or implementation telemetry.
+Execution metadata belongs on the turn, AgentSession, item payloads, artifact records, approval records, or implementation telemetry ([Evidence](evidence.md#telemetry)).
 
 ## Item
 
@@ -228,7 +228,7 @@ An execution substrate can fail while a Turn remains inspectable or eligible for
 
 [Fault Tolerance](fault-tolerance.md) defines safe points and danger windows. A durable admission, preparation intent, dispatch intent, accepted observation or terminal result establishes only its recorded facts. It does not prove that dependent runtime effects have settled. Recovery MUST follow the owning lifecycle above and obtain its required proof before adopting execution or releasing resources.
 
-[Permissions](permissions.md) owns checks at each governed effect boundary. Decisions permitting an effect MUST be recorded before that effect's danger window opens; a separately governed effect within a larger operation retains its own checks. An extension MUST NOT change an already committed decision or the immutable inputs of an effect that may have occurred.
+[Policy](policy.md) owns authorization and [Mediation](mediation.md#enforcement-points) owns checks at each governed effect boundary. Decisions permitting an effect MUST be recorded before that effect's danger window opens; a separately governed effect within a larger operation retains its own checks. An extension MUST NOT change an already committed decision or the immutable inputs of an effect that may have occurred.
 
 The resolved Agent setup and declared execution-environment inputs MUST remain fixed for the prepared Turn; later Agent, Skill or image changes apply to later Turns. This does not freeze mutable working data. Each further governed effect MUST satisfy current authorization at its enforcement point.
 

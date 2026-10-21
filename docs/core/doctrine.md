@@ -1,7 +1,7 @@
 ---
 status: Accepted
 ---
-# Foundation Model
+# Doctrine Model
 
 This document owns the cross-aspect doctrine that every OpenKit design, implementation, deployment, and product projection must preserve.
 
@@ -22,7 +22,7 @@ This model supplies those cross-aspect invariants without replacing the speciali
 - Apps, channels, skills, CLIs, adapters, indexes, and caches are projections over Core contracts. A projection must not become an independent workflow or authority source.
 - Scattered mechanisms and interfaces MUST be unified, and every later design and implementation MUST follow that rule. Each mechanism has one semantic owner, and its surfaces are derived from that owner. The rule does not merge distinct authentication, storage, effect, lifecycle, or offline host authorities. The ruling is recorded in [Operation Definition Rulings](../decisions/20261002-operation_definition_rulings.md).
 - Core capabilities are agent-native. Each capability MUST be defined as one semantic operation that an authorized agent can discover and invoke as naturally and easily as a tool call. Its human surfaces and its agent tool surfaces MUST be projections of that one operation, not separate semantic paths, and they differ only in the acting identity and the permissions it holds. Where an owner reserves a decision to a human, an agent acting under its own identity can request, observe, and explain that decision within existing authorization boundaries, but the agent projection MUST NOT let it make the decision. An agent that presents a human's own credential acts as that human for authorization; OpenKit does not distinguish the two mechanically, and the agent-facing instructions direct such an agent to obtain the human's decision before answering for the human. The decisions and their reasons are recorded in [a decision record](../decisions/20260929-agent_native_capabilities.md) and in [the interface unification rulings](../decisions/20261002-interface_unification_rulings.md).
-- Every agent, whether a user's external agent, a NanoCore internal agent, or a worker, MUST have its own principal and grants under the accepted [Permissions](permissions.md#subject) design. Authority MUST remain traceable to a human-approved domain through a finite, acyclic responsibility chain ending at one current responsible human. That accountability supplies no inherited human rights or human-only decision authority. The accepted design is not a claim that agent-principal activation is implemented; activation remains unclaimed. An agent acting for a User retains the distinct principal, actor, and restricted on-behalf-of authority defined by Permissions.
+- Every agent, whether a user's external agent, a NanoCore internal agent, or a worker, MUST have its own principal and grants under the accepted [Policy](policy.md#subject) design. Authority MUST remain traceable to a human-approved domain through a finite, acyclic responsibility chain ending at one current responsible human. That accountability supplies no inherited human rights or human-only decision authority. The accepted design is not a claim that agent-principal activation is implemented; activation remains unclaimed. An agent acting for a User retains the distinct principal, actor, and restricted on-behalf-of authority defined by Policy.
 - Agent-native components, protocols, and clients evolve quickly, so designs are forward-looking. Where clients do not yet support a newer standard mechanism, a projection uses a supported fallback, even if it costs some performance, and adopts the standard mechanism once the protocol, SDKs, and clients support it well.
 - Learning and self-improvement must remain source-traceable, reviewable, and reversible. Derived knowledge must not silently replace human intent or accepted product truth.
 - Trust, authorization, credential, execution, data-loss, and external-effect boundaries must be explicit. Missing authority or unverifiable lineage fails closed.
@@ -48,17 +48,17 @@ This model supplies those cross-aspect invariants without replacing the speciali
 
 ## Boundaries And Non-Goals
 
-Foundation owns doctrine shared by every Core aspect. Specialized concepts remain owned by their aspect documents even when they realize a Foundation principle.
+Doctrine owns doctrine shared by every Core aspect. Specialized concepts remain owned by their aspect documents even when they realize a Doctrine principle.
 
-Foundation does not define which actions require review, how a permission decision is represented, how evidence is stored, which runtime executes a task, how a projection is transported, or how a user interface presents state.
+Doctrine does not define which actions require review, how a permission decision is represented, how evidence is stored, which runtime executes a task, how a projection is transported, or how a user interface presents state.
 
-Foundation does not require every action to wait for a human. Automation may proceed within explicit delegated authority, policy, scope, and stop conditions.
+Doctrine does not require every action to wait for a human. Automation may proceed within explicit delegated authority, policy, scope, and stop conditions.
 
-Foundation does not make runtime-native state authoritative merely because it is durable inside a provider, sandbox, repository, or external service.
+Doctrine does not make runtime-native state authoritative merely because it is durable inside a provider, sandbox, repository, or external service.
 
-Foundation does not require every accepted operation to recover transparently after process, transport, or runtime failure. A bounded fallback may preserve the authoritative history, expose an `interrupted` or otherwise explicitly uncertain outcome, and require inspection or a new authorized attempt.
+Doctrine does not require every accepted operation to recover transparently after process, transport, or runtime failure. A bounded fallback may preserve the authoritative history, expose an `interrupted` or otherwise explicitly uncertain outcome, and require inspection or a new authorized attempt.
 
-Foundation does not promise compatibility with obsolete internal contracts. Contract evolution follows the clean current model.
+Doctrine does not promise compatibility with obsolete internal contracts. Contract evolution follows the clean current model.
 
 ## Invariants
 
@@ -82,17 +82,17 @@ Foundation does not promise compatibility with obsolete internal contracts. Cont
 
 `core-concepts.md` owns the shared objects and naming boundaries used to express durable product truth.
 
-`work-model.md` owns the user-facing projection of human authority, work state, review, and intervention.
+`work-model.md` owns the user-facing projection of human authority, work state, review, and intervention, together with workflow, gates, checkpoints, and stop semantics.
 
 `architecture.md` owns the stable App, Core, Agent, service, and projection boundaries that realize this doctrine.
 
-`runtime-model.md`, `agent-session.md`, and `agent-workflow.md` own bounded execution, continuity, workflow, gates, checkpoints, and stop semantics.
+`runtime-model.md` and `agent-session.md` own bounded execution and continuity.
 
 `protocol.md`, `communication.md`, and `storage.md` own the contracts that carry and persist Core truth.
 
-`identity.md`, `permissions.md`, `vault.md`, and `sandbox.md` own the concrete trust, authority, credential, and execution boundaries.
+`identity.md`, `policy.md`, `vault.md`, and `sandbox.md` own the concrete trust, authority, credential, and execution boundaries.
 
-`agent-capability.md`, `audit.md`, and `metering.md` own governed external effects, accountability projections, and measured consumption.
+`mediation.md` and `evidence.md` own governed external effects, accountability projections, measured consumption, Capture Coverage, and telemetry boundaries.
 
 `knowledge.md` owns reusable understanding and reviewed learning records.
 

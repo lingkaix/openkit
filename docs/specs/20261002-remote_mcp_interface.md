@@ -33,8 +33,8 @@ Where a rule below names another owner, that owner keeps the rule. This specific
 ## Core References
 
 - `docs/core/identity.md`
-- `docs/core/permissions.md`
-- `docs/core/audit.md`
+- `docs/core/policy.md`
+- `docs/core/evidence.md`
 - `docs/core/communication.md`
 
 ## Summary
@@ -95,7 +95,7 @@ A usable Token is not given a new audience check on this path. Audience binding 
 
 The request actor is the human User who owns the presented Token. An external agent holding that Token acts as that User. The endpoint creates no second actor for the agent.
 
-After successful verification, the Token's last-used summary records the channel `remote-mcp`. It may record the MCP client name supplied at initialization as the coarse source summary. It records no authorization header, no Token secret, and no full request. Audit of the request records the same User, the Token id, and the channel `remote-mcp`. `docs/core/audit.md` owns the audit record. The summary fields stay with [Remote Auth Credential Bootstrap](20260704-remote_auth_credential_bootstrap.md).
+After successful verification, the Token's last-used summary records the channel `remote-mcp`. It may record the MCP client name supplied at initialization as the coarse source summary. It records no authorization header, no Token secret, and no full request. Audit of the request records the same User, the Token id, and the channel `remote-mcp`. `docs/core/evidence.md` owns the audit record. The summary fields stay with [Remote Auth Credential Bootstrap](20260704-remote_auth_credential_bootstrap.md).
 
 ### Operation reach
 
@@ -107,7 +107,7 @@ A credential limit stays in force. A `workspace-readonly` Token that calls a mut
 
 An operation that returns a one-time secret stays unreachable. [Operation Definition](20261002-operation_definition.md) owns that exclusion. This endpoint does not dispatch the operation. The refusal is a tool result.
 
-When an operation's owner does not admit a bearer actor, the call returns that owner's typed refusal as a tool result. The endpoint does not substitute a session, change the actor, or hide the refusal. That refusal remains the result until the owner admits a bearer actor. A currently usable administrator bearer is admitted under the Administrator Eligibility rule in `docs/core/permissions.md`; ordinary users' bearer eligibility for session-only operations stays with each operation's owner.
+When an operation's owner does not admit a bearer actor, the call returns that owner's typed refusal as a tool result. The endpoint does not substitute a session, change the actor, or hide the refusal. That refusal remains the result until the owner admits a bearer actor. A currently usable administrator bearer is admitted under the Administrator Eligibility rule in `docs/core/policy.md`; ordinary users' bearer eligibility for session-only operations stays with each operation's owner.
 
 ### Protocol errors and product refusals
 

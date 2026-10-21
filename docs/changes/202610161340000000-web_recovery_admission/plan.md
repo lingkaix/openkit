@@ -12,7 +12,7 @@ Intent revision 1, 2026-10-16: The coordinator assigns L-WEB P28 supported admin
 
 ## Owners and boundary
 
-[Permissions](../../core/permissions.md) owns current authority and truthful settlement of dispatched effects. [Web product surface projection](../../specs/20260628-web_product_surface_projection.md) owns truthful client states. [Workspace backup, export and import](../../specs/20260704-workspace_backup_export_import.md) and [App update delivery](../../specs/20260910-app_update_delivery.md) retain their effects and recovery contracts. Existing Worker checkpoint and scheduler command owners retain exact identities and settlement. No API, durable state, actor epoch, command runner or new readiness policy is needed.
+[Permissions](../../core/policy.md) owns current authority and truthful settlement of dispatched effects. [Web product surface projection](../../specs/20260628-web_product_surface_projection.md) owns truthful client states. [Workspace backup, export and import](../../specs/20260704-workspace_backup_export_import.md) and [App update delivery](../../specs/20260910-app_update_delivery.md) retain their effects and recovery contracts. Existing Worker checkpoint and scheduler command owners retain exact identities and settlement. No API, durable state, actor epoch, command runner or new readiness policy is needed.
 
 ## Route and observations
 

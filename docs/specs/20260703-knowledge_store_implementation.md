@@ -30,8 +30,8 @@ kind: mechanism
 
 - `docs/core/knowledge.md`
 - `docs/core/storage.md`
-- `docs/core/agent-capability.md`
-- `docs/core/audit.md`
+- `docs/core/mediation.md`
+- `docs/core/evidence.md`
 
 ## Related Docs
 

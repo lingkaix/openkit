@@ -158,7 +158,7 @@ Contradictory human intent is not a communication arbitration problem. The authe
 ### Observable Acceptance
 
 - Asking for an explanation or status MUST NOT change a Plan, priority, Worker context, scheduler state, resource lifecycle, or external system.
-- A consequential natural-language request MUST expose its exact target and effect through the decision form required by `docs/core/permissions.md` before admission.
+- A consequential natural-language request MUST expose its exact target and effect through the decision form required by `docs/core/policy.md` before admission.
 - Every accepted command MUST preserve actor and request lineage and expose the owning accepted, queued, delivered, applied, rejected, stale, conflicted, failed, interrupted, unknown, or otherwise typed outcome without client inference.
 - Reconnect, retry, and channel replacement MUST reconstruct from durable owners and MUST NOT duplicate an effect or rely on hidden channel or provider state.
 
@@ -316,7 +316,7 @@ Communication with agents has three directions, each with one standard interface
 
 The tool surface a worker sees changes only at a Turn boundary, never inside a Turn.
 
-Inside the Sandbox, the worker's own configuration and tools, including MCP servers configured there, are the worker's. These directions govern only traffic that crosses the Sandbox boundary; storage and network containment still apply there. External routing follows [Sandbox](sandbox.md). [Agent Capability](agent-capability.md#routing) owns the managed-supply route and REST exception; transport selection MUST preserve those route contracts. This exception creates no upward route or NanoCore-managed MCP supply route.
+Inside the Sandbox, the worker's own configuration and tools, including MCP servers configured there, are the worker's. These directions govern only traffic that crosses the Sandbox boundary; storage and network containment still apply there. External routing follows [Sandbox](sandbox.md). [Mediation](mediation.md#routing) owns the managed-supply route and REST exception; transport selection MUST preserve those route contracts. This exception creates no upward route or NanoCore-managed MCP supply route.
 
 ## Control Plane
 
@@ -370,38 +370,11 @@ Vault credentials should be injected outside the agent's prompt context and shou
 
 Capability calls should carry audit metadata such as AgentSession ID, workspace ID, thread ID, turn ID, and request ID where practical.
 
-Detailed gateway semantics belong to `docs/core/agent-capability.md`.
+Detailed gateway semantics belong to `docs/core/mediation.md`.
 
 ## Capability Mediation Boundary
 
-A future capability mediation component may project Core capability services into a worker environment when the runtime cannot call those services directly.
-
-The component is communication substrate, not the agent runtime, worker-control path, or business-logic owner.
-
-Mediation responsibilities may include:
-
-- expose local capability endpoints to the agent
-- establish or accept a secure connection according to the deployment strategy
-- forward capability requests
-- apply Core-owned transformer pipeline decisions
-- support vault credential injection outside agent context
-- forward audit metadata
-- surface upstream failures as standard errors
-
-Mediation non-responsibilities:
-
-- choosing models
-- deciding provider fallback
-- owning rate limits
-- deciding which tools are visible
-- deciding which capabilities exist or remain available
-- persisting sensitive responses
-- owning product, workflow, or approval state
-- deciding permission policy
-- owning credentials, metering, or usage attribution
-- implementing business logic
-
-A capability mediation responsibility is not a worker-control owner and not a worker agent. The same outer transport projection or process MAY also carry a separately authenticated worker-control plane, but the capability mediation responsibility MUST NOT inspect, authorize, synthesize, retry, or reinterpret worker-control messages. Co-location and shared carriage MUST NOT change which participant owns a decision.
+[Mediation](mediation.md#capability-mediation-boundary) owns the Capability Mediation Boundary, its responsibilities, its non-responsibilities, and its shared-carriage authority boundary. Communication carries its transport projection.
 
 ## Deployment Projections
 
@@ -471,7 +444,7 @@ Audit is a cross-cutting communication requirement, not a separate transport.
 - Workers MUST NOT communicate with each other directly; a control edge between workers exists only as a parent-child edge through Core.
 - A worker's upward access to Core operations and NanoCore-managed integrated external systems MUST use NanoCore-served MCP through the gateway, and its visible tool surface MUST change only at a Turn boundary. Inference and worker-control traffic keep their own interfaces and owners.
 - Workspace bytes and artifact bytes SHOULD NOT travel through the control stream except for intentionally small inline previews.
-- Capability mediation responsibilities MUST NOT own, inspect, authorize, synthesize, retry, or reinterpret worker-control traffic; choose models; decide provider fallback; own rate limits; decide tool visibility or capability availability; persist sensitive responses; own credentials, metering, or usage attribution; decide permission policy; own product or workflow state; or implement business logic. A shared outer transport or process may carry the separately authenticated control plane without transferring those responsibilities.
+- [Mediation](mediation.md#invariants) owns the capability mediation responsibility invariant; Communication carries its transport projection.
 - Transport and deployment-mode choices MUST preserve the deployment-semantic invariant owned by `docs/core/architecture.md`.
 - Control, workspace, artifact, and capability planes MUST remain distinct in every deployment shape, including shapes where they share physical network infrastructure.
 - Sharing one connection, process, or transport session MUST NOT merge plane tokens, permission scopes, payload limits, ordering, retry rules, failure semantics, or protocol ownership.
@@ -483,7 +456,7 @@ Audit is a cross-cutting communication requirement, not a separate transport.
 - `docs/core/runtime-model.md`
 - `docs/core/storage.md`
 - `docs/core/agent-supply.md`
-- `docs/core/agent-capability.md`
+- `docs/core/mediation.md`
 - `docs/core/vault.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 - `docs/app-api.md`

@@ -15,10 +15,9 @@ This spec does not own the public Gateway HTTP surface; provider routing or requ
 
 ## Core References
 
-- `docs/core/agent-capability.md`
-- `docs/core/metering.md`
+- `docs/core/mediation.md`
 - `docs/core/vault.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 
 Related specs:
 

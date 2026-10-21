@@ -9,7 +9,7 @@ kind: mechanism
 
 This spec defines the `@openkit/policy-kernel` package contract: a strict NGAC subset evaluator for OpenKit policy facts, access rights, low-level allow or deny decisions, and structural decision traces.
 
-It keeps canonical product permission semantics in `docs/core/permissions.md` and leaves NanoCore enforcement mapping, approval routing, Action Center behavior, backend policy artifacts, and durable permission-decision records to `docs/specs/20260703-policy_enforcement_mapping.md`.
+It keeps canonical product permission semantics in `docs/core/policy.md` and leaves NanoCore enforcement mapping, approval routing, Action Center behavior, backend policy artifacts, and durable permission-decision records to `docs/specs/20260703-policy_enforcement_mapping.md`.
 
 ## Purpose
 
@@ -17,7 +17,7 @@ OpenKit needs one coherent authorization model for API access, workspace work, a
 
 The goal is not to implement or claim the complete NGAC standard. OpenKit MAY leave NGAC definitions, functions, relations, and functional entities unimplemented. The rule is stricter for implemented concepts: any NGAC concept implemented by `@openkit/policy-kernel` MUST match NGAC definitions, standard terminology, and described semantics instead of becoming an OpenKit-specific redesign.
 
-This spec owns the policy-kernel model and package boundary. `docs/core/permissions.md` owns the canonical product permission concept, and `docs/specs/20260703-policy_enforcement_mapping.md` owns how NanoCore maps policy decisions into product workflow, approvals, Action Center rows, backend policy artifacts, and durable permission-decision records.
+This spec owns the policy-kernel model and package boundary. `docs/core/policy.md` owns the canonical product permission concept, and `docs/specs/20260703-policy_enforcement_mapping.md` owns how NanoCore maps policy decisions into product workflow, approvals, Action Center rows, backend policy artifacts, and durable permission-decision records.
 
 ## Owns
 
@@ -40,11 +40,11 @@ This spec owns the policy-kernel model and package boundary. `docs/core/permissi
 
 ## Core References
 
-- `docs/core/permissions.md`
-- `docs/core/audit.md`
+- `docs/core/policy.md`
+- `docs/core/evidence.md`
 - `docs/core/vault.md`
 - `docs/core/knowledge.md`
-- `docs/core/agent-capability.md`
+- `docs/core/mediation.md`
 - `docs/core/sandbox.md`
 
 ## Product Fit
@@ -164,7 +164,7 @@ The standard-aligned kernel target supports these element kinds:
 
 An agent Turn supplies the actual process context for the evaluated principal. A direct User request may omit process context; adapters MUST NOT invent a Turn. Processes are not policy elements. When a product request has process context, adapters MUST represent it through NGAC process-to-user facts and process-scoped restrictions rather than assigning a process into the policy element graph. The terms `userAttribute` and `objectAttribute` are inherited from NGAC. OpenKit-facing adapters may project friendlier names such as subject group, capability group, resource group, trust domain, or policy domain.
 
-For an agent principal, request facts MUST resolve the responsibility chain defined by [Permissions](../core/permissions.md#subject). The Kernel MUST check that its terminal human remains current and authorized over the domain. A broken or no-longer-authorized chain suspends the agent's grants until human reassignment. This check supplies no inherited human rights and does not change the process-to-user relation.
+For an agent principal, request facts MUST resolve the responsibility chain defined by [Permissions](../core/policy.md#subject). The Kernel MUST check that its terminal human remains current and authorized over the domain. A broken or no-longer-authorized chain suspends the agent's grants until human reassignment. This check supplies no inherited human rights and does not change the process-to-user relation.
 
 ### Assignment
 

@@ -4,9 +4,9 @@ updated: 2026-09-11
 ---
 # Storage Model
 
-This document records the storage principles and key concepts for OpenKit.
+This document records the storage principles and key concepts for OpenKit across two explicit layers of one persistence module: Layer 1 (System State And Work Data) and Layer 2 (User Data And The Storage Service) ([layered storage decision](../decisions/20261018-layered_file_storage_and_knowledge_packages.md), [durable execution decision](../decisions/20261019-durable_execution_and_control_store.md)).
 
-This document owns OpenKit's scope-owned transactional control authority, immutable-content boundary, logical storage hierarchy, source-of-truth rules, item-log persistence invariants, and the boundary between bounded NanoCore product storage and external source storage.
+This document owns OpenKit's scope-owned transactional control authority, immutable-content boundary, logical storage hierarchy, source-of-truth rules, item-log persistence invariants, the shared file-storage, content-reference, lease, and package-byte boundary, and the boundary between bounded NanoCore product storage and external source storage.
 
 This document does not own the complete physical schema, table layout, file layout, migration plan, backup format, app read models, protocol record semantics, vault backend design, or implementation-specific data-root paths.
 
@@ -32,39 +32,11 @@ Secret values belong to the vault boundary, not normal workspace files or protoc
 
 Storage format evolution follows the unknown-field preservation and fail-closed rules in `docs/core/contract-evolution.md`.
 
-## Shared File Storage
+## Layer 1: System State And Work Data
 
-Content identity, locations, attachments, derivatives, indexes and Knowledge entries have separate responsibilities. The Storage Service owns locations and byte operations, not content meaning, Policy decisions, semantic retrieval or processing. Its separate process-agnostic package starts with a local backend and Knowledge Sources; other owners adopt it later. Vault owns backend credentials.
+Layer 1 governs system state and work data: scope stores and control authority, immutable content, source of truth per data class, the item log, retention and deletion classes (including retained agent work data and Worker working volumes), format markers, and portability.
 
-A reference binds its observed digest and locator; unavailable bytes never bind another object. Storage leases reuse Policy grants and current runtime enforcement. Derivation owns conversion; retrieval owns indexes and embeddings. Do not retain extra originals or derivative excerpts solely for historical resolution. Existing canonical data and retained work keep their owners. The [layered storage decision](../decisions/20261018-layered_file_storage_and_knowledge_packages.md) records these boundaries.
-
-## Persistent Worker Working Storage
-
-OpenKit SHOULD treat a healthy Worker environment as a long-lived, lightweight VM-like working resource. Durable working storage MUST outlive the replaceable process, Sandbox, image and execution-substrate epoch that use it. This is backend-independent storage doctrine, not a requirement to implement a VM backend or to preserve a container root filesystem.
-
-Retention applies to entire admitted writable volumes or directory roots, without an inventory of supported file types. Uncommitted and ignored files, project `temp/`, unfinished work, runtime-local conversations, memory, configuration and installed user tools are examples, not an allowlist. Git inclusion, Artifact registration, filename, extension, task completion and AgentSession termination MUST NOT decide whether bytes inside a retained root survive. Additional software may store previously unknown formats there without an OpenKit feature or schema change. Only an explicitly separate disposable mount or scratch area may carry automatic cleanup semantics.
-
-NanoCore owns each retained storage association's Workspace, access audience, execution attachment and deletion authority. The execution host owns the working bytes at that association; it is not a second owner of product records. Persisted working bytes MUST NOT be silently treated as an accepted Git commit, Artifact, Knowledge Page, completed Turn or independent verification result. Native runtime memory and history do not automatically become Core User Memory or Workspace Knowledge. A retained Worker environment may be named and created before execution; its existing Core association owns its Workspace, selected admitted environment supply, retained targets and attachment/deletion authority. The retained Worker environment belongs to its Workspace and is shared with its current membership from creation. Creator and contributor identities are attribution and provenance, not personal ownership or ordinary reuse vetoes. Retained working and native data admitted to that shared audience remain available after a contributor leaves. Narrower source data requires explicit destination-audience authorization before shared attachment; missing or revoked required proof preserves bytes and fences exposure. A shared work slot supplies no confidentiality guarantee. Existing private associations preserve their restricted audience and exact authorized continuation; migration cannot expose them to other members. The decision is recorded in [User-Selected Workspace-Shared Sandboxes](../decisions/20261008-user_selected_workspace_shared_sandboxes.md).
-
-Workspaces MUST have separate retained execution storage. Within one Workspace, an authorized Operator/Coordinator Agent SHOULD prefer reusing suitable idle Workers and volumes for related work, including a new Task or Goal. The Agent judges usefulness from authorized work context; deterministic admission enforces current audience, compatibility, writer fencing and independent-adjudication separation. [Permissions](permissions.md#shared-sandbox-resource-eligibility) owns the shared-Sandbox audience and source-to-destination disclosure requirements. Storage MUST preserve those admitted audiences across retention and reattachment. Matching image alone grants no access; current membership, credential scope, policy and protected-source admission remain required. The accepted disclosure boundary is recorded in [User-Selected Workspace-Shared Sandboxes](../decisions/20261008-user_selected_workspace_shared_sandboxes.md). An explicit fresh environment remains available when reuse is unsuitable.
-
-Image ancestry and an inherited storage-layout contract SHOULD make ordinary derived-image replacement reuse the same volumes. The mechanism MUST operate on volume identity, mount layout, ownership and current authorization, not by understanding each stored application's file formats. Compatible attachment does not prove software-format compatibility, native conversation continuity or data rollback. A changed image may add software without changing the working bytes; incompatible software or storage layout must preserve those bytes for a corrected environment or explicitly authorized migration.
-
-Normal Turn/AgentSession cleanup, Sandbox replacement, Runtime Epoch invalidation, NanoCore/Web updates and image-cache cleanup MUST NOT delete retained working storage. Runtime cleanup fences processes and authority; it does not erase working data to prove that execution stopped. Missing or inconsistent retained storage MUST be reported rather than replaced with an empty store under the same identity. Unproved writer absence blocks attachment by a successor. Security-suspect stored content remains retained for authorized inspection and MUST NOT be automatically reattached for execution.
-
-OpenKit-injected credentials, control state, route bindings and temporary grants MUST remain outside generic retained volumes and be recreated through their current owners. Preserved user files are data, never an authorization source. Retained native configuration cannot override current admission, provider, capability, network or credential policy. Preservation does not authorize new collection of private reasoning or raw data beyond the existing runtime and evidence owners.
-
-Purge requires a currently usable administrator credential, explicit resource-deletion authority, current audience and hold checks, and proved writer fencing. Ordinary members may stop an eligible idle shared realization and request administrator deletion; neither action grants purge authority. [User-Selected Workspace-Shared Sandboxes](../decisions/20261008-user_selected_workspace_shared_sandboxes.md) records this boundary. Pressure or quota exhaustion refuses new writes/admission or requests authorized cleanup; it MUST NOT silently evict retained work. Backup/export coverage MUST name execution-host volumes separately from NanoCore storage and report an unavailable or omitted volume truthfully. A persistent local volume is not an off-host backup or a guarantee against physical disk loss. Observable conformance requires unknown, untracked and ignored bytes to survive compatible replacement without promotion to product truth, and missing, conflicted, unsafe or unavailable storage to preserve data and block false recovery.
-
-## Local Execution Image Supply
-
-An execution host SHOULD retain verified immutable image content independently of its replaceable execution runtime. Public and private registries are acquisition sources for Worker images, not prerequisites imposed by OpenKit for starting NanoCore, connecting an execution host or reusing Worker image content already held locally. This does not replace a selected external runtime's own supported bootstrap behavior or dependencies. Startup establishes the execution substrate and its authenticated control connection; each workload separately proves availability and integrity of its exact image before execution. Missing content blocks the dependent preparation or workload without invalidating unrelated healthy execution.
-
-NanoCore owns desired image declarations, authorization, preparation lineage and accepted results. The execution host owns locally acquired or built image bytes and their verified import into its runtime. This does not make NanoCore a registry or duplicate large image blobs in Core storage. An explicitly supplied local archive may establish image availability without a registry; a new remote acquisition or build can still require its declared external sources. Local availability is neither publication nor authority to execute, and a local image copy is not an off-host backup.
-
-Verified retained images MUST NOT be automatically evicted. Capacity exhaustion refuses new image admission and requires an explicit administrator capacity change or cleanup, without interrupting running Workers. Removal is an explicit exact-image decision: it may make future environment creation unavailable and must not claim that a registry can always reproduce the bytes. Image replacement and deletion do not delete retained working volumes. A removed or corrupt image cannot be silently replaced by a different image under the same digest. Recovery uses verified identical content or a newly authorized image selection; it does not claim that preserved volume bytes alone can reproduce unavailable software.
-
-## Storage Hierarchy
+### Storage Hierarchy
 
 The logical storage hierarchy is:
 
@@ -86,7 +58,7 @@ Storage ownership is divided into three conceptual areas:
 
 The concrete path tree is defined in the server config and data layout spec, not duplicated here.
 
-## SQLite Layers
+### SQLite Layers
 
 One Core server may use multiple SQLite databases.
 
@@ -98,7 +70,7 @@ A Workspace control database belongs to one Workspace and owns its mutable contr
 
 Workspace-local control authority MUST NOT depend on a server-global database to reconstruct local history. Cross-scope physical ownership remains an explicit dependency, not duplicated Workspace authority. Per-Workspace databases support independent backup, movement, deletion and failure isolation.
 
-## Source Of Truth
+### Source Of Truth
 
 The scope control store owns mutable Workspace, Thread, Turn, AgentSession, Item revision, catalog, configuration-head and execution records. Existing domain owners keep their meanings and retention rules. Immutable content and authored revision bytes retain their original identities and content owners; database heads select the admitted revision. Authored server configuration stays server-scoped, and Workspace executions retain its admitted revision/digest as provenance rather than server authority.
 
@@ -125,7 +97,47 @@ These records still belong to the core model. SQLite being their source of truth
 
 Each Light App data kernel, defined in [Generative Apps](generative-apps.md), requires an explicit bounded canonical record contract, including schema evolution, constraints, and complete portability from its first implementation. Generative UI declarations, saved view definitions, source results, and business records remain distinct data classes with explicit owners; a rendered or cached view cannot repair or replace missing business authority. Each Light App has an independent schema/data recovery unit; a per-app SQLite realization remains under the Workspace storage owner, not a separate database service. Independent app stores remain under existing storage ownership; neither concept authorizes a second storage plane, implicit generalization of an existing text record, or omission from backup and export coverage.
 
-## Retention Classes
+### Item Log Invariants
+
+Item logs MUST be append-only.
+
+Item writes MUST preserve the same ordering that clients observe through protocol event streams.
+
+Replay MUST reproduce item order according to the stored stream sequence.
+
+Item writes SHOULD persist the `protocolVersion` that was active when the item event was recorded.
+
+Implementations SHOULD use a single-writer or equivalent atomic append discipline per item log scope so replay cannot observe partial item events.
+
+Compaction MAY materialize completed item snapshots, but it MUST NOT change item IDs, causation links, or the final meaning of completed items.
+
+### Persistent Worker Working Storage
+
+OpenKit SHOULD treat a healthy Worker environment as a long-lived, lightweight VM-like working resource. Durable working storage MUST outlive the replaceable process, Sandbox, image and execution-substrate epoch that use it. This is backend-independent storage doctrine, not a requirement to implement a VM backend or to preserve a container root filesystem.
+
+Retention applies to entire admitted writable volumes or directory roots, without an inventory of supported file types. Uncommitted and ignored files, project `temp/`, unfinished work, runtime-local conversations, memory, configuration and installed user tools are examples, not an allowlist. Git inclusion, Artifact registration, filename, extension, task completion and AgentSession termination MUST NOT decide whether bytes inside a retained root survive. Additional software may store previously unknown formats there without an OpenKit feature or schema change. Only an explicitly separate disposable mount or scratch area may carry automatic cleanup semantics.
+
+NanoCore owns each retained storage association's Workspace, access audience, execution attachment and deletion authority. The execution host owns the working bytes at that association; it is not a second owner of product records. Persisted working bytes MUST NOT be silently treated as an accepted Git commit, Artifact, Knowledge Page, completed Turn or independent verification result. Native runtime memory and history do not automatically become Core User Memory or Workspace Knowledge. A retained Worker environment may be named and created before execution; its existing Core association owns its Workspace, selected admitted environment supply, retained targets and attachment/deletion authority. The retained Worker environment belongs to its Workspace and is shared with its current membership from creation. Creator and contributor identities are attribution and provenance, not personal ownership or ordinary reuse vetoes. Retained working and native data admitted to that shared audience remain available after a contributor leaves. Narrower source data requires explicit destination-audience authorization before shared attachment; missing or revoked required proof preserves bytes and fences exposure. A shared work slot supplies no confidentiality guarantee. Existing private associations preserve their restricted audience and exact authorized continuation; migration cannot expose them to other members. The decision is recorded in [User-Selected Workspace-Shared Sandboxes](../decisions/20261008-user_selected_workspace_shared_sandboxes.md).
+
+Workspaces MUST have separate retained execution storage. Within one Workspace, an authorized Operator/Coordinator Agent SHOULD prefer reusing suitable idle Workers and volumes for related work, including a new Task or Goal. The Agent judges usefulness from authorized work context; deterministic admission enforces current audience, compatibility, writer fencing and independent-adjudication separation. [Policy](policy.md#shared-sandbox-resource-eligibility) owns the shared-Sandbox audience and source-to-destination disclosure requirements. Storage MUST preserve those admitted audiences across retention and reattachment. Matching image alone grants no access; current membership, credential scope, policy and protected-source admission remain required. The accepted disclosure boundary is recorded in [User-Selected Workspace-Shared Sandboxes](../decisions/20261008-user_selected_workspace_shared_sandboxes.md). An explicit fresh environment remains available when reuse is unsuitable.
+
+Image ancestry and an inherited storage-layout contract SHOULD make ordinary derived-image replacement reuse the same volumes. The mechanism MUST operate on volume identity, mount layout, ownership and current authorization, not by understanding each stored application's file formats. Compatible attachment does not prove software-format compatibility, native conversation continuity or data rollback. A changed image may add software without changing the working bytes; incompatible software or storage layout must preserve those bytes for a corrected environment or explicitly authorized migration.
+
+Normal Turn/AgentSession cleanup, Sandbox replacement, Runtime Epoch invalidation, NanoCore/Web updates and image-cache cleanup MUST NOT delete retained working storage. Runtime cleanup fences processes and authority; it does not erase working data to prove that execution stopped. Missing or inconsistent retained storage MUST be reported rather than replaced with an empty store under the same identity. Unproved writer absence blocks attachment by a successor. Security-suspect stored content remains retained for authorized inspection and MUST NOT be automatically reattached for execution.
+
+OpenKit-injected credentials, control state, route bindings and temporary grants MUST remain outside generic retained volumes and be recreated through their current owners. Preserved user files are data, never an authorization source. Retained native configuration cannot override current admission, provider, capability, network or credential policy. Preservation does not authorize new collection of private reasoning or raw data beyond the existing runtime and evidence owners.
+
+Purge requires a currently usable administrator credential, explicit resource-deletion authority, current audience and hold checks, and proved writer fencing. Ordinary members may stop an eligible idle shared realization and request administrator deletion; neither action grants purge authority. [User-Selected Workspace-Shared Sandboxes](../decisions/20261008-user_selected_workspace_shared_sandboxes.md) records this boundary. Pressure or quota exhaustion refuses new writes/admission or requests authorized cleanup; it MUST NOT silently evict retained work. Backup/export coverage MUST name execution-host volumes separately from NanoCore storage and report an unavailable or omitted volume truthfully. A persistent local volume is not an off-host backup or a guarantee against physical disk loss. Observable conformance requires unknown, untracked and ignored bytes to survive compatible replacement without promotion to product truth, and missing, conflicted, unsafe or unavailable storage to preserve data and block false recovery.
+
+### Local Execution Image Supply
+
+An execution host SHOULD retain verified immutable image content independently of its replaceable execution runtime. Public and private registries are acquisition sources for Worker images, not prerequisites imposed by OpenKit for starting NanoCore, connecting an execution host or reusing Worker image content already held locally. This does not replace a selected external runtime's own supported bootstrap behavior or dependencies. Startup establishes the execution substrate and its authenticated control connection; each workload separately proves availability and integrity of its exact image before execution. Missing content blocks the dependent preparation or workload without invalidating unrelated healthy execution.
+
+NanoCore owns desired image declarations, authorization, preparation lineage and accepted results. The execution host owns locally acquired or built image bytes and their verified import into its runtime. This does not make NanoCore a registry or duplicate large image blobs in Core storage. An explicitly supplied local archive may establish image availability without a registry; a new remote acquisition or build can still require its declared external sources. Local availability is neither publication nor authority to execute, and a local image copy is not an off-host backup.
+
+Verified retained images MUST NOT be automatically evicted. Capacity exhaustion refuses new image admission and requires an explicit administrator capacity change or cleanup, without interrupting running Workers. Removal is an explicit exact-image decision: it may make future environment creation unavailable and must not claim that a registry can always reproduce the bytes. Image replacement and deletion do not delete retained working volumes. A removed or corrupt image cannot be silently replaced by a different image under the same digest. Recovery uses verified identical content or a newly authorized image selection; it does not claim that preserved volume bytes alone can reproduce unavailable software.
+
+### Retention Classes
 
 The closed Core retention-class vocabulary is:
 
@@ -139,7 +151,7 @@ legal-hold
 
 Owning record specifications assign these existing tokens and their retention windows. `restricted-raw` is an access class, not a demonstrated-need retention gate or a duration. Valuable observed work data is retained by default without a demonstrated future use, as recorded in the [completeness decision](../decisions/20261019-work_data_retention_completeness.md). Owning records keep their capture coverage and ordinary retention policy. Raw reads require current owner authorization and an audit record. No class grants access. Material under `legal-hold` MUST NOT be compacted or deleted until the hold is released.
 
-## Agent Data Retention And Deletion
+### Agent Data Retention And Deletion
 
 Agent features introduce no retention class, retention engine, or global deletion workflow. They use the closed vocabulary above through the existing Thread, Turn, Item, Artifact, Knowledge, audit, usage, evidence, Workspace, user, and Vault owners.
 
@@ -165,6 +177,30 @@ Workspace and user deletion reuse their existing closure-export, backup, legal-h
 
 A separate product-record lifecycle for an unadmitted raw-audio/private-state capture feature is not applicable here. Observed provider/native work content and opaque runtime-owned volumes retain their existing owners. Creation, update, termination, retry, and recovery remain with those owners. Acceptance requires default complete capture within admitted boundaries, audited and authorized restricted-raw reads, no captured OpenKit-held/injected secrets, and explicit collection gaps or lawful disposal. Bounded safe diagnostics keep their existing class; source deletion/revocation prevents future derived reads before cleanup finishes; independently accepted resources keep their owners; legal hold blocks deletion without granting access.
 
+### Independent Retained Format Markers
+
+Each OpenKit-owned retained family has an explicit format marker in its record header or its existing owning inventory. New record formats start at version 1. Writers and readers use the shared marker helper: writers emit the marker, and readers check it before decoding the family's payload. A missing or unknown version fails closed. Family-owned retained schemas are independent of release-coupled wire schemas; a wire-only change cannot change the meaning of a stored version. The shared v1 marker remains 1; a future family format selects its own decoder and does not change the shared version constant. Existing native database journals govern scalar-only SQL storage; independently decoded JSON-bearing rows carry their own version. Original content and opaque native bytes are not rewritten to add an OpenKit header. Their versioned owning descriptors retain their exact digest and interpretation.
+
+This rc.10 cutover uses the accepted pre-stable reset boundary. It adds no converter, legacy reader or dual write. The coordinator performs the single deployment reset; this rule authorizes no host or account action.
+
+### Storage Scope Direction
+
+Workspace control authority uses its own scope database. Additional databases require an existing independent ownership or data-recovery need; they MUST NOT duplicate control authority.
+
+The rebuildable Retrieval Kernel projection is the default full-text search index family. Vector search remains an optional future index family until promoted by stable core requirements.
+
+The current local and server realization uses the encrypted-file Vault through the vault boundary, not normal storage records. Concrete ciphertext, metadata, and key-file layout remain implementation-facing Vault concerns.
+
+## Layer 2: User Data And The Storage Service
+
+Layer 2 governs user data and the Storage Service: locations and byte operations, storage backends, digest and locator references, leases under Policy grants, Knowledge package bytes, and the external Git and object-storage boundary ([layered storage decision](../decisions/20261018-layered_file_storage_and_knowledge_packages.md)).
+
+### Shared File Storage
+
+Content identity, locations, attachments, derivatives, indexes and Knowledge entries have separate responsibilities. The Storage Service owns locations and byte operations, not content meaning, Policy decisions, semantic retrieval or processing. Its separate process-agnostic package starts with a local backend and Knowledge Sources; other owners adopt it later. S3-compatible roots, NAS, and cloud drives are later backend candidates and are not current active backends. Vault owns backend credentials.
+
+A reference binds its observed digest and locator (`contentRef`, with raw-byte SHA-256 content identity, logical mount and confined relative path, optional byte or page range, and observed availability); unavailable bytes never bind another object, and references may miss without silently substituting different content or forcing extra retention copies ([references decision](../decisions/20260921-references_may_miss_never_mislead.md)). Storage leases reuse Policy grants and current runtime enforcement, with host-side mounts and never sandbox FUSE, and audit recorded per lease lifecycle rather than per byte. Knowledge Bases and Knowledge packages share one canonical layout (`pages/`, `sources/`, `schema/`, `raw/`, and optional `indexes/`), with `manifest.json` added at the package root and raw bytes kept in Storage outside Git. Derivation owns conversion; retrieval owns indexes and embeddings. Do not retain extra originals or derivative excerpts solely for historical resolution. Existing canonical data and retained work keep their owners. The [layered storage decision](../decisions/20261018-layered_file_storage_and_knowledge_packages.md) records these boundaries.
+
 ## Invariants
 
 - Workspace data MUST remain separable enough for backup, export, deletion, migration, and debugging.
@@ -180,31 +216,3 @@ A separate product-record lifecycle for an unadmitted raw-audio/private-state ca
 - Authority-bearing storage fields MUST NOT be silently ignored by readers that do not understand them.
 - A remote Agent Runtime MUST NOT consume a host-local Git repository path from the NanoCore server. Repository-sourced code and development text MUST first exist through an authorized network-addressable Git source. Workers use installed Git freely for local work inside the admitted Sandbox. Platform-managed external hosting calls use an explicitly selected vendor MCP server through NanoCore's Gateway, with gateway-held credentials and the MCP owner's authentication, current authorization, configured per-tool approval, and audit. Native Git push is optional user-space configuration requiring a user-injected credential and admitted git-receive-pack egress; OpenKit supplies no additional native-push mechanism. NanoCore reads no host repository to verify a Sandbox Git work slot. Bounded installed resources use their catalog-owned immutable snapshots and governed delivery rather than requiring a Git repository for each load. The decision and its reason are recorded in [a decision record](../decisions/20261002-hosting_through_gateway_mcp.md).
 - Large static source data MUST remain in an external object store once it exceeds the applicable bounded NanoCore-owned record or handoff contract. NanoCore retains only the external reference and required bounded lineage; neither NanoCore nor NanoHost becomes the object-storage service.
-
-## Item Log Invariants
-
-Item logs MUST be append-only.
-
-Item writes MUST preserve the same ordering that clients observe through protocol event streams.
-
-Replay MUST reproduce item order according to the stored stream sequence.
-
-Item writes SHOULD persist the `protocolVersion` that was active when the item event was recorded.
-
-Implementations SHOULD use a single-writer or equivalent atomic append discipline per item log scope so replay cannot observe partial item events.
-
-Compaction MAY materialize completed item snapshots, but it MUST NOT change item IDs, causation links, or the final meaning of completed items.
-
-## Storage Scope Direction
-
-Workspace control authority uses its own scope database. Additional databases require an existing independent ownership or data-recovery need; they MUST NOT duplicate control authority.
-
-The rebuildable Retrieval Kernel projection is the default full-text search index family. Vector search remains an optional future index family until promoted by stable core requirements.
-
-The current local and server realization uses the encrypted-file Vault through the vault boundary, not normal storage records. Concrete ciphertext, metadata, and key-file layout remain implementation-facing Vault concerns.
-
-## Independent Retained Format Markers
-
-Each OpenKit-owned retained family has an explicit format marker in its record header or its existing owning inventory. New record formats start at version 1. Writers and readers use the shared marker helper: writers emit the marker, and readers check it before decoding the family's payload. A missing or unknown version fails closed. Family-owned retained schemas are independent of release-coupled wire schemas; a wire-only change cannot change the meaning of a stored version. The shared v1 marker remains 1; a future family format selects its own decoder and does not change the shared version constant. Existing native database journals govern scalar-only SQL storage; independently decoded JSON-bearing rows carry their own version. Original content and opaque native bytes are not rewritten to add an OpenKit header. Their versioned owning descriptors retain their exact digest and interpretation.
-
-This rc.10 cutover uses the accepted pre-stable reset boundary. It adds no converter, legacy reader or dual write. The coordinator performs the single deployment reset; this rule authorizes no host or account action.

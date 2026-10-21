@@ -26,7 +26,7 @@ The same-day effect boundary names the dedicated x86_64 machine as development/t
 
 ## Reason
 
-The engineer expects two to three releases daily and wants less time and fewer engineer or external-Agent handoffs from acceptance through publication and update. The WP4 Consultant report at `/home/simonx/AI/temp/rc6/wp4-release-cadence-report.md` supplies measurements and recommendations, not authority. Its numbered decision table contains seven rows; the coordinator's accepted eighth item is main-push CI. This record preserves that distinction.
+The engineer expects two to three releases daily and wants less time and fewer engineer or external-Agent handoffs from acceptance through publication and update. The WP4 Consultant report at `~/AI/temp/rc6/wp4-release-cadence-report.md` supplies measurements and recommendations, not authority. Its numbered decision table contains seven rows; the coordinator's accepted eighth item is main-push CI. This record preserves that distinction.
 
 The reported exact-P candidate runs took [64m53s for rc.4](https://github.com/lingkaix/openkit/actions/runs/38347889829) and [65m42s for rc.5](https://github.com/lingkaix/openkit/actions/runs/38388878850). Tag runs took [35m23s for rc.4](https://github.com/lingkaix/openkit/actions/runs/38353473628) and [44m56s for rc.5](https://github.com/lingkaix/openkit/actions/runs/38396894772). The [rc.5 L0-L2 job](https://github.com/lingkaix/openkit/actions/runs/38388878850/job/115267665569) reportedly spent 22m39s on unit tests and 35m08s on coverage over overlapping suites.
 

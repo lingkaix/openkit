@@ -1189,15 +1189,19 @@ export async function prepareKnowledgeMaintenance(
                         : {}),
                       message: diagnostics.includes('notebook.maintenance_change_limit')
                         ? `Maintenance permits at most ${NOTEBOOK_EDITING_LIMITS.changedFiles} changed files, including index.md. Reduce the temporary edits before resubmitting; call knowledge.result only after a successful notebook submission.`
-                        : diagnostics.includes('scope_schema.invalid_confidence')
-                          ? 'Claim requires confidence: a finite number from zero through one. Correct the temporary Claim frontmatter before resubmitting; call knowledge.result only after a successful notebook submission.'
-                          : diagnostics.includes('notebook.unresolved_page_link')
-                            ? 'Repair the reported local links in the temporary notebook, then resubmit. Page links resolve relative to the containing page against the complete resulting tree, not relative to the editor filesystem root. Call knowledge.result only after a successful notebook submission.'
-                            : diagnostics.includes('notebook.script_path_refused')
-                              ? 'Writable Page files use bundle-relative lowercase .md paths under the Notebook root. Original Sources and omitted base members are read-only. There are no script, scratch or non-Markdown files. mkdir, remove, copy and move use the same path rule. Correct the path, then submit the accepted pages with knowledge.notebook.update once the synthesis is ready.'
-                              : errorCode === 'notebook_tool_failed'
-                                ? 'Notebook Tool failed unexpectedly. Publication is not confirmed; inspect the notebook before starting a new request.'
-                                : 'Notebook Tool refused the request. Check the admitted notebook constraints and native diagnostic codes; publication is not confirmed.',
+                        : diagnostics.includes('notebook.invalid_source_edit')
+                          ? 'Selected SourceSummary edits may change title, description, tags and summary text. Restore other frontmatter from the admitted summary, including source_refs and created_at; put citations on synthesized Pages. Resubmit with knowledge.notebook.update, then call knowledge.result after a successful submission.'
+                          : diagnostics.includes('scope_schema.invalid_applies_to')
+                            ? "Rule, Effect and Objective require applies_to as a nonempty YAML list of nonblank tool or work-step identifiers, for example applies_to: [step:report-review]. Use the supplied work's identifiers. Correct these pages, resubmit with knowledge.notebook.update, then call knowledge.result after a successful submission."
+                            : diagnostics.includes('scope_schema.invalid_confidence')
+                              ? 'Claim requires confidence: a finite number from zero through one. Correct the temporary Claim frontmatter before resubmitting; call knowledge.result only after a successful notebook submission.'
+                              : diagnostics.includes('notebook.unresolved_page_link')
+                                ? 'Repair the reported local links in the temporary notebook, then resubmit. Page links resolve relative to the containing page against the complete resulting tree, not relative to the editor filesystem root. Call knowledge.result only after a successful notebook submission.'
+                                : diagnostics.includes('notebook.script_path_refused')
+                                  ? 'Writable Page files use bundle-relative lowercase .md paths under the Notebook root. Original Sources and omitted base members are read-only. There are no script, scratch or non-Markdown files. mkdir, remove, copy and move use the same path rule. Correct the path, then submit the accepted pages with knowledge.notebook.update once the synthesis is ready.'
+                                  : errorCode === 'notebook_tool_failed'
+                                    ? 'Notebook Tool failed unexpectedly. Publication is not confirmed; inspect the notebook before starting a new request.'
+                                    : 'Notebook Tool refused the request. Check the admitted notebook constraints and native diagnostic codes; publication is not confirmed.',
                     }),
                   },
                 ],

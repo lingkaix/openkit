@@ -101,12 +101,12 @@ This document is the release-neutral overview for worker runtime communication. 
 - `docs/core/runtime-model.md`
 - `docs/core/communication.md`
 - `docs/core/agent-session.md`
-- `docs/core/agent-capability.md`
+- `docs/core/mediation.md`
 - `docs/core/agent-supply.md`
 - `docs/core/sandbox.md`
 - `docs/core/storage.md`
 - `docs/core/architecture.md`
-- `docs/core/agent-workflow.md`
+- `docs/core/work-model.md`
 - `docs/core/protocol.md`
 - `docs/core/knowledge.md`
 

@@ -6,7 +6,7 @@ status: in-progress
 
 ## Intent Revision 1
 
-The coordinator approved the R034 retained-attribution plan and then authorized free-path preparation before naming on 2026-10-18. Preserve the actor, resource, request, outcome and available non-secret credential facts for baseline governed effects, under the existing [Audit owner](../../core/audit.md) and [record specification](../../specs/20260703-audit_usage_evidence_records.md). Keep only authentication credential kind and nullable credential id; add no channel, record family, ledger, evaluator or workflow. Reuse L-AK's Server capability/usage shape after its normal landing. L-WEB retains R031 evaluation and exact PermissionDecision/Audit linkage; R080 remains separate.
+The coordinator approved the R034 retained-attribution plan and then authorized free-path preparation before naming on 2026-10-18. Preserve the actor, resource, request, outcome and available non-secret credential facts for baseline governed effects, under the existing [Audit owner](../../core/evidence.md) and [record specification](../../specs/20260703-audit_usage_evidence_records.md). Keep only authentication credential kind and nullable credential id; add no channel, record family, ledger, evaluator or workflow. Reuse L-AK's Server capability/usage shape after its normal landing. L-WEB retains R031 evaluation and exact PermissionDecision/Audit linkage; R080 remains separate.
 
 ## Working Checkpoint
 

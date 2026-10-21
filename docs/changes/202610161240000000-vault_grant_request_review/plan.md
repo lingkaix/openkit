@@ -12,7 +12,7 @@ Source: the L-GA independent P22 request/review assignment. Deliver request, exa
 
 ## Owners And Boundaries
 
-[Vault](../../core/vault.md) owns use authority and evidence. [Permissions](../../core/permissions.md) owns current actor and Policy checks. [Vault Secret Injection](../../specs/20260703-vault_secret_injection.md#supported-grant-request-and-review) freezes the finite workflow projection before production changes. [Vault Backend](../../specs/20260704-vault_backend_implementation.md#public-workspace-secret-administration) limits the issuer shapes. [Pending Requests](../../specs/20260930-pending_requests.md) owns command intent, exact disclosure, review, claim, cancellation, restart and delivery.
+[Vault](../../core/vault.md) owns use authority and evidence. [Permissions](../../core/policy.md) owns current actor and Policy checks. [Vault Secret Injection](../../specs/20260703-vault_secret_injection.md#supported-grant-request-and-review) freezes the finite workflow projection before production changes. [Vault Backend](../../specs/20260704-vault_backend_implementation.md#public-workspace-secret-administration) limits the issuer shapes. [Pending Requests](../../specs/20260930-pending_requests.md) owns command intent, exact disclosure, review, claim, cancellation, restart and delivery.
 
 The cross-owner seam is a captured non-secret command intent consumed once into the existing VaultGrant. Tests observe canonical request, grant, PermissionDecision and Audit facts, plus real API framing. Web uses the same definition-derived client. Existing sink tests distinguish backend resolution from injection completion. Primary review and integration remain separate from this producer report.
 

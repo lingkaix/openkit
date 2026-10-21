@@ -32,7 +32,7 @@ This spec defines the target record model for audit, usage, and evidence.
 
 The clean target is to split three concerns that are currently easy to blur: audit explains responsibility and policy, usage measures consumed resources, and evidence preserves proof material. They must link through common lineage, but they should not collapse into one log table or raw backend transcript.
 
-Agent-capability-mediated usage semantics belong to `docs/core/agent-capability.md`. Future non-gateway metering direction belongs to `docs/core/metering.md`. This spec owns the concrete record-linking projection for audit, usage, and evidence records.
+Agent-capability-mediated usage production belongs to `docs/core/mediation.md`. `UsageRecord`, usage attribution, and future non-gateway metering direction belong to `docs/core/evidence.md`. This spec owns the concrete record-linking projection for audit, usage, and evidence records.
 
 ## Owns
 
@@ -56,12 +56,11 @@ Agent-capability-mediated usage semantics belong to `docs/core/agent-capability.
 
 ## Core References
 
-- `docs/core/audit.md`
-- `docs/core/agent-capability.md`
-- `docs/core/metering.md`
+- `docs/core/evidence.md`
+- `docs/core/mediation.md`
 - `docs/core/storage.md`
 - `docs/core/vault.md`
-- `docs/core/permissions.md`
+- `docs/core/policy.md`
 
 ## Related Docs
 
@@ -477,7 +476,7 @@ Raw restricted evidence:
 
 The existing Workspace `audit.read` capability-usage reader gains a redacted route-lineage projection under current Workspace and applicable Thread audience checks: logical ID, route-member ID, unavailable/attempt disposition, selection reason, closed kind, attempt order, retry index, output-began fact, terminal result, and which entry was released. It omits credentials, Vault locators, raw account IDs and raw upstream errors; account-slot identity is not stored at all. Public errors, model discovery and ordinary Thread activity gain no private chain.
 
-Product APIs must not expose raw restricted evidence. The one exception is the portable Workspace export archive and its import: admitted original bodies of retained work data, restricted originals included, travel intact in the archive and are restored intact, so that a re-imported Workspace keeps complete information. The exception is collected only under the exporting actor's current Thread audience and body-read authorization. For an ordinary caller it never applies to other users' private Threads. A currently usable administrator credential's export includes those private Threads under the administrator eligibility rule in [Core Permissions](../core/permissions.md). The exception never applies to system-managed Vault, provider, and runtime secret material, and it does not change any other product API. An imported body keeps its retention class, sensitivity classification, hold state, and original expiry; import grants no fresh retention window and no wider visibility, and content already expired or unavailable at export stays so ([decision](../decisions/20260924-restricted_bodies_travel_in_export.md)).
+Product APIs must not expose raw restricted evidence. The one exception is the portable Workspace export archive and its import: admitted original bodies of retained work data, restricted originals included, travel intact in the archive and are restored intact, so that a re-imported Workspace keeps complete information. The exception is collected only under the exporting actor's current Thread audience and body-read authorization. For an ordinary caller it never applies to other users' private Threads. A currently usable administrator credential's export includes those private Threads under the administrator eligibility rule in [Core Permissions](../core/policy.md). The exception never applies to system-managed Vault, provider, and runtime secret material, and it does not change any other product API. An imported body keeps its retention class, sensitivity classification, hold state, and original expiry; import grants no fresh retention window and no wider visibility, and content already expired or unavailable at export stays so ([decision](../decisions/20260924-restricted_bodies_travel_in_export.md)).
 
 ## Redaction
 
@@ -588,10 +587,9 @@ If a producer is not implemented, diagnostics must not claim that audit or usage
 
 ## Links
 
-- `docs/core/audit.md`
-- `docs/core/agent-capability.md`
+- `docs/core/evidence.md`
+- `docs/core/mediation.md`
 - `docs/core/storage.md`
-- `docs/core/metering.md`
 - `docs/core/vault.md`
 - `docs/specs/20260703-schema_evolution_record_envelope.md`
 - `docs/specs/20260616-agent_environment_package.md`

@@ -640,6 +640,95 @@ it.each([
   expect(feedback).not.toContain('notebook.submission_refused');
 }, 120_000);
 
+it.each([
+  'Rule',
+  'Effect',
+  'Objective',
+])('repairs typed %s applicability after an actual submission refusal', async (type) => {
+  const f = fixture();
+  const observed = observeNotebookTools();
+  const notebook = new KnowledgeNotebook({
+    repositoryPath: join(f.dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'knowledge', 'notebook.git'),
+  });
+  const before = notebook.publishedRevision();
+  const content = updateOkfFrontmatter({
+    path: 'typed.md',
+    content: serializeKnowledgePageFixture(
+      {
+        title: 'Synthetic domain page',
+        content: 'UNPUBLISHED-DOMAIN-CONTENT',
+        sourceReferences: [],
+        createdAt: '2026-10-20T00:00:00.000Z',
+        updatedAt: '2026-10-20T00:00:00.000Z',
+      },
+      { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID }
+    ),
+    updates: {
+      type,
+      ...(type === 'Effect'
+        ? { basis: 'Supplied fixture evidence.', last_checked_at: '2026-10-20T00:00:00Z' }
+        : {}),
+    },
+  });
+  const corrected = updateOkfFrontmatter({
+    path: 'typed.md',
+    content,
+    updates: { applies_to: ['step:report-review'] },
+  });
+  let feedback = '';
+  let beforeRepair: { revision: string; proposalCount: number } | undefined;
+  f.createResponses.mockImplementation(async () => {
+    if (f.createResponses.mock.calls.length === 1)
+      return calls([
+        [
+          'knowledge.notebook-workspace.update',
+          { script: `cat > typed.md <<'PAGE'\n${content}PAGE\n` },
+        ],
+        ['knowledge.notebook.update', { summary: 'Submit the domain page.' }],
+      ]);
+    feedback = latestToolOutput(f);
+    beforeRepair = {
+      revision: notebook.publishedRevision(),
+      proposalCount: f.store.listKnowledgeProposals(DEMO_WORKSPACE_ID).length,
+    };
+    return calls([
+      [
+        'knowledge.notebook-workspace.update',
+        { script: `cat > typed.md <<'PAGE'\n${corrected}PAGE\n` },
+      ],
+      ['knowledge.notebook.update', { summary: 'Submit the corrected applicability.' }],
+      ['knowledge.result', { summary: 'The corrected domain page requires human Review.' }],
+    ]);
+  });
+  const response = await f.app.request(
+    ...operationRequest(
+      'knowledge.maintain',
+      { workspaceId: DEMO_WORKSPACE_ID },
+      { body: JSON.stringify({ requestId: randomUUID(), instruction: 'Curate the domain page.' }) }
+    )
+  );
+  const body = (await response.json()) as { outcome: string; turnId: string };
+  expect(response.status, JSON.stringify(body)).toBe(200);
+  expect(f.createResponses).toHaveBeenCalledTimes(2);
+  expect(beforeRepair).toEqual({ revision: before, proposalCount: 0 });
+  const submissions = observed.filter(({ name }) => name === 'knowledge.notebook.update');
+  expect(submissions).toHaveLength(2);
+  expect(submissions[0]!.result.isError).toBe(true);
+  expect(submissions[1]!.result.isError).not.toBe(true);
+  expect(feedback).not.toContain('UNPUBLISHED-DOMAIN-CONTENT');
+  expect(feedback).not.toContain(f.dataRoot);
+  expect(JSON.parse(feedback)).toEqual({
+    code: 'invalid_request',
+    diagnostics: ['notebook.invalid_page', 'scope_schema.invalid_applies_to'],
+    message:
+      "Rule, Effect and Objective require applies_to as a nonempty YAML list of nonblank tool or work-step identifiers, for example applies_to: [step:report-review]. Use the supplied work's identifiers. Correct these pages, resubmit with knowledge.notebook.update, then call knowledge.result after a successful submission.",
+  });
+  expect(body.outcome).toBe('review-required');
+  expect(f.store.getTurnById(body.turnId).status).toBe('completed');
+  expect(f.store.listKnowledgeProposals(DEMO_WORKSPACE_ID)).toHaveLength(1);
+  expect(notebook.publishedRevision()).toBe(before);
+}, 120_000);
+
 it('makes the actual script path refusal actionable with exact native feedback', async () => {
   const f = await fixture();
   const observed = observeNotebookTools();

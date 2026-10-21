@@ -20,12 +20,12 @@ updated: "2026-10-03"
 
 ## Core References
 
-- `docs/core/agent-capability.md`
+- `docs/core/mediation.md`
 - `docs/core/agent-supply.md`
 - `docs/core/storage.md`
-- `docs/core/permissions.md`
+- `docs/core/policy.md`
 - `docs/core/vault.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 
 ## Summary
 

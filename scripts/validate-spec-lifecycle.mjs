@@ -11,6 +11,14 @@ const TERMINAL_DIRECTORY_STATUS = new Map([
   ['retired', 'Retired'],
   ['superseded', 'Superseded'],
 ]);
+const HISTORICAL_CORE_RENAMES = new Map([
+  ['docs/core/agent-capability.md', 'docs/core/mediation.md'],
+  ['docs/core/agent-workflow.md', 'docs/core/work-model.md'],
+  ['docs/core/audit.md', 'docs/core/evidence.md'],
+  ['docs/core/foundation.md', 'docs/core/doctrine.md'],
+  ['docs/core/metering.md', 'docs/core/evidence.md'],
+  ['docs/core/permissions.md', 'docs/core/policy.md'],
+]);
 const SPEC_FILE_PATTERN = /^20\d{6}-[a-z0-9_]+\.md$/;
 const EVIDENCE_PATH_PATTERN = /(?:docs\/|\.\.?\/)[a-zA-Z0-9_./-]*(?:\.md|\/)/g;
 const PLACEHOLDER_PATTERN = /^(?:none|pending|tbd|todo|unknown|n\/a)$/i;
@@ -317,6 +325,15 @@ function resolveEvidencePaths(repoRoot, relativePath, value) {
     const frozenReferrer =
       relativePath.startsWith('docs/specs/') &&
       TERMINAL_DIRECTORY_STATUS.has(relativePath.split('/')[2]);
+    if (frozenReferrer && !existsSync(join(repoRoot, normalizedPath))) {
+      const renamedCorePath = HISTORICAL_CORE_RENAMES.get(normalizedPath);
+      if (
+        renamedCorePath &&
+        lstatSync(join(repoRoot, renamedCorePath), { throwIfNoEntry: false })?.isFile()
+      ) {
+        return renamedCorePath;
+      }
+    }
     if (
       !frozenReferrer ||
       existsSync(join(repoRoot, normalizedPath)) ||

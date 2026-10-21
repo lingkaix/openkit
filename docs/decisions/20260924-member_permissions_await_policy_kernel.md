@@ -27,6 +27,6 @@ The Policy Kernel is connected to the enforcement points that need permission, o
 
 ## Affected Owners
 
-- docs/core/permissions.md
+- docs/core/policy.md
 - docs/core/identity.md
 - docs/specs/20260715-multi_user_workspace_system.md

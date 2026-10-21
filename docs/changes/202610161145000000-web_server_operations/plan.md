@@ -16,7 +16,7 @@ Intent revision 1, 2026-10-16: L-WEB delivers the supported P28 administration a
 - [Operational telemetry](../../specs/20260731-operational_telemetry_standardization.md#app-diagnostics-operational-sample).
 - [App update delivery](../../specs/20260910-app_update_delivery.md).
 - [Multi-user Workspace system](../../specs/20260715-multi_user_workspace_system.md).
-- [Permissions](../../core/permissions.md) and [Audit](../../core/audit.md).
+- [Permissions](../../core/policy.md) and [Audit](../../core/evidence.md).
 
 ## Route and decisions
 

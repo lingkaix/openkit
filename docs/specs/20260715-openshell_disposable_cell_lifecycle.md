@@ -100,7 +100,7 @@ All remaining sections describe the partially implemented legacy Cell path as it
 - `docs/core/runtime-model.md`
 - `docs/core/agent-session.md`
 - `docs/core/storage.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 
 ## Legacy Summary
 

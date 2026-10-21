@@ -21,13 +21,13 @@ updated: 2026-09-09
 
 ## Core References
 
-- `docs/core/foundation.md`
+- `docs/core/doctrine.md`
 - `docs/core/agent-supply.md`
-- `docs/core/agent-capability.md`
+- `docs/core/mediation.md`
 - `docs/core/storage.md`
-- `docs/core/permissions.md`
+- `docs/core/policy.md`
 - `docs/core/vault.md`
-- `docs/core/audit.md`
+- `docs/core/evidence.md`
 
 ## Summary
 

@@ -31,20 +31,19 @@ The private administration entry may prepare and apply an exact Worker environme
 - Direct provider error codes, redaction, and retry semantics. `docs/specs/20260531-worker_turn_reliability_envelope.md` owns that exact call-boundary contract.
 - The generic internal Agent loop or Tool contract. `docs/specs/20260813-internal_agent_runtime.md` owns those mechanisms; this specification owns only the Assistant role assembly projected onto them.
 - The shared durable rolling context mechanism. [Context Management](20260902-agent_runtime_context_compaction.md#internal-durable-rolling-context) owns it; this specification binds Assistant context to its private Timeline or shared conversation.
-- Permission evaluation or disclosure authorization. `docs/core/permissions.md` owns `AssistantReadScope`, `OutputAudience`, per-call authorization, approval strength, and the publication guard; this specification narrows and projects those decisions for Assistant Turns. When an administration resource family is cut over, the per-call administrator check is invocation's, as Derived internal tools states, and this specification still keeps revocation and provenance.
+- Permission evaluation or disclosure authorization. `docs/core/policy.md` owns `AssistantReadScope`, `OutputAudience`, per-call authorization, approval strength, and the publication guard; this specification narrows and projects those decisions for Assistant Turns. When an administration resource family is cut over, the per-call administrator check is invocation's, as Derived internal tools states, and this specification still keeps revocation and provenance.
 - Conversation-target enumeration, structured submission, Artifact references, and public command identity. `docs/specs/20260831-unified_conversation_composer.md` owns that boundary and invokes this Assistant branch.
 
 ## Core References
 
 - `docs/core/work-model.md`
 - `docs/core/architecture.md`
-- `docs/core/agent-workflow.md`
 - `docs/core/communication.md`
 - `docs/core/protocol.md`
-- `docs/core/agent-capability.md`
+- `docs/core/mediation.md`
 - `docs/core/knowledge.md`
-- `docs/core/audit.md`
-- `docs/core/permissions.md`
+- `docs/core/evidence.md`
+- `docs/core/policy.md`
 
 ## Summary
 
@@ -98,7 +97,7 @@ Addressing a Worker from Chat requires a confirmed Task handoff that creates a l
 
 ## Background
 
-`docs/core/work-model.md` defines Chat Mode as the lightweight path for simple answers, clarification, and state lookup. `docs/core/architecture.md` defines Core Assistant as the lightweight user-facing entry role. `docs/core/agent-workflow.md` states that the Assistant should hand non-trivial worker-agent work to the Workflow Coordinator.
+`docs/core/work-model.md` defines Chat Mode as the lightweight path for simple answers, clarification, and state lookup. `docs/core/architecture.md` defines Core Assistant as the lightweight user-facing entry role. `docs/core/work-model.md` states that the Assistant should hand non-trivial worker-agent work to the Workflow Coordinator.
 
 The missing V1 contract is the concrete Assistant boundary: which tools it may use, how it decides to answer or hand off, and how its output appears in the durable thread model.
 
@@ -118,7 +117,7 @@ The missing V1 contract is the concrete Assistant boundary: which tools it may u
 
 Until a resource family is cut over, the fixed Tool sets and the per-call checks in this specification remain that family's contract.
 
-When that resource family is cut over, the accepted target applies. Internal Tools are derived from the definitions and execute through invocation. [Operation Definition](20261002-operation_definition.md) owns that mechanism. This specification does not restate it. Trusted entry assembly keeps the ordinary entry and the administration entry, their immutable ordered selections, and the separation of those two Tool sets. Administration Tools move their per-call administrator check into invocation. `docs/core/permissions.md` remains the authority for what administrator authority means. This specification keeps revocation and provenance. Loss of the current authority required for the effect prevents a later effect. Membership loss alone does not remove eligibility supplied by a currently usable administrator credential under [Core Permissions](../core/permissions.md#administrator-eligibility). The audit record still names the current user, the target, the operation, and the outcome. Model-facing schemas omit bound fields, and a conflicting argument is rejected before any effect, under the same definition.
+When that resource family is cut over, the accepted target applies. Internal Tools are derived from the definitions and execute through invocation. [Operation Definition](20261002-operation_definition.md) owns that mechanism. This specification does not restate it. Trusted entry assembly keeps the ordinary entry and the administration entry, their immutable ordered selections, and the separation of those two Tool sets. Administration Tools move their per-call administrator check into invocation. `docs/core/policy.md` remains the authority for what administrator authority means. This specification keeps revocation and provenance. Loss of the current authority required for the effect prevents a later effect. Membership loss alone does not remove eligibility supplied by a currently usable administrator credential under [Core Permissions](../core/policy.md#administrator-eligibility). The audit record still names the current user, the target, the operation, and the outcome. Model-facing schemas omit bound fields, and a conflicting argument is rejected before any effect, under the same definition.
 
 ### Assistant Tool Boundary
 
@@ -201,7 +200,7 @@ Acceptance is observable when a general question performs no business/source-con
 
 ### Read Scope And Output Audience Projection
 
-Every Assistant answer carries one `AssistantReadScope` and one `OutputAudience` resolved under `docs/core/permissions.md`. `AssistantReadScope` determines which exact sources and revisions the Assistant may discover and retrieve for this request. `OutputAudience` independently determines the exact destination and recipients that may receive the result.
+Every Assistant answer carries one `AssistantReadScope` and one `OutputAudience` resolved under `docs/core/policy.md`. `AssistantReadScope` determines which exact sources and revisions the Assistant may discover and retrieve for this request. `OutputAudience` independently determines the exact destination and recipients that may receive the result.
 
 The role assembler supplies only source candidates inside the current read scope and excludes material that cannot reach the resolved audience before assembling output-producing context. Every concrete read reauthorizes the current actor, source, Workspace, revision, operation, and audience. Retrieved material retains source, visibility, freshness, provenance, and disclosure restrictions through generation.
 
@@ -254,7 +253,7 @@ This Tool is part of the fixed administration set, never the ordinary Assistant 
 | Approval | Apply every other exact confirmed candidate through its existing Core command; perform that owner's ordinary configuration reload where supported. | Current user authority and payload-bound confirmation rechecked at application; record actual command and reload outcome. |
 | Prohibited in this entry | Read or generate bearer secrets; author administrator grants or Workspace membership; arbitrary shell/file/Git writes; install Plugin hooks; change authority Policy or Vault grants, or Worker network policy outside the finite delegated Git-read correction; start/stop/restart services; force unknown effects; provision NanoHost/OpenShell; delete a Workspace, Provider or Worker profile. | Typed unavailable/denied result; use the appropriate existing authorized product surface, never a hidden Worker bypass. |
 
-System operations and technical configuration affecting system behavior require the current user's usable administrator authority under Permissions Core, including Workspace-local Worker/profile, runtime/capability configuration and Provider setup. Workspace targets keep their existing Policy checks. A currently usable administrator credential is eligible for their content, including other users' private content, under Administrator Eligibility in `docs/core/permissions.md`. Attribution stays truthful. Per-effect authority objects are still checked. Workspace creation and ordinary business metadata retain their user/Workspace owners, and personal preferences target only the current user. Selecting an already approved resource for ordinary work is distinct from modifying its technical configuration. The schema/configuration owner, not the selected Thread, model or ordinary member's confirmation, classifies the target. The management entry is for the team's technical administrator; a non-admin request receives an administrator-required result without management discovery or effects. Until that family is cut over, this entry applies the administrator-required result. When the family is cut over, invocation performs the per-call administrator check, and this entry still returns that result without management discovery or effects.
+System operations and technical configuration affecting system behavior require the current user's usable administrator authority under Permissions Core, including Workspace-local Worker/profile, runtime/capability configuration and Provider setup. Workspace targets keep their existing Policy checks. A currently usable administrator credential is eligible for their content, including other users' private content, under Administrator Eligibility in `docs/core/policy.md`. Attribution stays truthful. Per-effect authority objects are still checked. Workspace creation and ordinary business metadata retain their user/Workspace owners, and personal preferences target only the current user. Selecting an already approved resource for ordinary work is distinct from modifying its technical configuration. The schema/configuration owner, not the selected Thread, model or ordinary member's confirmation, classifies the target. The management entry is for the team's technical administrator; a non-admin request receives an administrator-required result without management discovery or effects. Until that family is cut over, this entry applies the administrator-required result. When the family is cut over, invocation performs the per-call administrator check, and this entry still returns that result without management discovery or effects.
 
 Initial create/update scope includes ordinary Workspace name and authored configuration, Provider non-secret profile and logical-model bindings, and Worker profile/runtime/AEP selections admitted by their respective configuration schemas. References must resolve to currently available, authorized resources. Data-source catalog attachment, credential binding and execution-environment setup may be inspected and explained. The Workspace host repository resource and the Repositories screen are retired. Actual privileged setup, new secret entry and provisioning remain with their existing forms and owning commands. Unsupported fields are rejected rather than written as raw JSONC.
 
@@ -274,7 +273,7 @@ The read-only `nanohost.runtime-target` Tool uses the same configured-target obs
 
 #### Personal scope and audit
 
-This Thread has private visibility with its initiating user as private owner; [Thread Visibility](20260909-thread_visibility_and_sharing.md#admission-read-and-publication) owns its audience admission, including administrator eligibility. The Assistant never receives the administrator token secret. Until the administration family is cut over, NanoCore derives request authority from the authenticated bearer or eligible session and checks it at each effect. When the family is cut over, that per-call administrator check moves into invocation under Derived internal tools. Loss of the current authority required for the effect prevents later application even after approval; a reconnect or provider cache cannot resurrect that authority. Membership loss alone does not remove eligibility supplied by a currently usable administrator credential under [Core Permissions](../core/permissions.md#administrator-eligibility). That revocation rule stays in this specification.
+This Thread has private visibility with its initiating user as private owner; [Thread Visibility](20260909-thread_visibility_and_sharing.md#admission-read-and-publication) owns its audience admission, including administrator eligibility. The Assistant never receives the administrator token secret. Until the administration family is cut over, NanoCore derives request authority from the authenticated bearer or eligible session and checks it at each effect. When the family is cut over, that per-call administrator check moves into invocation under Derived internal tools. Loss of the current authority required for the effect prevents later application even after approval; a reconnect or provider cache cannot resurrect that authority. Membership loss alone does not remove eligibility supplied by a currently usable administrator credential under [Core Permissions](../core/policy.md#administrator-eligibility). That revocation rule stays in this specification.
 
 Record current user/responsible actor, target scope, operation, exact change/base identities, required confirmation or delegated Policy decision, command, request and outcome through existing AuditEvent/CapabilityCall owners. Redacted configuration effects may be visible to their resource audience; private reasoning/dialogue and credential contents are not audit payloads. Shared cards or summaries do not transfer the originating user's permissions.
 
@@ -499,7 +498,6 @@ The stateless `chat.quick` operation is removed under [Retire Stateless Quick Ch
 
 - `docs/core/work-model.md`
 - `docs/core/architecture.md`
-- `docs/core/agent-workflow.md`
 - `docs/core/knowledge.md`
 - `docs/specs/20260704-task_mode_worker_delegation.md`
 - `docs/specs/20261002-operation_definition.md`

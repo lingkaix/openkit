@@ -49,11 +49,11 @@ truth, and host-local staging is not a product Worker Agent runtime.
 
 - `docs/core/storage.md`
 - `docs/core/sandbox.md`
-- `docs/core/audit.md`
-- `docs/core/agent-workflow.md`
+- `docs/core/evidence.md`
+- `docs/core/work-model.md`
 - `docs/core/agent-session.md`
-- `docs/core/agent-capability.md`
-- `docs/core/permissions.md`
+- `docs/core/mediation.md`
+- `docs/core/policy.md`
 - `docs/core/runtime-model.md`
 
 ## Related Docs
@@ -790,8 +790,8 @@ Contract above; their build-out is implementation work tracked through the
 - `docs/specs/20260531-human_attention_intervention_model.md`
 - `docs/core/storage.md`
 - `docs/core/sandbox.md`
-- `docs/core/audit.md`
-- `docs/core/agent-workflow.md`
+- `docs/core/evidence.md`
+- `docs/core/work-model.md`
 - `docs/product-vision.md`
 - [NVIDIA/NemoClaw](https://github.com/NVIDIA/NemoClaw)
 - [NVIDIA OpenShell documentation](https://docs.nvidia.com/openshell/)

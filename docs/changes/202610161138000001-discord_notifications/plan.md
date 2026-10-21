@@ -20,7 +20,7 @@ Source: coordinator notice at 20:15Z on 2026-10-16. P14 and the Goal increment a
 
 ## Owners And Decisions
 
-[Communication](../../core/communication.md) owns the channel boundary. [Pending Requests](../../specs/20260930-pending_requests.md) owns exact responses and request attention. [Permissions](../../core/permissions.md) owns current authority and audience admission. Existing storage, operation definitions, configuration, and Web design owners remain binding. Use the recommended D07 scope with Discord. Direct decisions admit exact approval denials and non-secret question answers, in private direct messages only. Approval grants return to the App for the existing decision-strength confirmation. Email sends links only. Unknown sends and unknown response dispatch stay separate from Core outcomes.
+[Communication](../../core/communication.md) owns the channel boundary. [Pending Requests](../../specs/20260930-pending_requests.md) owns exact responses and request attention. [Permissions](../../core/policy.md) owns current authority and audience admission. Existing storage, operation definitions, configuration, and Web design owners remain binding. Use the recommended D07 scope with Discord. Direct decisions admit exact approval denials and non-secret question answers, in private direct messages only. Approval grants return to the App for the existing decision-strength confirmation. Email sends links only. Unknown sends and unknown response dispatch stay separate from Core outcomes.
 
 ## Closeout Summary
 

@@ -104,7 +104,7 @@ Use the fixed phrase for the meaning you intend. A bare word is acceptable only 
 | --- | --- | --- | --- |
 | epoch | Former name of an Intent Revision | Runtime, physical, and execution epochs in NanoHost and storage | Renamed to Intent Revision in engineering text |
 | Orchestrator | Not used | Not used here. The product role is the Coordinator in docs/core/core-concepts.md. | Do not say the product Orchestrator. Use Coordinator for that role. |
-| audit record | A dated observation record under docs/audits/ | A product audit record owned by docs/core/audit.md | Say "repository audit record" when the product one could be meant |
+| audit record | A dated observation record under docs/audits/ | A product audit record owned by docs/core/evidence.md | Say "repository audit record" when the product one could be meant |
 | projection | Document projection | Read projection | Use the fixed phrases above |
 
 ### Avoid

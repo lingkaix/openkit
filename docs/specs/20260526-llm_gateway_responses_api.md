@@ -17,11 +17,10 @@ This spec does not own provider transport, request, response, streaming, usage, 
 
 ## Core References
 
-- `docs/core/agent-capability.md`
-- `docs/core/metering.md`
+- `docs/core/mediation.md`
 - `docs/core/vault.md`
-- `docs/core/permissions.md`
-- `docs/core/audit.md`
+- `docs/core/policy.md`
+- `docs/core/evidence.md`
 
 Related specs:
 
