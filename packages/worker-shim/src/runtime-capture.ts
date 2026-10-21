@@ -113,32 +113,37 @@ function decodedContentStrings(
   }
   return strings;
 }
+/** Decodes only valid JSON escapes for admission; malformed backslashes stay literal. */
+function decodeJsonEscapes(value: string): string {
+  return value.replace(
+    /\\u([0-9a-fA-F]{4})|\\(["\\/bfnrt])/g,
+    (_match, unicode: string | undefined, escaped: string) =>
+      unicode
+        ? String.fromCharCode(Number.parseInt(unicode, 16))
+        : (JSON.parse(`"\\${escaped}"`) as string)
+  );
+}
+/** Checks raw and JSON-escaped carriers without parsing an oversized native unit. */
+function containsRawCredential(value: string, values: readonly string[]): boolean {
+  // Admission may decode JSON escapes even for a torn native frame; retained bytes stay exact.
+  const decoded = decodeJsonEscapes(value);
+  return (
+    values.some(
+      (secret) => secret.length > 0 && (value.includes(secret) || decoded.includes(secret))
+    ) ||
+    /(?:authorization["']?\s*[:=]\s*["']?\s*(?:bearer|basic)\s+|["'](?:api_key|apiKey|access_token|refresh_token|password|authorization|cookie)["']\s*:)/i.test(
+      decoded
+    )
+  );
+}
 /** Rejects known credentials in decoded values and their logical concatenation, not arbitrary encodings. */
 function containsCredential(
   text: string | readonly string[],
   values: readonly string[],
   holdFrom?: (unit: number) => void
 ): boolean {
-  const decode = (value: string) =>
-    value.replace(
-      /\\u([0-9a-fA-F]{4})|\\(["\\/bfnrt])/g,
-      (_match, unicode: string | undefined, escaped: string) =>
-        unicode
-          ? String.fromCharCode(Number.parseInt(unicode, 16))
-          : (JSON.parse(`"\\${escaped}"`) as string)
-    );
-  const hasCredential = (value: string) => {
-    // Admission may decode JSON escapes even for a torn native frame; retained bytes stay exact.
-    const decoded = decode(value);
-    return (
-      values.some(
-        (secret) => secret.length > 0 && (value.includes(secret) || decoded.includes(secret))
-      ) ||
-      /(?:authorization["']?\s*[:=]\s*["']?\s*(?:bearer|basic)\s+|["'](?:api_key|apiKey|access_token|refresh_token|password|authorization|cookie)["']\s*:)/i.test(
-        decoded
-      )
-    );
-  };
+  const decode = decodeJsonEscapes;
+  const hasCredential = (value: string) => containsRawCredential(value, values);
   let detected = false;
   const units = typeof text === 'string' ? [text] : text;
   type Part = { text: string; unit: number };
@@ -718,9 +723,9 @@ export class NativeRuntimeCapture {
     source: NativeCaptureSource;
     bytes: Buffer;
     start: number;
-    unit: { text: string; held: boolean };
+    unit: { text: string; held: boolean; complete: boolean; rawOnly: boolean; size: number };
   }> = [];
-  private readonly blocked = new Set<string>();
+  private readonly blocked = new Map<string, 'credential-excluded' | 'limit-exceeded'>();
   private queue: Promise<void> = Promise.resolve();
   private failure: unknown;
   private stopped = false;
@@ -783,92 +788,161 @@ export class NativeRuntimeCapture {
         await this.publish({ sourceRef, source, bytes: frame, start }, false);
         return;
       }
-      // Keep native unit boundaries for the same decoded admission used by semantic capture.
-      // Concatenated JSON documents cannot be decoded as one JSON value.
-      const unit = { text: frame.toString('utf8'), held: false };
-      const units = [
-        ...new Set(
-          this.pending.filter((entry) => entry.sourceRef === sourceRef).map((entry) => entry.unit)
-        ),
-        unit,
-      ];
-      for (const pending of units) pending.held = false;
-      if (
-        this.blocked.has(sourceRef) ||
-        containsCredential(
-          units.map((pending) => pending.text),
-          this.input.credentialValues,
-          (from) => {
-            for (const pending of units.slice(from)) pending.held = true;
-          }
-        )
-      ) {
-        const start = this.positions.get(sourceRef) ?? source.preLaunchWatermark ?? 0;
-        this.positions.set(sourceRef, start + frame.length);
-        if (!this.blocked.has(sourceRef)) {
-          this.blocked.add(sourceRef);
-          this.pending = this.pending.filter((entry) => entry.sourceRef !== sourceRef);
-          await this.publish(
-            { sourceRef, source, bytes: Buffer.alloc(0), start },
-            false,
-            'credential-excluded',
-            'credential-excluded'
-          );
-        }
-        return;
-      }
-      for (let offset = 0; offset < frame.length; offset += 64 * 1024) {
+      const position = this.positions.get(sourceRef) ?? source.preLaunchWatermark ?? 0;
+      this.positions.set(sourceRef, position + frame.length);
+      this.sources.set(sourceRef, source);
+      if (this.blocked.has(sourceRef)) return;
+      const jsonl = source.format.endsWith('-jsonl');
+      const boundedHold = source.format === 'deepseek-acp-update-json';
+      let unit = jsonl
+        ? this.pending.find((entry) => entry.sourceRef === sourceRef && !entry.unit.complete)?.unit
+        : undefined;
+      for (let offset = 0; offset < frame.length; ) {
         if (this.abandoned) return;
-        const copy = Buffer.from(
-          frame.subarray(offset, Math.min(frame.length, offset + 64 * 1024))
+        unit ??= { text: '', held: true, complete: false, rawOnly: false, size: 0 };
+        const newline = jsonl ? frame.indexOf(10, offset) : -1;
+        const end = Math.min(
+          frame.length,
+          offset + 64 * 1024,
+          newline < 0 ? frame.length : newline + 1
         );
-        const start = this.positions.get(sourceRef) ?? source.preLaunchWatermark ?? 0;
-        this.positions.set(sourceRef, start + copy.length);
-        if (this.blocked.has(sourceRef)) continue;
+        const start = position + offset;
+        const copy = Buffer.from(frame.subarray(offset, end));
         this.pending.push({ sourceRef, source, bytes: copy, start, unit });
+        unit.size += copy.length;
+        offset = end;
+        // Reads and pipe chunks are transport boundaries. Keep every byte of an unfinished
+        // JSONL unit in the existing bounded admission buffer, before publishing any piece.
         const related = this.pending.filter((entry) => entry.sourceRef === sourceRef);
-        const joined = Buffer.concat(related.map((entry) => entry.bytes));
-        if (containsCredential(joined.toString('utf8'), this.input.credentialValues)) {
-          this.blocked.add(sourceRef);
-          this.pending = this.pending.filter((entry) => entry.sourceRef !== sourceRef);
-          await this.publish(
-            { sourceRef, source, bytes: Buffer.alloc(0), start },
-            false,
-            'credential-excluded',
-            'credential-excluded'
+        if (!boundedHold && unit.size > RUNTIME_FRAME_MAX_BYTES && !unit.rawOnly) {
+          // The parser ceiling bounds decoded admission, not native raw retention. Above it,
+          // stream with the existing raw/escaped cross-chunk scan and name the extraction gap.
+          unit.rawOnly = true;
+          unit.held = false;
+          const sourceSequence = this.sequences.get(sourceRef) ?? 0;
+          this.sequences.set(sourceRef, sourceSequence + 1);
+          await emitRuntimeFact(
+            this.input,
+            { sourceRef, sourceSequence },
+            {
+              kind: 'coverage',
+              runtimeOriginRef: source.runtimeOriginRef,
+              family: 'primary-content',
+              coverage: 'unavailable',
+              reason: 'limit-exceeded',
+            }
           );
-          continue;
         }
-        // Keep a bounded suffix until later bytes decide split credential/UTF-8 admission.
-        let waiting = joined.length;
-        if (waiting > RUNTIME_FRAME_MAX_BYTES) {
-          this.blocked.add(sourceRef);
-          this.pending = this.pending.filter((entry) => entry.sourceRef !== sourceRef);
-          await this.publish(
-            { sourceRef, source, bytes: Buffer.alloc(0), start },
-            false,
-            'limit-exceeded'
-          );
-          continue;
+        if (
+          boundedHold &&
+          related.reduce((size, entry) => size + entry.bytes.length, 0) > RUNTIME_FRAME_MAX_BYTES
+        ) {
+          await this.block(sourceRef, source, 'limit-exceeded');
+          return;
         }
-        while (waiting > this.lookbehind + 64 * 1024) {
-          const index = this.pending.findIndex((entry) => entry.sourceRef === sourceRef);
-          const entry = this.pending[index]!;
-          if (entry.unit.held || waiting - entry.bytes.length < this.lookbehind) break;
-          this.pending.splice(index, 1);
-          waiting -= entry.bytes.length;
-          await this.publish(entry, false);
+        const complete = jsonl ? newline >= 0 && end === newline + 1 : end === frame.length;
+        if (complete && !unit.rawOnly) {
+          unit.text = Buffer.concat(
+            related.filter((entry) => entry.unit === unit).map((entry) => entry.bytes)
+          ).toString('utf8');
         }
+        unit.complete = complete;
+        if (complete || unit.rawOnly) {
+          if (!(await this.admit(sourceRef, source))) return;
+        }
+        if (complete) unit = undefined;
       }
     }).finally(() => {
       this.queuedBytes -= charge;
     });
+  }
+  /** Applies the common decoded rule only once all observed bytes of a logical unit are held. */
+  private async admit(
+    sourceRef: string,
+    source: NativeCaptureSource,
+    final = false
+  ): Promise<boolean> {
+    if (this.blocked.has(sourceRef)) return false;
+    const related = this.pending.filter((entry) => entry.sourceRef === sourceRef);
+    const units = [...new Set(related.map((entry) => entry.unit))];
+    if (final) {
+      // A stopped source can leave a partial final line. Inspect its entire observed prefix
+      // together; the separate structural reader reports its partial-frame coverage.
+      for (const unit of units.filter((unit) => !unit.complete)) {
+        if (!unit.rawOnly)
+          unit.text = Buffer.concat(
+            related.filter((entry) => entry.unit === unit).map((entry) => entry.bytes)
+          ).toString('utf8');
+        unit.complete = true;
+      }
+    }
+    const rawIndex = units.findLastIndex((unit) => unit.rawOnly);
+    const rawOnly = rawIndex >= 0;
+    // An oversized unit ends the bounded decoded window. Later bounded units still keep
+    // their own decoded-prefix holds even while an older raw suffix is draining.
+    for (const [index, unit] of units.entries()) unit.held = index > rawIndex && !unit.complete;
+    const complete = units.filter((unit, index) => index > rawIndex && unit.complete);
+    if (
+      // The byte suffix also covers a UTF-8 code point split between ordinary log writes.
+      containsRawCredential(
+        Buffer.concat(related.map((entry) => entry.bytes)).toString('utf8'),
+        this.input.credentialValues
+      ) ||
+      containsCredential(
+        complete.map((unit) => unit.text),
+        this.input.credentialValues,
+        (from) => {
+          for (const unit of complete.slice(from)) unit.held = true;
+        }
+      )
+    ) {
+      await this.block(sourceRef, source, 'credential-excluded');
+      return false;
+    }
+    let waiting = related.reduce((size, entry) => size + entry.bytes.length, 0);
+    if (!rawOnly && waiting > RUNTIME_FRAME_MAX_BYTES) {
+      await this.block(sourceRef, source, 'limit-exceeded');
+      return false;
+    }
+    for (const entry of related) {
+      if (
+        waiting <= this.lookbehind + 64 * 1024 ||
+        entry.unit.held ||
+        waiting - entry.bytes.length < this.lookbehind
+      )
+        break;
+      this.pending.splice(this.pending.indexOf(entry), 1);
+      waiting -= entry.bytes.length;
+      await this.publish(entry, false);
+    }
+    return true;
+  }
+  /** Refuses a source at its first withheld byte and preserves the actual reason through drain. */
+  private async block(
+    sourceRef: string,
+    source: NativeCaptureSource,
+    reason: 'credential-excluded' | 'limit-exceeded'
+  ): Promise<void> {
+    const start =
+      this.pending.find((entry) => entry.sourceRef === sourceRef)?.start ??
+      this.positions.get(sourceRef) ??
+      source.preLaunchWatermark ??
+      0;
+    this.blocked.set(sourceRef, reason);
+    this.pending = this.pending.filter((entry) => entry.sourceRef !== sourceRef);
+    await this.publish(
+      { sourceRef, source, bytes: Buffer.alloc(0), start },
+      false,
+      reason,
+      reason === 'credential-excluded' ? reason : undefined
+    );
   }
   /** Drains observed source bytes without claiming native execution completion. */
   public finish(): Promise<void> {
     if (this.finishing) return this.finishing;
     this.stopped = true;
     this.finishing = this.enqueue(async () => {
+      for (const [sourceRef, source] of this.sources) await this.admit(sourceRef, source, true);
       for (const entry of this.pending.splice(0)) await this.publish(entry, false);
       for (const [sourceRef, position] of this.positions) {
         const source = this.sources.get(sourceRef);
@@ -876,7 +950,7 @@ export class NativeRuntimeCapture {
           await this.publish(
             { sourceRef, source, start: position, bytes: Buffer.alloc(0) },
             this.ended.has(sourceRef),
-            this.blocked.has(sourceRef) ? 'credential-excluded' : undefined
+            this.blocked.get(sourceRef)
           );
       }
     });
@@ -894,6 +968,8 @@ export class NativeRuntimeCapture {
     fact: RuntimeFact & { kind: 'coverage'; coverage: 'unavailable' }
   ): Promise<void> {
     return this.enqueue(async () => {
+      const source = this.sources.get(sourceRef);
+      if (source) await this.admit(sourceRef, source, true);
       const prefix = this.pending.filter((entry) => entry.sourceRef === sourceRef);
       this.pending = this.pending.filter((entry) => entry.sourceRef !== sourceRef);
       for (const entry of prefix) await this.publish(entry, false);
