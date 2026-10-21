@@ -352,6 +352,7 @@ describe('database setup', () => {
         '0013_control_store.sql',
         '0014_execution_journal.sql',
         '0015_work_observations.sql',
+        '0016_workspace_recovery_admissions.sql',
       ]);
       expect(
         ['app', 'core', 'user', 'workspace'].every((scope) =>
@@ -376,6 +377,7 @@ describe('database setup', () => {
         'core_0013_control_store',
         'core_0014_execution_journal',
         'core_0015_work_observations',
+        'core_0016_workspace_recovery_admissions',
       ]);
       expect(listTableNames(coreDb)).toEqual(beforeTables);
       for (const table of ['capability_calls', 'usage_records', 'evidence_bundles']) {

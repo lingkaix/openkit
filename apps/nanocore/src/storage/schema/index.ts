@@ -131,7 +131,7 @@ export {
 } from './workspace-membership.js';
 export { workspaceQuarantineRecords } from './workspace-quarantine-records.js';
 export { workspaceReconciliationRecords } from './workspace-reconciliation-records.js';
-
+export { workspaceRecoveryAdmissions } from './workspace-recovery-admissions.js';
 export {
   workspaceSnapshotCollections,
   workspaceSnapshotCursors,

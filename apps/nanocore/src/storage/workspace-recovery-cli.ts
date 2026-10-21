@@ -12,7 +12,19 @@ import {
   WorkspaceRecoveryError,
 } from './workspace-backup.js';
 import { parseWorkspaceBackupManifest } from './workspace-backup-bundle.js';
+import {
+  abandonWorkspaceMove,
+  finishWorkspaceMove,
+  inspectWorkspaceRecovery,
+  moveOutWorkspace,
+  reactivateWorkspace,
+} from './workspace-move.js';
 import type { WorkspaceMoveMemberMapping } from './workspace-move-mapping.js';
+import {
+  openRecoveryDatabase,
+  refuseRecovery,
+  withRecoveryRoot,
+} from './workspace-recovery-admissions.js';
 
 export { WorkspaceRecoveryError, type WorkspaceRecoveryErrorCode } from './workspace-backup.js';
 
@@ -267,7 +279,7 @@ function installedRelease(path: string) {
 }
 
 /**
- * Runs capture or full verification without server composition or a release-identity fallback.
+ * Runs offline capture, verification and source decisions without server composition or a release-identity fallback.
  * @param argv Closed offline command arguments.
  * @param write Receives one path-free JSON success report.
  * @param deps Optional private identity path; the binary uses the installed image path.
@@ -278,11 +290,53 @@ export async function runWorkspaceRecoveryCli(
   deps: { readonly releaseIdentityPath?: string } = {}
 ): Promise<WorkspaceRecoveryCliReport> {
   const args = parseWorkspaceRecoveryArgs(argv);
-  if (args.command !== 'capture' && args.command !== 'verify')
-    throw new WorkspaceRecoveryError(
-      'not-implemented',
-      'This Workspace recovery decision is not implemented.'
-    );
+  if (args.command !== 'capture' && args.command !== 'verify') {
+    if (args.command === 'restore' || args.command === 'move-in')
+      installedRelease(deps.releaseIdentityPath ?? RELEASE_IDENTITY_PATH);
+    const result =
+      args.command === 'move-out'
+        ? await moveOutWorkspace(args)
+        : args.command === 'reactivate'
+          ? await reactivateWorkspace(args)
+          : args.command === 'inspect'
+            ? await inspectWorkspaceRecovery(args)
+            : args.command === 'finish' && args.selection.kind === 'capture'
+              ? await finishWorkspaceMove(args)
+              : args.command === 'abandon' && args.selection.kind === 'capture'
+                ? await abandonWorkspaceMove(args)
+                : await withRecoveryRoot(args.dataRoot, async () => {
+                    if (args.command === 'restore') {
+                      const path = join(
+                        args.dataRoot,
+                        'workspaces',
+                        args.workspaceId,
+                        'db/workspace.sqlite'
+                      );
+                      if (lstatSync(path, { throwIfNoEntry: false })) {
+                        const db = openRecoveryDatabase(path);
+                        try {
+                          if (
+                            db
+                              .prepare(
+                                "SELECT json_extract(record_json, '$.movedOut') FROM control_workspaces WHERE id=?"
+                              )
+                              .pluck()
+                              .get(args.workspaceId)
+                          )
+                            refuseRecovery('workspace-moved-out');
+                        } finally {
+                          db.close();
+                        }
+                      }
+                    }
+                    throw new WorkspaceRecoveryError(
+                      'not-implemented',
+                      'This Workspace recovery decision is not implemented.'
+                    );
+                  });
+    write(`${JSON.stringify(result)}\n`);
+    return result;
+  }
   let temporary: string | undefined;
   try {
     const expectedRelease = installedRelease(deps.releaseIdentityPath ?? RELEASE_IDENTITY_PATH);

@@ -163,13 +163,15 @@ export interface WorkspaceBackupVerificationInput {
   readonly expectedRelease: Readonly<{ version: string; buildId: string }>;
   readonly supportedDatabaseFormats: Readonly<Record<string, number>>;
   readonly supportedRequiredFeatures?: readonly string[];
+  /** Internal source decision only: verify a prepared MOVE without manufacturing a transferable seal. */
+  readonly allowPreparedMove?: boolean;
 }
 
 /** Callback-scoped verified bytes; no live admission, capture or complete-closure authority. */
 export interface VerifiedWorkspaceBackupBundle {
   readonly verification: 'structural-only';
   readonly manifest: WorkspaceBackupManifest;
-  readonly seal: WorkspaceBackupSeal;
+  readonly seal: WorkspaceBackupSeal | null;
   readonly manifestDigest: string;
   readonly fileCount: number;
   readonly totalBytes: number;
@@ -504,9 +506,13 @@ async function readMetadata(root: FileHandle, path: string, tree: SourceTree): P
 }
 
 /** Checks the exact file/directory set and owner-required permissions before any copy is exposed. */
-function assertInventoryTree(manifest: WorkspaceBackupManifest, tree: SourceTree): void {
+function assertInventoryTree(
+  manifest: WorkspaceBackupManifest,
+  tree: SourceTree,
+  prepared = false
+): void {
   const expectedFiles = new Set([
-    ...METADATA_FILES,
+    ...[...METADATA_FILES].filter((path) => !prepared || path !== WORKSPACE_BACKUP_SEAL_FILE),
     ...manifest.inventory.map((entry) => entry.path),
   ]);
   if (
@@ -614,19 +620,25 @@ export async function withVerifiedWorkspaceBackupBundle<T>(
           throw new Error('Workspace backup root changed.');
         const tree = await inspectTree(source);
         const manifestBytes = await readMetadata(source, WORKSPACE_BACKUP_MANIFEST_FILE, tree);
-        const sealBytes = await readMetadata(source, WORKSPACE_BACKUP_SEAL_FILE, tree);
+        const prepared =
+          input.allowPreparedMove === true && !tree.files.has(WORKSPACE_BACKUP_SEAL_FILE);
+        const sealBytes = prepared
+          ? Buffer.alloc(0)
+          : await readMetadata(source, WORKSPACE_BACKUP_SEAL_FILE, tree);
         const manifestMetadata = decodeMetadata(manifestBytes);
-        const sealMetadata = decodeMetadata(sealBytes);
+        const sealMetadata = prepared ? null : decodeMetadata(sealBytes);
         const features = new Set(input.supportedRequiredFeatures ?? []);
         assertRequiredFeatures(manifestMetadata.value, features);
-        assertRequiredFeatures(sealMetadata.value, features);
+        if (sealMetadata) assertRequiredFeatures(sealMetadata.value, features);
         const manifest = parseWorkspaceBackupManifest(manifestMetadata.value);
-        const seal = parseWorkspaceBackupSeal(sealMetadata.value);
+        const seal = sealMetadata ? parseWorkspaceBackupSeal(sealMetadata.value) : null;
+        if (prepared && manifest.purpose !== 'move') throw new Error('Only MOVE may be prepared.');
         const manifestDigest = digest(manifestBytes);
         if (
-          seal.backupId !== manifest.backupId ||
-          seal.purpose !== manifest.purpose ||
-          seal.manifestDigest !== manifestDigest
+          seal !== null &&
+          (seal.backupId !== manifest.backupId ||
+            seal.purpose !== manifest.purpose ||
+            seal.manifestDigest !== manifestDigest)
         ) {
           throw new Error('Workspace backup seal does not match.');
         }
@@ -653,7 +665,7 @@ export async function withVerifiedWorkspaceBackupBundle<T>(
         ) {
           throw new Error('Workspace backup inventory digest does not match.');
         }
-        assertInventoryTree(manifest, tree);
+        assertInventoryTree(manifest, tree, prepared);
         const totalBytes = manifest.inventory.reduce((sum, entry) => sum + entry.bytes, 0);
         if (totalBytes + manifestBytes.length + sealBytes.length > MAX_TOTAL_BYTES)
           throw new Error('Workspace backup exceeds its byte limit.');
